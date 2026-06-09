@@ -83,23 +83,52 @@ function renderInlineMarkdown(value) {
     const cleanLabel = String(label || target || "").trim();
     return `<code title="${escapeHTML(cleanTarget)}">${escapeHTML(cleanLabel)}</code>`;
   });
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, src) => {
+    const cleanSrc = safeMarkdownHref(src);
+    if (!cleanSrc) return escapeHTML(alt);
+    return `<img src="${cleanSrc}" alt="${alt}">`;
+  });
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const cleanHref = safeMarkdownHref(href);
+    if (!cleanHref) return label;
+    return `<a href="${cleanHref}" target="_blank" rel="noreferrer">${label}</a>`;
+  });
   text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  text = text.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
   return text;
+}
+
+function safeMarkdownHref(value) {
+  const href = String(value || "").trim();
+  if (/^(https?:|mailto:|#|\/|\.\/|\.\.\/)/i.test(href)) {
+    return escapeHTML(href);
+  }
+  return "";
 }
 
 function renderMarkdown(value) {
   const lines = String(value || "").split(/\r?\n/);
   const html = [];
-  let inList = false;
+  let listType = "";
   let inCode = false;
+  let index = 0;
   const closeList = () => {
-    if (inList) {
-      html.push("</ul>");
-      inList = false;
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = "";
     }
   };
-  for (const rawLine of lines) {
+  if (lines[0]?.trim() === "---") {
+    const end = lines.slice(1).findIndex((line) => line.trim() === "---");
+    if (end >= 0) {
+      html.push(renderFrontMatter(lines.slice(1, end + 1)));
+      index = end + 2;
+    }
+  }
+  for (; index < lines.length; index++) {
+    const rawLine = lines[index];
     const line = rawLine.trimEnd();
     if (line.trim().startsWith("```")) {
       if (inCode) {
@@ -127,13 +156,43 @@ function renderMarkdown(value) {
       html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       continue;
     }
-    const listItem = line.match(/^[-*]\s+(.+)$/);
-    if (listItem) {
-      if (!inList) {
-        html.push("<ul>");
-        inList = true;
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      closeList();
+      html.push("<hr>");
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      closeList();
+      const table = collectTable(lines, index);
+      html.push(renderTable(table.rows));
+      index = table.nextIndex - 1;
+      continue;
+    }
+    const orderedItem = line.match(/^\d+[.)]\s+(.+)$/);
+    if (orderedItem) {
+      if (listType !== "ol") {
+        closeList();
+        html.push("<ol>");
+        listType = "ol";
       }
-      html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+      html.push(`<li>${renderInlineMarkdown(orderedItem[1])}</li>`);
+      continue;
+    }
+    const listItem = line.match(/^[-*]\s+(\[[ xX]\]\s+)?(.+)$/);
+    if (listItem) {
+      if (listType !== "ul") {
+        closeList();
+        html.push("<ul>");
+        listType = "ul";
+      }
+      const task = listItem[1];
+      const body = renderInlineMarkdown(listItem[2]);
+      if (task) {
+        const checked = /\[[xX]\]/.test(task) ? " checked" : "";
+        html.push(`<li class="task-item"><input type="checkbox" disabled${checked}>${body}</li>`);
+      } else {
+        html.push(`<li>${body}</li>`);
+      }
       continue;
     }
     if (line.startsWith(">")) {
@@ -147,6 +206,58 @@ function renderMarkdown(value) {
   closeList();
   if (inCode) html.push("</code></pre>");
   return html.join("");
+}
+
+function renderFrontMatter(lines) {
+  const rows = lines
+    .map((line) => line.match(/^([^:#][^:]*):\s*(.*)$/))
+    .filter(Boolean)
+    .map((match) => `<dt>${renderInlineMarkdown(match[1].trim())}</dt><dd>${renderInlineMarkdown(match[2].trim())}</dd>`);
+  if (rows.length === 0) {
+    return "";
+  }
+  return `<dl class="front-matter">${rows.join("")}</dl>`;
+}
+
+function isTableStart(lines, index) {
+  return hasTableCells(lines[index]) && isTableSeparator(lines[index + 1]);
+}
+
+function collectTable(lines, index) {
+  const rows = [splitTableRow(lines[index])];
+  index += 2;
+  while (index < lines.length && hasTableCells(lines[index])) {
+    rows.push(splitTableRow(lines[index]));
+    index++;
+  }
+  return { rows, nextIndex: index };
+}
+
+function renderTable(rows) {
+  const [header, ...body] = rows;
+  const head = `<thead><tr>${header.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead>`;
+  const rowsHTML = body
+    .map((row) => `<tr>${header.map((_cell, idx) => `<td>${renderInlineMarkdown(row[idx] || "")}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table>${head}<tbody>${rowsHTML}</tbody></table>`;
+}
+
+function hasTableCells(line) {
+  return typeof line === "string" && line.includes("|") && splitTableRow(line).length > 1;
+}
+
+function isTableSeparator(line) {
+  if (!hasTableCells(line)) return false;
+  return splitTableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function splitTableRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
 }
 
 function renderDiff(lines) {

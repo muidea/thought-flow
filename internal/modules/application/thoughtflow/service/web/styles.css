@@ -428,6 +428,90 @@ textarea.markdown-preview {
   padding-left: 20px;
 }
 
+.markdown-rendered ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.markdown-rendered a {
+  color: var(--accent-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-rendered hr {
+  height: 1px;
+  border: 0;
+  background: var(--line);
+  margin: 14px 0;
+}
+
+.markdown-rendered img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 10px 0;
+}
+
+.markdown-rendered table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-rendered th,
+.markdown-rendered td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-rendered th {
+  background: #eef3f6;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.markdown-rendered .task-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  list-style: none;
+  margin-left: -20px;
+}
+
+.markdown-rendered .task-item input {
+  width: 16px;
+  min-height: 16px;
+  margin-top: 3px;
+}
+
+.front-matter {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f6f8fa;
+  margin: 0 0 12px;
+  padding: 10px;
+  color: var(--muted);
+}
+
+.front-matter dt {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.front-matter dd {
+  margin: 0;
+  min-width: 0;
+}
+
 .markdown-rendered blockquote {
   margin: 10px 0;
   border-left: 3px solid var(--line);

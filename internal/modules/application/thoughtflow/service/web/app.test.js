@@ -53,6 +53,45 @@ Text with **strong** and \`code\`.
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
 });
 
+test("renderMarkdown supports extended document structures safely", () => {
+  const app = loadAppFunctions();
+
+  const html = app.renderMarkdown(`---
+id: demo
+type: topic
+---
+
+| Name | Link |
+| --- | --- |
+| Alpha | [Open](https://example.test/a) |
+| Unsafe | [Nope](javascript:alert(1)) |
+
+1. First
+2. Second
+- [x] Done
+- [ ] Todo
+---
+*emphasis*
+~~removed~~
+![Diagram](./attachments/diagram.png)
+![Unsafe](javascript:alert(1))`);
+
+  assert.match(html, /<dl class="front-matter">/);
+  assert.match(html, /<dt>id<\/dt><dd>demo<\/dd>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<th>Name<\/th>/);
+  assert.match(html, /<a href="https:\/\/example\.test\/a" target="_blank" rel="noreferrer">Open<\/a>/);
+  assert.doesNotMatch(html, /javascript:alert/);
+  assert.match(html, /<ol><li>First<\/li><li>Second<\/li><\/ol>/);
+  assert.match(html, /<li class="task-item"><input type="checkbox" disabled checked>Done<\/li>/);
+  assert.match(html, /<li class="task-item"><input type="checkbox" disabled>Todo<\/li>/);
+  assert.match(html, /<hr>/);
+  assert.match(html, /<em>emphasis<\/em>/);
+  assert.match(html, /<del>removed<\/del>/);
+  assert.match(html, /<img src=".\/attachments\/diagram\.png" alt="Diagram">/);
+  assert.doesNotMatch(html, /<img src="javascript/);
+});
+
 test("renderDiff marks added and removed lines", () => {
   const app = loadAppFunctions();
 

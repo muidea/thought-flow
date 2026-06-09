@@ -918,7 +918,7 @@ running -> retrying -> running
 4. 主题规则匹配。
 5. 混合搜索分数归一化。
 6. Git debounce 队列。
-7. 原生前端组件测试：Markdown 渲染、diff 展示、synthesis source link 去重和 outline helper。
+7. 原生前端组件测试：Markdown 安全渲染、常用 GFM/Obsidian 子集、diff 展示、synthesis source link 去重和 outline helper。
 
 ### 15.2 集成测试
 

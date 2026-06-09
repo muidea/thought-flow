@@ -207,14 +207,14 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - SSE activity feed
    - system AI/workspace 状态摘要
    - topic rules editor，支持编辑 keywords/tags/manual include/manual exclude/semantic/outline/auto_weave
-   - topic document 和 thought preview 的基础 Markdown 渲染
+   - topic document 和 thought preview 的 Markdown 渲染，支持 front matter、标题、列表、任务列表、有序列表、表格、链接、图片、分隔线、引用、代码块、Obsidian 双链和常见行内样式
    - topic weave review，支持审批队列/历史、patch hunk、diff 查看、候选文档编辑和确认写入
 4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 5. 嵌入资产服务单元测试。
 6. 原生前端组件测试：
    - `node --check internal/modules/application/thoughtflow/service/web/app.js`
    - `node --test internal/modules/application/thoughtflow/service/web/app.test.js`
-   - 覆盖轻量 Markdown 安全渲染、diff 展示、synthesis source link 去重和 outline helper。
+   - 覆盖 Markdown 安全渲染、常用扩展、diff 展示、synthesis source link 去重和 outline helper。
 7. 浏览器 smoke 测试矩阵：
    - `node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js`
    - 使用本机 Google Chrome headless 和 mock API server 覆盖 desktop/mobile 视口。
@@ -242,7 +242,7 @@ M3：
 
 UI：
 
-1. Diff/patch 审批视图已有轻量 Review tab 和独立审批队列；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
+1. Diff/patch 审批视图已有轻量 Review tab 和独立审批队列；Markdown 渲染已支持常用 GFM/Obsidian 子集，但尚未接入完整 CommonMark/GFM 解析器。
 2. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；还没有 Firefox/Safari 覆盖。
 
 当前限制：
