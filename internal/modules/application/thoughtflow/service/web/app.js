@@ -163,7 +163,7 @@ function renderDiff(lines) {
 async function loadStatus() {
   try {
     const status = await api("/api/system/status");
-    $("#system-status").textContent = `${status.workspace.id} / ${status.ai.status}`;
+    $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
   } catch (error) {
     $("#system-status").textContent = "degraded";
   }

@@ -33,6 +33,14 @@
 10. SSE 事件流基础推送。
     - 支持 `Last-Event-ID` 从内存历史中断点续传。
     - 支持 `types` 查询参数按事件类型过滤历史和实时事件。
+11. `GET /api/system/status` 返回结构化运行态健康信息：
+    - top-level `status` / `ready`。
+    - workspace 读写状态。
+    - DuckDB 配置路径和文件存在状态。
+    - AI provider 配置状态。
+    - Git 仓库、用户身份和未提交变更只读探测。
+    - background jobs 目录写入状态。
+    - SSE history/subscriber 统计。
 
 验证：
 

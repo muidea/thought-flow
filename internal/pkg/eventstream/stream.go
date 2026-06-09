@@ -22,6 +22,12 @@ type SubscribeOptions struct {
 	Types       []string
 }
 
+type Stats struct {
+	HistorySize int
+	Limit       int
+	Subscribers int
+}
+
 func New(limit int) *Stream {
 	if limit <= 0 {
 		limit = 100
@@ -98,6 +104,16 @@ func sanitizeRefinement(refinement models.ThoughtRefinement) models.ThoughtRefin
 
 func (s *Stream) Subscribe(ctx context.Context) <-chan models.DomainEvent {
 	return s.SubscribeWithOptions(ctx, SubscribeOptions{})
+}
+
+func (s *Stream) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Stats{
+		HistorySize: len(s.history),
+		Limit:       s.limit,
+		Subscribers: len(s.subscribers),
+	}
 }
 
 func (s *Stream) SubscribeWithOptions(ctx context.Context, options SubscribeOptions) <-chan models.DomainEvent {

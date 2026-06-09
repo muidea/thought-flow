@@ -12,6 +12,7 @@ import (
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -174,6 +175,60 @@ func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
 	}
 	if strings.Contains(body, "evt-1") || strings.Contains(body, "evt-2") {
 		t.Fatalf("SSE body should honor Last-Event-ID and type filter:\n%s", body)
+	}
+}
+
+func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+		GitEnabled:   false,
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.RuntimePath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	duckdbPath := filepath.Join(ws.RuntimePath, "thoughtflow.duckdb")
+	if err := os.WriteFile(duckdbPath, []byte("duckdb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(duckdb) error = %v", err)
+	}
+	stream := eventstream.New(10)
+	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured})
+	service := &Service{workspace: ws, stream: stream}
+
+	status := service.systemStatus(context.Background(), appconfig.Config{
+		Search: appconfig.SearchConfig{DuckDBPath: filepath.ToSlash(filepath.Join(".thoughtflow", "thoughtflow.duckdb"))},
+		AI: appconfig.AIConfig{
+			APIKey:         "test-key",
+			BaseURL:        "https://api.example.test",
+			ChatModel:      "chat-test",
+			EmbeddingModel: "embed-test",
+		},
+	})
+
+	if !status.Ready || status.Status != "ready" {
+		t.Fatalf("status = %#v", status)
+	}
+	if !status.Workspace.Writable || status.Workspace.Status != "ready" {
+		t.Fatalf("workspace status = %#v", status.Workspace)
+	}
+	if !status.DuckDB.Exists || status.DuckDB.Status != "ready" {
+		t.Fatalf("duckdb status = %#v", status.DuckDB)
+	}
+	if status.Git.Status != "disabled" || status.Git.Enabled {
+		t.Fatalf("git status = %#v", status.Git)
+	}
+	if !status.Background.Writable || status.Background.Status != "ready" {
+		t.Fatalf("background status = %#v", status.Background)
+	}
+	if status.Events.HistorySize != 1 || status.Events.Limit != 10 {
+		t.Fatalf("events status = %#v", status.Events)
 	}
 }
 

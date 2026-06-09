@@ -9,7 +9,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -487,36 +489,200 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 }
 
 func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	_ = ctx
 	cfg := appconfig.Load()
-	aiStatus := "not_configured"
-	if strings.TrimSpace(cfg.AI.APIKey) != "" {
-		aiStatus = "ready"
-	}
-	status := map[string]any{
-		"workspace": map[string]any{
-			"id":               s.workspace.ID,
-			"root_path":        s.workspace.RootPath,
-			"thoughts_path":    s.workspace.ThoughtsPath,
-			"topics_path":      s.workspace.TopicsPath,
-			"attachments_path": s.workspace.AttachmentsPath,
-			"runtime_path":     s.workspace.RuntimePath,
-			"git_enabled":      s.workspace.GitEnabled,
-		},
-		"duckdb": map[string]any{
-			"status": "ready",
-		},
-		"ai": map[string]any{
-			"status":          aiStatus,
-			"base_url":        cfg.AI.BaseURL,
-			"chat_model":      cfg.AI.ChatModel,
-			"embedding_model": cfg.AI.EmbeddingModel,
-		},
-		"events": map[string]any{
-			"status": "ready",
-		},
-	}
+	status := s.systemStatus(ctx, cfg)
 	writeJSON(res, req, http.StatusOK, status)
+}
+
+func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models.SystemStatus {
+	workspaceStatus := workspaceRuntimeStatus(s.workspace)
+	duckdbStatus := duckDBRuntimeStatus(s.workspace, cfg)
+	aiStatus := aiRuntimeStatus(cfg)
+	gitStatus := gitRuntimeStatus(ctx, s.workspace)
+	backgroundStatus := backgroundRuntimeStatus(s.workspace)
+	eventsStatus := eventsRuntimeStatus(s.stream)
+
+	ready := workspaceStatus.Status == "ready" &&
+		duckdbStatus.Status == "ready" &&
+		backgroundStatus.Status == "ready" &&
+		eventsStatus.Status == "ready"
+	status := "ready"
+	if !ready || aiStatus.Status != "ready" || gitStatus.Status == "degraded" {
+		status = "degraded"
+	}
+	return models.SystemStatus{
+		Status:     status,
+		Ready:      ready,
+		Workspace:  workspaceStatus,
+		DuckDB:     duckdbStatus,
+		AI:         aiStatus,
+		Git:        gitStatus,
+		Background: backgroundStatus,
+		Events:     eventsStatus,
+	}
+}
+
+func workspaceRuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus {
+	status := models.WorkspaceRuntimeStatus{Status: "degraded"}
+	if ws == nil {
+		status.Error = "workspace is not ready"
+		return status
+	}
+	status.ID = ws.ID
+	status.RootPath = ws.RootPath
+	status.ThoughtsPath = ws.ThoughtsPath
+	status.TopicsPath = ws.TopicsPath
+	status.AttachmentsPath = ws.AttachmentsPath
+	status.RuntimePath = ws.RuntimePath
+	status.JobsPath = ws.JobsPath
+	status.GitEnabled = ws.GitEnabled
+	if err := os.MkdirAll(ws.RuntimePath, 0o755); err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmp, err := os.CreateTemp(ws.RuntimePath, ".status-*.tmp")
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath)
+	status.Writable = true
+	status.Status = "ready"
+	return status
+}
+
+func duckDBRuntimeStatus(ws *models.Workspace, cfg appconfig.Config) models.DuckDBRuntimeStatus {
+	status := models.DuckDBRuntimeStatus{Status: "ready"}
+	if ws == nil {
+		status.Status = "degraded"
+		status.Error = "workspace is not ready"
+		return status
+	}
+	pathValue := strings.TrimSpace(cfg.Search.DuckDBPath)
+	if pathValue == "" {
+		pathValue = ".thoughtflow/thoughtflow.duckdb"
+	}
+	if filepath.IsAbs(pathValue) {
+		status.Path = pathValue
+	} else {
+		status.Path = filepath.Join(ws.RootPath, filepath.FromSlash(pathValue))
+	}
+	if _, err := os.Stat(status.Path); err == nil {
+		status.Exists = true
+		return status
+	} else if errors.Is(err, os.ErrNotExist) {
+		return status
+	} else {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+}
+
+func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
+	status := "not_configured"
+	configured := strings.TrimSpace(cfg.AI.APIKey) != ""
+	if configured {
+		status = "ready"
+	}
+	return models.AIRuntimeStatus{
+		Status:         status,
+		Configured:     configured,
+		BaseURL:        cfg.AI.BaseURL,
+		ChatModel:      cfg.AI.ChatModel,
+		EmbeddingModel: cfg.AI.EmbeddingModel,
+	}
+}
+
+func gitRuntimeStatus(ctx context.Context, ws *models.Workspace) models.GitRuntimeStatus {
+	status := models.GitRuntimeStatus{Status: "disabled"}
+	if ws == nil {
+		status.Status = "degraded"
+		status.Error = "workspace is not ready"
+		return status
+	}
+	status.Enabled = ws.GitEnabled
+	if !ws.GitEnabled {
+		return status
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+	gitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	status.Repository = gitCommandOK(gitCtx, ws.RootPath, "rev-parse", "--is-inside-work-tree")
+	nameOK := gitCommandOK(gitCtx, ws.RootPath, "config", "--get", "user.name")
+	emailOK := gitCommandOK(gitCtx, ws.RootPath, "config", "--get", "user.email")
+	status.IdentityConfigured = nameOK && emailOK
+	if status.Repository {
+		raw, err := gitOutput(gitCtx, ws.RootPath, "status", "--porcelain")
+		if err == nil {
+			status.Dirty = strings.TrimSpace(string(raw)) != ""
+		}
+	}
+	if !status.IdentityConfigured {
+		status.Status = "degraded"
+		status.Error = "git user.name and user.email are required for commits"
+		return status
+	}
+	if !status.Repository {
+		status.Status = "pending_init"
+		return status
+	}
+	status.Status = "ready"
+	return status
+}
+
+func backgroundRuntimeStatus(ws *models.Workspace) models.BackgroundRuntimeStatus {
+	status := models.BackgroundRuntimeStatus{Status: "degraded"}
+	if ws == nil {
+		status.Error = "workspace is not ready"
+		return status
+	}
+	status.JobsPath = ws.JobsPath
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmp, err := os.CreateTemp(ws.JobsPath, ".status-*.tmp")
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath)
+	status.Writable = true
+	status.Status = "ready"
+	return status
+}
+
+func eventsRuntimeStatus(stream *eventstream.Stream) models.EventsRuntimeStatus {
+	if stream == nil {
+		return models.EventsRuntimeStatus{Status: "degraded"}
+	}
+	stats := stream.Stats()
+	return models.EventsRuntimeStatus{
+		Status:      "ready",
+		HistorySize: stats.HistorySize,
+		Limit:       stats.Limit,
+		Subscribers: stats.Subscribers,
+	}
+}
+
+func gitCommandOK(ctx context.Context, rootPath string, args ...string) bool {
+	_, err := gitOutput(ctx, rootPath, args...)
+	return err == nil
+}
+
+func gitOutput(ctx context.Context, rootPath string, args ...string) ([]byte, error) {
+	cmdArgs := append([]string{"-C", rootPath}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+	return cmd.CombinedOutput()
 }
 
 func (s *Service) handleReindex(ctx context.Context, res http.ResponseWriter, req *http.Request) {

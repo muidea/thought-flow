@@ -203,6 +203,69 @@ type GitCommitRecord struct {
 	JobID       string    `json:"job_id,omitempty"`
 }
 
+type SystemStatus struct {
+	Status     string                  `json:"status"`
+	Ready      bool                    `json:"ready"`
+	Workspace  WorkspaceRuntimeStatus  `json:"workspace"`
+	DuckDB     DuckDBRuntimeStatus     `json:"duckdb"`
+	AI         AIRuntimeStatus         `json:"ai"`
+	Git        GitRuntimeStatus        `json:"git"`
+	Background BackgroundRuntimeStatus `json:"background"`
+	Events     EventsRuntimeStatus     `json:"events"`
+}
+
+type WorkspaceRuntimeStatus struct {
+	ID              string `json:"id"`
+	Status          string `json:"status"`
+	RootPath        string `json:"root_path"`
+	ThoughtsPath    string `json:"thoughts_path"`
+	TopicsPath      string `json:"topics_path"`
+	AttachmentsPath string `json:"attachments_path"`
+	RuntimePath     string `json:"runtime_path"`
+	JobsPath        string `json:"jobs_path"`
+	GitEnabled      bool   `json:"git_enabled"`
+	Writable        bool   `json:"writable"`
+	Error           string `json:"error,omitempty"`
+}
+
+type DuckDBRuntimeStatus struct {
+	Status string `json:"status"`
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+	Error  string `json:"error,omitempty"`
+}
+
+type AIRuntimeStatus struct {
+	Status         string `json:"status"`
+	Configured     bool   `json:"configured"`
+	BaseURL        string `json:"base_url"`
+	ChatModel      string `json:"chat_model"`
+	EmbeddingModel string `json:"embedding_model"`
+}
+
+type GitRuntimeStatus struct {
+	Status             string `json:"status"`
+	Enabled            bool   `json:"enabled"`
+	Repository         bool   `json:"repository"`
+	IdentityConfigured bool   `json:"identity_configured"`
+	Dirty              bool   `json:"dirty"`
+	Error              string `json:"error,omitempty"`
+}
+
+type BackgroundRuntimeStatus struct {
+	Status   string `json:"status"`
+	JobsPath string `json:"jobs_path"`
+	Writable bool   `json:"writable"`
+	Error    string `json:"error,omitempty"`
+}
+
+type EventsRuntimeStatus struct {
+	Status      string `json:"status"`
+	HistorySize int    `json:"history_size"`
+	Limit       int    `json:"limit"`
+	Subscribers int    `json:"subscribers"`
+}
+
 type SearchQuery struct {
 	Query          string        `json:"q"`
 	Mode           string        `json:"mode"`
