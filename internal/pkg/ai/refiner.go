@@ -33,6 +33,14 @@ type EmbedRequest struct {
 	Text      string
 }
 
+type SynthesisRequest struct {
+	ThoughtIDs  []string
+	Goal        string
+	Format      string
+	Snapshots   []models.ThoughtSnapshot
+	SourceLinks []string
+}
+
 type RefineProvider interface {
 	Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error)
 }
@@ -45,10 +53,15 @@ type WeaveProvider interface {
 	Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error)
 }
 
+type SynthesisProvider interface {
+	Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error)
+}
+
 type Provider interface {
 	RefineProvider
 	EmbeddingProvider
 	WeaveProvider
+	SynthesisProvider
 }
 
 type LocalRefineProvider struct{}
@@ -72,6 +85,13 @@ func NewEmbeddingProvider(cfg appconfig.AIConfig) EmbeddingProvider {
 }
 
 func NewWeaveProvider(cfg appconfig.AIConfig) WeaveProvider {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return NewLocalRefineProvider()
+	}
+	return NewOpenAICompatibleProvider(cfg)
+}
+
+func NewSynthesisProvider(cfg appconfig.AIConfig) SynthesisProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return NewLocalRefineProvider()
 	}
@@ -127,6 +147,31 @@ func (p *LocalRefineProvider) Weave(ctx context.Context, req models.TopicWeaveRe
 		document = strings.TrimRight(document, "\n") + "\n\n" + section
 	}
 	return models.TopicWeaveResult{Document: strings.TrimRight(document, "\n") + "\n", Model: "local-rule", Strategy: "outline-insert"}, nil
+}
+
+func (p *LocalRefineProvider) Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error) {
+	_ = ctx
+	contentParts := []string{}
+	for _, snapshot := range req.Snapshots {
+		title := firstNonEmpty(snapshot.Thought.DisplayTitle, snapshot.Thought.UserTitle, snapshot.Thought.ExtractedTitle, snapshot.Thought.ID)
+		body := firstNonEmpty(snapshot.Thought.Summary, snapshot.Content.AINotes, snapshot.Content.ExtractedContent, snapshot.Content.Original)
+		contentParts = append(contentParts, "## "+title+"\n\n"+body)
+	}
+	format := firstNonEmpty(req.Format, "summary")
+	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
+	now := time.Now().UTC()
+	return models.SynthesisDraft{
+		ID:          models.NewJobID("synthesis", now),
+		ThoughtIDs:  req.ThoughtIDs,
+		Goal:        goal,
+		Format:      format,
+		Content:     ensureSynthesisSourceLinks("# "+goal+"\n\n"+strings.Join(contentParts, "\n\n"), req.SourceLinks),
+		SourceLinks: req.SourceLinks,
+		Model:       "local-rule",
+		Status:      "draft",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, nil
 }
 
 type OpenAICompatibleProvider struct {
@@ -280,6 +325,59 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 	return models.TopicWeaveResult{Document: document + "\n", Model: p.chatModel, Strategy: "llm-document-merge"}, nil
 }
 
+func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error) {
+	if len(req.Snapshots) == 0 {
+		return models.SynthesisDraft{}, errors.New("synthesis snapshots are required")
+	}
+	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
+	format := firstNonEmpty(req.Format, "summary")
+	payload := map[string]any{
+		"model": p.chatModel,
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
+			},
+			{
+				"role": "user",
+				"content": "Goal: " + goal +
+					"\nFormat: " + format +
+					"\nRequired source links:\n" + strings.Join(req.SourceLinks, "\n") +
+					"\n\nInput notes:\n" + renderSynthesisInputs(req.Snapshots),
+			},
+		},
+		"temperature": 0.2,
+	}
+	var response chatCompletionResponse
+	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+		return models.SynthesisDraft{}, err
+	}
+	if len(response.Choices) == 0 {
+		return models.SynthesisDraft{}, errors.New("synthesis returned no choices")
+	}
+	var parsed synthesisJSON
+	if err := json.Unmarshal([]byte(extractJSONObject(response.Choices[0].Message.Content)), &parsed); err != nil {
+		return models.SynthesisDraft{}, fmt.Errorf("parse synthesis json: %w", err)
+	}
+	content := strings.TrimSpace(parsed.Content)
+	if content == "" {
+		return models.SynthesisDraft{}, errors.New("synthesis content is empty")
+	}
+	now := time.Now().UTC()
+	return models.SynthesisDraft{
+		ID:          models.NewJobID("synthesis", now),
+		ThoughtIDs:  req.ThoughtIDs,
+		Goal:        goal,
+		Format:      format,
+		Content:     ensureSynthesisSourceLinks(content, req.SourceLinks),
+		SourceLinks: req.SourceLinks,
+		Model:       p.chatModel,
+		Status:      "draft",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, nil
+}
+
 func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
 	if strings.TrimSpace(p.apiKey) == "" {
 		return errors.New("ai api key is required")
@@ -422,6 +520,10 @@ type topicWeaveJSON struct {
 	Document string `json:"document"`
 }
 
+type synthesisJSON struct {
+	Content string `json:"content"`
+}
+
 func extractJSONObject(value string) string {
 	value = strings.TrimSpace(value)
 	start := strings.Index(value, "{")
@@ -430,6 +532,47 @@ func extractJSONObject(value string) string {
 		return value[start : end+1]
 	}
 	return value
+}
+
+func renderSynthesisInputs(snapshots []models.ThoughtSnapshot) string {
+	parts := []string{}
+	for _, snapshot := range snapshots {
+		title := firstNonEmpty(snapshot.Thought.DisplayTitle, snapshot.Thought.UserTitle, snapshot.Thought.ExtractedTitle, snapshot.Thought.ID)
+		body := firstNonEmpty(snapshot.Thought.Summary, snapshot.Content.AINotes, snapshot.Content.ExtractedContent, snapshot.Content.Original)
+		parts = append(parts, "ID: "+snapshot.Thought.ID+
+			"\nTitle: "+title+
+			"\nSource link: "+snapshot.Thought.Path+
+			"\nContent:\n"+body)
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
+func ensureSynthesisSourceLinks(content string, sourceLinks []string) string {
+	content = strings.TrimSpace(content)
+	missing := []string{}
+	for _, link := range sourceLinks {
+		link = strings.TrimSpace(link)
+		if link == "" || strings.Contains(content, link) {
+			continue
+		}
+		missing = append(missing, link)
+	}
+	if len(missing) == 0 {
+		return content
+	}
+	var builder strings.Builder
+	builder.WriteString(content)
+	if strings.Contains(strings.ToLower(content), "### sources") {
+		builder.WriteString("\n")
+	} else {
+		builder.WriteString("\n\n### Sources\n\n")
+	}
+	for _, link := range missing {
+		builder.WriteString("- [[")
+		builder.WriteString(link)
+		builder.WriteString("]]\n")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func normalizeList(values []string) []string {

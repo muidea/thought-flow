@@ -387,7 +387,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `format` | enum | `summary`、`outline`、`report` |
 | `content` | string | AI 生成内容 |
 | `source_links` | []string | 原子笔记链接 |
-| `model` | string | 使用模型 |
+| `model` | string | 使用模型，未配置 AI 时为 `local-rule` |
 | `status` | enum | `draft`、`saved` |
 | `saved_thought_id` | string | 保存后生成的 Thought ID |
 | `history` | []SynthesisDraftHistory | 草稿创建和保存历史 |
@@ -398,9 +398,10 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 功能定义：
 
 1. 从选中 Thought 生成摘要或大纲。
-2. 默认写入 `synthesis/drafts/{draft_id}.yaml`，作为独立草稿仓库。
-3. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
-4. 保存后将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
+2. 配置 AI API key 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
+3. 默认写入 `synthesis/drafts/{draft_id}.yaml`，作为独立草稿仓库。
+4. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
+5. 保存后将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
 
 ## 5. 运行任务模型
 

@@ -22,6 +22,7 @@ import (
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
@@ -44,6 +45,7 @@ type Service struct {
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
 	synthesisStore *synthesisstore.Store
+	synthesisAI    ai.SynthesisProvider
 }
 
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
@@ -57,6 +59,7 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		stream:         stream,
 		workspace:      workspace,
 		synthesisStore: newSynthesisStore(workspace),
+		synthesisAI:    ai.NewSynthesisProvider(appconfig.Load().AI),
 	}
 }
 
@@ -203,29 +206,26 @@ func (s *Service) handleSynthesis(ctx context.Context, res http.ResponseWriter, 
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "thought_ids is required")
 		return
 	}
-	contentParts := []string{}
 	snapshots, sourceLinks, err := s.synthesisSources(ctx, request.ThoughtIDs)
 	if err != nil {
 		writeSynthesisSourceError(res, req, err)
 		return
 	}
+	thoughtIDs := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		title := firstNonEmpty(snapshot.Thought.DisplayTitle, snapshot.Thought.UserTitle, snapshot.Thought.ExtractedTitle, snapshot.Thought.ID)
-		body := firstNonEmpty(snapshot.Thought.Summary, snapshot.Content.AINotes, snapshot.Content.ExtractedContent, snapshot.Content.Original)
-		contentParts = append(contentParts, "## "+title+"\n\n"+body)
+		thoughtIDs = append(thoughtIDs, snapshot.Thought.ID)
 	}
-	format := firstNonEmpty(request.Format, "summary")
-	goal := firstNonEmpty(request.Goal, "Synthesize selected thoughts")
-	draft := models.SynthesisDraft{
-		ID:          models.NewJobID("synthesis", time.Now().UTC()),
-		ThoughtIDs:  request.ThoughtIDs,
-		Goal:        goal,
-		Format:      format,
-		Content:     "# " + goal + "\n\n" + strings.Join(contentParts, "\n\n"),
+	provider := s.getSynthesisProvider()
+	draft, err := provider.Synthesize(ctx, ai.SynthesisRequest{
+		ThoughtIDs:  thoughtIDs,
+		Goal:        request.Goal,
+		Format:      request.Format,
+		Snapshots:   snapshots,
 		SourceLinks: sourceLinks,
-		Model:       "local-rule",
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		writeError(res, req, http.StatusBadGateway, "thoughtflow.synthesis.generate_failed", err.Error())
+		return
 	}
 	if store := s.getSynthesisStore(); store != nil {
 		draft, err = store.SaveDraft(ctx, draft)
@@ -353,6 +353,14 @@ func newSynthesisStore(workspace *models.Workspace) *synthesisstore.Store {
 		return nil
 	}
 	return synthesisstore.New(workspace.RootPath)
+}
+
+func (s *Service) getSynthesisProvider() ai.SynthesisProvider {
+	if s.synthesisAI != nil {
+		return s.synthesisAI
+	}
+	s.synthesisAI = ai.NewSynthesisProvider(appconfig.Load().AI)
+	return s.synthesisAI
 }
 
 func (s *Service) synthesisSources(ctx context.Context, thoughtIDs []string) ([]models.ThoughtSnapshot, []string, error) {

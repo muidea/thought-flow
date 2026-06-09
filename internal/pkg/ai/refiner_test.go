@@ -156,3 +156,54 @@ func TestOpenAICompatibleProviderWeaveRequiresSourceLink(t *testing.T) {
 		t.Fatalf("expected missing source link error")
 	}
 }
+
+func TestOpenAICompatibleProviderSynthesizePreservesSourceLinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/v1/chat/completions" {
+			http.NotFound(res, req)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": `{"content":"# Cloud draft\n\nSynthesized by cloud model."}`,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	})
+	draft, err := provider.Synthesize(context.Background(), SynthesisRequest{
+		ThoughtIDs: []string{"thought-1"},
+		Goal:       "Cloud outline",
+		Format:     "outline",
+		Snapshots: []models.ThoughtSnapshot{
+			{
+				Thought: models.Thought{ID: "thought-1", Path: "thoughts/2026/06/thought-1.md", DisplayTitle: "Cloud note"},
+				Content: models.ThoughtContent{Original: "Cloud synthesis source."},
+			},
+		},
+		SourceLinks: []string{"thoughts/2026/06/thought-1.md"},
+	})
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if draft.Model != "chat-model" {
+		t.Fatalf("model = %q", draft.Model)
+	}
+	if !strings.Contains(draft.Content, "Cloud draft") {
+		t.Fatalf("content = %q", draft.Content)
+	}
+	if !strings.Contains(draft.Content, "[[thoughts/2026/06/thought-1.md]]") {
+		t.Fatalf("expected source link to be appended, content = %q", draft.Content)
+	}
+}

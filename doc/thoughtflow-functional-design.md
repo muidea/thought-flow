@@ -575,7 +575,7 @@ payload
 }
 ```
 
-返回本地草稿，并写入 `synthesis/drafts/{draft_id}.yaml`，状态为 `draft`。
+返回 synthesis 草稿，并写入 `synthesis/drafts/{draft_id}.yaml`，状态为 `draft`。配置 AI API key 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
 
 `GET /api/synthesis`
 

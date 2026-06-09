@@ -13,6 +13,7 @@ import (
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
@@ -250,7 +251,7 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	}
 	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
 	drafts := synthesisstore.New(root)
-	service := &Service{captureService: captureService, synthesisStore: drafts, workspace: ws}
+	service := &Service{captureService: captureService, synthesisStore: drafts, workspace: ws, synthesisAI: fakeSynthesisProvider{}}
 	ctx := context.Background()
 	result, err := captureService.Capture(ctx, models.CaptureCommand{
 		Type:    models.ThoughtTypeText,
@@ -281,6 +282,9 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	}
 	if createPayload.Data.ID == "" || createPayload.Data.Status != "draft" {
 		t.Fatalf("created draft = %#v", createPayload.Data)
+	}
+	if createPayload.Data.Model != "fake-cloud" || !strings.Contains(createPayload.Data.Content, "Cloud synthesis draft") {
+		t.Fatalf("draft should come from synthesis provider, got %#v", createPayload.Data)
 	}
 	loaded, err := drafts.GetDraft(ctx, createPayload.Data.ID)
 	if err != nil {
@@ -324,6 +328,25 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	if len(saved.History) != 2 || saved.History[1].Status != "saved" {
 		t.Fatalf("saved history = %#v", saved.History)
 	}
+}
+
+type fakeSynthesisProvider struct{}
+
+func (fakeSynthesisProvider) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
+	_ = ctx
+	now := time.Now().UTC()
+	return models.SynthesisDraft{
+		ID:          models.NewJobID("synthesis", now),
+		ThoughtIDs:  req.ThoughtIDs,
+		Goal:        req.Goal,
+		Format:      req.Format,
+		Content:     "# Cloud synthesis draft\n\nGenerated from provider.\n\n### Sources\n\n- [[" + req.SourceLinks[0] + "]]",
+		SourceLinks: req.SourceLinks,
+		Model:       "fake-cloud",
+		Status:      "draft",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, nil
 }
 
 func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
