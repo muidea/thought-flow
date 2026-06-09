@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 		}
 	}
 
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Engineering Search",
@@ -98,7 +99,7 @@ func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
 		}
 	}
 
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, ai.NewLocalRefineProvider())
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, ai.NewLocalRefineProvider(), nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name:        "Semantic Retrieval",
@@ -140,6 +141,109 @@ func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
 	if len(detail.Members) != 1 || detail.Members[0].MatchType != "semantic" {
 		t.Fatalf("detail members = %#v", detail.Members)
 	}
+}
+
+func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	cache := &testEmbeddingCache{
+		record: models.EmbeddingRecord{
+			ThoughtID: "20260609-143010-cached",
+			Model:     "test-embedding",
+			Dimension: 3,
+			Vector:    []float64{1, 0, 0},
+		},
+	}
+	embedder := &countingEmbeddingProvider{
+		record: models.EmbeddingRecord{
+			Model:     "test-embedding",
+			Dimension: 3,
+			Vector:    []float64{1, 0, 0},
+		},
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache)
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:        "Cached Semantic Retrieval",
+		Description: "vector embeddings semantic retrieval",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 0.9},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	thought := serviceTestThought("20260609-143010-cached", "Cached embedding note")
+	content := models.ThoughtContent{Original: "semantic retrieval with cached vector embeddings"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	memberships, err := service.MatchThought(ctx, thought.ID)
+	if err != nil {
+		t.Fatalf("MatchThought() error = %v", err)
+	}
+	if len(memberships) != 1 || memberships[0].TopicID != topic.ID {
+		t.Fatalf("memberships = %#v", memberships)
+	}
+	if cache.calls != 1 {
+		t.Fatalf("cache calls = %d, want 1", cache.calls)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("embedder calls = %d, want only topic embedding call", embedder.calls)
+	}
+}
+
+type testEmbeddingCache struct {
+	record models.EmbeddingRecord
+	calls  int
+}
+
+func (c *testEmbeddingCache) CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
+	_ = ctx
+	c.calls++
+	if c.record.ThoughtID != thoughtID {
+		return models.EmbeddingRecord{}, false
+	}
+	if model != "" && c.record.Model != "" && model != c.record.Model {
+		return models.EmbeddingRecord{}, false
+	}
+	return c.record, true
+}
+
+type countingEmbeddingProvider struct {
+	mu     sync.Mutex
+	record models.EmbeddingRecord
+	calls  int
+}
+
+func (p *countingEmbeddingProvider) Refine(ctx context.Context, req ai.RefineRequest) (models.ThoughtRefinement, error) {
+	_ = ctx
+	_ = req
+	return models.ThoughtRefinement{}, nil
+}
+
+func (p *countingEmbeddingProvider) Embed(ctx context.Context, req ai.EmbedRequest) (models.EmbeddingRecord, error) {
+	_ = ctx
+	_ = req
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	return p.record, nil
 }
 
 func serviceTestThought(id string, title string) models.Thought {

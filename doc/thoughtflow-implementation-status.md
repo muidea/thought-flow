@@ -135,6 +135,11 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
 12. 本地 synthesis 草稿 API：`POST /api/synthesis`。
 13. synthesis 会读取指定 thoughts，生成本地 Markdown 草稿并返回 source links。
 14. M3 topic store、topic service 和 weave provider 单元测试。
+15. topic semantic matching 已复用 search embedding cache：
+   - topic 运行单元通过窄接口读取 search 运行单元缓存的 `EmbeddingRecord`。
+   - semantic rule 匹配时先生成 topic 定义向量，再优先读取同模型 thought embedding cache。
+   - 缓存缺失或维度不匹配时才回退即时 embedding。
+   - `search.index_updated` 仍会触发 topic match，确保 refined embedding 写入索引后可再次复用缓存匹配。
 
 验证：
 
@@ -181,7 +186,7 @@ M2：
 
 M3：
 
-1. topic semantic matching 目前按匹配时即时 embedding + cosine 计算，尚未复用 DuckDB embedding cache 或 ANN 索引。
+1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
 2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
 3. 专题成员关系当前随 topic YAML 和 Thought front matter/Links 聚合存储，尚未拆为独立 membership 事实文件。
 4. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。

@@ -26,9 +26,14 @@ type Service struct {
 	eventHub   event.Hub
 	background task.BackgroundRoutine
 	embedder   ai.EmbeddingProvider
+	cache      EmbeddingCache
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider) *Service {
+type EmbeddingCache interface {
+	CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool)
+}
+
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, cache EmbeddingCache) *Service {
 	return &Service{
 		workspace:  workspace,
 		jobs:       jobs,
@@ -36,6 +41,7 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topics
 		eventHub:   eventHub,
 		background: background,
 		embedder:   embedder,
+		cache:      cache,
 	}
 }
 
@@ -206,9 +212,15 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 	if err != nil {
 		return models.TopicMembership{}, false
 	}
-	thoughtEmbedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: thoughtText})
-	if err != nil {
-		return models.TopicMembership{}, false
+	thoughtEmbedding, ok := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
+	if ok && len(thoughtEmbedding.Vector) != len(topicEmbedding.Vector) {
+		ok = false
+	}
+	if !ok {
+		thoughtEmbedding, err = s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: thoughtText})
+		if err != nil {
+			return models.TopicMembership{}, false
+		}
 	}
 	score := cosine(topicEmbedding.Vector, thoughtEmbedding.Vector)
 	threshold := topic.Rules.Semantic.Threshold
@@ -229,6 +241,17 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, true
+}
+
+func (s *Service) cachedThoughtEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
+	if s.cache == nil {
+		return models.EmbeddingRecord{}, false
+	}
+	record, ok := s.cache.CachedEmbedding(ctx, thoughtID, model)
+	if !ok || len(record.Vector) == 0 {
+		return models.EmbeddingRecord{}, false
+	}
+	return record, true
 }
 
 func semanticHardExcluded(topic models.Topic, thought models.Thought, content models.ThoughtContent) bool {

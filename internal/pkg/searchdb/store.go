@@ -589,6 +589,11 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 }
 
 func (s *Store) embeddingForThought(ctx context.Context, thoughtID string, model string) models.EmbeddingRecord {
+	record, _ := s.GetEmbedding(ctx, thoughtID, model)
+	return record
+}
+
+func (s *Store) GetEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
 	where := "thought_id = ?"
 	args := []any{thoughtID}
 	if strings.TrimSpace(model) != "" {
@@ -600,10 +605,13 @@ func (s *Store) embeddingForThought(ctx context.Context, thoughtID string, model
 	var record models.EmbeddingRecord
 	var raw string
 	if err := row.Scan(&record.ThoughtID, &record.Model, &record.Dimension, &raw, &record.ContentHash, &record.CreatedAt); err != nil {
-		return models.EmbeddingRecord{}
+		return models.EmbeddingRecord{}, false
 	}
 	_ = json.Unmarshal([]byte(raw), &record.Vector)
-	return record
+	if len(record.Vector) == 0 {
+		return models.EmbeddingRecord{}, false
+	}
+	return record, true
 }
 
 func buildSearchText(thought models.Thought, content models.ThoughtContent) string {

@@ -9,6 +9,7 @@ import (
 	"github.com/muidea/magicCommon/framework/plugin/module"
 	"github.com/muidea/magicCommon/task"
 
+	searchmodule "thoughtflow/internal/modules/search"
 	"thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
@@ -62,7 +63,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	if err != nil {
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(ws.RootPath, topicstore.WithWeaveProvider(ai.NewWeaveProvider(cfg.AI))), eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.AI))
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(ws.RootPath, topicstore.WithWeaveProvider(ai.NewWeaveProvider(cfg.AI))), eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.AI), searchmodule.Current())
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.refined", m.service)
 	eventHub.Subscribe("search.index_updated", m.service)

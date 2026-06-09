@@ -147,6 +147,13 @@ func (s *Service) Search(ctx context.Context, query models.SearchQuery) (models.
 	return s.store.Search(ctx, query)
 }
 
+func (s *Service) CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
+	if s == nil || s.store == nil || strings.TrimSpace(thoughtID) == "" {
+		return models.EmbeddingRecord{}, false
+	}
+	return s.store.GetEmbedding(ctx, thoughtID, model)
+}
+
 func (s *Service) indexJob(job models.Job, embedding *models.EmbeddingRecord) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))

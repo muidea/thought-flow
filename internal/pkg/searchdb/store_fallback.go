@@ -65,6 +65,20 @@ func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecor
 	return nil
 }
 
+func (s *Store) GetEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.embeddings[thoughtID]
+	if !ok || len(record.Vector) == 0 {
+		return models.EmbeddingRecord{}, false
+	}
+	if strings.TrimSpace(model) != "" && record.Model != "" && record.Model != model {
+		return models.EmbeddingRecord{}, false
+	}
+	return record, true
+}
+
 func (s *Store) Init(ctx context.Context) error {
 	_ = ctx
 	return nil
