@@ -678,6 +678,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `GET /api/events` | SSE 事件流 |
 | `GET /api/jobs/{id}` | `GetJob` |
 | `GET /api/system/status` | `GetSystemStatus` |
+| `GET /api/system/metrics` | `GetSystemMetrics` |
+| `GET /metrics` | Prometheus 指标文本 |
 | `POST /api/system/reindex` | `ReindexWorkspace` |
 
 必须校验：

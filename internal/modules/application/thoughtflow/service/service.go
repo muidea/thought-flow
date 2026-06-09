@@ -26,7 +26,9 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/synthesisstore"
 )
 
@@ -90,7 +92,9 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/jobs/:id", engine.GET, s.handleGetJob)
 	s.registry.AddHandler("/api/events", engine.GET, s.handleEvents)
 	s.registry.AddHandler("/api/system/status", engine.GET, s.handleSystemStatus)
+	s.registry.AddHandler("/api/system/metrics", engine.GET, s.handleSystemMetrics)
 	s.registry.AddHandler("/api/system/reindex", engine.POST, s.handleReindex)
+	s.registry.AddHandler("/metrics", engine.GET, s.handlePrometheusMetrics)
 	s.registry.AddHandler("/health/live", engine.GET, s.handleLive)
 	s.registry.AddHandler("/health/ready", engine.GET, s.handleReady)
 }
@@ -176,6 +180,7 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 }
 
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	observability.IncrementSearchQuery()
 	query := req.URL.Query()
 	searchQuery := models.SearchQuery{
 		Query:    query.Get("q"),
@@ -621,6 +626,203 @@ func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWrite
 	cfg := appconfig.Load()
 	status := s.systemStatus(ctx, cfg)
 	writeJSON(res, req, http.StatusOK, status)
+}
+
+func (s *Service) handleSystemMetrics(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	metrics, err := s.systemMetrics(ctx, time.Now().UTC())
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.system.metrics_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, metrics)
+}
+
+func (s *Service) handlePrometheusMetrics(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	metrics, err := s.systemMetrics(ctx, time.Now().UTC())
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.system.metrics_failed", err.Error())
+		return
+	}
+	_ = req
+	res.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write([]byte(renderPrometheusMetrics(metrics)))
+}
+
+func (s *Service) systemMetrics(ctx context.Context, now time.Time) (models.SystemMetrics, error) {
+	_ = ctx
+	counters := observability.Snapshot()
+	jobs := []models.Job{}
+	if s.jobs != nil {
+		listed, err := s.jobs.List()
+		if err != nil {
+			return models.SystemMetrics{}, err
+		}
+		jobs = listed
+	}
+	thoughts, err := listWorkspaceThoughts(s.workspace)
+	if err != nil {
+		return models.SystemMetrics{}, err
+	}
+
+	captureTotal := len(thoughts)
+	gitCommitTotal := 0
+	for _, job := range jobs {
+		if job.Type == models.JobTypeGitCommit && job.Status == models.JobStatusSucceeded {
+			gitCommitTotal++
+		}
+	}
+	refineDuration := refineDurationMetric(jobs)
+	backgroundJobs := backgroundJobsMetric(jobs)
+	indexLag := thoughtIndexLagMetric(thoughts, now)
+	values := map[string]float64{
+		"thoughtflow_capture_total":           float64(captureTotal),
+		"thoughtflow_refine_duration_seconds": refineDuration.Average,
+		"thoughtflow_ai_request_total":        float64(counters.AIRequestTotal),
+		"thoughtflow_search_query_total":      float64(counters.SearchQueryTotal),
+		"thoughtflow_index_lag_seconds":       indexLag.Seconds,
+		"thoughtflow_topic_weave_total":       float64(counters.TopicWeaveTotal),
+		"thoughtflow_git_commit_total":        float64(gitCommitTotal),
+		"thoughtflow_background_jobs":         float64(backgroundJobs.Total),
+	}
+	return models.SystemMetrics{
+		GeneratedAt:           now,
+		Values:                values,
+		RefineDurationSeconds: refineDuration,
+		BackgroundJobs:        backgroundJobs,
+		ThoughtIndexLag:       indexLag,
+	}, nil
+}
+
+func listWorkspaceThoughts(ws *models.Workspace) ([]models.Thought, error) {
+	if ws == nil || strings.TrimSpace(ws.RootPath) == "" {
+		return []models.Thought{}, nil
+	}
+	thoughtsPath := filepath.Join(ws.RootPath, "thoughts")
+	thoughts := []models.Thought{}
+	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
+			return nil
+		}
+		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		thought, _, err := markdown.ReadThought(ws.RootPath, thoughtID)
+		if err != nil {
+			return err
+		}
+		thoughts = append(thoughts, thought)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.Thought{}, nil
+	}
+	return thoughts, err
+}
+
+func refineDurationMetric(jobs []models.Job) models.DurationMetric {
+	metric := models.DurationMetric{}
+	for _, job := range jobs {
+		if job.Type != models.JobTypeRefine || job.StartedAt == nil || job.FinishedAt == nil {
+			continue
+		}
+		duration := job.FinishedAt.Sub(*job.StartedAt).Seconds()
+		if duration < 0 {
+			continue
+		}
+		metric.Count++
+		metric.Sum += duration
+		metric.Latest = duration
+	}
+	if metric.Count > 0 {
+		metric.Average = metric.Sum / float64(metric.Count)
+	}
+	return metric
+}
+
+func backgroundJobsMetric(jobs []models.Job) models.BackgroundJobsMetric {
+	metric := models.BackgroundJobsMetric{
+		Total:    len(jobs),
+		ByStatus: map[string]int{},
+		ByType:   map[string]int{},
+	}
+	for _, job := range jobs {
+		if job.Status != "" {
+			metric.ByStatus[job.Status]++
+		}
+		if job.Type != "" {
+			metric.ByType[job.Type]++
+		}
+	}
+	return metric
+}
+
+func thoughtIndexLagMetric(thoughts []models.Thought, now time.Time) models.ThoughtIndexLagMetric {
+	metric := models.ThoughtIndexLagMetric{}
+	for _, thought := range thoughts {
+		switch thought.IndexStatus {
+		case models.IndexStatusIndexed:
+			continue
+		case models.IndexStatusFailed:
+			metric.FailedThoughts++
+		default:
+			metric.PendingThoughts++
+		}
+		updatedAt := thought.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = thought.CreatedAt
+		}
+		if updatedAt.IsZero() {
+			continue
+		}
+		lag := now.Sub(updatedAt).Seconds()
+		if lag > metric.Seconds {
+			metric.Seconds = lag
+		}
+	}
+	return metric
+}
+
+func renderPrometheusMetrics(metrics models.SystemMetrics) string {
+	var builder strings.Builder
+	writePrometheusSample(&builder, "thoughtflow_capture_total", "counter", "Total captured thoughts.", metrics.Values["thoughtflow_capture_total"])
+	writePrometheusSample(&builder, "thoughtflow_refine_duration_seconds", "gauge", "Average thought refinement duration in seconds.", metrics.Values["thoughtflow_refine_duration_seconds"])
+	writePrometheusSample(&builder, "thoughtflow_ai_request_total", "counter", "Total AI provider requests.", metrics.Values["thoughtflow_ai_request_total"])
+	writePrometheusSample(&builder, "thoughtflow_search_query_total", "counter", "Total search queries.", metrics.Values["thoughtflow_search_query_total"])
+	writePrometheusSample(&builder, "thoughtflow_index_lag_seconds", "gauge", "Maximum lag for non-indexed thoughts in seconds.", metrics.Values["thoughtflow_index_lag_seconds"])
+	writePrometheusSample(&builder, "thoughtflow_topic_weave_total", "counter", "Total topic weave operations.", metrics.Values["thoughtflow_topic_weave_total"])
+	writePrometheusSample(&builder, "thoughtflow_git_commit_total", "counter", "Total successful git commit jobs.", metrics.Values["thoughtflow_git_commit_total"])
+	writePrometheusSample(&builder, "thoughtflow_background_jobs", "gauge", "Total persisted background jobs.", metrics.Values["thoughtflow_background_jobs"])
+	writePrometheusSample(&builder, "thoughtflow_refine_duration_seconds_sum", "counter", "Total refinement duration in seconds.", metrics.RefineDurationSeconds.Sum)
+	writePrometheusSample(&builder, "thoughtflow_refine_duration_seconds_count", "counter", "Total completed refinement jobs.", float64(metrics.RefineDurationSeconds.Count))
+	for status, count := range metrics.BackgroundJobs.ByStatus {
+		writePrometheusLabeledSample(&builder, "thoughtflow_background_jobs", map[string]string{"status": status}, float64(count))
+	}
+	for jobType, count := range metrics.BackgroundJobs.ByType {
+		writePrometheusLabeledSample(&builder, "thoughtflow_background_jobs", map[string]string{"type": jobType}, float64(count))
+	}
+	return builder.String()
+}
+
+func writePrometheusSample(builder *strings.Builder, name string, metricType string, help string, value float64) {
+	_, _ = fmt.Fprintf(builder, "# HELP %s %s\n", name, help)
+	_, _ = fmt.Fprintf(builder, "# TYPE %s %s\n", name, metricType)
+	_, _ = fmt.Fprintf(builder, "%s %.6f\n", name, value)
+}
+
+func writePrometheusLabeledSample(builder *strings.Builder, name string, labels map[string]string, value float64) {
+	parts := []string{}
+	for key, value := range labels {
+		parts = append(parts, fmt.Sprintf("%s=%q", key, sanitizePrometheusLabel(value)))
+	}
+	_, _ = fmt.Fprintf(builder, "%s{%s} %.6f\n", name, strings.Join(parts, ","), value)
+}
+
+func sanitizePrometheusLabel(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	return strings.ReplaceAll(value, "\"", "\\\"")
 }
 
 func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models.SystemStatus {

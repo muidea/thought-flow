@@ -18,6 +18,8 @@
    - `GET /api/jobs/{id}`
    - `GET /api/events`
    - `GET /api/system/status`
+   - `GET /api/system/metrics`
+   - `GET /metrics`
    - `GET /health/live`
    - `GET /health/ready`
 5. 工作区初始化：
@@ -41,11 +43,20 @@
     - Git 仓库、用户身份和未提交变更只读探测。
     - background jobs 目录写入状态。
     - SSE history/subscriber 统计。
-12. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
+12. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
+    - `thoughtflow_capture_total` 从工作区 Markdown thought 事实源计算。
+    - `thoughtflow_refine_duration_seconds` 从 refine job 开始/完成时间计算。
+    - `thoughtflow_ai_request_total` 统计 AI Provider 调用次数。
+    - `thoughtflow_search_query_total` 统计搜索请求次数。
+    - `thoughtflow_index_lag_seconds` 统计待索引/失败索引 thought 的最大滞后。
+    - `thoughtflow_topic_weave_total` 统计专题文档缝合次数。
+    - `thoughtflow_git_commit_total` 从成功 git commit job 计算。
+    - `thoughtflow_background_jobs` 从持久化 job 快照计算，并按 status/type 输出 label 维度。
+13. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
     - 监听地址使用 `THOUGHTFLOW_HOST` + `THOUGHTFLOW_PORT`。
     - `application.Shutdown(ctx)` 触发 application module `Teardown(ctx)` 时调用 `http.Server.Shutdown(ctx)`。
     - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
-13. 配置分层加载：
+14. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
     - 启动时按工作区读取 `.thoughtflow/config.local.yaml`。
     - 环境变量保持最高优先级，覆盖本地配置中的端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。

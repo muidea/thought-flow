@@ -19,6 +19,7 @@ import (
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/observability"
 )
 
 const localEmbeddingModel = "local-hash-embedding-v1"
@@ -72,30 +73,66 @@ func NewLocalRefineProvider() *LocalRefineProvider {
 
 func NewRefineProvider(cfg appconfig.AIConfig) RefineProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return NewLocalRefineProvider()
+		return observedRefineProvider{next: NewLocalRefineProvider()}
 	}
-	return NewOpenAICompatibleProvider(cfg)
+	return observedRefineProvider{next: NewOpenAICompatibleProvider(cfg)}
 }
 
 func NewEmbeddingProvider(cfg appconfig.AIConfig) EmbeddingProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return NewLocalRefineProvider()
+		return observedEmbeddingProvider{next: NewLocalRefineProvider()}
 	}
-	return NewOpenAICompatibleProvider(cfg)
+	return observedEmbeddingProvider{next: NewOpenAICompatibleProvider(cfg)}
 }
 
 func NewWeaveProvider(cfg appconfig.AIConfig) WeaveProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return NewLocalRefineProvider()
+		return observedWeaveProvider{next: NewLocalRefineProvider()}
 	}
-	return NewOpenAICompatibleProvider(cfg)
+	return observedWeaveProvider{next: NewOpenAICompatibleProvider(cfg)}
 }
 
 func NewSynthesisProvider(cfg appconfig.AIConfig) SynthesisProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return NewLocalRefineProvider()
+		return observedSynthesisProvider{next: NewLocalRefineProvider()}
 	}
-	return NewOpenAICompatibleProvider(cfg)
+	return observedSynthesisProvider{next: NewOpenAICompatibleProvider(cfg)}
+}
+
+type observedRefineProvider struct {
+	next RefineProvider
+}
+
+func (p observedRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
+	observability.IncrementAIRequest()
+	return p.next.Refine(ctx, req)
+}
+
+type observedEmbeddingProvider struct {
+	next EmbeddingProvider
+}
+
+func (p observedEmbeddingProvider) Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error) {
+	observability.IncrementAIRequest()
+	return p.next.Embed(ctx, req)
+}
+
+type observedWeaveProvider struct {
+	next WeaveProvider
+}
+
+func (p observedWeaveProvider) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
+	observability.IncrementAIRequest()
+	return p.next.Weave(ctx, req)
+}
+
+type observedSynthesisProvider struct {
+	next SynthesisProvider
+}
+
+func (p observedSynthesisProvider) Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error) {
+	observability.IncrementAIRequest()
+	return p.next.Synthesize(ctx, req)
 }
 
 func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {

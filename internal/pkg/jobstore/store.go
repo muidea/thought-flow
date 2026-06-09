@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,6 +64,41 @@ func (s *Store) Get(jobID string) (models.Job, error) {
 		return models.Job{}, err
 	}
 	return job, nil
+}
+
+func (s *Store) List() ([]models.Job, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := os.ReadDir(s.rootPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.Job{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	jobs := []models.Job{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.rootPath, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var job models.Job
+		if err := json.Unmarshal(raw, &job); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	sort.Slice(jobs, func(left, right int) bool {
+		if jobs[left].CreatedAt.Equal(jobs[right].CreatedAt) {
+			return jobs[left].ID < jobs[right].ID
+		}
+		return jobs[left].CreatedAt.Before(jobs[right].CreatedAt)
+	})
+	return jobs, nil
 }
 
 func (s *Store) MarkRunning(job models.Job) (models.Job, error) {

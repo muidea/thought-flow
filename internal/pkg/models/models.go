@@ -214,6 +214,33 @@ type SystemStatus struct {
 	Events     EventsRuntimeStatus     `json:"events"`
 }
 
+type SystemMetrics struct {
+	GeneratedAt           time.Time             `json:"generated_at"`
+	Values                map[string]float64    `json:"values"`
+	RefineDurationSeconds DurationMetric        `json:"refine_duration_seconds"`
+	BackgroundJobs        BackgroundJobsMetric  `json:"background_jobs"`
+	ThoughtIndexLag       ThoughtIndexLagMetric `json:"thought_index_lag"`
+}
+
+type DurationMetric struct {
+	Count   int     `json:"count"`
+	Sum     float64 `json:"sum"`
+	Average float64 `json:"average"`
+	Latest  float64 `json:"latest"`
+}
+
+type BackgroundJobsMetric struct {
+	Total    int            `json:"total"`
+	ByStatus map[string]int `json:"by_status"`
+	ByType   map[string]int `json:"by_type"`
+}
+
+type ThoughtIndexLagMetric struct {
+	Seconds         float64 `json:"seconds"`
+	PendingThoughts int     `json:"pending_thoughts"`
+	FailedThoughts  int     `json:"failed_thoughts"`
+}
+
 type WorkspaceRuntimeStatus struct {
 	ID              string `json:"id"`
 	Status          string `json:"status"`

@@ -16,6 +16,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/topicstore"
 )
 
@@ -178,6 +179,7 @@ func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.To
 		changed = true
 	}
 	if changed {
+		observability.IncrementTopicWeave()
 		eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
 		eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
 	}
@@ -299,6 +301,7 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 				return memberships, err
 			}
 			if changed {
+				observability.IncrementTopicWeave()
 				eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
 				eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
 			}
@@ -320,6 +323,7 @@ func (s *Service) rebuildTopicJob(job models.Job) {
 	}
 	job.Message = "topic rebuilt"
 	job, _ = s.jobs.MarkSucceeded(job, "topic rebuilt")
+	observability.AddTopicWeave(uint64(count))
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, map[string]any{"topic": topic, "matched_count": count}))
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedThoughtPaths...))

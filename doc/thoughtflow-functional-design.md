@@ -689,6 +689,10 @@ data: {"thought_id":"20260609-143010-8f3a","status":"refined"}
 
 `GET /api/system/status`：查询工作区、AI、DuckDB、Git 和索引状态。
 
+`GET /api/system/metrics`：查询 JSON 格式运行指标快照。
+
+`GET /metrics`：查询 Prometheus text exposition 格式运行指标。
+
 `POST /api/system/reindex`：从 Markdown 全量重建 DuckDB 索引。
 
 ## 9. UI 功能设计

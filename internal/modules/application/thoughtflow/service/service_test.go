@@ -19,6 +19,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/topicstore"
 )
@@ -454,6 +455,136 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	}
 	if status.Events.HistorySize != 1 || status.Events.Limit != 10 {
 		t.Fatalf("events status = %#v", status.Events)
+	}
+}
+
+func TestSystemMetricsReportsDesignedMetricNames(t *testing.T) {
+	observability.ResetForTest()
+	defer observability.ResetForTest()
+
+	root := t.TempDir()
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	indexed := models.Thought{
+		ID:            "20260609-100000-indexed",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-100000-indexed")),
+		CreatedAt:     now.Add(-10 * time.Minute),
+		UpdatedAt:     now.Add(-9 * time.Minute),
+		ContentHash:   models.ContentHash("indexed"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusMatched,
+	}
+	pending := indexed
+	pending.ID = "20260609-100500-pending"
+	pending.Path = filepath.ToSlash(markdown.ThoughtRelativePath(pending.ID))
+	pending.UpdatedAt = now.Add(-5 * time.Second)
+	pending.IndexStatus = models.IndexStatusPending
+	for _, thought := range []models.Thought{indexed, pending} {
+		if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: thought.ID}); err != nil {
+			t.Fatalf("WriteThought(%s) error = %v", thought.ID, err)
+		}
+	}
+
+	jobs := jobstore.New(ws.JobsPath)
+	started := now.Add(-4 * time.Second)
+	finished := now.Add(-1 * time.Second)
+	if err := jobs.Save(models.Job{
+		ID:           "refine-job",
+		Type:         models.JobTypeRefine,
+		ResourceType: models.ResourceTypeThought,
+		ResourceID:   indexed.ID,
+		Status:       models.JobStatusSucceeded,
+		CreatedAt:    now.Add(-5 * time.Second),
+		StartedAt:    &started,
+		FinishedAt:   &finished,
+	}); err != nil {
+		t.Fatalf("Save(refine) error = %v", err)
+	}
+	if err := jobs.Save(models.Job{
+		ID:           "git-job",
+		Type:         models.JobTypeGitCommit,
+		ResourceType: models.ResourceTypeWorkspace,
+		ResourceID:   ws.ID,
+		Status:       models.JobStatusSucceeded,
+		CreatedAt:    now.Add(-3 * time.Second),
+	}); err != nil {
+		t.Fatalf("Save(git) error = %v", err)
+	}
+	if err := jobs.Save(models.Job{
+		ID:           "index-job",
+		Type:         models.JobTypeIndex,
+		ResourceType: models.ResourceTypeThought,
+		ResourceID:   pending.ID,
+		Status:       models.JobStatusRunning,
+		CreatedAt:    now.Add(-2 * time.Second),
+	}); err != nil {
+		t.Fatalf("Save(index) error = %v", err)
+	}
+	observability.IncrementAIRequest()
+	observability.IncrementAIRequest()
+	observability.IncrementSearchQuery()
+	observability.AddTopicWeave(3)
+
+	service := &Service{workspace: ws, jobs: jobs}
+	metrics, err := service.systemMetrics(context.Background(), now)
+	if err != nil {
+		t.Fatalf("systemMetrics() error = %v", err)
+	}
+	expected := map[string]float64{
+		"thoughtflow_capture_total":           2,
+		"thoughtflow_refine_duration_seconds": 3,
+		"thoughtflow_ai_request_total":        2,
+		"thoughtflow_search_query_total":      1,
+		"thoughtflow_index_lag_seconds":       5,
+		"thoughtflow_topic_weave_total":       3,
+		"thoughtflow_git_commit_total":        1,
+		"thoughtflow_background_jobs":         3,
+	}
+	for name, value := range expected {
+		if metrics.Values[name] != value {
+			t.Fatalf("%s = %v, want %v in %#v", name, metrics.Values[name], value, metrics.Values)
+		}
+	}
+	if metrics.RefineDurationSeconds.Count != 1 || metrics.RefineDurationSeconds.Sum != 3 {
+		t.Fatalf("refine duration = %#v", metrics.RefineDurationSeconds)
+	}
+	if metrics.BackgroundJobs.ByStatus[models.JobStatusSucceeded] != 2 ||
+		metrics.BackgroundJobs.ByType[models.JobTypeIndex] != 1 {
+		t.Fatalf("background jobs = %#v", metrics.BackgroundJobs)
+	}
+	if metrics.ThoughtIndexLag.PendingThoughts != 1 || metrics.ThoughtIndexLag.FailedThoughts != 0 {
+		t.Fatalf("index lag = %#v", metrics.ThoughtIndexLag)
+	}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	service.handlePrometheusMetrics(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("prometheus status = %d, body = %s", res.Code, res.Body.String())
+	}
+	body := res.Body.String()
+	for name := range expected {
+		if !strings.Contains(body, name) {
+			t.Fatalf("prometheus body missing %s:\n%s", name, body)
+		}
+	}
+	if !strings.Contains(body, `thoughtflow_background_jobs{status="running"} 1.000000`) {
+		t.Fatalf("prometheus body missing status label:\n%s", body)
 	}
 }
 
