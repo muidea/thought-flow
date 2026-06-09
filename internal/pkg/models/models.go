@@ -352,6 +352,16 @@ type SynthesisRequest struct {
 	Format     string   `json:"format"`
 }
 
+type SynthesisSaveRequest struct {
+	DraftID     string   `json:"draft_id,omitempty"`
+	ThoughtIDs  []string `json:"thought_ids"`
+	Goal        string   `json:"goal"`
+	Format      string   `json:"format"`
+	Title       string   `json:"title,omitempty"`
+	Content     string   `json:"content"`
+	SourceLinks []string `json:"source_links,omitempty"`
+}
+
 type SynthesisDraft struct {
 	ID          string    `json:"id"`
 	ThoughtIDs  []string  `json:"thought_ids"`
@@ -361,6 +371,12 @@ type SynthesisDraft struct {
 	SourceLinks []string  `json:"source_links"`
 	Model       string    `json:"model"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type SynthesisSaveResult struct {
+	Thought     Thought  `json:"thought"`
+	Jobs        []Job    `json:"jobs,omitempty"`
+	SourceLinks []string `json:"source_links,omitempty"`
 }
 
 type APIResponse struct {

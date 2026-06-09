@@ -3,6 +3,7 @@ const state = {
   activeTopicId: "",
   selectedThoughts: new Set(),
   lastResults: [],
+  synthesisDraft: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -262,8 +263,44 @@ async function createSynthesis(event) {
       format: $("#synthesis-format").value,
     }),
   });
-  $("#synthesis-output").textContent = `${draft.content}\n\nSources:\n${(draft.source_links || []).join("\n")}`;
+  state.synthesisDraft = draft;
+  $("#synthesis-output").value = renderSynthesisDraft(draft);
+  $("#save-synthesis").disabled = false;
   activateTab("synthesis");
+}
+
+function renderSynthesisDraft(draft) {
+  const links = (draft.source_links || []).filter(Boolean);
+  if (links.length === 0) return draft.content || "";
+  return `${draft.content || ""}\n\n### Sources\n\n${links.map((link) => `- [[${link}]]`).join("\n")}`;
+}
+
+async function saveSynthesis() {
+  if (!state.synthesisDraft) {
+    toast("Create a draft first");
+    return;
+  }
+  const content = $("#synthesis-output").value.trim();
+  if (!content) {
+    toast("Draft content is required");
+    return;
+  }
+  const result = await api("/api/synthesis/save", {
+    method: "POST",
+    body: JSON.stringify({
+      draft_id: state.synthesisDraft.id,
+      thought_ids: state.synthesisDraft.thought_ids || [],
+      goal: state.synthesisDraft.goal || $("#synthesis-goal").value.trim(),
+      format: state.synthesisDraft.format || $("#synthesis-format").value,
+      content,
+      source_links: state.synthesisDraft.source_links || [],
+    }),
+  });
+  toast(`Saved ${result.thought.id}`);
+  state.selectedThoughts.clear();
+  $("#save-synthesis").disabled = true;
+  state.synthesisDraft = null;
+  window.setTimeout(() => runSearch().catch((error) => toast(error.message)), 1000);
 }
 
 async function rebuildTopic() {
@@ -328,6 +365,7 @@ function bind() {
   $("#topic-form").addEventListener("submit", (event) => createTopic(event).catch((error) => toast(error.message)));
   $("#search-form").addEventListener("submit", (event) => runSearch(event).catch((error) => toast(error.message)));
   $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
+  $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
   $("#rebuild-topic").addEventListener("click", () => rebuildTopic().catch((error) => toast(error.message)));
   $("#reindex-button").addEventListener("click", () => reindex().catch((error) => toast(error.message)));

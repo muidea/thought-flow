@@ -363,7 +363,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 1. 从选中 Thought 生成摘要或大纲。
 2. 默认作为临时结果返回。
-3. 用户保存后创建新的 Thought，`source` 标记为 `synthesis`。
+3. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
 
 ## 5. 运行任务模型
 
@@ -628,6 +628,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `POST /api/thoughts/{id}/retry-refine` | `RetryRefineThought` |
 | `GET /api/search` | `SearchThoughts` |
 | `POST /api/synthesis` | `CreateSynthesisDraft` |
+| `POST /api/synthesis/save` | `SaveSynthesisDraft` |
 | `GET /api/topics` | `ListTopics` |
 | `POST /api/topics` | `CreateTopic` |
 | `GET /api/topics/{id}` | `GetTopic` |

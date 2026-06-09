@@ -354,6 +354,12 @@ p {
   min-height: 220px;
 }
 
+textarea.markdown-preview {
+  resize: vertical;
+  font: inherit;
+  line-height: 1.5;
+}
+
 .toggle-row {
   display: flex;
   gap: 8px;

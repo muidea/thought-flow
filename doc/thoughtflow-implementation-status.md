@@ -146,6 +146,11 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 旧数据没有 membership YAML 时，保留从 `index.md` 成员段落推断的兼容路径。
    - 专题 rebuild 会写入当前成员事实并删除不再命中的陈旧 membership 文件。
    - topic 变更触发 Git 提交时会包含 `memberships/` 目录。
+17. synthesis 草稿支持保存为新的 Thought：
+   - 新增 `POST /api/synthesis/save`。
+   - 保存动作复用 capture 运行单元创建 Markdown，不在 application handler 中直接写文件。
+   - 新 Thought 的 `source` 标记为 `synthesis`，并在内容中保留来源 Thought 链接。
+   - 嵌入式 UI 的 synthesis 面板支持编辑草稿后保存。
 
 验证：
 
@@ -170,7 +175,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - topic dashboard
    - search hub，支持 keyword / semantic / hybrid 模式
    - topic workspace，展示专题 Markdown 文档并可触发 rebuild
-   - synthesis 草稿视图
+   - synthesis 草稿视图，可编辑并保存为新 Thought
    - thought preview
    - SSE activity feed
    - system AI/workspace 状态摘要
@@ -194,7 +199,7 @@ M3：
 
 1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
 2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
-3. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
+3. synthesis 当前已支持本地草稿保存为 Thought，尚未接入云端模型、独立草稿仓库和审批历史。
 
 UI：
 

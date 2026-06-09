@@ -574,6 +574,26 @@ payload
 }
 ```
 
+`POST /api/synthesis/save`
+
+请求：
+
+```json
+{
+  "draft_id": "job-synthesis-xxxx",
+  "thought_ids": ["20260609-143010-8f3a"],
+  "goal": "生成一份研究大纲",
+  "format": "outline",
+  "content": "# 研究大纲\n\n..."
+}
+```
+
+说明：
+
+1. 保存动作通过 capture 运行单元创建新的 Thought。
+2. 新 Thought 的 `source` 标记为 `synthesis`。
+3. 保存内容会保留来源 Thought 的 Markdown 链接。
+
 ### 8.3 Topics
 
 `GET /api/topics`
