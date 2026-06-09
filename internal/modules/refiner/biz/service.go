@@ -26,6 +26,20 @@ type Service struct {
 	fetcher    *webfetch.Fetcher
 }
 
+const refineMaxAttempts = 3
+
+type retryableRefineError struct {
+	err error
+}
+
+func (e retryableRefineError) Error() string {
+	return e.err.Error()
+}
+
+func (e retryableRefineError) Unwrap() error {
+	return e.err
+}
+
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.RefineProvider, fetcher *webfetch.Fetcher) *Service {
 	return &Service{
 		workspace:  workspace,
@@ -58,7 +72,7 @@ func (s *Service) RefineAsync(thoughtID string) (models.Job, error) {
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
-	job, err := s.jobs.Create(models.JobTypeRefine, models.ResourceTypeThought, thoughtID, "refine queued")
+	job, err := s.jobs.CreateWithMaxAttempts(models.JobTypeRefine, models.ResourceTypeThought, thoughtID, "refine queued", refineMaxAttempts)
 	if err != nil {
 		return models.Job{}, err
 	}
@@ -85,22 +99,57 @@ func (s *Service) RefineNow(ctx context.Context, thoughtID string) (models.Thoug
 
 func (s *Service) refineJob(job models.Job) {
 	ctx := context.Background()
-	job, _ = s.jobs.MarkRunning(job)
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:      models.EventThoughtRefineStarted,
-		SourceUnit:     "refiner",
-		OccurredAt:     time.Now().UTC(),
-		WorkspaceID:    s.workspace.ID,
-		ResourceType:   models.ResourceTypeThought,
-		ResourceID:     job.ResourceID,
-		PayloadVersion: 1,
-		Payload:        job,
-	})
+	for {
+		job, _ = s.jobs.MarkRunning(job)
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:      models.EventThoughtRefineStarted,
+			SourceUnit:     "refiner",
+			OccurredAt:     time.Now().UTC(),
+			WorkspaceID:    s.workspace.ID,
+			ResourceType:   models.ResourceTypeThought,
+			ResourceID:     job.ResourceID,
+			PayloadVersion: 1,
+			Payload:        job,
+		})
 
-	refinement, err := s.RefineNow(ctx, job.ResourceID)
-	if err != nil {
-		errRef := models.NewErrorRef("thoughtflow.refiner.failed", err.Error(), true)
+		refinement, err := s.RefineNow(ctx, job.ResourceID)
+		if err == nil {
+			job, _ = s.jobs.MarkSucceeded(job, "refine succeeded")
+			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+			eventutil.Post(s.eventHub, models.DomainEvent{
+				EventType:      models.EventThoughtRefined,
+				SourceUnit:     "refiner",
+				OccurredAt:     time.Now().UTC(),
+				WorkspaceID:    s.workspace.ID,
+				ResourceType:   models.ResourceTypeThought,
+				ResourceID:     refinement.ThoughtID,
+				PayloadVersion: 1,
+				Payload:        refinement,
+			})
+			eventutil.Post(s.eventHub, models.DomainEvent{
+				EventType:    models.EventGitCommitRequested,
+				SourceUnit:   "refiner",
+				OccurredAt:   time.Now().UTC(),
+				WorkspaceID:  s.workspace.ID,
+				ResourceType: models.ResourceTypeThought,
+				ResourceID:   refinement.ThoughtID,
+				Payload: models.GitCommitRequestedPayload{
+					Paths:       []string{markdown.ThoughtRelativePath(refinement.ThoughtID)},
+					Reason:      "refine",
+					ResourceIDs: []string{refinement.ThoughtID},
+				},
+				PayloadVersion: 1,
+			})
+			return
+		}
+
+		errRef := models.NewErrorRef("thoughtflow.refiner.failed", err.Error(), isRetryableRefineError(err))
+		if errRef.Retryable && job.Attempt < job.MaxAttempts {
+			job, _ = s.jobs.MarkRetrying(job, errRef, "refine retrying")
+			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+			continue
+		}
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 		eventutil.Post(s.eventHub, models.DomainEvent{
@@ -115,33 +164,6 @@ func (s *Service) refineJob(job models.Job) {
 		})
 		return
 	}
-
-	job, _ = s.jobs.MarkSucceeded(job, "refine succeeded")
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:      models.EventThoughtRefined,
-		SourceUnit:     "refiner",
-		OccurredAt:     time.Now().UTC(),
-		WorkspaceID:    s.workspace.ID,
-		ResourceType:   models.ResourceTypeThought,
-		ResourceID:     refinement.ThoughtID,
-		PayloadVersion: 1,
-		Payload:        refinement,
-	})
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:    models.EventGitCommitRequested,
-		SourceUnit:   "refiner",
-		OccurredAt:   time.Now().UTC(),
-		WorkspaceID:  s.workspace.ID,
-		ResourceType: models.ResourceTypeThought,
-		ResourceID:   refinement.ThoughtID,
-		Payload: models.GitCommitRequestedPayload{
-			Paths:       []string{markdown.ThoughtRelativePath(refinement.ThoughtID)},
-			Reason:      "refine",
-			ResourceIDs: []string{refinement.ThoughtID},
-		},
-		PayloadVersion: 1,
-	})
 }
 
 func (s *Service) refine(ctx context.Context, thought models.Thought, content models.ThoughtContent) (models.ThoughtRefinement, error) {
@@ -159,7 +181,7 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 				Status:      models.RefineStatusFailed,
 				GeneratedAt: time.Now().UTC(),
 				Error:       &errRef,
-			}, err
+			}, retryableRefineError{err: err}
 		}
 		if fetched.Title != "" {
 			thought.ExtractedTitle = fetched.Title
@@ -186,6 +208,15 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
+}
+
+func isRetryableRefineError(err error) bool {
+	var retryable retryableRefineError
+	if errors.As(err, &retryable) {
+		return true
+	}
+	var providerErr ai.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Retryable
 }
 
 func renderAINotes(refinement models.ThoughtRefinement) string {

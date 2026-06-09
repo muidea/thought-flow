@@ -97,35 +97,36 @@ go build ./cmd/thoughtflow
 8. refined 结果回写原子 Markdown 的 front matter 和 `AI Notes` 分区。
 9. `thought.refined` payload 携带 `EmbeddingRecord`，供 search 写入索引层。
    - SSE 事件流会保留 embedding 元数据但移除 vector，避免向前端推送大向量 payload。
-10. `search` 运行单元。
-11. `thought.captured` / `thought.refined` 触发后台 index Job。
+10. refiner 后台 Job 使用 `max_attempts=3`，retryable 的 URL 抓取失败或 AI transient provider 错误会进入 `retrying` 状态并再次 `running`；最终失败才发布 `thought.refine_failed`。
+11. `search` 运行单元。
+12. `thought.captured` / `thought.refined` 触发后台 index Job。
    - `topic.updated` 触发 workspace reindex，刷新专题过滤视图。
-12. `GET /api/search`。
-13. `POST /api/system/reindex`。
-14. `POST /api/thoughts/{id}/retry-refine`。
-15. `search.index_updated`、`search.index_failed`、`search.reindex_started`、`search.reindex_finished` 事件。
-16. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
-17. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
-18. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
-19. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
-20. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
-21. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。
-22. DuckDB tagged store 已接入 `fts` extension：
+13. `GET /api/search`。
+14. `POST /api/system/reindex`。
+15. `POST /api/thoughts/{id}/retry-refine`。
+16. `search.index_updated`、`search.index_failed`、`search.reindex_started`、`search.reindex_finished` 事件。
+17. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
+18. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
+19. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
+20. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
+21. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
+22. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。
+23. DuckDB tagged store 已接入 `fts` extension：
    - `thought_contents.search_text` 按需创建 FTS index。
    - 关键词分优先使用 `match_bm25(..., conjunctive := 1)`，并归一化为 `keyword_score`。
    - FTS extension 安装或加载不可用时保留 LIKE 降级路径。
    - 对 DuckDB extension 下载器不兼容带尾部 `/` 的 proxy URL 做了局部规范化。
-23. DuckDB tagged store 已接入原生 ARRAY 向量检索路径：
+24. DuckDB tagged store 已接入原生 ARRAY 向量检索路径：
    - embedding 继续写入 `thought_embeddings` JSON 表，作为兼容和降级数据。
    - 同步写入按维度隔离的 `thought_embedding_vectors_{dimension}` 表，使用 `FLOAT[n]` 固定长度向量列。
    - `mode=semantic` / `mode=hybrid` 有 query vector 时，使用 DuckDB `array_cosine_similarity` 计算 `semantic_score`。
    - DuckDB ARRAY 向量表缺失或查询失败时，保留原 JSON embedding + Go cosine 降级路径。
-24. DuckDB tagged store 已接入 VSS/HNSW ANN 检索路径：
+25. DuckDB tagged store 已接入 VSS/HNSW ANN 检索路径：
    - 按 embedding 维度为 `thought_embedding_vectors_{dimension}.vector` 创建 cosine HNSW index。
    - `mode=semantic` / `mode=hybrid` 有 query vector 时，优先通过 `ORDER BY array_cosine_distance(...) LIMIT ...` 使用 HNSW 候选。
    - VSS extension 安装、加载或 HNSW 查询不可用时自动降级到 DuckDB ARRAY 全量相似度。
    - `explain.semantic_source` 会返回 `duckdb_hnsw`、`duckdb_array`、`json_cosine` 或 fallback store 的 `memory_cosine`。
-25. 混合搜索支持排序策略、权重配置和 explain 信息：
+26. 混合搜索支持排序策略、权重配置和 explain 信息：
    - `sort=score|keyword|semantic|recency`。
    - `keyword_weight` / `semantic_weight` / `recency_weight` 任一正值会归一化并覆盖默认权重。
    - `explain=true` 时每条结果返回分数组件、最终公式、权重、关键词来源和语义来源。
