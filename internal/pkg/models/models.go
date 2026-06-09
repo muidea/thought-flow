@@ -112,17 +112,27 @@ type ThoughtSnapshot struct {
 }
 
 type ThoughtRefinement struct {
-	ThoughtID            string    `json:"thought_id"`
-	Status               string    `json:"status"`
-	ExtractedTitle       string    `json:"extracted_title,omitempty"`
-	ExtractedContentHash string    `json:"extracted_content_hash,omitempty"`
-	Summary              string    `json:"summary,omitempty"`
-	KeyPoints            []string  `json:"key_points,omitempty"`
-	AITags               []string  `json:"ai_tags,omitempty"`
-	Model                string    `json:"model,omitempty"`
-	InputHash            string    `json:"input_hash,omitempty"`
-	GeneratedAt          time.Time `json:"generated_at"`
-	Error                *ErrorRef `json:"error,omitempty"`
+	ThoughtID            string           `json:"thought_id"`
+	Status               string           `json:"status"`
+	ExtractedTitle       string           `json:"extracted_title,omitempty"`
+	ExtractedContentHash string           `json:"extracted_content_hash,omitempty"`
+	Summary              string           `json:"summary,omitempty"`
+	KeyPoints            []string         `json:"key_points,omitempty"`
+	AITags               []string         `json:"ai_tags,omitempty"`
+	Model                string           `json:"model,omitempty"`
+	InputHash            string           `json:"input_hash,omitempty"`
+	GeneratedAt          time.Time        `json:"generated_at"`
+	Error                *ErrorRef        `json:"error,omitempty"`
+	Embedding            *EmbeddingRecord `json:"embedding,omitempty"`
+}
+
+type EmbeddingRecord struct {
+	ThoughtID   string    `json:"thought_id"`
+	Model       string    `json:"model"`
+	Dimension   int       `json:"dimension"`
+	Vector      []float64 `json:"vector"`
+	ContentHash string    `json:"content_hash"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type CaptureCommand struct {
@@ -194,12 +204,14 @@ type GitCommitRecord struct {
 }
 
 type SearchQuery struct {
-	Query    string   `json:"q"`
-	Mode     string   `json:"mode"`
-	TopicID  string   `json:"topic_id,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-	Page     int      `json:"page"`
-	PageSize int      `json:"page_size"`
+	Query          string    `json:"q"`
+	Mode           string    `json:"mode"`
+	TopicID        string    `json:"topic_id,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
+	Page           int       `json:"page"`
+	PageSize       int       `json:"page_size"`
+	QueryVector    []float64 `json:"-"`
+	EmbeddingModel string    `json:"-"`
 }
 
 type SearchResult struct {

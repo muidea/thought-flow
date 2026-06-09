@@ -35,7 +35,7 @@ func (s *Stream) Notify(ev event.Event, result event.Result) {
 	if !ok {
 		return
 	}
-	s.Publish(domainEvent)
+	s.Publish(sanitize(domainEvent))
 	if result != nil {
 		result.Set(nil, nil)
 	}
@@ -59,6 +59,32 @@ func (s *Stream) Publish(domainEvent models.DomainEvent) {
 		default:
 		}
 	}
+}
+
+func sanitize(domainEvent models.DomainEvent) models.DomainEvent {
+	if domainEvent.EventType != models.EventThoughtRefined {
+		return domainEvent
+	}
+	switch payload := domainEvent.Payload.(type) {
+	case models.ThoughtRefinement:
+		domainEvent.Payload = sanitizeRefinement(payload)
+	case *models.ThoughtRefinement:
+		if payload != nil {
+			refinement := sanitizeRefinement(*payload)
+			domainEvent.Payload = refinement
+		}
+	}
+	return domainEvent
+}
+
+func sanitizeRefinement(refinement models.ThoughtRefinement) models.ThoughtRefinement {
+	if refinement.Embedding == nil {
+		return refinement
+	}
+	embedding := *refinement.Embedding
+	embedding.Vector = nil
+	refinement.Embedding = &embedding
+	return refinement
 }
 
 func (s *Stream) Subscribe(ctx context.Context) <-chan models.DomainEvent {

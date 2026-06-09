@@ -44,6 +44,16 @@ func TestIndexAndSearchThought(t *testing.T) {
 	if err := store.IndexThought(ctx, thought, content); err != nil {
 		t.Fatalf("IndexThought() error = %v", err)
 	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID:   thought.ID,
+		Model:       "test-embedding",
+		Dimension:   3,
+		Vector:      []float64{1, 0, 0},
+		ContentHash: models.ContentHash("hybrid search"),
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding() error = %v", err)
+	}
 
 	result, err := store.Search(ctx, models.SearchQuery{Query: "duckdb", Mode: "hybrid", Page: 1, PageSize: 10})
 	if err != nil {
@@ -75,5 +85,23 @@ func TestIndexAndSearchThought(t *testing.T) {
 	}
 	if empty.Total != 0 {
 		t.Fatalf("unmatched topic filtered total = %d", empty.Total)
+	}
+
+	semantic, err := store.Search(ctx, models.SearchQuery{
+		Query:          "analytics",
+		Mode:           "semantic",
+		QueryVector:    []float64{1, 0, 0},
+		EmbeddingModel: "test-embedding",
+		Page:           1,
+		PageSize:       10,
+	})
+	if err != nil {
+		t.Fatalf("semantic Search() error = %v", err)
+	}
+	if semantic.Total != 1 || len(semantic.Items) != 1 {
+		t.Fatalf("semantic result total=%d len=%d", semantic.Total, len(semantic.Items))
+	}
+	if semantic.Items[0].SemanticScore <= 0 {
+		t.Fatalf("expected positive semantic score, got %v", semantic.Items[0].SemanticScore)
 	}
 }

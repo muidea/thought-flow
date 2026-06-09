@@ -16,6 +16,7 @@ import (
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
+	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
@@ -288,6 +289,11 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 
 func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	_ = ctx
+	cfg := appconfig.Load()
+	aiStatus := "not_configured"
+	if strings.TrimSpace(cfg.AI.APIKey) != "" {
+		aiStatus = "ready"
+	}
 	status := map[string]any{
 		"workspace": map[string]any{
 			"id":               s.workspace.ID,
@@ -302,7 +308,10 @@ func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWrite
 			"status": "ready",
 		},
 		"ai": map[string]any{
-			"status": "not_configured",
+			"status":          aiStatus,
+			"base_url":        cfg.AI.BaseURL,
+			"chat_model":      cfg.AI.ChatModel,
+			"embedding_model": cfg.AI.EmbeddingModel,
 		},
 		"events": map[string]any{
 			"status": "ready",

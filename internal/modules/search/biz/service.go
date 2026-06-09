@@ -9,6 +9,7 @@ import (
 	"github.com/muidea/magicCommon/event"
 	"github.com/muidea/magicCommon/task"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -22,15 +23,17 @@ type Service struct {
 	store      *searchdb.Store
 	eventHub   event.Hub
 	background task.BackgroundRoutine
+	embedder   ai.EmbeddingProvider
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine) *Service {
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider) *Service {
 	return &Service{
 		workspace:  workspace,
 		jobs:       jobs,
 		store:      store,
 		eventHub:   eventHub,
 		background: background,
+		embedder:   embedder,
 	}
 }
 
@@ -44,7 +47,7 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 		switch domainEvent.ResourceType {
 		case models.ResourceTypeThought:
 			if domainEvent.ResourceID != "" {
-				_, _ = s.IndexAsync(domainEvent.ResourceID)
+				_, _ = s.IndexAsyncWithEmbedding(domainEvent.ResourceID, eventEmbedding(domainEvent.Payload))
 			}
 		case models.ResourceTypeTopic:
 			_, _ = s.ReindexWorkspace(context.Background())
@@ -56,6 +59,10 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 }
 
 func (s *Service) IndexAsync(thoughtID string) (models.Job, error) {
+	return s.IndexAsyncWithEmbedding(thoughtID, nil)
+}
+
+func (s *Service) IndexAsyncWithEmbedding(thoughtID string, embedding *models.EmbeddingRecord) (models.Job, error) {
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
@@ -65,7 +72,7 @@ func (s *Service) IndexAsync(thoughtID string) (models.Job, error) {
 	}
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	run := func() {
-		s.indexJob(job)
+		s.indexJob(job, embedding)
 	}
 	if s.background != nil {
 		if err := s.background.AsyncFunction(run); err == nil {
@@ -76,7 +83,7 @@ func (s *Service) IndexAsync(thoughtID string) (models.Job, error) {
 	return job, nil
 }
 
-func (s *Service) IndexThought(ctx context.Context, thoughtID string) error {
+func (s *Service) IndexThought(ctx context.Context, thoughtID string, embedding *models.EmbeddingRecord) error {
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {
 		return err
@@ -86,7 +93,20 @@ func (s *Service) IndexThought(ctx context.Context, thoughtID string) error {
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return err
 	}
-	return s.store.IndexThought(ctx, thought, content)
+	if err := s.store.IndexThought(ctx, thought, content); err != nil {
+		return err
+	}
+	if embedding != nil && len(embedding.Vector) > 0 {
+		embedding.ThoughtID = thought.ID
+		if embedding.ContentHash == "" {
+			embedding.ContentHash = models.ContentHash(buildEmbeddingText(thought, content))
+		}
+		if embedding.CreatedAt.IsZero() {
+			embedding.CreatedAt = time.Now().UTC()
+		}
+		return s.store.IndexEmbedding(ctx, *embedding)
+	}
+	return nil
 }
 
 func (s *Service) ReindexWorkspace(ctx context.Context) (models.Job, error) {
@@ -108,13 +128,29 @@ func (s *Service) ReindexWorkspace(ctx context.Context) (models.Job, error) {
 }
 
 func (s *Service) Search(ctx context.Context, query models.SearchQuery) (models.SearchResponse, error) {
+	mode := strings.ToLower(strings.TrimSpace(query.Mode))
+	if mode == "" {
+		mode = "hybrid"
+	}
+	query.Mode = mode
+	if strings.TrimSpace(query.Query) != "" && (mode == "semantic" || mode == "hybrid") && s.embedder != nil {
+		embedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{Text: query.Query})
+		if err != nil {
+			if mode == "semantic" {
+				return models.SearchResponse{}, err
+			}
+		} else {
+			query.QueryVector = embedding.Vector
+			query.EmbeddingModel = embedding.Model
+		}
+	}
 	return s.store.Search(ctx, query)
 }
 
-func (s *Service) indexJob(job models.Job) {
+func (s *Service) indexJob(job models.Job, embedding *models.EmbeddingRecord) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	err := s.IndexThought(context.Background(), job.ResourceID)
+	err := s.IndexThought(context.Background(), job.ResourceID, embedding)
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.search.index_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
@@ -139,6 +175,31 @@ func (s *Service) indexJob(job models.Job) {
 		},
 		PayloadVersion: 1,
 	})
+}
+
+func eventEmbedding(payload any) *models.EmbeddingRecord {
+	switch value := payload.(type) {
+	case models.ThoughtRefinement:
+		return value.Embedding
+	case *models.ThoughtRefinement:
+		if value == nil {
+			return nil
+		}
+		return value.Embedding
+	default:
+		return nil
+	}
+}
+
+func buildEmbeddingText(thought models.Thought, content models.ThoughtContent) string {
+	return strings.Join([]string{
+		thought.UserTitle,
+		thought.ExtractedTitle,
+		thought.Summary,
+		content.Original,
+		content.ExtractedContent,
+		content.AINotes,
+	}, "\n")
 }
 
 func (s *Service) reindexJob(job models.Job) {

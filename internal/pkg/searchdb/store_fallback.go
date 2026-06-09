@@ -6,19 +6,22 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 )
 
 type Store struct {
-	mu    sync.RWMutex
-	items map[string]indexedThought
+	mu         sync.RWMutex
+	items      map[string]indexedThought
+	embeddings map[string]models.EmbeddingRecord
 }
 
 type indexedThought struct {
@@ -36,10 +39,30 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{items: map[string]indexedThought{}}, nil
+	return &Store{items: map[string]indexedThought{}, embeddings: map[string]models.EmbeddingRecord{}}, nil
 }
 
 func (s *Store) Close() error {
+	return nil
+}
+
+func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecord) error {
+	_ = ctx
+	if record.ThoughtID == "" {
+		return errors.New("thought id is required")
+	}
+	if len(record.Vector) == 0 {
+		return errors.New("embedding vector is required")
+	}
+	if record.Dimension == 0 {
+		record.Dimension = len(record.Vector)
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embeddings[record.ThoughtID] = record
 	return nil
 }
 
@@ -119,6 +142,11 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		pageSize = 20
 	}
 	q := strings.ToLower(strings.TrimSpace(query.Query))
+	mode := strings.ToLower(strings.TrimSpace(query.Mode))
+	if mode == "" {
+		mode = "hybrid"
+	}
+	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 
 	s.mu.RLock()
 	all := make([]indexedThought, 0, len(s.items))
@@ -129,16 +157,40 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		if len(query.Tags) > 0 && !hasAnyFold(item.tags, query.Tags) {
 			continue
 		}
-		if q == "" || strings.Contains(strings.ToLower(item.text), q) || strings.Contains(strings.ToLower(item.thought.DisplayTitle), q) {
+		matchesKeyword := q == "" || strings.Contains(strings.ToLower(item.text), q) || strings.Contains(strings.ToLower(item.thought.DisplayTitle), q)
+		if useVector || matchesKeyword {
 			all = append(all, item)
 		}
 	}
+
+	items := []models.SearchResult{}
+	for _, item := range all {
+		embedding := s.embeddings[item.thought.ID]
+		keywordScore := keywordScore(item.text, query.Query)
+		semanticScore := semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
+		recencyScore := recencyScore(item.thought.UpdatedAt)
+		items = append(items, models.SearchResult{
+			ThoughtID:     item.thought.ID,
+			Title:         item.thought.DisplayTitle,
+			Snippet:       snippet(item.text, query.Query),
+			Score:         combinedScore(mode, keywordScore, semanticScore, recencyScore, useVector),
+			KeywordScore:  keywordScore,
+			SemanticScore: semanticScore,
+			RecencyScore:  recencyScore,
+			Path:          item.thought.Path,
+			Topics:        item.thought.TopicIDs,
+			Tags:          item.tags,
+		})
+	}
 	s.mu.RUnlock()
 
-	sort.Slice(all, func(left, right int) bool {
-		return all[left].thought.UpdatedAt.After(all[right].thought.UpdatedAt)
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].Score == items[right].Score {
+			return items[left].ThoughtID > items[right].ThoughtID
+		}
+		return items[left].Score > items[right].Score
 	})
-	total := len(all)
+	total := len(items)
 	start := (page - 1) * pageSize
 	if start > total {
 		start = total
@@ -147,23 +199,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if end > total {
 		end = total
 	}
-
-	items := []models.SearchResult{}
-	for _, item := range all[start:end] {
-		keywordScore := keywordScore(item.text, query.Query)
-		items = append(items, models.SearchResult{
-			ThoughtID:     item.thought.ID,
-			Title:         item.thought.DisplayTitle,
-			Snippet:       snippet(item.text, query.Query),
-			Score:         keywordScore,
-			KeywordScore:  keywordScore,
-			SemanticScore: 0,
-			RecencyScore:  0,
-			Path:          item.thought.Path,
-			Topics:        item.thought.TopicIDs,
-			Tags:          item.tags,
-		})
-	}
+	items = items[start:end]
 	return models.SearchResponse{
 		Items:    items,
 		Page:     page,
@@ -245,6 +281,63 @@ func keywordScore(text string, query string) float64 {
 		return 1
 	}
 	return score
+}
+
+func semanticScore(queryVector []float64, thoughtVector []float64, queryModel string, thoughtModel string) float64 {
+	if len(queryVector) == 0 || len(thoughtVector) == 0 {
+		return 0
+	}
+	if queryModel != "" && thoughtModel != "" && queryModel != thoughtModel {
+		return 0
+	}
+	score := cosine(queryVector, thoughtVector)
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func cosine(left []float64, right []float64) float64 {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0
+	}
+	dot := 0.0
+	leftNorm := 0.0
+	rightNorm := 0.0
+	for idx := range left {
+		dot += left[idx] * right[idx]
+		leftNorm += left[idx] * left[idx]
+		rightNorm += right[idx] * right[idx]
+	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm))
+}
+
+func recencyScore(updatedAt time.Time) float64 {
+	if updatedAt.IsZero() {
+		return 0
+	}
+	age := time.Since(updatedAt)
+	if age < 0 {
+		return 1
+	}
+	return 1 / (1 + age.Hours()/24/30)
+}
+
+func combinedScore(mode string, keyword float64, semantic float64, recency float64, useVector bool) float64 {
+	switch mode {
+	case "semantic":
+		return semantic*0.9 + recency*0.1
+	case "hybrid":
+		if useVector {
+			return keyword*0.45 + semantic*0.45 + recency*0.10
+		}
+		return keyword
+	default:
+		return keyword
+	}
 }
 
 func firstNonEmpty(values ...string) string {

@@ -54,6 +54,9 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	if refinement.Status != models.RefineStatusRefined {
 		t.Fatalf("refinement status = %q", refinement.Status)
 	}
+	if refinement.Embedding == nil || len(refinement.Embedding.Vector) == 0 {
+		t.Fatalf("expected refinement embedding")
+	}
 
 	gotThought, gotContent, err := markdown.ReadThought(root, thought.ID)
 	if err != nil {

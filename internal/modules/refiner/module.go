@@ -63,7 +63,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	if err != nil {
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewLocalRefineProvider(), webfetch.New(30*time.Second))
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewRefineProvider(cfg.AI), webfetch.New(30*time.Second))
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)
 	return nil

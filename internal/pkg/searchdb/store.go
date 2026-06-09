@@ -5,11 +5,14 @@ package searchdb
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -151,6 +154,32 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	return tx.Commit()
 }
 
+func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecord) error {
+	if record.ThoughtID == "" {
+		return errors.New("thought id is required")
+	}
+	if len(record.Vector) == 0 {
+		return errors.New("embedding vector is required")
+	}
+	if record.Dimension == 0 {
+		record.Dimension = len(record.Vector)
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	raw, err := json.Marshal(record.Vector)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_embeddings WHERE thought_id = ? AND model = ?`, record.ThoughtID, record.Model); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO thought_embeddings (
+		thought_id, model, dimension, vector, content_hash, created_at
+	) VALUES (?, ?, ?, ?, ?, ?)`, record.ThoughtID, record.Model, record.Dimension, string(raw), record.ContentHash, record.CreatedAt)
+	return err
+}
+
 func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_contents`); err != nil {
 		return 0, err
@@ -195,10 +224,15 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	}
 	offset := (page - 1) * pageSize
 	pattern := "%" + strings.ToLower(strings.TrimSpace(query.Query)) + "%"
+	mode := strings.ToLower(strings.TrimSpace(query.Mode))
+	if mode == "" {
+		mode = "hybrid"
+	}
+	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 
 	where := "1=1"
 	args := []any{}
-	if strings.TrimSpace(query.Query) != "" {
+	if strings.TrimSpace(query.Query) != "" && !useVector {
 		where = "(lower(c.search_text) LIKE ? OR lower(t.title) LIKE ?)"
 		args = append(args, pattern, pattern)
 	}
@@ -227,12 +261,19 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		return models.SearchResponse{}, err
 	}
 
+	limitClause := "LIMIT ? OFFSET ?"
+	selectArgs := append([]any{}, args...)
+	if useVector {
+		limitClause = ""
+	} else {
+		selectArgs = append(selectArgs, pageSize, offset)
+	}
 	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, '')
 		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
 		WHERE %s
 		ORDER BY t.updated_at DESC
-		LIMIT ? OFFSET ?`, where)
-	rows, err := s.db.QueryContext(ctx, selectQuery, append(args, pageSize, offset)...)
+		%s`, where, limitClause)
+	rows, err := s.db.QueryContext(ctx, selectQuery, selectArgs...)
 	if err != nil {
 		return models.SearchResponse{}, err
 	}
@@ -247,11 +288,12 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs); err != nil {
 			return models.SearchResponse{}, err
 		}
+		embedding := s.embeddingForThought(ctx, item.ThoughtID, query.EmbeddingModel)
 		item.Snippet = snippet(searchText, query.Query)
 		item.KeywordScore = keywordScore(searchText, query.Query)
-		item.SemanticScore = 0
-		item.RecencyScore = 0
-		item.Score = item.KeywordScore
+		item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
+		item.RecencyScore = recencyScore(embedding.CreatedAt)
+		item.Score = combinedScore(mode, item.KeywordScore, item.SemanticScore, item.RecencyScore, useVector)
 		item.Tags = splitCSV(tags)
 		item.Topics = splitCSV(topicIDs)
 		items = append(items, item)
@@ -259,12 +301,47 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if err := rows.Err(); err != nil {
 		return models.SearchResponse{}, err
 	}
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].Score == items[right].Score {
+			return items[left].ThoughtID > items[right].ThoughtID
+		}
+		return items[left].Score > items[right].Score
+	})
+	if useVector {
+		start := offset
+		if start > len(items) {
+			start = len(items)
+		}
+		end := start + pageSize
+		if end > len(items) {
+			end = len(items)
+		}
+		items = items[start:end]
+	}
 	return models.SearchResponse{
 		Items:    items,
 		Page:     page,
 		PageSize: pageSize,
 		Total:    total,
 	}, nil
+}
+
+func (s *Store) embeddingForThought(ctx context.Context, thoughtID string, model string) models.EmbeddingRecord {
+	where := "thought_id = ?"
+	args := []any{thoughtID}
+	if strings.TrimSpace(model) != "" {
+		where += " AND model = ?"
+		args = append(args, model)
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT thought_id, model, dimension, vector, content_hash, created_at
+		FROM thought_embeddings WHERE `+where+` ORDER BY created_at DESC LIMIT 1`, args...)
+	var record models.EmbeddingRecord
+	var raw string
+	if err := row.Scan(&record.ThoughtID, &record.Model, &record.Dimension, &raw, &record.ContentHash, &record.CreatedAt); err != nil {
+		return models.EmbeddingRecord{}
+	}
+	_ = json.Unmarshal([]byte(raw), &record.Vector)
+	return record
 }
 
 func buildSearchText(thought models.Thought, content models.ThoughtContent) string {
@@ -322,6 +399,63 @@ func keywordScore(text string, query string) float64 {
 		return 1
 	}
 	return score
+}
+
+func semanticScore(queryVector []float64, thoughtVector []float64, queryModel string, thoughtModel string) float64 {
+	if len(queryVector) == 0 || len(thoughtVector) == 0 {
+		return 0
+	}
+	if queryModel != "" && thoughtModel != "" && queryModel != thoughtModel {
+		return 0
+	}
+	score := cosine(queryVector, thoughtVector)
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func cosine(left []float64, right []float64) float64 {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0
+	}
+	dot := 0.0
+	leftNorm := 0.0
+	rightNorm := 0.0
+	for idx := range left {
+		dot += left[idx] * right[idx]
+		leftNorm += left[idx] * left[idx]
+		rightNorm += right[idx] * right[idx]
+	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm))
+}
+
+func recencyScore(updatedAt time.Time) float64 {
+	if updatedAt.IsZero() {
+		return 0
+	}
+	age := time.Since(updatedAt)
+	if age < 0 {
+		return 1
+	}
+	return 1 / (1 + age.Hours()/24/30)
+}
+
+func combinedScore(mode string, keyword float64, semantic float64, recency float64, useVector bool) float64 {
+	switch mode {
+	case "semantic":
+		return semantic*0.9 + recency*0.1
+	case "hybrid":
+		if useVector {
+			return keyword*0.45 + semantic*0.45 + recency*0.10
+		}
+		return keyword
+	default:
+		return keyword
+	}
 }
 
 func splitCSV(value string) []string {

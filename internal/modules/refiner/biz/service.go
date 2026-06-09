@@ -173,6 +173,9 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	if err != nil {
 		return models.ThoughtRefinement{}, err
 	}
+	if strings.TrimSpace(refinement.ExtractedTitle) != "" {
+		thought.ExtractedTitle = strings.TrimSpace(refinement.ExtractedTitle)
+	}
 	thought.Summary = refinement.Summary
 	thought.KeyPoints = refinement.KeyPoints
 	thought.AITags = refinement.AITags

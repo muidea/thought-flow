@@ -46,20 +46,31 @@ go build ./cmd/thoughtflow
 1. `refiner` 运行单元。
 2. `thought.captured` 触发后台 refine Job。
 3. 文本笔记本地摘要、核心观点和标签生成。
-4. URL 笔记正文抓取基础链路，抓取失败会保留原始笔记并发布失败事件。
-5. `thought.refine_started`、`thought.refined`、`thought.refine_failed` 事件。
-6. refined 结果回写原子 Markdown 的 front matter 和 `AI Notes` 分区。
-7. `search` 运行单元。
-8. `thought.captured` / `thought.refined` 触发后台 index Job。
+4. OpenAI-compatible chat provider，可通过环境变量配置：
+   - `THOUGHTFLOW_AI_BASE_URL`
+   - `THOUGHTFLOW_AI_API_KEY`
+   - `THOUGHTFLOW_AI_CHAT_MODEL`
+   - `THOUGHTFLOW_AI_EMBEDDING_MODEL`
+   - `THOUGHTFLOW_AI_TIMEOUT_SECONDS`
+5. 未配置 AI Key 时使用本地规则 provider，并生成 deterministic local embedding，保证开发环境可运行。
+6. URL 笔记正文抓取基础链路，抓取失败会保留原始笔记并发布失败事件。
+7. `thought.refine_started`、`thought.refined`、`thought.refine_failed` 事件。
+8. refined 结果回写原子 Markdown 的 front matter 和 `AI Notes` 分区。
+9. `thought.refined` payload 携带 `EmbeddingRecord`，供 search 写入索引层。
+   - SSE 事件流会保留 embedding 元数据但移除 vector，避免向前端推送大向量 payload。
+10. `search` 运行单元。
+11. `thought.captured` / `thought.refined` 触发后台 index Job。
    - `topic.updated` 触发 workspace reindex，刷新专题过滤视图。
-9. `GET /api/search`。
-10. `POST /api/system/reindex`。
-11. `POST /api/thoughts/{id}/retry-refine`。
-12. `search.index_updated`、`search.index_failed`、`search.reindex_started`、`search.reindex_finished` 事件。
-13. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
-14. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
-15. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
-16. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
+12. `GET /api/search`。
+13. `POST /api/system/reindex`。
+14. `POST /api/thoughts/{id}/retry-refine`。
+15. `search.index_updated`、`search.index_failed`、`search.reindex_started`、`search.reindex_finished` 事件。
+16. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
+17. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
+18. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
+19. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
+20. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
+21. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。
 
 验证：
 
@@ -113,11 +124,10 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 
 M2：
 
-1. 云端 OpenAI-compatible Provider 调用。
-2. Embedding 生成。
-3. DuckDB FTS 扩展索引。
-4. 向量相似度检索。
-5. 混合搜索中的语义分和时间分。
+1. DuckDB FTS 扩展索引。
+2. DuckDB 原生向量扩展或 ANN 索引。
+3. 当前语义检索是在 Go 内对候选 embedding 做 cosine 计算，不是 DuckDB 向量算子。
+4. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
 
 M3：
 

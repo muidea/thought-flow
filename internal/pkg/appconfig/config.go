@@ -12,6 +12,7 @@ type Config struct {
 	Workspace WorkspaceConfig
 	GitSync   GitSyncConfig
 	Search    SearchConfig
+	AI        AIConfig
 }
 
 type ServerConfig struct {
@@ -31,6 +32,14 @@ type GitSyncConfig struct {
 
 type SearchConfig struct {
 	DuckDBPath string
+}
+
+type AIConfig struct {
+	BaseURL        string
+	APIKey         string
+	ChatModel      string
+	EmbeddingModel string
+	Timeout        time.Duration
 }
 
 var (
@@ -55,6 +64,13 @@ func Load() Config {
 			},
 			Search: SearchConfig{
 				DuckDBPath: envString("THOUGHTFLOW_DUCKDB_PATH", ".thoughtflow/thoughtflow.duckdb"),
+			},
+			AI: AIConfig{
+				BaseURL:        envString("THOUGHTFLOW_AI_BASE_URL", "https://api.openai.com"),
+				APIKey:         envString("THOUGHTFLOW_AI_API_KEY", ""),
+				ChatModel:      envString("THOUGHTFLOW_AI_CHAT_MODEL", "gpt-4o-mini"),
+				EmbeddingModel: envString("THOUGHTFLOW_AI_EMBEDDING_MODEL", "text-embedding-3-small"),
+				Timeout:        time.Duration(envInt("THOUGHTFLOW_AI_TIMEOUT_SECONDS", 30)) * time.Second,
 			},
 		}
 	})
