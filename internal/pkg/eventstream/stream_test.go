@@ -65,6 +65,22 @@ func TestStreamSubscribeWithLastEventIDAndTypes(t *testing.T) {
 	assertNextEvent(t, events, "evt-5")
 }
 
+func TestStreamHistoryReturnsCopy(t *testing.T) {
+	stream := New(10)
+	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured})
+
+	history := stream.History()
+	if len(history) != 1 || history[0].EventID != "evt-1" {
+		t.Fatalf("history = %#v", history)
+	}
+	history[0].EventID = "mutated"
+
+	again := stream.History()
+	if len(again) != 1 || again[0].EventID != "evt-1" {
+		t.Fatalf("history was mutated through returned slice: %#v", again)
+	}
+}
+
 func assertNextEvent(t *testing.T, events <-chan models.DomainEvent, eventID string) {
 	t.Helper()
 	select {

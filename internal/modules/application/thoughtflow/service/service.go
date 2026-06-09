@@ -468,7 +468,73 @@ func (s *Service) handleGetTopic(ctx context.Context, res http.ResponseWriter, r
 		writeError(res, req, http.StatusNotFound, "thoughtflow.topic.not_found", err.Error())
 		return
 	}
+	detail.Activities = topicActivities(s.stream, topicID, 20)
 	writeJSON(res, req, http.StatusOK, detail)
+}
+
+func topicActivities(stream *eventstream.Stream, topicID string, limit int) []models.DomainEvent {
+	if stream == nil || strings.TrimSpace(topicID) == "" {
+		return nil
+	}
+	history := stream.History()
+	activities := []models.DomainEvent{}
+	for idx := len(history) - 1; idx >= 0; idx-- {
+		item := history[idx]
+		if !isTopicActivity(item, topicID) {
+			continue
+		}
+		activities = append(activities, item)
+		if limit > 0 && len(activities) >= limit {
+			break
+		}
+	}
+	for left, right := 0, len(activities)-1; left < right; left, right = left+1, right-1 {
+		activities[left], activities[right] = activities[right], activities[left]
+	}
+	return activities
+}
+
+func isTopicActivity(event models.DomainEvent, topicID string) bool {
+	if event.ResourceType == models.ResourceTypeTopic && event.ResourceID == topicID {
+		return true
+	}
+	if strings.HasPrefix(event.EventType, "topic.") && payloadReferencesTopic(event.Payload, topicID) {
+		return true
+	}
+	return false
+}
+
+func payloadReferencesTopic(payload any, topicID string) bool {
+	switch value := payload.(type) {
+	case models.Topic:
+		return value.ID == topicID
+	case *models.Topic:
+		return value != nil && value.ID == topicID
+	case models.TopicMembership:
+		return value.TopicID == topicID
+	case *models.TopicMembership:
+		return value != nil && value.TopicID == topicID
+	case []models.TopicMembership:
+		for _, membership := range value {
+			if membership.TopicID == topicID {
+				return true
+			}
+		}
+	case []*models.TopicMembership:
+		for _, membership := range value {
+			if membership != nil && membership.TopicID == topicID {
+				return true
+			}
+		}
+	case map[string]any:
+		if topicValue, ok := value["topic"]; ok && payloadReferencesTopic(topicValue, topicID) {
+			return true
+		}
+		if topicIDValue, ok := value["topic_id"].(string); ok && topicIDValue == topicID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) handleUpdateTopic(ctx context.Context, res http.ResponseWriter, req *http.Request) {

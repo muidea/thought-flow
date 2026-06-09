@@ -191,6 +191,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
 16. 专题成员关系已拆为独立事实文件：
    - 路径为 `topics/{slug}/memberships/{thought_id}.yaml`。
    - `GET /api/topics/{id}` 优先从 membership YAML 读取命中类型、分数、原因和状态。
+   - `GET /api/topics/{id}` 会从 SSE 历史事件中聚合最近专题活动记录。
    - 旧数据没有 membership YAML 时，保留从 `index.md` 成员段落推断的兼容路径。
    - 专题 rebuild 会写入当前成员事实并删除不再命中的陈旧 membership 文件。
    - topic 变更触发 Git 提交时会包含 `memberships/` 目录。

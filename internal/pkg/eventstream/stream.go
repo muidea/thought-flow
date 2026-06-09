@@ -116,6 +116,12 @@ func (s *Stream) Stats() Stats {
 	}
 }
 
+func (s *Stream) History() []models.DomainEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]models.DomainEvent(nil), s.history...)
+}
+
 func (s *Stream) SubscribeWithOptions(ctx context.Context, options SubscribeOptions) <-chan models.DomainEvent {
 	options.Types = normalizeTypes(options.Types)
 	s.mu.Lock()

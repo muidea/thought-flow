@@ -189,6 +189,65 @@ func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {
 	}
 }
 
+func TestHandleGetTopicIncludesRecentActivities(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	ctx := context.Background()
+	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{Name: "Activity Topic"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	stream := eventstream.New(10)
+	stream.Publish(models.DomainEvent{EventID: "evt-unrelated", EventType: models.EventTopicUpdated, ResourceType: models.ResourceTypeTopic, ResourceID: "other-topic"})
+	stream.Publish(models.DomainEvent{EventID: "evt-topic", EventType: models.EventTopicUpdated, ResourceType: models.ResourceTypeTopic, ResourceID: topic.ID})
+	stream.Publish(models.DomainEvent{
+		EventID:      "evt-membership",
+		EventType:    models.EventTopicMatched,
+		ResourceType: models.ResourceTypeThought,
+		ResourceID:   "thought-1",
+		Payload: []models.TopicMembership{
+			{TopicID: topic.ID, ThoughtID: "thought-1"},
+		},
+	})
+	service := &Service{topicService: topicService, stream: stream}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/topics/"+topic.ID, nil)
+	service.handleGetTopic(ctx, res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.TopicDetail `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Topic.ID != topic.ID {
+		t.Fatalf("topic = %#v", payload.Data.Topic)
+	}
+	if len(payload.Data.Activities) != 2 {
+		t.Fatalf("activities = %#v", payload.Data.Activities)
+	}
+	if payload.Data.Activities[0].EventID != "evt-topic" || payload.Data.Activities[1].EventID != "evt-membership" {
+		t.Fatalf("activities order = %#v", payload.Data.Activities)
+	}
+}
+
 func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
