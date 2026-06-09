@@ -280,9 +280,9 @@ go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
 
-## 尚未实现
+## 当前限制与环境说明
 
-UI：
+UI 验证环境：
 
 1. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；Firefox/Safari 已进入测试目标声明和环境探测，但当前本机无法实际执行 Firefox/Safari 覆盖。
 
