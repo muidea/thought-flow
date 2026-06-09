@@ -104,6 +104,28 @@ func TestHandleWebServesMarkdownParserVendorScript(t *testing.T) {
 	}
 }
 
+func TestTimeQueryParsesSearchRangeParameters(t *testing.T) {
+	from, err := timeQuery("2026-06-09T10:30:00+08:00", false)
+	if err != nil {
+		t.Fatalf("timeQuery(RFC3339) error = %v", err)
+	}
+	if want := time.Date(2026, 6, 9, 2, 30, 0, 0, time.UTC); !from.Equal(want) {
+		t.Fatalf("from = %s, want %s", from, want)
+	}
+
+	to, err := timeQuery("2026-06-09", true)
+	if err != nil {
+		t.Fatalf("timeQuery(date) error = %v", err)
+	}
+	if want := time.Date(2026, 6, 9, 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC); !to.Equal(want) {
+		t.Fatalf("to = %s, want %s", to, want)
+	}
+
+	if _, err := timeQuery("not-a-date", false); err == nil {
+		t.Fatalf("expected invalid date error")
+	}
+}
+
 func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

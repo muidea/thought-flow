@@ -108,7 +108,7 @@ go build ./cmd/thoughtflow
 17. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
 18. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
 19. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
-20. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
+20. 搜索索引返回 `topics` 字段，并支持 `topic_id`、`tags`、`from` 和 `to` 过滤。
 21. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
 22. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。
 23. DuckDB tagged store 已接入 `fts` extension：

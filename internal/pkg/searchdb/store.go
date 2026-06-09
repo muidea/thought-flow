@@ -639,6 +639,14 @@ func searchFilterWhere(query models.SearchQuery) (string, []any) {
 			where = where + " AND (" + strings.Join(tagClauses, " OR ") + ")"
 		}
 	}
+	if !query.From.IsZero() {
+		where = where + " AND t.updated_at >= ?"
+		args = append(args, query.From)
+	}
+	if !query.To.IsZero() {
+		where = where + " AND t.updated_at <= ?"
+		args = append(args, query.To)
+	}
 	return where, args
 }
 

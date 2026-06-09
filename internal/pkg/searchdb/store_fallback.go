@@ -192,6 +192,12 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		if len(query.Tags) > 0 && !hasAnyFold(item.tags, query.Tags) {
 			continue
 		}
+		if !query.From.IsZero() && item.thought.UpdatedAt.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && item.thought.UpdatedAt.After(query.To) {
+			continue
+		}
 		matchesKeyword := q == "" || strings.Contains(strings.ToLower(item.text), q) || strings.Contains(strings.ToLower(item.thought.DisplayTitle), q)
 		if useVector || matchesKeyword {
 			all = append(all, item)

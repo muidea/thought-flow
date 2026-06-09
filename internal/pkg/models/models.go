@@ -301,6 +301,8 @@ type SearchQuery struct {
 	Sort           string        `json:"sort,omitempty"`
 	TopicID        string        `json:"topic_id,omitempty"`
 	Tags           []string      `json:"tags,omitempty"`
+	From           time.Time     `json:"from,omitempty"`
+	To             time.Time     `json:"to,omitempty"`
 	Page           int           `json:"page"`
 	PageSize       int           `json:"page_size"`
 	Explain        bool          `json:"explain,omitempty"`

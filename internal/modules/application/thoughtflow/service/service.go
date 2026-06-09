@@ -182,12 +182,28 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	observability.IncrementSearchQuery()
 	query := req.URL.Query()
+	from, err := timeQuery(query.Get("from"), false)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "from must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	to, err := timeQuery(query.Get("to"), true)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "to must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "from must be before to")
+		return
+	}
 	searchQuery := models.SearchQuery{
 		Query:    query.Get("q"),
 		Mode:     firstNonEmpty(query.Get("mode"), "hybrid"),
 		Sort:     query.Get("sort"),
 		TopicID:  query.Get("topic_id"),
 		Tags:     splitCSV(query.Get("tags")),
+		From:     from,
+		To:       to,
 		Page:     intQuery(query.Get("page"), 1),
 		PageSize: intQuery(query.Get("page_size"), 20),
 		Explain:  boolQuery(query.Get("explain")),
@@ -1187,6 +1203,25 @@ func floatQuery(value string, fallback float64) float64 {
 		return fallback
 	}
 	return ret
+}
+
+func timeQuery(value string, endOfDay bool) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	parsed = parsed.UTC()
+	if endOfDay {
+		parsed = parsed.Add(24*time.Hour - time.Nanosecond)
+	}
+	return parsed, nil
 }
 
 func splitCSV(value string) []string {

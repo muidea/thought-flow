@@ -201,3 +201,75 @@ func TestSearchSortWeightsAndExplain(t *testing.T) {
 		t.Fatalf("semantic component = %v", explain.Components.Semantic)
 	}
 }
+
+func TestSearchFiltersUpdatedAtRange(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	for _, thought := range []models.Thought{
+		searchRangeThought("20260609-110000-range", "Older range note", base.Add(-time.Hour)),
+		searchRangeThought("20260609-120000-range", "Current range note", base),
+		searchRangeThought("20260609-130000-range", "Newer range note", base.Add(time.Hour)),
+	} {
+		if err := store.IndexThought(ctx, thought, models.ThoughtContent{Original: "Range filter fixture."}); err != nil {
+			t.Fatalf("IndexThought(%s) error = %v", thought.ID, err)
+		}
+	}
+
+	result, err := store.Search(ctx, models.SearchQuery{
+		Query:    "range",
+		Mode:     "keyword",
+		From:     base.Add(-time.Minute),
+		To:       base.Add(time.Minute),
+		Page:     1,
+		PageSize: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.Total != 1 || len(result.Items) != 1 {
+		t.Fatalf("search result total=%d len=%d", result.Total, len(result.Items))
+	}
+	if result.Items[0].ThoughtID != "20260609-120000-range" {
+		t.Fatalf("thought id = %q", result.Items[0].ThoughtID)
+	}
+
+	fromOnly, err := store.Search(ctx, models.SearchQuery{Query: "range", Mode: "keyword", From: base, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search(from only) error = %v", err)
+	}
+	if fromOnly.Total != 2 {
+		t.Fatalf("from-only total = %d", fromOnly.Total)
+	}
+
+	toOnly, err := store.Search(ctx, models.SearchQuery{Query: "range", Mode: "keyword", To: base, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search(to only) error = %v", err)
+	}
+	if toOnly.Total != 2 {
+		t.Fatalf("to-only total = %d", toOnly.Total)
+	}
+}
+
+func searchRangeThought(id string, title string, updatedAt time.Time) models.Thought {
+	return models.Thought{
+		ID:            id,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     title,
+		DisplayTitle:  title,
+		Path:          filepath.ToSlash(filepath.Join("thoughts", "2026", "06", id+".md")),
+		CreatedAt:     updatedAt,
+		UpdatedAt:     updatedAt,
+		ContentHash:   models.ContentHash(id),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+}
