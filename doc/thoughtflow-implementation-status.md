@@ -22,6 +22,7 @@
    - `GET /metrics`
    - `GET /health/live`
    - `GET /health/ready`
+   - `GET /api/thoughts/{id}` 会聚合原子笔记正文、相关后台 Job 和最近 Git commit 摘要。
 5. 工作区初始化：
    - `thoughts/`
    - `topics/`

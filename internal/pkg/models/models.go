@@ -109,8 +109,10 @@ type ThoughtContent struct {
 }
 
 type ThoughtSnapshot struct {
-	Thought Thought        `json:"thought"`
-	Content ThoughtContent `json:"content,omitempty"`
+	Thought    Thought           `json:"thought"`
+	Content    ThoughtContent    `json:"content,omitempty"`
+	Jobs       []Job             `json:"jobs,omitempty"`
+	GitCommits []GitCommitRecord `json:"git_commits,omitempty"`
 }
 
 type ThoughtRefinement struct {

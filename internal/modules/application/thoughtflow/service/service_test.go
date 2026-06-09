@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,6 +124,103 @@ func TestTimeQueryParsesSearchRangeParameters(t *testing.T) {
 
 	if _, err := timeQuery("not-a-date", false); err == nil {
 		t.Fatalf("expected invalid date error")
+	}
+}
+
+func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+		GitEnabled:   true,
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	thought := models.Thought{
+		ID:            "20260609-143010-detail",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     "Detail thought",
+		DisplayTitle:  "Detail thought",
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-143010-detail")),
+		CreatedAt:     time.Date(2026, 6, 9, 14, 30, 10, 0, time.UTC),
+		UpdatedAt:     time.Date(2026, 6, 9, 14, 30, 10, 0, time.UTC),
+		ContentHash:   models.ContentHash("detail thought"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "Thought detail body."}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	runGitForTest(t, root, "init")
+	runGitForTest(t, root, "config", "user.name", "ThoughtFlow Test")
+	runGitForTest(t, root, "config", "user.email", "thoughtflow-test@example.test")
+	runGitForTest(t, root, "add", "--", thought.Path)
+	runGitForTest(t, root, "commit", "-m", "thoughtflow: add detail thought")
+
+	jobs := jobstore.New(ws.JobsPath)
+	if err := jobs.Save(models.Job{
+		ID:           "index-detail",
+		Type:         models.JobTypeIndex,
+		ResourceType: models.ResourceTypeThought,
+		ResourceID:   thought.ID,
+		Status:       models.JobStatusSucceeded,
+		CreatedAt:    thought.CreatedAt.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("Save(job) error = %v", err)
+	}
+	captureService := capturebiz.NewService(ws, jobs, nil)
+	service := &Service{captureService: captureService, jobs: jobs, workspace: ws}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/thoughts/"+thought.ID, nil)
+	service.handleGetThought(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.ThoughtSnapshot `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Thought.ID != thought.ID {
+		t.Fatalf("thought = %#v", payload.Data.Thought)
+	}
+	if len(payload.Data.Jobs) != 1 || payload.Data.Jobs[0].ID != "index-detail" {
+		t.Fatalf("jobs = %#v", payload.Data.Jobs)
+	}
+	if len(payload.Data.GitCommits) != 1 {
+		t.Fatalf("git commits = %#v", payload.Data.GitCommits)
+	}
+	if payload.Data.GitCommits[0].Message != "thoughtflow: add detail thought" ||
+		payload.Data.GitCommits[0].CommitHash == "" ||
+		len(payload.Data.GitCommits[0].Paths) != 1 ||
+		payload.Data.GitCommits[0].Paths[0] != thought.Path {
+		t.Fatalf("git commit = %#v", payload.Data.GitCommits[0])
+	}
+}
+
+func runGitForTest(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmdArgs := append([]string{"-C", root}, args...)
+	cmd := exec.Command("git", cmdArgs...)
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %s: %v", strings.Join(cmdArgs, " "), strings.TrimSpace(string(raw)), err)
 	}
 }
 
