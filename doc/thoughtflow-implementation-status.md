@@ -45,6 +45,11 @@
     - 监听地址使用 `THOUGHTFLOW_HOST` + `THOUGHTFLOW_PORT`。
     - `application.Shutdown(ctx)` 触发 application module `Teardown(ctx)` 时调用 `http.Server.Shutdown(ctx)`。
     - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
+13. 配置分层加载：
+    - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
+    - 启动时按工作区读取 `.thoughtflow/config.local.yaml`。
+    - 环境变量保持最高优先级，覆盖本地配置中的端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。
+    - 启动参数 `--host`、`--port`、`--workspace-root`、`--git-enabled`、`--duckdb-path`、`--ai-*` 等会先映射为环境变量，再复用同一套覆盖逻辑。
 
 验证：
 
