@@ -71,6 +71,11 @@ go build ./cmd/thoughtflow
 19. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
 20. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
 21. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。
+22. DuckDB tagged store 已接入 `fts` extension：
+   - `thought_contents.search_text` 按需创建 FTS index。
+   - 关键词分优先使用 `match_bm25(..., conjunctive := 1)`，并归一化为 `keyword_score`。
+   - FTS extension 安装或加载不可用时保留 LIKE 降级路径。
+   - 对 DuckDB extension 下载器不兼容带尾部 `/` 的 proxy URL 做了局部规范化。
 
 验证：
 
@@ -161,10 +166,9 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 
 M2：
 
-1. DuckDB FTS 扩展索引。
-2. DuckDB 原生向量扩展或 ANN 索引。
-3. 当前语义检索是在 Go 内对候选 embedding 做 cosine 计算，不是 DuckDB 向量算子。
-4. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
+1. DuckDB 原生向量扩展或 ANN 索引。
+2. 当前语义检索是在 Go 内对候选 embedding 做 cosine 计算，不是 DuckDB 向量算子。
+3. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
 
 M3：
 

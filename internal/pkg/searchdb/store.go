@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -23,7 +24,12 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	ftsMu        sync.Mutex
+	ftsChecked   bool
+	ftsAvailable bool
+	ftsDirty     bool
+	ftsErr       error
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -37,7 +43,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db}
+	store := &Store{db: db, ftsDirty: true}
 	if err := store.Init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -107,6 +113,12 @@ func execIgnoreColumnExists(ctx context.Context, db *sql.DB, query string) error
 	return nil
 }
 
+func (s *Store) markFTSDirty() {
+	s.ftsMu.Lock()
+	s.ftsDirty = true
+	s.ftsMu.Unlock()
+}
+
 func (s *Store) IndexThought(ctx context.Context, thought models.Thought, content models.ThoughtContent) error {
 	if thought.ID == "" {
 		return errors.New("thought id is required")
@@ -151,7 +163,11 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.markFTSDirty()
+	return nil
 }
 
 func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecord) error {
@@ -187,6 +203,7 @@ func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, err
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM thoughts`); err != nil {
 		return 0, err
 	}
+	s.markFTSDirty()
 	count := 0
 	thoughtsPath := filepath.Join(rootPath, "thoughts")
 	err := filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -213,29 +230,143 @@ func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, err
 	return count, err
 }
 
-func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.SearchResponse, error) {
-	page := query.Page
-	if page <= 0 {
-		page = 1
-	}
-	pageSize := query.PageSize
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 20
-	}
-	offset := (page - 1) * pageSize
-	pattern := "%" + strings.ToLower(strings.TrimSpace(query.Query)) + "%"
-	mode := strings.ToLower(strings.TrimSpace(query.Mode))
-	if mode == "" {
-		mode = "hybrid"
-	}
-	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
+func (s *Store) ensureFTSIndex(ctx context.Context) bool {
+	s.ftsMu.Lock()
+	defer s.ftsMu.Unlock()
 
+	if !s.ftsChecked {
+		s.ftsChecked = true
+		if err := s.loadFTS(ctx); err != nil {
+			s.ftsAvailable = false
+			s.ftsErr = err
+			return false
+		}
+		s.ftsAvailable = true
+		s.ftsErr = nil
+		s.ftsDirty = true
+	}
+	if !s.ftsAvailable {
+		return false
+	}
+	if !s.ftsDirty {
+		return true
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA create_fts_index('thought_contents', 'thought_id', 'search_text', overwrite = 1)`); err != nil {
+		s.ftsAvailable = false
+		s.ftsErr = err
+		return false
+	}
+	s.ftsDirty = false
+	s.ftsErr = nil
+	return true
+}
+
+func (s *Store) loadFTS(ctx context.Context) error {
+	return withNormalizedProxyEnv(func() error {
+		s.configureDuckDBProxy(ctx)
+		if _, err := s.db.ExecContext(ctx, `LOAD fts`); err == nil {
+			return nil
+		}
+		if _, err := s.db.ExecContext(ctx, `INSTALL fts`); err != nil {
+			return err
+		}
+		_, err := s.db.ExecContext(ctx, `LOAD fts`)
+		return err
+	})
+}
+
+func (s *Store) configureDuckDBProxy(ctx context.Context) {
+	for _, key := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"} {
+		value, ok := os.LookupEnv(key)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `SET http_proxy = ?`, strings.TrimSuffix(value, "/")); err == nil {
+			return
+		}
+	}
+}
+
+func withNormalizedProxyEnv(run func() error) error {
+	keys := []string{
+		"http_proxy",
+		"https_proxy",
+		"ftp_proxy",
+		"all_proxy",
+		"HTTP_PROXY",
+		"HTTPS_PROXY",
+		"FTP_PROXY",
+		"ALL_PROXY",
+	}
+	type previousValue struct {
+		value string
+		ok    bool
+	}
+	previous := map[string]previousValue{}
+	for _, key := range keys {
+		value, ok := os.LookupEnv(key)
+		previous[key] = previousValue{value: value, ok: ok}
+		if ok {
+			os.Setenv(key, strings.TrimSuffix(value, "/"))
+		}
+	}
+	defer func() {
+		for _, key := range keys {
+			value := previous[key]
+			if value.ok {
+				os.Setenv(key, value.value)
+			} else {
+				os.Unsetenv(key)
+			}
+		}
+	}()
+	return run()
+}
+
+func (s *Store) keywordScoresFromFTS(ctx context.Context, query string) (map[string]float64, bool) {
+	query = strings.TrimSpace(query)
+	if query == "" || !s.ensureFTSIndex(ctx) {
+		return nil, false
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT thought_id, score
+		FROM (
+			SELECT thought_id, fts_main_thought_contents.match_bm25(thought_id, ?, conjunctive := 1) AS score
+			FROM thought_contents
+		) sq
+		WHERE score IS NOT NULL`, query)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	scores := map[string]float64{}
+	maxScore := 0.0
+	for rows.Next() {
+		var thoughtID string
+		var rawScore float64
+		if err := rows.Scan(&thoughtID, &rawScore); err != nil {
+			return nil, false
+		}
+		scores[thoughtID] = rawScore
+		if rawScore > maxScore {
+			maxScore = rawScore
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
+	}
+	if maxScore <= 0 {
+		return scores, true
+	}
+	for thoughtID, rawScore := range scores {
+		scores[thoughtID] = rawScore / maxScore
+	}
+	return scores, true
+}
+
+func searchFilterWhere(query models.SearchQuery) (string, []any) {
 	where := "1=1"
 	args := []any{}
-	if strings.TrimSpace(query.Query) != "" && !useVector {
-		where = "(lower(c.search_text) LIKE ? OR lower(t.title) LIKE ?)"
-		args = append(args, pattern, pattern)
-	}
 	if strings.TrimSpace(query.TopicID) != "" {
 		where = where + " AND lower(coalesce(t.topic_ids, '')) LIKE ?"
 		args = append(args, "%"+strings.ToLower(strings.TrimSpace(query.TopicID))+"%")
@@ -254,26 +385,33 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 			where = where + " AND (" + strings.Join(tagClauses, " OR ") + ")"
 		}
 	}
+	return where, args
+}
 
-	countQuery := fmt.Sprintf(`SELECT count(*) FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id WHERE %s`, where)
-	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return models.SearchResponse{}, err
+func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.SearchResponse, error) {
+	page := query.Page
+	if page <= 0 {
+		page = 1
 	}
+	pageSize := query.PageSize
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+	mode := strings.ToLower(strings.TrimSpace(query.Mode))
+	if mode == "" {
+		mode = "hybrid"
+	}
+	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
+	trimmedQuery := strings.TrimSpace(query.Query)
+	ftsScores, useFTS := s.keywordScoresFromFTS(ctx, trimmedQuery)
 
-	limitClause := "LIMIT ? OFFSET ?"
-	selectArgs := append([]any{}, args...)
-	if useVector {
-		limitClause = ""
-	} else {
-		selectArgs = append(selectArgs, pageSize, offset)
-	}
-	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, '')
+	where, args := searchFilterWhere(query)
+	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at
 		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
 		WHERE %s
-		ORDER BY t.updated_at DESC
-		%s`, where, limitClause)
-	rows, err := s.db.QueryContext(ctx, selectQuery, selectArgs...)
+		ORDER BY t.updated_at DESC`, where)
+	rows, err := s.db.QueryContext(ctx, selectQuery, args...)
 	if err != nil {
 		return models.SearchResponse{}, err
 	}
@@ -285,14 +423,21 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		var searchText string
 		var tags string
 		var topicIDs string
-		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs); err != nil {
+		var updatedAt time.Time
+		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt); err != nil {
 			return models.SearchResponse{}, err
 		}
 		embedding := s.embeddingForThought(ctx, item.ThoughtID, query.EmbeddingModel)
 		item.Snippet = snippet(searchText, query.Query)
 		item.KeywordScore = keywordScore(searchText, query.Query)
+		if useFTS && trimmedQuery != "" {
+			item.KeywordScore = ftsScores[item.ThoughtID]
+		}
+		if trimmedQuery != "" && !useVector && item.KeywordScore <= 0 {
+			continue
+		}
 		item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
-		item.RecencyScore = recencyScore(embedding.CreatedAt)
+		item.RecencyScore = recencyScore(updatedAt)
 		item.Score = combinedScore(mode, item.KeywordScore, item.SemanticScore, item.RecencyScore, useVector)
 		item.Tags = splitCSV(tags)
 		item.Topics = splitCSV(topicIDs)
@@ -307,17 +452,16 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		}
 		return items[left].Score > items[right].Score
 	})
-	if useVector {
-		start := offset
-		if start > len(items) {
-			start = len(items)
-		}
-		end := start + pageSize
-		if end > len(items) {
-			end = len(items)
-		}
-		items = items[start:end]
+	total := len(items)
+	start := offset
+	if start > total {
+		start = total
 	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	items = items[start:end]
 	return models.SearchResponse{
 		Items:    items,
 		Page:     page,
