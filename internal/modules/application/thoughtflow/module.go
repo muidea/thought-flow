@@ -2,7 +2,12 @@ package thoughtflow
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
 	"sync"
+	"time"
 
 	cd "github.com/muidea/magicCommon/def"
 	"github.com/muidea/magicCommon/event"
@@ -32,8 +37,14 @@ func New() *Module {
 }
 
 type Module struct {
-	server engine.HTTPServer
-	stream *eventstream.Stream
+	server     gracefulHTTPServer
+	serverDone chan error
+	stream     *eventstream.Stream
+}
+
+type gracefulHTTPServer interface {
+	ListenAndServe() error
+	Shutdown(ctx context.Context) error
 }
 
 var (
@@ -111,9 +122,26 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	registry := engine.NewRouteRegistry()
 	httpService := service.New(registry, captureService, refinerService, searchService, topicService, jobs, m.stream, ws)
 	httpService.RegisterRoutes()
-	m.server = engine.NewHTTPServer(engine.WithPort(cfg.Server.Port))
-	m.server.Bind(registry)
+	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
+	if err != nil {
+		return cd.WrapError(cd.Unexpected, err, "create http server")
+	}
+	m.serverDone = make(chan error, 1)
 	return nil
+}
+
+func newGracefulHTTPServer(cfg appconfig.ServerConfig, registry engine.RouteRegistry) (gracefulHTTPServer, error) {
+	engineServer := engine.NewHTTPServer()
+	engineServer.Bind(registry)
+	handler, ok := engineServer.(http.Handler)
+	if !ok {
+		return nil, errors.New("magicEngine http server does not implement http.Handler")
+	}
+	return &http.Server{
+		Addr:              net.JoinHostPort(cfg.Host, cfg.Port),
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}, nil
 }
 
 func (m *Module) Run(ctx context.Context) *cd.Error {
@@ -121,11 +149,33 @@ func (m *Module) Run(ctx context.Context) *cd.Error {
 	if m.server == nil {
 		return cd.NewError(cd.Unexpected, "http server is not ready")
 	}
-	go m.server.Run()
+	if m.serverDone == nil {
+		m.serverDone = make(chan error, 1)
+	}
+	go func() {
+		err := m.server.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		if err != nil {
+			slog.Error("thoughtflow http server stopped with error", "error", err)
+		}
+		m.serverDone <- err
+	}()
 	return nil
 }
 
 func (m *Module) Teardown(ctx context.Context) {
-	_ = ctx
+	if m.server != nil {
+		shutdownCtx := ctx
+		cancel := func() {}
+		if _, ok := shutdownCtx.Deadline(); !ok {
+			shutdownCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		}
+		if err := m.server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("thoughtflow http server shutdown failed", "error", err)
+		}
+		cancel()
+	}
 	setCurrentStream(nil)
 }

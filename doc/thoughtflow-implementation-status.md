@@ -41,6 +41,10 @@
     - Git 仓库、用户身份和未提交变更只读探测。
     - background jobs 目录写入状态。
     - SSE history/subscriber 统计。
+12. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
+    - 监听地址使用 `THOUGHTFLOW_HOST` + `THOUGHTFLOW_PORT`。
+    - `application.Shutdown(ctx)` 触发 application module `Teardown(ctx)` 时调用 `http.Server.Shutdown(ctx)`。
+    - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
 
 验证：
 
@@ -202,6 +206,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - `GET /index.html`
    - `GET /styles.css`
    - `GET /app.js`
+   - `GET /vendor/markdown-it.min.js`
 3. 首屏工作台：
    - 快速捕捉文本/URL
    - `Ctrl+K` 聚焦搜索
@@ -244,6 +249,5 @@ UI：
 
 当前限制：
 
-1. HTTP server 通过 `magicEngine.HTTPServer.Run()` 启动，当前框架接口未暴露 graceful shutdown hook。
-2. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
-3. `.thoughtflow/` 运行时数据只作为本地任务快照，不是长期事实源。
+1. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
+2. `.thoughtflow/` 运行时数据只作为本地任务快照，不是长期事实源。
