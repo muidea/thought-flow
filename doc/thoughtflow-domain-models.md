@@ -35,7 +35,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `Topic` | 专题定义和专题主文档 | topic | `topics/{slug}/topic.yaml` + `index.md` |
 | `TopicRule` | 专题匹配规则 | topic | `topic.yaml` |
 | `TopicOutline` | 专题大纲 | topic | `topic.yaml` + `index.md` |
-| `TopicMembership` | 碎片与专题的关系 | topic/search | DuckDB 缓存 + `topic.yaml` 手动决策 + `index.md` 成员快照 |
+| `TopicMembership` | 碎片与专题的关系 | topic/search | `topics/{slug}/memberships/{thought_id}.yaml` + DuckDB 缓存 |
 | `SearchIndex` | 关键词和语义索引 | search | DuckDB |
 | `SearchResult` | 检索结果视图 | search | 运行态响应 |
 | `SynthesisDraft` | 即席合稿草稿 | refiner/application | 运行态，保存后转 Thought |
@@ -175,7 +175,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 文件：
 
 1. `topics/{slug}/topic.yaml` 保存规则、大纲和配置。
-2. `topics/{slug}/index.md` 保存可读专题主文档。
+2. `topics/{slug}/index.md` 保存可读专题主文档和成员快照。
+3. `topics/{slug}/memberships/{thought_id}.yaml` 保存成员关系事实。
 
 功能定义：
 
@@ -238,7 +239,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 支持用户接受或排除。
 3. 支持专题重组后重算。
 4. 为专题文档 source link 提供依据。
-5. 自动命中关系可从规则、Thought 和索引重建；用户手动接受、排除、固定包含必须写入 `topic.yaml`。
+5. 自动命中关系可从规则、Thought 和索引重建；用户手动接受、排除、固定包含必须写入 membership 事实文件，专题规则仍写入 `topic.yaml`。
 
 ## 4. 派生分析模型
 

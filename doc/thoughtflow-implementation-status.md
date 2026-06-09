@@ -140,6 +140,12 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - semantic rule 匹配时先生成 topic 定义向量，再优先读取同模型 thought embedding cache。
    - 缓存缺失或维度不匹配时才回退即时 embedding。
    - `search.index_updated` 仍会触发 topic match，确保 refined embedding 写入索引后可再次复用缓存匹配。
+16. 专题成员关系已拆为独立事实文件：
+   - 路径为 `topics/{slug}/memberships/{thought_id}.yaml`。
+   - `GET /api/topics/{id}` 优先从 membership YAML 读取命中类型、分数、原因和状态。
+   - 旧数据没有 membership YAML 时，保留从 `index.md` 成员段落推断的兼容路径。
+   - 专题 rebuild 会写入当前成员事实并删除不再命中的陈旧 membership 文件。
+   - topic 变更触发 Git 提交时会包含 `memberships/` 目录。
 
 验证：
 
@@ -152,7 +158,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 
 已实现：
 
-1. 嵌入式前端资源，无需额外构建链。
+1. 嵌入式前端资源，无需额外构建链；当前保持原生 HTML/CSS/JS 技术栈。
 2. `magicEngine` 路由服务：
    - `GET /`
    - `GET /index.html`
@@ -188,8 +194,7 @@ M3：
 
 1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
 2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
-3. 专题成员关系当前随 topic YAML 和 Thought front matter/Links 聚合存储，尚未拆为独立 membership 事实文件。
-4. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
+3. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
 
 UI：
 

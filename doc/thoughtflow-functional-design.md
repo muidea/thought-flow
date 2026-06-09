@@ -208,6 +208,8 @@ thoughtflow-workspace/
     ai-research/
       index.md
       topic.yaml
+      memberships/
+        20260609-143010-8f3a.yaml
   attachments/
   .thoughtflow/
     thoughtflow.duckdb
@@ -321,6 +323,26 @@ members:
 
 > Sources: [[../../thoughts/2026/06/20260609-143010-8f3a]]
 ```
+
+`topics/{slug}/memberships/{thought_id}.yaml`：
+
+```yaml
+topic_id: ai-research
+thought_id: 20260609-143010-8f3a
+match_type: semantic
+score: 0.82
+reasons:
+  - semantic:0.820
+status: accepted
+created_at: "2026-06-09T14:10:00Z"
+updated_at: "2026-06-09T14:10:00Z"
+```
+
+约束：
+
+1. `topic.yaml` 保存专题定义和统计快照，不作为成员关系唯一事实源。
+2. `index.md` 保存可读专题主文档和成员快照，不反推命中分数、原因或状态。
+3. `memberships/` 保存 Thought 与 Topic 的关系事实，进入 Git，可由规则重建并可承载后续审批状态。
 
 ## 5. DuckDB 索引设计
 

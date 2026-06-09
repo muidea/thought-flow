@@ -2,6 +2,7 @@ package topicstore
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,6 +73,35 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	if !strings.Contains(document, "members:\n  - 20260609-143010-8f3a") {
 		t.Fatalf("expected member snapshot in topic document front matter:\n%s", document)
 	}
+	membershipPath := filepath.Join(root, "topics", updated.Slug, "memberships", thought.ID+".yaml")
+	membershipRaw, err := os.ReadFile(membershipPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", membershipPath, err)
+	}
+	membershipText := string(membershipRaw)
+	if !strings.Contains(membershipText, "topic_id: duckdb-notes") ||
+		!strings.Contains(membershipText, "thought_id: 20260609-143010-8f3a") ||
+		!strings.Contains(membershipText, "status: accepted") ||
+		!strings.Contains(membershipText, "keyword:duckdb") {
+		t.Fatalf("unexpected membership fact:\n%s", membershipText)
+	}
+	rewrittenDocument := strings.Replace(document, "Match: keyword:duckdb, tag:engineering", "Match: semantic:0.111", 1)
+	if err := store.writeDocument(updated, rewrittenDocument); err != nil {
+		t.Fatalf("writeDocument() error = %v", err)
+	}
+	detail, err := store.Detail(ctx, updated.ID)
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+	if len(detail.Members) != 1 {
+		t.Fatalf("detail member count = %d", len(detail.Members))
+	}
+	if detail.Members[0].MatchType != membership.MatchType || detail.Members[0].Score != membership.Score {
+		t.Fatalf("detail membership should come from fact file, got %#v", detail.Members[0])
+	}
+	if !containsString(detail.Members[0].Reasons, "keyword:duckdb") {
+		t.Fatalf("detail reasons should come from fact file, got %#v", detail.Members[0].Reasons)
+	}
 	updatedThought, updatedContent, err := markdown.ReadThought(root, thought.ID)
 	if err != nil {
 		t.Fatalf("ReadThought() error = %v", err)
@@ -92,6 +122,55 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	}
 	if changed {
 		t.Fatalf("duplicate membership should not change topic")
+	}
+}
+
+func TestStoreRebuildRemovesStaleMembershipFacts(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{
+		Name: "DuckDB Notes",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	thought := testThought("20260609-143010-8f3a", "Query planner note", nil)
+	content := models.ThoughtContent{Original: "DuckDB can keep local thought search fast."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	membership, ok := store.MatchThought(topic, thought, content)
+	if !ok {
+		t.Fatalf("expected topic rule match")
+	}
+	updated, changed, err := store.AddMembership(ctx, topic, thought, content, membership)
+	if err != nil {
+		t.Fatalf("AddMembership() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected membership to be added")
+	}
+	membershipPath := filepath.Join(root, "topics", updated.Slug, "memberships", thought.ID+".yaml")
+	if _, err := os.Stat(membershipPath); err != nil {
+		t.Fatalf("expected membership fact before rebuild, stat error = %v", err)
+	}
+
+	rebuilt, count, _, err := store.RebuildWithMatcher(ctx, updated.ID, func(context.Context, models.Topic, models.Thought, models.ThoughtContent) (models.TopicMembership, bool) {
+		return models.TopicMembership{}, false
+	})
+	if err != nil {
+		t.Fatalf("RebuildWithMatcher() error = %v", err)
+	}
+	if count != 0 || rebuilt.MemberCount != 0 || len(rebuilt.Members) != 0 {
+		t.Fatalf("unexpected rebuild result: topic=%#v count=%d", rebuilt, count)
+	}
+	if _, err := os.Stat(membershipPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale membership fact to be removed, stat error = %v", err)
 	}
 }
 

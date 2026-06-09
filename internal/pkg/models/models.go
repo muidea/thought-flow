@@ -298,14 +298,14 @@ type OutlineNode struct {
 }
 
 type TopicMembership struct {
-	TopicID   string    `json:"topic_id"`
-	ThoughtID string    `json:"thought_id"`
-	MatchType string    `json:"match_type"`
-	Score     float64   `json:"score"`
-	Reasons   []string  `json:"reasons"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	TopicID   string    `json:"topic_id" yaml:"topic_id"`
+	ThoughtID string    `json:"thought_id" yaml:"thought_id"`
+	MatchType string    `json:"match_type" yaml:"match_type"`
+	Score     float64   `json:"score" yaml:"score"`
+	Reasons   []string  `json:"reasons" yaml:"reasons"`
+	Status    string    `json:"status" yaml:"status"`
+	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type TopicWeaveRequest struct {

@@ -131,18 +131,43 @@ func (s *Store) Detail(ctx context.Context, id string) (models.TopicDetail, erro
 		return models.TopicDetail{}, err
 	}
 	document, _ := s.ReadDocument(ctx, topic.ID)
-	memberships := make([]models.TopicMembership, 0, len(topic.Members))
-	for _, thoughtID := range topic.Members {
-		membership := inferDocumentMembership(document, topic.ID, thoughtID)
-		if membership.CreatedAt.IsZero() {
-			membership.CreatedAt = topic.CreatedAt
-		}
-		if membership.UpdatedAt.IsZero() {
-			membership.UpdatedAt = topic.UpdatedAt
-		}
-		memberships = append(memberships, membership)
+	memberships, err := s.detailMemberships(topic, document)
+	if err != nil {
+		return models.TopicDetail{}, err
 	}
 	return models.TopicDetail{Topic: topic, Document: document, Members: memberships}, nil
+}
+
+func (s *Store) detailMemberships(topic models.Topic, document string) ([]models.TopicMembership, error) {
+	facts, err := s.readMemberships(topic)
+	if err != nil {
+		return nil, err
+	}
+	factByThought := map[string]models.TopicMembership{}
+	for _, membership := range facts {
+		factByThought[membership.ThoughtID] = membership
+	}
+	if len(topic.Members) == 0 && len(facts) > 0 {
+		return facts, nil
+	}
+	memberships := make([]models.TopicMembership, 0, len(topic.Members))
+	for _, thoughtID := range topic.Members {
+		membership, ok := factByThought[thoughtID]
+		if !ok {
+			membership = inferDocumentMembership(document, topic.ID, thoughtID)
+			if membership.CreatedAt.IsZero() {
+				membership.CreatedAt = topic.CreatedAt
+			}
+			if membership.UpdatedAt.IsZero() {
+				membership.UpdatedAt = topic.UpdatedAt
+			}
+		}
+		memberships = append(memberships, normalizeMembershipForRead(topic, thoughtID, membership))
+	}
+	sort.Slice(memberships, func(left, right int) bool {
+		return memberships[left].ThoughtID < memberships[right].ThoughtID
+	})
+	return memberships, nil
 }
 
 func inferDocumentMembership(document string, topicID string, thoughtID string) models.TopicMembership {
@@ -370,6 +395,10 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {
 	if contains(topic.Members, thought.ID) {
+		_, membershipChanged, err := s.upsertMembership(topic, thought.ID, membership, time.Now().UTC())
+		if err != nil {
+			return models.Topic{}, false, err
+		}
 		currentThought, currentContent, err := markdown.ReadThought(s.rootPath, thought.ID)
 		if err == nil {
 			thought = currentThought
@@ -378,11 +407,12 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 			return models.Topic{}, false, err
 		}
 		changed, err := s.updateThoughtTopicLink(topic, thought, content, true)
-		return topic, changed, err
+		return topic, changed || membershipChanged, err
 	}
 	topic.Members = append(topic.Members, thought.ID)
 	sort.Strings(topic.Members)
 	now := time.Now().UTC()
+	membership = normalizeMembership(topic, thought.ID, membership, now)
 	topic.MemberCount = len(topic.Members)
 	topic.LastActiveAt = &now
 	topic.UpdatedAt = now
@@ -399,6 +429,9 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 	document = updateTopicDocumentMembers(document, topic.Members)
 	topic.WordCount = countWords(document)
 	if err := s.writeDocument(topic, document); err != nil {
+		return models.Topic{}, false, err
+	}
+	if _, _, err := s.upsertMembership(topic, thought.ID, membership, now); err != nil {
 		return models.Topic{}, false, err
 	}
 	if err := s.writeTopic(topic); err != nil {
@@ -434,6 +467,7 @@ func (s *Store) RebuildWithMatcher(ctx context.Context, id string, matcher Match
 	document := initialDocument(topic)
 	matchedThoughts := map[string]models.Thought{}
 	matchedContents := map[string]models.ThoughtContent{}
+	matchedMemberships := map[string]models.TopicMembership{}
 	thoughtsRoot := filepath.Join(s.rootPath, "thoughts")
 	count := 0
 	err = filepath.WalkDir(thoughtsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -455,6 +489,7 @@ func (s *Store) RebuildWithMatcher(ctx context.Context, id string, matcher Match
 		topic.Members = append(topic.Members, thought.ID)
 		matchedThoughts[thought.ID] = thought
 		matchedContents[thought.ID] = content
+		matchedMemberships[thought.ID] = normalizeMembership(topic, thought.ID, membership, time.Now().UTC())
 		document = s.weaveDocument(ctx, topic, document, thought, content, membership)
 		count++
 		return nil
@@ -473,6 +508,14 @@ func (s *Store) RebuildWithMatcher(ctx context.Context, id string, matcher Match
 	topic.LastActiveAt = &now
 	topic.UpdatedAt = now
 	if err := s.writeDocument(topic, document); err != nil {
+		return models.Topic{}, 0, nil, err
+	}
+	for _, thoughtID := range topic.Members {
+		if _, _, err := s.upsertMembership(topic, thoughtID, matchedMemberships[thoughtID], now); err != nil {
+			return models.Topic{}, 0, nil, err
+		}
+	}
+	if err := s.removeStaleMemberships(topic, topic.Members); err != nil {
 		return models.Topic{}, 0, nil, err
 	}
 	if err := s.writeTopic(topic); err != nil {
@@ -550,6 +593,159 @@ func (s *Store) writeDocument(topic models.Topic, document string) error {
 	return os.Rename(tmp, path)
 }
 
+func (s *Store) upsertMembership(topic models.Topic, thoughtID string, membership models.TopicMembership, now time.Time) (models.TopicMembership, bool, error) {
+	next := normalizeMembership(topic, thoughtID, membership, now)
+	current, err := s.readMembership(topic, thoughtID)
+	if err == nil {
+		current = normalizeMembershipForRead(topic, thoughtID, current)
+		next.CreatedAt = current.CreatedAt
+		if sameMembershipFact(current, next) {
+			return current, false, nil
+		}
+		next.UpdatedAt = now
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return models.TopicMembership{}, false, err
+	}
+	if err := s.writeMembership(topic, next); err != nil {
+		return models.TopicMembership{}, false, err
+	}
+	return next, true, nil
+}
+
+func (s *Store) writeMembership(topic models.Topic, membership models.TopicMembership) error {
+	path, err := s.membershipPath(topic, membership.ThoughtID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(membership)
+	if err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(tmp)
+	}()
+	return os.Rename(tmp, path)
+}
+
+func (s *Store) readMembership(topic models.Topic, thoughtID string) (models.TopicMembership, error) {
+	path, err := s.membershipPath(topic, thoughtID)
+	if err != nil {
+		return models.TopicMembership{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return models.TopicMembership{}, err
+	}
+	var membership models.TopicMembership
+	if err := yaml.Unmarshal(raw, &membership); err != nil {
+		return models.TopicMembership{}, err
+	}
+	return normalizeMembershipForRead(topic, thoughtID, membership), nil
+}
+
+func (s *Store) readMemberships(topic models.Topic) ([]models.TopicMembership, error) {
+	dir, err := s.membershipDir(topic)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.TopicMembership{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	memberships := []models.TopicMembership{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		thoughtID := strings.TrimSuffix(entry.Name(), ".yaml")
+		membership, err := s.readMembership(topic, thoughtID)
+		if err != nil {
+			return nil, err
+		}
+		memberships = append(memberships, membership)
+	}
+	sort.Slice(memberships, func(left, right int) bool {
+		return memberships[left].ThoughtID < memberships[right].ThoughtID
+	})
+	return memberships, nil
+}
+
+func (s *Store) removeStaleMemberships(topic models.Topic, activeThoughtIDs []string) error {
+	dir, err := s.membershipDir(topic)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	active := map[string]struct{}{}
+	for _, thoughtID := range activeThoughtIDs {
+		active[thoughtID] = struct{}{}
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		thoughtID := strings.TrimSuffix(entry.Name(), ".yaml")
+		if _, ok := active[thoughtID]; ok {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) membershipDir(topic models.Topic) (string, error) {
+	slug := Slugify(firstNonEmpty(topic.Slug, topic.ID))
+	if slug == "" {
+		return "", errors.New("topic id is required")
+	}
+	path := filepath.Join(s.rootPath, "topics", slug, "memberships")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) membershipPath(topic models.Topic, thoughtID string) (string, error) {
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return "", errors.New("thought id is required")
+	}
+	if strings.ContainsAny(thoughtID, `/\`) {
+		return "", fmt.Errorf("invalid thought id %q", thoughtID)
+	}
+	dir, err := s.membershipDir(topic)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, thoughtID+".yaml")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func (s *Store) topicPath(id string) (string, error) {
 	slug := Slugify(id)
 	if slug == "" {
@@ -570,6 +766,64 @@ func normalizeRule(rule models.TopicRule) models.TopicRule {
 	rule.ManualInclude = normalizeList(rule.ManualInclude)
 	rule.ManualExclude = normalizeList(rule.ManualExclude)
 	return rule
+}
+
+func normalizeMembership(topic models.Topic, thoughtID string, membership models.TopicMembership, now time.Time) models.TopicMembership {
+	if topic.ID != "" {
+		membership.TopicID = topic.ID
+	}
+	if thoughtID != "" {
+		membership.ThoughtID = thoughtID
+	}
+	if membership.MatchType == "" {
+		membership.MatchType = "accepted"
+	}
+	if membership.Status == "" {
+		membership.Status = "accepted"
+	}
+	if membership.Score == 0 && (membership.MatchType == "accepted" || membership.MatchType == "manual") {
+		membership.Score = 1
+	}
+	if membership.CreatedAt.IsZero() {
+		membership.CreatedAt = now
+	}
+	if membership.UpdatedAt.IsZero() {
+		membership.UpdatedAt = membership.CreatedAt
+	}
+	return membership
+}
+
+func normalizeMembershipForRead(topic models.Topic, thoughtID string, membership models.TopicMembership) models.TopicMembership {
+	if topic.ID != "" {
+		membership.TopicID = topic.ID
+	}
+	if thoughtID != "" {
+		membership.ThoughtID = thoughtID
+	}
+	if membership.MatchType == "" {
+		membership.MatchType = "accepted"
+	}
+	if membership.Status == "" {
+		membership.Status = "accepted"
+	}
+	if membership.CreatedAt.IsZero() {
+		membership.CreatedAt = topic.CreatedAt
+	}
+	if membership.UpdatedAt.IsZero() {
+		membership.UpdatedAt = topic.UpdatedAt
+	}
+	return membership
+}
+
+func sameMembershipFact(left models.TopicMembership, right models.TopicMembership) bool {
+	if left.TopicID != right.TopicID ||
+		left.ThoughtID != right.ThoughtID ||
+		left.MatchType != right.MatchType ||
+		left.Score != right.Score ||
+		left.Status != right.Status {
+		return false
+	}
+	return sameStringSet(left.Reasons, right.Reasons)
 }
 
 func initialDocument(topic models.Topic) string {

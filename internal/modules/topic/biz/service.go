@@ -354,6 +354,7 @@ func gitTopicEvent(workspaceID string, topic models.Topic, reason string, extraP
 	paths := []string{
 		"topics/" + topic.Slug + "/topic.yaml",
 		"topics/" + topic.Slug + "/index.md",
+		"topics/" + topic.Slug + "/memberships",
 	}
 	paths = append(paths, extraPaths...)
 	return models.DomainEvent{
