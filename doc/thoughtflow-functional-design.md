@@ -638,7 +638,7 @@ payload
 }
 ```
 
-返回当前 `index.md`、候选新版文档、source link、membership、逐行 diff 和 proposal ID。该接口不写入专题主文档，但会将 pending proposal 写入 `topics/{slug}/approvals/{proposal_id}.yaml`。
+返回当前 `index.md`、候选新版文档、source link、membership、逐行 diff、结构化 patch 和 proposal ID。该接口不写入专题主文档，但会将 pending proposal 写入 `topics/{slug}/approvals/{proposal_id}.yaml`。
 
 `GET /api/topics/{id}/weave-proposals`
 
@@ -646,7 +646,7 @@ payload
 
 `GET /api/topics/{id}/weave-proposals/{proposal_id}`
 
-返回单个 weave proposal 的候选文档、diff、状态和确认记录。
+返回单个 weave proposal 的候选文档、diff、结构化 patch、状态和确认记录。
 
 `POST /api/topics/{id}/weave-accept`
 
@@ -660,7 +660,7 @@ payload
 }
 ```
 
-确认用户审阅后的候选文档，校验 source link 后原子写入 `topics/{slug}/index.md`，同步 membership 事实文件、Thought backlink，并将对应 proposal 标记为 `accepted`。
+确认用户审阅后的候选文档。当请求未修改候选文档时，服务端按 proposal 内的结构化 patch 校验 base hash、上下文行和 proposed hash 后原子写入 `topics/{slug}/index.md`；当前文档已经变化时返回冲突错误。用户编辑过候选文档时，服务端按完整文档写入路径处理，仍校验 source link。确认成功后同步 membership 事实文件、Thought backlink，并将对应 proposal 标记为 `accepted`。
 
 ### 8.4 Events
 

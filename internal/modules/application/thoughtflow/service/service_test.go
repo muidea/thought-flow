@@ -76,6 +76,9 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "renderDiff") {
 		t.Fatalf("expected diff renderer in embedded app script")
 	}
+	if !strings.Contains(res.Body.String(), "patch hunks") {
+		t.Fatalf("expected structured patch hunk indicator in embedded app script")
+	}
 }
 
 func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {

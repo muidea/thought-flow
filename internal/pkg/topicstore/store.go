@@ -546,6 +546,22 @@ func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topi
 	return proposal, nil
 }
 
+func (s *Store) ApplyMembershipPatch(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, patch models.TopicDocumentPatch) (models.Topic, bool, string, error) {
+	currentDocument, err := s.ReadDocument(ctx, topic.ID)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return models.Topic{}, false, "", err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		currentDocument = initialDocument(topic)
+	}
+	document, err := applyDocumentPatch(currentDocument, patch)
+	if err != nil {
+		return models.Topic{}, false, "", err
+	}
+	updatedTopic, changed, err := s.ApplyMembershipDocument(ctx, topic, thought, content, membership, document)
+	return updatedTopic, changed, document, err
+}
+
 func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string) (models.Topic, bool, error) {
 	if strings.TrimSpace(thought.ID) == "" {
 		return models.Topic{}, false, errors.New("thought id is required")
@@ -1055,6 +1071,84 @@ func normalizeWeaveProposal(topic models.Topic, proposal models.TopicWeavePropos
 		proposal.UpdatedAt = proposal.CreatedAt
 	}
 	return proposal
+}
+
+func applyDocumentPatch(currentDocument string, patch models.TopicDocumentPatch) (string, error) {
+	if len(patch.Hunks) == 0 {
+		return "", errors.New("patch hunks are required")
+	}
+	if patch.BaseHash != "" && models.ContentHash(strings.TrimRight(currentDocument, "\n")) != patch.BaseHash {
+		return "", errors.New("patch base document mismatch")
+	}
+	currentLines := splitPatchDocumentLines(currentDocument)
+	result := []string{}
+	cursor := 0
+	for _, hunk := range patch.Hunks {
+		baseCount, proposedCount := patchHunkCounts(hunk)
+		if baseCount != hunk.BaseCount || proposedCount != hunk.ProposedCount {
+			return "", errors.New("patch hunk count mismatch")
+		}
+		baseStart := hunk.BaseStart
+		if baseStart <= 0 {
+			baseStart = 1
+		}
+		start := baseStart - 1
+		if start < cursor || start > len(currentLines) {
+			return "", fmt.Errorf("patch hunk base_start %d is out of range", hunk.BaseStart)
+		}
+		result = append(result, currentLines[cursor:start]...)
+		cursor = start
+		for _, line := range hunk.Lines {
+			switch line.Op {
+			case "context":
+				if cursor >= len(currentLines) || currentLines[cursor] != line.Text {
+					return "", errors.New("patch context mismatch")
+				}
+				result = append(result, currentLines[cursor])
+				cursor++
+			case "remove":
+				if cursor >= len(currentLines) || currentLines[cursor] != line.Text {
+					return "", errors.New("patch remove mismatch")
+				}
+				cursor++
+			case "add":
+				result = append(result, line.Text)
+			default:
+				return "", fmt.Errorf("unsupported patch operation %q", line.Op)
+			}
+		}
+	}
+	result = append(result, currentLines[cursor:]...)
+	document := strings.Join(result, "\n")
+	if document != "" {
+		document += "\n"
+	}
+	if patch.ProposedHash != "" && models.ContentHash(strings.TrimRight(document, "\n")) != patch.ProposedHash {
+		return "", errors.New("patch proposed document hash mismatch")
+	}
+	return document, nil
+}
+
+func patchHunkCounts(hunk models.TopicDocumentPatchHunk) (int, int) {
+	baseCount := 0
+	proposedCount := 0
+	for _, line := range hunk.Lines {
+		if line.Op != "add" {
+			baseCount++
+		}
+		if line.Op != "remove" {
+			proposedCount++
+		}
+	}
+	return baseCount, proposedCount
+}
+
+func splitPatchDocumentLines(document string) []string {
+	document = strings.TrimRight(document, "\n")
+	if document == "" {
+		return []string{}
+	}
+	return strings.Split(document, "\n")
 }
 
 func sameMembershipFact(left models.TopicMembership, right models.TopicMembership) bool {

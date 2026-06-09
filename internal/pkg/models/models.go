@@ -407,6 +407,7 @@ type TopicWeaveProposal struct {
 	ProposedDocument string                  `json:"proposed_document"`
 	AcceptedDocument string                  `json:"accepted_document,omitempty" yaml:"accepted_document,omitempty"`
 	Diff             []TopicDocumentDiffLine `json:"diff"`
+	Patch            TopicDocumentPatch      `json:"patch" yaml:"patch"`
 	CreatedAt        time.Time               `json:"created_at"`
 	UpdatedAt        time.Time               `json:"updated_at" yaml:"updated_at"`
 	AcceptedAt       *time.Time              `json:"accepted_at,omitempty" yaml:"accepted_at,omitempty"`
@@ -415,6 +416,20 @@ type TopicWeaveProposal struct {
 type TopicDocumentDiffLine struct {
 	Op   string `json:"op"`
 	Text string `json:"text"`
+}
+
+type TopicDocumentPatch struct {
+	BaseHash     string                   `json:"base_hash" yaml:"base_hash"`
+	ProposedHash string                   `json:"proposed_hash" yaml:"proposed_hash"`
+	Hunks        []TopicDocumentPatchHunk `json:"hunks" yaml:"hunks"`
+}
+
+type TopicDocumentPatchHunk struct {
+	BaseStart     int                     `json:"base_start" yaml:"base_start"`
+	BaseCount     int                     `json:"base_count" yaml:"base_count"`
+	ProposedStart int                     `json:"proposed_start" yaml:"proposed_start"`
+	ProposedCount int                     `json:"proposed_count" yaml:"proposed_count"`
+	Lines         []TopicDocumentDiffLine `json:"lines" yaml:"lines"`
 }
 
 type TopicCreateRequest struct {

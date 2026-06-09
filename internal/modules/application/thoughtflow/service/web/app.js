@@ -177,11 +177,13 @@ function renderWeaveProposals() {
     .map((proposal) => {
       const active = state.weaveProposal?.id === proposal.id ? " active" : "";
       const status = proposal.status || "pending";
+      const hunkCount = proposal.patch?.hunks?.length || 0;
       return `
         <article class="approval-item${active}" data-proposal-id="${escapeHTML(proposal.id)}">
           <strong>${escapeHTML(proposal.thought_id || proposal.id)}</strong>
           <div class="topic-meta">
             <span class="pill">${escapeHTML(status)}</span>
+            <span>${hunkCount} patch hunks</span>
             <span>${escapeHTML(fmtDate(proposal.updated_at || proposal.created_at))}</span>
           </div>
         </article>

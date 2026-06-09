@@ -361,6 +361,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `proposed_document` | string | 候选专题文档 |
 | `accepted_document` | string | 用户最终确认写入的文档 |
 | `diff` | []TopicDocumentDiffLine | 逐行差异 |
+| `patch` | TopicDocumentPatch | 可校验并应用的结构化补丁，包含 base/proposed hash 和 hunk 行操作 |
 | `created_at` | time | 创建时间 |
 | `updated_at` | time | 更新时间 |
 | `accepted_at` | time | 确认时间 |
@@ -368,8 +369,9 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 功能定义：
 
 1. `weave-preview` 创建 pending proposal，不直接改写 `index.md`。
-2. 用户确认后将 `accepted_document` 写入 `index.md`，并把 proposal 标记为 `accepted`。
-3. proposal 文件进入 Git，作为 topic weave 审批队列和历史。
+2. 用户确认未编辑候选文档时，按结构化 patch 校验 base hash 和上下文后写入 `index.md`；若当前文档已变化则拒绝应用。
+3. 用户编辑候选文档时，将完整 `accepted_document` 写入 `index.md`，仍校验 source link。
+4. proposal 文件进入 Git，作为 topic weave 审批队列和历史。
 
 ### 4.6 SynthesisDraft
 

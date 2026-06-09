@@ -256,6 +256,9 @@ func TestServicePreviewAndAcceptWeave(t *testing.T) {
 	if !hasDiffOp(proposal.Diff, "add") {
 		t.Fatalf("expected added diff lines, got %#v", proposal.Diff)
 	}
+	if len(proposal.Patch.Hunks) == 0 || proposal.Patch.BaseHash == "" || proposal.Patch.ProposedHash == "" {
+		t.Fatalf("expected structured patch in proposal, got %#v", proposal.Patch)
+	}
 	proposals, err := service.ListWeaveProposals(ctx, topic.ID)
 	if err != nil {
 		t.Fatalf("ListWeaveProposals() error = %v", err)
@@ -290,6 +293,104 @@ func TestServicePreviewAndAcceptWeave(t *testing.T) {
 	}
 	if !strings.Contains(accepted.AcceptedDocument, "Accepted edit.") {
 		t.Fatalf("accepted document = %q", accepted.AcceptedDocument)
+	}
+}
+
+func TestServiceAcceptWeaveAppliesStructuredPatch(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Patch Weave",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	thought := serviceTestThought("20260609-143010-patch", "Patch note")
+	content := models.ThoughtContent{Original: "DuckDB patch apply should preserve source links."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	proposal, err := service.PreviewWeave(ctx, topic.ID, thought.ID)
+	if err != nil {
+		t.Fatalf("PreviewWeave() error = %v", err)
+	}
+
+	detail, err := service.AcceptWeave(ctx, topic.ID, models.TopicWeaveAcceptRequest{ProposalID: proposal.ID})
+	if err != nil {
+		t.Fatalf("AcceptWeave() error = %v", err)
+	}
+	if detail.Topic.MemberCount != 1 || !strings.Contains(detail.Document, proposal.SourceLink) {
+		t.Fatalf("detail = %#v document=\n%s", detail.Topic, detail.Document)
+	}
+	accepted, err := service.GetWeaveProposal(ctx, topic.ID, proposal.ID)
+	if err != nil {
+		t.Fatalf("GetWeaveProposal() error = %v", err)
+	}
+	if accepted.Status != "accepted" || strings.TrimSpace(accepted.AcceptedDocument) != strings.TrimSpace(proposal.ProposedDocument) {
+		t.Fatalf("accepted proposal = %#v", accepted)
+	}
+}
+
+func TestServiceAcceptWeaveRejectsStaleStructuredPatch(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	store := topicstore.New(root)
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil)
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Patch Conflict",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	thought := serviceTestThought("20260609-143010-stale", "Stale patch note")
+	content := models.ThoughtContent{Original: "DuckDB stale patch should fail."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	proposal, err := service.PreviewWeave(ctx, topic.ID, thought.ID)
+	if err != nil {
+		t.Fatalf("PreviewWeave() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "topics", topic.Slug, "index.md"), []byte(proposal.BaseDocument+"\nConcurrent edit.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(index.md) error = %v", err)
+	}
+
+	_, err = service.AcceptWeave(ctx, topic.ID, models.TopicWeaveAcceptRequest{ProposalID: proposal.ID})
+	if err == nil || !strings.Contains(err.Error(), "patch base document mismatch") {
+		t.Fatalf("expected stale patch mismatch, got %v", err)
 	}
 }
 

@@ -169,10 +169,13 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
 18. topic weave 支持人工确认主链路：
    - `weave-preview` 生成候选专题文档、逐行 diff 和 proposal ID，不写入专题主文档。
    - pending proposal 持久化为 `topics/{slug}/approvals/{proposal_id}.yaml`，作为可进入 Git 的审批队列。
+   - proposal 包含结构化 patch，记录 base/proposed hash 和 hunk 行操作。
    - 新增 `GET /api/topics/{id}/weave-proposals` 和 `GET /api/topics/{id}/weave-proposals/{proposal_id}`。
-   - `weave-accept` 支持 `proposal_id`，校验 source link 后写入用户确认的文档，并将 proposal 标记为 `accepted`。
+   - `weave-accept` 支持 `proposal_id`，未编辑候选文档时通过结构化 patch 校验并应用；当前文档变更时拒绝 stale patch。
+   - 用户编辑候选文档时保留完整文档确认路径，继续校验 source link。
+   - 确认成功后将 proposal 标记为 `accepted`。
    - 确认后同步 membership 事实文件、Thought backlink、`topic.updated` 和 git commit 请求。
-   - 嵌入式 UI 增加 Review tab，用于查看审批队列/历史、diff、编辑候选文档并确认写入。
+   - 嵌入式 UI 增加 Review tab，用于查看审批队列/历史、patch hunk、diff、编辑候选文档并确认写入。
 
 验证：
 
@@ -203,7 +206,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - system AI/workspace 状态摘要
    - topic rules editor，支持编辑 keywords/tags/manual include/manual exclude/semantic/outline/auto_weave
    - topic document 和 thought preview 的基础 Markdown 渲染
-   - topic weave review，支持审批队列/历史、diff 查看、候选文档编辑和确认写入
+   - topic weave review，支持审批队列/历史、patch hunk、diff 查看、候选文档编辑和确认写入
 4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 5. 嵌入资产服务单元测试。
 
@@ -223,8 +226,7 @@ M2：
 M3：
 
 1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
-2. topic weave 已支持独立持久化审批队列和审批历史，但尚未实现结构化 patch apply 引擎。
-3. synthesis 当前已支持独立本地草稿仓库和保存历史，但尚未接入云端模型合稿。
+2. synthesis 当前已支持独立本地草稿仓库和保存历史，但尚未接入云端模型合稿。
 
 UI：
 

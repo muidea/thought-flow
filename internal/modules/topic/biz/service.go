@@ -107,6 +107,7 @@ func (s *Service) PreviewWeave(ctx context.Context, topicID string, thoughtID st
 		BaseDocument:     baseDocument,
 		ProposedDocument: proposedDocument,
 		Diff:             documentLineDiff(baseDocument, proposedDocument),
+		Patch:            documentPatch(baseDocument, proposedDocument),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	})
@@ -126,8 +127,11 @@ func (s *Service) GetWeaveProposal(ctx context.Context, topicID string, proposal
 }
 
 func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
+	var proposal models.TopicWeaveProposal
+	usePatch := false
 	if strings.TrimSpace(req.ProposalID) != "" {
-		proposal, err := s.store.GetWeaveProposal(ctx, topicID, req.ProposalID)
+		var err error
+		proposal, err = s.store.GetWeaveProposal(ctx, topicID, req.ProposalID)
 		if err != nil {
 			return models.TopicDetail{}, err
 		}
@@ -143,17 +147,28 @@ func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.To
 		if strings.TrimSpace(req.Document) == "" {
 			req.Document = proposal.ProposedDocument
 		}
+		usePatch = len(proposal.Patch.Hunks) > 0 && strings.TrimSpace(req.Document) == strings.TrimSpace(proposal.ProposedDocument)
 	}
 	topic, thought, content, membership, err := s.weaveInput(ctx, topicID, req.ThoughtID)
 	if err != nil {
 		return models.TopicDetail{}, err
 	}
-	updatedTopic, changed, err := s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document)
-	if err != nil {
-		return models.TopicDetail{}, err
+	updatedTopic := models.Topic{}
+	changed := false
+	acceptedDocument := req.Document
+	if usePatch {
+		updatedTopic, changed, acceptedDocument, err = s.store.ApplyMembershipPatch(ctx, topic, thought, content, membership, proposal.Patch)
+		if err != nil {
+			return models.TopicDetail{}, err
+		}
+	} else {
+		updatedTopic, changed, err = s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document)
+		if err != nil {
+			return models.TopicDetail{}, err
+		}
 	}
 	if strings.TrimSpace(req.ProposalID) != "" {
-		if _, err := s.store.MarkWeaveProposalAccepted(ctx, updatedTopic, req.ProposalID, req.Document); err != nil {
+		if _, err := s.store.MarkWeaveProposalAccepted(ctx, updatedTopic, req.ProposalID, acceptedDocument); err != nil {
 			return models.TopicDetail{}, err
 		}
 		changed = true
@@ -546,6 +561,34 @@ func documentLineDiff(baseDocument string, proposedDocument string) []models.Top
 		right++
 	}
 	return diff
+}
+
+func documentPatch(baseDocument string, proposedDocument string) models.TopicDocumentPatch {
+	diff := documentLineDiff(baseDocument, proposedDocument)
+	if len(diff) == 0 {
+		return models.TopicDocumentPatch{}
+	}
+	baseCount := 0
+	proposedCount := 0
+	for _, line := range diff {
+		if line.Op != "add" {
+			baseCount++
+		}
+		if line.Op != "remove" {
+			proposedCount++
+		}
+	}
+	return models.TopicDocumentPatch{
+		BaseHash:     models.ContentHash(strings.TrimRight(baseDocument, "\n")),
+		ProposedHash: models.ContentHash(strings.TrimRight(proposedDocument, "\n")),
+		Hunks: []models.TopicDocumentPatchHunk{{
+			BaseStart:     1,
+			BaseCount:     baseCount,
+			ProposedStart: 1,
+			ProposedCount: proposedCount,
+			Lines:         diff,
+		}},
+	}
 }
 
 func splitDocumentLines(document string) []string {

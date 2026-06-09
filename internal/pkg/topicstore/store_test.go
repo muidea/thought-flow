@@ -261,6 +261,7 @@ func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
 		BaseDocument:     baseDocument,
 		ProposedDocument: proposedDocument,
 		Diff:             []models.TopicDocumentDiffLine{{Op: "add", Text: "added"}},
+		Patch:            testDocumentPatch(baseDocument, proposedDocument),
 	})
 	if err != nil {
 		t.Fatalf("SaveWeaveProposal() error = %v", err)
@@ -283,8 +284,18 @@ func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
 	if len(proposals) != 1 || proposals[0].ID != proposal.ID {
 		t.Fatalf("proposals = %#v", proposals)
 	}
+	patchUpdated, patchChanged, patchDocument, err := store.ApplyMembershipPatch(ctx, topic, thought, content, membership, proposal.Patch)
+	if err != nil {
+		t.Fatalf("ApplyMembershipPatch() error = %v", err)
+	}
+	if !patchChanged || !strings.Contains(patchDocument, sourceLink) {
+		t.Fatalf("patch result changed=%v document=\n%s", patchChanged, patchDocument)
+	}
+	if _, _, _, err := store.ApplyMembershipPatch(ctx, patchUpdated, thought, content, membership, proposal.Patch); err == nil {
+		t.Fatalf("expected stale patch to fail after topic document changed")
+	}
 	confirmedDocument := proposedDocument + "\n\nConfirmed edit.\n"
-	updated, changed, err := store.ApplyMembershipDocument(ctx, topic, thought, content, membership, confirmedDocument)
+	updated, changed, err := store.ApplyMembershipDocument(ctx, patchUpdated, thought, content, membership, confirmedDocument)
 	if err != nil {
 		t.Fatalf("ApplyMembershipDocument() error = %v", err)
 	}
@@ -320,6 +331,36 @@ func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
 	}
 	if !strings.Contains(accepted.AcceptedDocument, "Confirmed edit.") {
 		t.Fatalf("accepted document = %q", accepted.AcceptedDocument)
+	}
+}
+
+func TestApplyDocumentPatchRejectsContextMismatch(t *testing.T) {
+	base := "one\ntwo\n"
+	proposed := "one\nthree\n"
+	patch := models.TopicDocumentPatch{
+		BaseHash:     models.ContentHash(strings.TrimRight(base, "\n")),
+		ProposedHash: models.ContentHash(strings.TrimRight(proposed, "\n")),
+		Hunks: []models.TopicDocumentPatchHunk{{
+			BaseStart:     1,
+			BaseCount:     2,
+			ProposedStart: 1,
+			ProposedCount: 2,
+			Lines: []models.TopicDocumentDiffLine{
+				{Op: "context", Text: "one"},
+				{Op: "remove", Text: "two"},
+				{Op: "add", Text: "three"},
+			},
+		}},
+	}
+	applied, err := applyDocumentPatch(base, patch)
+	if err != nil {
+		t.Fatalf("applyDocumentPatch() error = %v", err)
+	}
+	if strings.TrimSpace(applied) != strings.TrimSpace(proposed) {
+		t.Fatalf("applied = %q", applied)
+	}
+	if _, err := applyDocumentPatch("one\nchanged\n", patch); err == nil {
+		t.Fatalf("expected context mismatch")
 	}
 }
 
@@ -368,6 +409,84 @@ func containsString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func testDocumentPatch(baseDocument string, proposedDocument string) models.TopicDocumentPatch {
+	baseLines := testDocumentLines(baseDocument)
+	proposedLines := testDocumentLines(proposedDocument)
+	lines := testDocumentDiff(baseLines, proposedLines)
+	baseCount := 0
+	proposedCount := 0
+	for _, line := range lines {
+		if line.Op != "add" {
+			baseCount++
+		}
+		if line.Op != "remove" {
+			proposedCount++
+		}
+	}
+	return models.TopicDocumentPatch{
+		BaseHash:     models.ContentHash(strings.TrimRight(baseDocument, "\n")),
+		ProposedHash: models.ContentHash(strings.TrimRight(proposedDocument, "\n")),
+		Hunks: []models.TopicDocumentPatchHunk{{
+			BaseStart:     1,
+			BaseCount:     baseCount,
+			ProposedStart: 1,
+			ProposedCount: proposedCount,
+			Lines:         lines,
+		}},
+	}
+}
+
+func testDocumentDiff(baseLines []string, proposedLines []string) []models.TopicDocumentDiffLine {
+	lcs := make([][]int, len(baseLines)+1)
+	for idx := range lcs {
+		lcs[idx] = make([]int, len(proposedLines)+1)
+	}
+	for left := len(baseLines) - 1; left >= 0; left-- {
+		for right := len(proposedLines) - 1; right >= 0; right-- {
+			if baseLines[left] == proposedLines[right] {
+				lcs[left][right] = lcs[left+1][right+1] + 1
+			} else if lcs[left+1][right] >= lcs[left][right+1] {
+				lcs[left][right] = lcs[left+1][right]
+			} else {
+				lcs[left][right] = lcs[left][right+1]
+			}
+		}
+	}
+	lines := []models.TopicDocumentDiffLine{}
+	left, right := 0, 0
+	for left < len(baseLines) && right < len(proposedLines) {
+		switch {
+		case baseLines[left] == proposedLines[right]:
+			lines = append(lines, models.TopicDocumentDiffLine{Op: "context", Text: baseLines[left]})
+			left++
+			right++
+		case lcs[left+1][right] >= lcs[left][right+1]:
+			lines = append(lines, models.TopicDocumentDiffLine{Op: "remove", Text: baseLines[left]})
+			left++
+		default:
+			lines = append(lines, models.TopicDocumentDiffLine{Op: "add", Text: proposedLines[right]})
+			right++
+		}
+	}
+	for left < len(baseLines) {
+		lines = append(lines, models.TopicDocumentDiffLine{Op: "remove", Text: baseLines[left]})
+		left++
+	}
+	for right < len(proposedLines) {
+		lines = append(lines, models.TopicDocumentDiffLine{Op: "add", Text: proposedLines[right]})
+		right++
+	}
+	return lines
+}
+
+func testDocumentLines(document string) []string {
+	document = strings.TrimRight(document, "\n")
+	if document == "" {
+		return []string{}
+	}
+	return strings.Split(document, "\n")
 }
 
 type fakeWeaver struct{}
