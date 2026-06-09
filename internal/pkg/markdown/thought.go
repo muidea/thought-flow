@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,8 +35,12 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
+	unknownFrontMatter, err := readUnknownFrontMatter(targetPath)
+	if err != nil {
+		return err
+	}
 	tmpPath := fmt.Sprintf("%s.%d.tmp", targetPath, time.Now().UnixNano())
-	if err := os.WriteFile(tmpPath, RenderThought(thought, content), 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, renderThought(thought, content, unknownFrontMatter), 0o644); err != nil {
 		return err
 	}
 	defer func() {
@@ -61,6 +66,10 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 }
 
 func RenderThought(thought models.Thought, content models.ThoughtContent) []byte {
+	return renderThought(thought, content, nil)
+}
+
+func renderThought(thought models.Thought, content models.ThoughtContent, unknownFrontMatter []string) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("---\n")
 	writeScalar(&buf, "id", thought.ID)
@@ -82,6 +91,7 @@ func RenderThought(thought models.Thought, content models.ThoughtContent) []byte
 	writeScalar(&buf, "refine_status", thought.RefineStatus)
 	writeScalar(&buf, "index_status", thought.IndexStatus)
 	writeScalar(&buf, "topic_status", thought.TopicStatus)
+	writeUnknownFrontMatter(&buf, unknownFrontMatter)
 	buf.WriteString("errors: []\n")
 	buf.WriteString("---\n\n")
 	writeSection(&buf, "Original", content.Original)
@@ -91,14 +101,27 @@ func RenderThought(thought models.Thought, content models.ThoughtContent) []byte
 	return buf.Bytes()
 }
 
+func readUnknownFrontMatter(targetPath string) ([]string, error) {
+	raw, err := os.ReadFile(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return unknownFrontMatterLines(raw), nil
+}
+
 func ParseThought(raw []byte) (models.Thought, models.ThoughtContent) {
 	text := string(raw)
 	thought := models.Thought{}
-	if strings.HasPrefix(text, "---\n") {
-		if end := strings.Index(text[4:], "\n---"); end >= 0 {
-			frontMatter := text[4 : 4+end]
-			parseFrontMatter(frontMatter, &thought)
-			text = strings.TrimPrefix(text[4+end+len("\n---"):], "\n")
+	if frontMatter, ok := frontMatterText(raw); ok {
+		parseFrontMatter(frontMatter, &thought)
+		normalized := strings.ReplaceAll(text, "\r\n", "\n")
+		if strings.HasPrefix(normalized, "---\n") {
+			if end := strings.Index(normalized[4:], "\n---"); end >= 0 {
+				text = strings.TrimPrefix(normalized[4+end+len("\n---"):], "\n")
+			}
 		}
 	}
 	content := models.ThoughtContent{
@@ -134,6 +157,101 @@ func writeList(buf *bytes.Buffer, key string, values []string) {
 	_, _ = fmt.Fprintf(buf, "%s:\n", key)
 	for _, value := range copied {
 		_, _ = fmt.Fprintf(buf, "  - %q\n", value)
+	}
+}
+
+func writeUnknownFrontMatter(buf *bytes.Buffer, lines []string) {
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(buf, strings.TrimRight(line, "\r"))
+	}
+}
+
+func unknownFrontMatterLines(raw []byte) []string {
+	frontMatter, ok := frontMatterText(raw)
+	if !ok {
+		return nil
+	}
+	lines := strings.Split(frontMatter, "\n")
+	ret := []string{}
+	for idx := 0; idx < len(lines); {
+		line := strings.TrimRight(lines[idx], "\r")
+		key, hasKey := frontMatterKey(line)
+		if !hasKey {
+			idx++
+			continue
+		}
+		blockEnd := idx + 1
+		for blockEnd < len(lines) {
+			if _, nextHasKey := frontMatterKey(strings.TrimRight(lines[blockEnd], "\r")); nextHasKey {
+				break
+			}
+			blockEnd++
+		}
+		if !knownThoughtFrontMatterKey(key) {
+			for _, preserved := range lines[idx:blockEnd] {
+				ret = append(ret, strings.TrimRight(preserved, "\r"))
+			}
+		}
+		idx = blockEnd
+	}
+	return ret
+}
+
+func frontMatterText(raw []byte) (string, bool) {
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		return "", false
+	}
+	end := strings.Index(text[4:], "\n---")
+	if end < 0 {
+		return "", false
+	}
+	return text[4 : 4+end], true
+}
+
+func frontMatterKey(line string) (string, bool) {
+	if strings.TrimSpace(line) == "" {
+		return "", false
+	}
+	if line[0] == ' ' || line[0] == '\t' || strings.HasPrefix(strings.TrimSpace(line), "-") {
+		return "", false
+	}
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	key := strings.TrimSpace(parts[0])
+	if key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+func knownThoughtFrontMatterKey(key string) bool {
+	switch key {
+	case "id",
+		"type",
+		"source",
+		"user_title",
+		"extracted_title",
+		"url",
+		"path",
+		"created_at",
+		"updated_at",
+		"content_hash",
+		"user_tags",
+		"ai_tags",
+		"topic_ids",
+		"summary",
+		"key_points",
+		"capture_status",
+		"refine_status",
+		"index_status",
+		"topic_status",
+		"errors":
+		return true
+	default:
+		return false
 	}
 }
 

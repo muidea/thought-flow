@@ -28,7 +28,8 @@
    - `attachments/`
    - `.thoughtflow/jobs`
    - `.thoughtflow/logs`
-6. 原子笔记 Markdown 原子写入和读取。
+6. 原子笔记 Markdown 原子写入和读取：
+   - 写入已有 thought 文件时保留未知 front matter 字段块，保证未来字段和外部工具字段向后兼容。
 7. `Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitCommitRecord` 等 M1 模型。
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。
