@@ -4,6 +4,7 @@ const state = {
   selectedThoughts: new Set(),
   lastResults: [],
   synthesisDraft: null,
+  synthesisDrafts: [],
   activeTopicDetail: null,
   weaveProposal: null,
   weaveProposals: [],
@@ -189,6 +190,34 @@ function renderWeaveProposals() {
     .join("");
   list.querySelectorAll("[data-proposal-id]").forEach((item) => {
     item.addEventListener("click", () => loadWeaveProposal(item.dataset.proposalId).catch((error) => toast(error.message)));
+  });
+}
+
+function renderSynthesisDrafts() {
+  const list = $("#synthesis-drafts");
+  if (!list) return;
+  if (!state.synthesisDrafts || state.synthesisDrafts.length === 0) {
+    list.innerHTML = '<div class="topic-meta">No synthesis drafts.</div>';
+    return;
+  }
+  list.innerHTML = state.synthesisDrafts
+    .map((draft) => {
+      const active = state.synthesisDraft?.id === draft.id ? " active" : "";
+      const status = draft.status || "draft";
+      return `
+        <article class="approval-item${active}" data-synthesis-id="${escapeHTML(draft.id)}">
+          <strong>${escapeHTML(draft.goal || draft.id)}</strong>
+          <div class="topic-meta">
+            <span class="pill">${escapeHTML(status)}</span>
+            <span>${escapeHTML(draft.format || "summary")}</span>
+            <span>${escapeHTML(fmtDate(draft.updated_at || draft.created_at))}</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  list.querySelectorAll("[data-synthesis-id]").forEach((item) => {
+    item.addEventListener("click", () => loadSynthesisDraft(item.dataset.synthesisId).catch((error) => toast(error.message)));
   });
 }
 
@@ -499,7 +528,25 @@ async function createSynthesis(event) {
   });
   state.synthesisDraft = draft;
   $("#synthesis-output").value = renderSynthesisDraft(draft);
-  $("#save-synthesis").disabled = false;
+  $("#save-synthesis").disabled = (draft.status || "draft") !== "draft";
+  await loadSynthesisDrafts();
+  activateTab("synthesis");
+}
+
+async function loadSynthesisDrafts() {
+  state.synthesisDrafts = await api("/api/synthesis");
+  renderSynthesisDrafts();
+}
+
+async function loadSynthesisDraft(draftId) {
+  if (!draftId) return;
+  const draft = await api(`/api/synthesis/${encodeURIComponent(draftId)}`);
+  state.synthesisDraft = draft;
+  $("#synthesis-goal").value = draft.goal || "";
+  $("#synthesis-format").value = draft.format || "summary";
+  $("#synthesis-output").value = renderSynthesisDraft(draft);
+  $("#save-synthesis").disabled = (draft.status || "draft") !== "draft";
+  renderSynthesisDrafts();
   activateTab("synthesis");
 }
 
@@ -563,8 +610,10 @@ async function acceptWeave() {
 
 function renderSynthesisDraft(draft) {
   const links = (draft.source_links || []).filter(Boolean);
-  if (links.length === 0) return draft.content || "";
-  return `${draft.content || ""}\n\n### Sources\n\n${links.map((link) => `- [[${link}]]`).join("\n")}`;
+  let content = draft.content || "";
+  const missing = links.filter((link) => !content.includes(link));
+  if (missing.length === 0) return content;
+  return `${content}\n\n### Sources\n\n${missing.map((link) => `- [[${link}]]`).join("\n")}`;
 }
 
 async function saveSynthesis() {
@@ -592,6 +641,7 @@ async function saveSynthesis() {
   state.selectedThoughts.clear();
   $("#save-synthesis").disabled = true;
   state.synthesisDraft = null;
+  await loadSynthesisDrafts();
   window.setTimeout(() => runSearch().catch((error) => toast(error.message)), 1000);
 }
 
@@ -676,6 +726,7 @@ async function boot() {
   bind();
   await loadStatus();
   await loadTopics();
+  await loadSynthesisDrafts();
   await runSearch();
   connectEvents();
 }

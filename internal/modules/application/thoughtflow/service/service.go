@@ -26,6 +26,7 @@ import (
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/synthesisstore"
 )
 
 //go:embed web/*
@@ -42,6 +43,7 @@ type Service struct {
 	jobs           *jobstore.Store
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
+	synthesisStore *synthesisstore.Store
 }
 
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
@@ -54,6 +56,7 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		jobs:           jobs,
 		stream:         stream,
 		workspace:      workspace,
+		synthesisStore: newSynthesisStore(workspace),
 	}
 }
 
@@ -67,6 +70,8 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
 	s.registry.AddHandler("/api/synthesis/save", engine.POST, s.handleSaveSynthesis)
+	s.registry.AddHandler("/api/synthesis/:id", engine.GET, s.handleGetSynthesisDraft)
+	s.registry.AddHandler("/api/synthesis", engine.GET, s.handleListSynthesisDrafts)
 	s.registry.AddHandler("/api/synthesis", engine.POST, s.handleSynthesis)
 	s.registry.AddHandler("/api/topics", engine.GET, s.handleListTopics)
 	s.registry.AddHandler("/api/topics", engine.POST, s.handleCreateTopic)
@@ -220,6 +225,47 @@ func (s *Service) handleSynthesis(ctx context.Context, res http.ResponseWriter, 
 		SourceLinks: sourceLinks,
 		Model:       "local-rule",
 		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	if store := s.getSynthesisStore(); store != nil {
+		draft, err = store.SaveDraft(ctx, draft)
+		if err != nil {
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.draft_failed", err.Error())
+			return
+		}
+	}
+	writeJSON(res, req, http.StatusOK, draft)
+}
+
+func (s *Service) handleListSynthesisDrafts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	store := s.getSynthesisStore()
+	if store == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.store_unavailable", "synthesis draft store is unavailable")
+		return
+	}
+	drafts, err := store.ListDrafts(ctx)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.list_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, drafts)
+}
+
+func (s *Service) handleGetSynthesisDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	draftID := pathID(req.URL.Path, "/api/synthesis/")
+	if draftID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "draft id is required")
+		return
+	}
+	store := s.getSynthesisStore()
+	if store == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.store_unavailable", "synthesis draft store is unavailable")
+		return
+	}
+	draft, err := store.GetDraft(ctx, draftID)
+	if err != nil {
+		writeError(res, req, http.StatusNotFound, "thoughtflow.synthesis.draft_not_found", err.Error())
+		return
 	}
 	writeJSON(res, req, http.StatusOK, draft)
 }
@@ -229,6 +275,26 @@ func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWrit
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_json", err.Error())
 		return
+	}
+	store := s.getSynthesisStore()
+	if store != nil && strings.TrimSpace(request.DraftID) != "" {
+		draft, err := store.GetDraft(ctx, request.DraftID)
+		if err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_not_found", err.Error())
+			return
+		}
+		if len(request.ThoughtIDs) == 0 {
+			request.ThoughtIDs = draft.ThoughtIDs
+		}
+		if strings.TrimSpace(request.Goal) == "" {
+			request.Goal = draft.Goal
+		}
+		if strings.TrimSpace(request.Format) == "" {
+			request.Format = draft.Format
+		}
+		if strings.TrimSpace(request.Content) == "" {
+			request.Content = draft.Content
+		}
 	}
 	if len(request.ThoughtIDs) == 0 {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "thought_ids is required")
@@ -261,11 +327,32 @@ func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWrit
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.save_failed", err.Error())
 		return
 	}
+	if store != nil && strings.TrimSpace(request.DraftID) != "" {
+		if _, err := store.MarkSaved(ctx, request.DraftID, content, result.Thought); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_save_failed", err.Error())
+			return
+		}
+	}
 	writeJSON(res, req, http.StatusAccepted, models.SynthesisSaveResult{
 		Thought:     result.Thought,
 		Jobs:        result.Jobs,
 		SourceLinks: sourceLinks,
 	})
+}
+
+func (s *Service) getSynthesisStore() *synthesisstore.Store {
+	if s.synthesisStore != nil {
+		return s.synthesisStore
+	}
+	s.synthesisStore = newSynthesisStore(s.workspace)
+	return s.synthesisStore
+}
+
+func newSynthesisStore(workspace *models.Workspace) *synthesisstore.Store {
+	if workspace == nil || strings.TrimSpace(workspace.RootPath) == "" {
+		return nil
+	}
+	return synthesisstore.New(workspace.RootPath)
 }
 
 func (s *Service) synthesisSources(ctx context.Context, thoughtIDs []string) ([]models.ThoughtSnapshot, []string, error) {

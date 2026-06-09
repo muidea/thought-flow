@@ -39,7 +39,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `TopicWeaveProposal` | 专题文档候选变更和审批历史 | topic | `topics/{slug}/approvals/{proposal_id}.yaml` |
 | `SearchIndex` | 关键词和语义索引 | search | DuckDB |
 | `SearchResult` | 检索结果视图 | search | 运行态响应 |
-| `SynthesisDraft` | 即席合稿草稿 | refiner/application | 运行态，保存后转 Thought |
+| `SynthesisDraft` | 即席合稿草稿和保存历史 | refiner/application | `synthesis/drafts/{draft_id}.yaml`，保存后转 Thought |
 | `Job` | 后台任务及状态 | 所属任务运行单元 | `.thoughtflow/jobs` + DuckDB |
 | `DomainEvent` | 运行单元协同事件 | application/EventHub | EventHub + 可选 offset |
 | `GitChangeSet` | 待提交文件集合 | git-sync | 运行态队列 |
@@ -373,7 +373,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 ### 4.6 SynthesisDraft
 
-`SynthesisDraft` 是用户基于搜索结果生成的临时合稿。
+`SynthesisDraft` 是用户基于搜索结果生成的本地合稿草稿。
 
 字段：
 
@@ -386,13 +386,19 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `content` | string | AI 生成内容 |
 | `source_links` | []string | 原子笔记链接 |
 | `model` | string | 使用模型 |
+| `status` | enum | `draft`、`saved` |
+| `saved_thought_id` | string | 保存后生成的 Thought ID |
+| `history` | []SynthesisDraftHistory | 草稿创建和保存历史 |
 | `created_at` | time | 创建时间 |
+| `updated_at` | time | 更新时间 |
+| `saved_at` | time | 保存时间 |
 
 功能定义：
 
 1. 从选中 Thought 生成摘要或大纲。
-2. 默认作为临时结果返回。
+2. 默认写入 `synthesis/drafts/{draft_id}.yaml`，作为独立草稿仓库。
 3. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
+4. 保存后将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
 
 ## 5. 运行任务模型
 

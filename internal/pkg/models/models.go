@@ -457,14 +457,26 @@ type SynthesisSaveRequest struct {
 }
 
 type SynthesisDraft struct {
-	ID          string    `json:"id"`
-	ThoughtIDs  []string  `json:"thought_ids"`
-	Goal        string    `json:"goal"`
-	Format      string    `json:"format"`
-	Content     string    `json:"content"`
-	SourceLinks []string  `json:"source_links"`
-	Model       string    `json:"model"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID             string                  `json:"id" yaml:"id"`
+	ThoughtIDs     []string                `json:"thought_ids" yaml:"thought_ids"`
+	Goal           string                  `json:"goal" yaml:"goal"`
+	Format         string                  `json:"format" yaml:"format"`
+	Content        string                  `json:"content" yaml:"content"`
+	SourceLinks    []string                `json:"source_links" yaml:"source_links"`
+	Model          string                  `json:"model" yaml:"model"`
+	Status         string                  `json:"status" yaml:"status"`
+	SavedThoughtID string                  `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
+	History        []SynthesisDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
+	CreatedAt      time.Time               `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time               `json:"updated_at" yaml:"updated_at"`
+	SavedAt        *time.Time              `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
+}
+
+type SynthesisDraftHistory struct {
+	Status    string    `json:"status" yaml:"status"`
+	Message   string    `json:"message,omitempty" yaml:"message,omitempty"`
+	ThoughtID string    `json:"thought_id,omitempty" yaml:"thought_id,omitempty"`
+	At        time.Time `json:"at" yaml:"at"`
 }
 
 type SynthesisSaveResult struct {

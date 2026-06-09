@@ -575,6 +575,16 @@ payload
 }
 ```
 
+返回本地草稿，并写入 `synthesis/drafts/{draft_id}.yaml`，状态为 `draft`。
+
+`GET /api/synthesis`
+
+返回本地 synthesis 草稿仓库，按更新时间倒序排列。
+
+`GET /api/synthesis/{draft_id}`
+
+返回单个 synthesis 草稿，包括输入 Thought、来源链接、当前内容、状态和保存历史。
+
 `POST /api/synthesis/save`
 
 请求：
@@ -594,6 +604,7 @@ payload
 1. 保存动作通过 capture 运行单元创建新的 Thought。
 2. 新 Thought 的 `source` 标记为 `synthesis`。
 3. 保存内容会保留来源 Thought 的 Markdown 链接。
+4. 当请求包含 `draft_id` 时，会将 `synthesis/drafts/{draft_id}.yaml` 标记为 `saved`，记录保存时间和生成的 Thought ID。
 
 ### 8.3 Topics
 

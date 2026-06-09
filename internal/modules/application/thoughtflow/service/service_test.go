@@ -18,6 +18,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/topicstore"
 )
 
@@ -231,6 +232,94 @@ func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 		if !strings.Contains(savedContent.Original, sourcePath) {
 			t.Fatalf("saved synthesis content should include source %s:\n%s", sourcePath, savedContent.Original)
 		}
+	}
+}
+
+func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "test",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	drafts := synthesisstore.New(root)
+	service := &Service{captureService: captureService, synthesisStore: drafts, workspace: ws}
+	ctx := context.Background()
+	result, err := captureService.Capture(ctx, models.CaptureCommand{
+		Type:    models.ThoughtTypeText,
+		Title:   "Draft source",
+		Content: "Synthesis drafts should keep a local approval history.",
+	})
+	if err != nil {
+		t.Fatalf("Capture() error = %v", err)
+	}
+
+	createBody := strings.NewReader(`{
+		"thought_ids":["` + result.Thought.ID + `"],
+		"goal":"Draft goal",
+		"format":"summary"
+	}`)
+	createRes := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/synthesis", createBody)
+	service.handleSynthesis(ctx, createRes, createReq)
+
+	if createRes.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRes.Code, createRes.Body.String())
+	}
+	var createPayload struct {
+		Data models.SynthesisDraft `json:"data"`
+	}
+	if err := json.Unmarshal(createRes.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("Unmarshal(create) error = %v", err)
+	}
+	if createPayload.Data.ID == "" || createPayload.Data.Status != "draft" {
+		t.Fatalf("created draft = %#v", createPayload.Data)
+	}
+	loaded, err := drafts.GetDraft(ctx, createPayload.Data.ID)
+	if err != nil {
+		t.Fatalf("GetDraft() error = %v", err)
+	}
+	if loaded.ID != createPayload.Data.ID || len(loaded.History) != 1 {
+		t.Fatalf("loaded draft = %#v", loaded)
+	}
+
+	listRes := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/synthesis", nil)
+	service.handleListSynthesisDrafts(ctx, listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+	getRes := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/synthesis/"+createPayload.Data.ID, nil)
+	service.handleGetSynthesisDraft(ctx, getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
+	}
+
+	saveBody := strings.NewReader(`{
+		"draft_id":"` + createPayload.Data.ID + `",
+		"content":"# Draft goal\n\nAccepted synthesis."
+	}`)
+	saveRes := httptest.NewRecorder()
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/synthesis/save", saveBody)
+	service.handleSaveSynthesis(ctx, saveRes, saveReq)
+
+	if saveRes.Code != http.StatusAccepted {
+		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
+	}
+	saved, err := drafts.GetDraft(ctx, createPayload.Data.ID)
+	if err != nil {
+		t.Fatalf("GetDraft(saved) error = %v", err)
+	}
+	if saved.Status != "saved" || saved.SavedThoughtID == "" || saved.SavedAt == nil {
+		t.Fatalf("saved draft = %#v", saved)
+	}
+	if len(saved.History) != 2 || saved.History[1].Status != "saved" {
+		t.Fatalf("saved history = %#v", saved.History)
 	}
 }
 

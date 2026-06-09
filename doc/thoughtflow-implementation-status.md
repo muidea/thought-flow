@@ -159,10 +159,13 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 专题 rebuild 会写入当前成员事实并删除不再命中的陈旧 membership 文件。
    - topic 变更触发 Git 提交时会包含 `memberships/` 目录。
 17. synthesis 草稿支持保存为新的 Thought：
+   - `POST /api/synthesis` 会生成本地草稿并持久化到 `synthesis/drafts/{draft_id}.yaml`。
+   - 新增 `GET /api/synthesis` 和 `GET /api/synthesis/{draft_id}`，用于查看草稿仓库和单个草稿详情。
    - 新增 `POST /api/synthesis/save`。
    - 保存动作复用 capture 运行单元创建 Markdown，不在 application handler 中直接写文件。
    - 新 Thought 的 `source` 标记为 `synthesis`，并在内容中保留来源 Thought 链接。
-   - 嵌入式 UI 的 synthesis 面板支持编辑草稿后保存。
+   - 保存后会将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
+   - 嵌入式 UI 的 synthesis 面板支持草稿列表/历史、编辑草稿后保存。
 18. topic weave 支持人工确认主链路：
    - `weave-preview` 生成候选专题文档、逐行 diff 和 proposal ID，不写入专题主文档。
    - pending proposal 持久化为 `topics/{slug}/approvals/{proposal_id}.yaml`，作为可进入 Git 的审批队列。
@@ -194,7 +197,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - topic dashboard
    - search hub，支持 keyword / semantic / hybrid 模式
    - topic workspace，展示专题 Markdown 文档并可触发 rebuild
-   - synthesis 草稿视图，可编辑并保存为新 Thought
+   - synthesis 草稿仓库视图，可载入历史草稿、编辑并保存为新 Thought
    - thought preview
    - SSE activity feed
    - system AI/workspace 状态摘要
@@ -221,7 +224,7 @@ M3：
 
 1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
 2. topic weave 已支持独立持久化审批队列和审批历史，但尚未实现结构化 patch apply 引擎。
-3. synthesis 当前已支持本地草稿保存为 Thought，尚未接入云端模型、独立草稿仓库和审批历史。
+3. synthesis 当前已支持独立本地草稿仓库和保存历史，但尚未接入云端模型合稿。
 
 UI：
 
