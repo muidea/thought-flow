@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -139,6 +141,39 @@ func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 		if !strings.Contains(savedContent.Original, sourcePath) {
 			t.Fatalf("saved synthesis content should include source %s:\n%s", sourcePath, savedContent.Original)
 		}
+	}
+}
+
+func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
+	stream := eventstream.New(10)
+	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured, ResourceID: "one"})
+	stream.Publish(models.DomainEvent{EventID: "evt-2", EventType: models.EventJobUpdated, ResourceID: "two"})
+	stream.Publish(models.DomainEvent{EventID: "evt-3", EventType: models.EventTopicUpdated, ResourceID: "three"})
+	service := &Service{stream: stream}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/events?types="+models.EventTopicUpdated, nil).WithContext(ctx)
+	req.Header.Set("Last-Event-ID", "evt-1")
+	res := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		service.handleEvents(ctx, res, req)
+		close(done)
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("handleEvents did not stop after context cancellation")
+	}
+
+	body := res.Body.String()
+	if !strings.Contains(body, "evt-3") || !strings.Contains(body, models.EventTopicUpdated) {
+		t.Fatalf("expected replayed topic event in SSE body:\n%s", body)
+	}
+	if strings.Contains(body, "evt-1") || strings.Contains(body, "evt-2") {
+		t.Fatalf("SSE body should honor Last-Event-ID and type filter:\n%s", body)
 	}
 }
 

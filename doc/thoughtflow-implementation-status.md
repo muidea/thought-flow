@@ -31,6 +31,8 @@
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。
 10. SSE 事件流基础推送。
+    - 支持 `Last-Event-ID` 从内存历史中断点续传。
+    - 支持 `types` 查询参数按事件类型过滤历史和实时事件。
 
 验证：
 

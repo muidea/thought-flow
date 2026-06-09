@@ -2,6 +2,7 @@ package eventstream
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/muidea/magicCommon/event"
@@ -11,9 +12,14 @@ import (
 
 type Stream struct {
 	mu          sync.RWMutex
-	subscribers map[chan models.DomainEvent]struct{}
+	subscribers map[chan models.DomainEvent]SubscribeOptions
 	history     []models.DomainEvent
 	limit       int
+}
+
+type SubscribeOptions struct {
+	LastEventID string
+	Types       []string
 }
 
 func New(limit int) *Stream {
@@ -21,7 +27,7 @@ func New(limit int) *Stream {
 		limit = 100
 	}
 	return &Stream{
-		subscribers: map[chan models.DomainEvent]struct{}{},
+		subscribers: map[chan models.DomainEvent]SubscribeOptions{},
 		limit:       limit,
 	}
 }
@@ -47,13 +53,16 @@ func (s *Stream) Publish(domainEvent models.DomainEvent) {
 	if len(s.history) > s.limit {
 		s.history = s.history[len(s.history)-s.limit:]
 	}
-	subscribers := make([]chan models.DomainEvent, 0, len(s.subscribers))
-	for ch := range s.subscribers {
-		subscribers = append(subscribers, ch)
+	subscribers := make(map[chan models.DomainEvent]SubscribeOptions, len(s.subscribers))
+	for ch, options := range s.subscribers {
+		subscribers[ch] = options
 	}
 	s.mu.Unlock()
 
-	for _, ch := range subscribers {
+	for ch, options := range subscribers {
+		if !matchesTypes(domainEvent, options.Types) {
+			continue
+		}
 		select {
 		case ch <- domainEvent:
 		default:
@@ -88,12 +97,23 @@ func sanitizeRefinement(refinement models.ThoughtRefinement) models.ThoughtRefin
 }
 
 func (s *Stream) Subscribe(ctx context.Context) <-chan models.DomainEvent {
-	ch := make(chan models.DomainEvent, 32)
+	return s.SubscribeWithOptions(ctx, SubscribeOptions{})
+}
+
+func (s *Stream) SubscribeWithOptions(ctx context.Context, options SubscribeOptions) <-chan models.DomainEvent {
+	options.Types = normalizeTypes(options.Types)
 	s.mu.Lock()
-	for _, item := range s.history {
+	replay := []models.DomainEvent{}
+	for _, item := range replayHistory(s.history, options) {
+		if matchesTypes(item, options.Types) {
+			replay = append(replay, item)
+		}
+	}
+	ch := make(chan models.DomainEvent, len(replay)+32)
+	for _, item := range replay {
 		ch <- item
 	}
-	s.subscribers[ch] = struct{}{}
+	s.subscribers[ch] = options
 	s.mu.Unlock()
 
 	go func() {
@@ -104,4 +124,45 @@ func (s *Stream) Subscribe(ctx context.Context) <-chan models.DomainEvent {
 		s.mu.Unlock()
 	}()
 	return ch
+}
+
+func normalizeTypes(types []string) []string {
+	seen := map[string]struct{}{}
+	ret := []string{}
+	for _, eventType := range types {
+		eventType = strings.TrimSpace(eventType)
+		if eventType == "" {
+			continue
+		}
+		if _, exists := seen[eventType]; exists {
+			continue
+		}
+		seen[eventType] = struct{}{}
+		ret = append(ret, eventType)
+	}
+	return ret
+}
+
+func replayHistory(history []models.DomainEvent, options SubscribeOptions) []models.DomainEvent {
+	if options.LastEventID == "" {
+		return history
+	}
+	for idx, item := range history {
+		if item.EventID == options.LastEventID {
+			return history[idx+1:]
+		}
+	}
+	return history
+}
+
+func matchesTypes(domainEvent models.DomainEvent, types []string) bool {
+	if len(types) == 0 {
+		return true
+	}
+	for _, eventType := range types {
+		if eventType == domainEvent.EventType {
+			return true
+		}
+	}
+	return false
 }

@@ -461,7 +461,10 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.system.sse_unavailable", "streaming is not supported")
 		return
 	}
-	events := s.stream.Subscribe(req.Context())
+	events := s.stream.SubscribeWithOptions(req.Context(), eventstream.SubscribeOptions{
+		LastEventID: req.Header.Get("Last-Event-ID"),
+		Types:       splitCSV(req.URL.Query().Get("types")),
+	})
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 
