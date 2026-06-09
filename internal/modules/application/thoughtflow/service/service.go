@@ -44,6 +44,7 @@ type Service struct {
 	jobs           *jobstore.Store
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
+	config         appconfig.Config
 }
 
 type gitQueryReader interface {
@@ -51,7 +52,7 @@ type gitQueryReader interface {
 	RuntimeStatus(ctx context.Context) models.GitRuntimeStatus
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
@@ -62,6 +63,7 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		jobs:           jobs,
 		stream:         stream,
 		workspace:      workspace,
+		config:         cfg,
 	}
 }
 
@@ -704,8 +706,7 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 }
 
 func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	cfg := appconfig.Load()
-	status := s.systemStatus(ctx, cfg)
+	status := s.systemStatus(ctx, s.config)
 	writeJSON(res, req, http.StatusOK, status)
 }
 

@@ -125,7 +125,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 
 	jobs := jobstore.New(ws.JobsPath)
 	registry := engine.NewRouteRegistry()
-	httpService := service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, m.stream, ws)
+	httpService := service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, m.stream, ws, cfg)
 	httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
 	if err != nil {
