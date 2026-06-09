@@ -180,6 +180,9 @@ func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecor
 	if record.Dimension == 0 {
 		record.Dimension = len(record.Vector)
 	}
+	if record.Dimension != len(record.Vector) {
+		return errors.New("embedding dimension does not match vector length")
+	}
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
@@ -193,7 +196,11 @@ func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecor
 	_, err = s.db.ExecContext(ctx, `INSERT INTO thought_embeddings (
 		thought_id, model, dimension, vector, content_hash, created_at
 	) VALUES (?, ?, ?, ?, ?, ?)`, record.ThoughtID, record.Model, record.Dimension, string(raw), record.ContentHash, record.CreatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	_ = s.indexEmbeddingVector(ctx, record)
+	return nil
 }
 
 func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, error) {
@@ -323,6 +330,52 @@ func withNormalizedProxyEnv(run func() error) error {
 	return run()
 }
 
+func (s *Store) indexEmbeddingVector(ctx context.Context, record models.EmbeddingRecord) error {
+	tableName, err := embeddingVectorTableName(record.Dimension)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		thought_id VARCHAR,
+		model VARCHAR,
+		vector FLOAT[%d],
+		content_hash VARCHAR,
+		created_at TIMESTAMP
+	)`, tableName, record.Dimension)); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE thought_id = ? AND model = ?`, tableName), record.ThoughtID, record.Model); err != nil {
+		return err
+	}
+	args := []any{record.ThoughtID, record.Model}
+	for _, value := range record.Vector {
+		args = append(args, value)
+	}
+	args = append(args, record.ContentHash, record.CreatedAt)
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (
+		thought_id, model, vector, content_hash, created_at
+	) VALUES (?, ?, %s, ?, ?)`, tableName, arrayValueExpression(record.Dimension)), args...)
+	return err
+}
+
+func embeddingVectorTableName(dimension int) (string, error) {
+	if dimension <= 0 {
+		return "", errors.New("embedding dimension is required")
+	}
+	if dimension > 8192 {
+		return "", errors.New("embedding dimension is too large")
+	}
+	return fmt.Sprintf("thought_embedding_vectors_%d", dimension), nil
+}
+
+func arrayValueExpression(dimension int) string {
+	parts := make([]string, dimension)
+	for idx := range parts {
+		parts[idx] = "?::FLOAT"
+	}
+	return fmt.Sprintf("array_value(%s)::FLOAT[%d]", strings.Join(parts, ", "), dimension)
+}
+
 func (s *Store) keywordScoresFromFTS(ctx context.Context, query string) (map[string]float64, bool) {
 	query = strings.TrimSpace(query)
 	if query == "" || !s.ensureFTSIndex(ctx) {
@@ -360,6 +413,49 @@ func (s *Store) keywordScoresFromFTS(ctx context.Context, query string) (map[str
 	}
 	for thoughtID, rawScore := range scores {
 		scores[thoughtID] = rawScore / maxScore
+	}
+	return scores, true
+}
+
+func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []float64, model string) (map[string]float64, bool) {
+	dimension := len(queryVector)
+	tableName, err := embeddingVectorTableName(dimension)
+	if err != nil {
+		return nil, false
+	}
+	args := make([]any, 0, dimension+1)
+	for _, value := range queryVector {
+		args = append(args, value)
+	}
+	where := "1=1"
+	if strings.TrimSpace(model) != "" {
+		where = "model = ?"
+		args = append(args, model)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT thought_id, array_cosine_similarity(vector, %s) AS score
+		FROM %s
+		WHERE %s`, arrayValueExpression(dimension), tableName, where), args...)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	scores := map[string]float64{}
+	for rows.Next() {
+		var thoughtID string
+		var score float64
+		if err := rows.Scan(&thoughtID, &score); err != nil {
+			return nil, false
+		}
+		if score < 0 {
+			score = 0
+		}
+		if existing, ok := scores[thoughtID]; !ok || score > existing {
+			scores[thoughtID] = score
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
 	}
 	return scores, true
 }
@@ -405,6 +501,10 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 	trimmedQuery := strings.TrimSpace(query.Query)
 	ftsScores, useFTS := s.keywordScoresFromFTS(ctx, trimmedQuery)
+	semanticScores, useDuckDBVector := map[string]float64{}, false
+	if useVector {
+		semanticScores, useDuckDBVector = s.semanticScoresFromDuckDB(ctx, query.QueryVector, query.EmbeddingModel)
+	}
 
 	where, args := searchFilterWhere(query)
 	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at
@@ -427,7 +527,6 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt); err != nil {
 			return models.SearchResponse{}, err
 		}
-		embedding := s.embeddingForThought(ctx, item.ThoughtID, query.EmbeddingModel)
 		item.Snippet = snippet(searchText, query.Query)
 		item.KeywordScore = keywordScore(searchText, query.Query)
 		if useFTS && trimmedQuery != "" {
@@ -436,7 +535,18 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		if trimmedQuery != "" && !useVector && item.KeywordScore <= 0 {
 			continue
 		}
-		item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
+		if useDuckDBVector {
+			score, ok := semanticScores[item.ThoughtID]
+			if ok {
+				item.SemanticScore = score
+			} else {
+				embedding := s.embeddingForThought(ctx, item.ThoughtID, query.EmbeddingModel)
+				item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
+			}
+		} else if useVector {
+			embedding := s.embeddingForThought(ctx, item.ThoughtID, query.EmbeddingModel)
+			item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
+		}
 		item.RecencyScore = recencyScore(updatedAt)
 		item.Score = combinedScore(mode, item.KeywordScore, item.SemanticScore, item.RecencyScore, useVector)
 		item.Tags = splitCSV(tags)

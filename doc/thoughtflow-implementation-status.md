@@ -76,6 +76,11 @@ go build ./cmd/thoughtflow
    - 关键词分优先使用 `match_bm25(..., conjunctive := 1)`，并归一化为 `keyword_score`。
    - FTS extension 安装或加载不可用时保留 LIKE 降级路径。
    - 对 DuckDB extension 下载器不兼容带尾部 `/` 的 proxy URL 做了局部规范化。
+23. DuckDB tagged store 已接入原生 ARRAY 向量检索路径：
+   - embedding 继续写入 `thought_embeddings` JSON 表，作为兼容和降级数据。
+   - 同步写入按维度隔离的 `thought_embedding_vectors_{dimension}` 表，使用 `FLOAT[n]` 固定长度向量列。
+   - `mode=semantic` / `mode=hybrid` 有 query vector 时，优先使用 DuckDB `array_cosine_similarity` 计算 `semantic_score`。
+   - DuckDB ARRAY 向量表缺失或查询失败时，保留原 JSON embedding + Go cosine 降级路径。
 
 验证：
 
@@ -83,6 +88,7 @@ go build ./cmd/thoughtflow
 go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 CGO_LDFLAGS=-L/tmp go test -tags duckdb ./internal/pkg/searchdb
+CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
 ```
 
 本机 DuckDB tagged 验证说明：
@@ -166,9 +172,8 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 
 M2：
 
-1. DuckDB 原生向量扩展或 ANN 索引。
-2. 当前语义检索是在 Go 内对候选 embedding 做 cosine 计算，不是 DuckDB 向量算子。
-3. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
+1. DuckDB VSS/HNSW ANN 索引尚未启用；官方文档仍将持久化 HNSW 标为实验能力，当前先使用可持久化的 ARRAY 表与原生相似度函数。
+2. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
 
 M3：
 

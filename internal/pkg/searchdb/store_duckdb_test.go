@@ -52,6 +52,73 @@ func TestDuckDBFTSMatchesNonContiguousTerms(t *testing.T) {
 	}
 }
 
+func TestDuckDBArrayVectorSemanticSearch(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 9, 17, 35, 0, 0, time.UTC)
+	nearest := searchTestThought("20260609-173500-vector-a", "Vector nearest note", now)
+	distant := searchTestThought("20260609-173500-vector-b", "Vector distant note", now.Add(-time.Minute))
+	for _, thought := range []models.Thought{nearest, distant} {
+		if err := store.IndexThought(ctx, thought, models.ThoughtContent{Original: "Vector similarity fixture."}); err != nil {
+			t.Fatalf("IndexThought(%s) error = %v", thought.ID, err)
+		}
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID:   nearest.ID,
+		Model:       "test-embedding",
+		Dimension:   3,
+		Vector:      []float64{1, 0, 0},
+		ContentHash: models.ContentHash(nearest.ID),
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding(nearest) error = %v", err)
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID:   distant.ID,
+		Model:       "test-embedding",
+		Dimension:   3,
+		Vector:      []float64{0, 1, 0},
+		ContentHash: models.ContentHash(distant.ID),
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding(distant) error = %v", err)
+	}
+
+	scores, ok := store.semanticScoresFromDuckDB(ctx, []float64{1, 0, 0}, "test-embedding")
+	if !ok {
+		t.Fatalf("expected DuckDB ARRAY vector scores")
+	}
+	if scores[nearest.ID] <= scores[distant.ID] {
+		t.Fatalf("semantic scores = %#v", scores)
+	}
+
+	result, err := store.Search(ctx, models.SearchQuery{
+		Query:          "nearest vector",
+		Mode:           "semantic",
+		QueryVector:    []float64{1, 0, 0},
+		EmbeddingModel: "test-embedding",
+		Page:           1,
+		PageSize:       10,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.Total != 2 || len(result.Items) != 2 {
+		t.Fatalf("search result total=%d len=%d", result.Total, len(result.Items))
+	}
+	if result.Items[0].ThoughtID != nearest.ID {
+		t.Fatalf("top thought id = %q, want %q", result.Items[0].ThoughtID, nearest.ID)
+	}
+	if result.Items[0].SemanticScore < 0.99 {
+		t.Fatalf("top semantic score = %v", result.Items[0].SemanticScore)
+	}
+}
+
 func searchTestThought(id string, title string, updatedAt time.Time) models.Thought {
 	return models.Thought{
 		ID:            id,
