@@ -280,6 +280,57 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 	}, nil
 }
 
+func (s *Service) RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord {
+	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.RootPath) == "" || strings.TrimSpace(relativePath) == "" || limit == 0 {
+		return nil
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil
+	}
+	gitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := runGit(gitCtx, "-C", s.workspace.RootPath, "rev-parse", "--is-inside-work-tree"); err != nil {
+		return nil
+	}
+	if limit < 0 {
+		limit = 5
+	}
+	path := filepath.ToSlash(relativePath)
+	raw, err := outputGit(gitCtx, "-C", s.workspace.RootPath, "log", "-n", fmt.Sprintf("%d", limit), "--format=%H%x1f%ct%x1f%s", "--", path)
+	if err != nil {
+		return nil
+	}
+	records := []models.GitCommitRecord{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1f", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		seconds, err := parseUnixSeconds(parts[1])
+		if err != nil {
+			continue
+		}
+		records = append(records, models.GitCommitRecord{
+			CommitHash:  parts[0],
+			Message:     parts[2],
+			Paths:       []string{path},
+			ResourceIDs: []string{resourceID},
+			CommittedAt: time.Unix(seconds, 0).UTC(),
+		})
+	}
+	return records
+}
+
+func parseUnixSeconds(value string) (int64, error) {
+	var seconds int64
+	_, err := fmt.Sscanf(value, "%d", &seconds)
+	return seconds, err
+}
+
 func (s *Service) ensureRepository(ctx context.Context) error {
 	if err := runGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--is-inside-work-tree"); err == nil {
 		return nil

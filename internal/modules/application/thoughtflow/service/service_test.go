@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,9 +127,6 @@ func TestTimeQueryParsesSearchRangeParameters(t *testing.T) {
 }
 
 func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git is unavailable: %v", err)
-	}
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:           "local",
@@ -164,11 +160,6 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "Thought detail body."}); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
-	runGitForTest(t, root, "init")
-	runGitForTest(t, root, "config", "user.name", "ThoughtFlow Test")
-	runGitForTest(t, root, "config", "user.email", "thoughtflow-test@example.test")
-	runGitForTest(t, root, "add", "--", thought.Path)
-	runGitForTest(t, root, "commit", "-m", "thoughtflow: add detail thought")
 
 	jobs := jobstore.New(ws.JobsPath)
 	if err := jobs.Save(models.Job{
@@ -182,7 +173,18 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 		t.Fatalf("Save(job) error = %v", err)
 	}
 	captureService := capturebiz.NewService(ws, jobs, nil)
-	service := &Service{captureService: captureService, jobs: jobs, workspace: ws}
+	service := &Service{
+		captureService: captureService,
+		jobs:           jobs,
+		workspace:      ws,
+		gitCommits: fakeGitCommitReader{records: []models.GitCommitRecord{{
+			CommitHash:  "abc123",
+			Message:     "thoughtflow: add detail thought",
+			Paths:       []string{thought.Path},
+			ResourceIDs: []string{thought.ID},
+			CommittedAt: thought.CreatedAt.Add(2 * time.Minute),
+		}}},
+	}
 
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/thoughts/"+thought.ID, nil)
@@ -207,21 +209,23 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 		t.Fatalf("git commits = %#v", payload.Data.GitCommits)
 	}
 	if payload.Data.GitCommits[0].Message != "thoughtflow: add detail thought" ||
-		payload.Data.GitCommits[0].CommitHash == "" ||
+		payload.Data.GitCommits[0].CommitHash != "abc123" ||
 		len(payload.Data.GitCommits[0].Paths) != 1 ||
 		payload.Data.GitCommits[0].Paths[0] != thought.Path {
 		t.Fatalf("git commit = %#v", payload.Data.GitCommits[0])
 	}
 }
 
-func runGitForTest(t *testing.T, root string, args ...string) {
-	t.Helper()
-	cmdArgs := append([]string{"-C", root}, args...)
-	cmd := exec.Command("git", cmdArgs...)
-	raw, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %s: %v", strings.Join(cmdArgs, " "), strings.TrimSpace(string(raw)), err)
-	}
+type fakeGitCommitReader struct {
+	records []models.GitCommitRecord
+}
+
+func (reader fakeGitCommitReader) RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord {
+	_ = ctx
+	_ = relativePath
+	_ = resourceID
+	_ = limit
+	return reader.records
 }
 
 func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {

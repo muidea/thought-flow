@@ -1,6 +1,11 @@
 package biz
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +96,51 @@ func TestNormalizedCommitPathRejectsRuntimeAndUnsafePaths(t *testing.T) {
 
 	if got, ok := normalizedCommitPath("topics/demo/../demo/index.md"); !ok || got != "topics/demo/index.md" {
 		t.Fatalf("normalizedCommitPath() = %q, %v", got, ok)
+	}
+}
+
+func TestRecentCommitsReturnsPathHistory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	root := t.TempDir()
+	thoughtPath := filepath.ToSlash(filepath.Join("thoughts", "2026", "06", "20260609-143010-detail.md"))
+	fullPath := filepath.Join(root, filepath.FromSlash(thoughtPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte("# Detail thought\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runGitForTest(t, root, "init")
+	runGitForTest(t, root, "config", "user.name", "ThoughtFlow Test")
+	runGitForTest(t, root, "config", "user.email", "thoughtflow-test@example.test")
+	runGitForTest(t, root, "add", "--", thoughtPath)
+	runGitForTest(t, root, "commit", "-m", "thoughtflow: add detail thought")
+
+	service := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+	records := service.RecentCommits(context.Background(), thoughtPath, "20260609-143010-detail", 5)
+
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	if records[0].CommitHash == "" ||
+		records[0].Message != "thoughtflow: add detail thought" ||
+		len(records[0].Paths) != 1 ||
+		records[0].Paths[0] != thoughtPath ||
+		len(records[0].ResourceIDs) != 1 ||
+		records[0].ResourceIDs[0] != "20260609-143010-detail" ||
+		records[0].CommittedAt.IsZero() {
+		t.Fatalf("record = %#v", records[0])
+	}
+}
+
+func runGitForTest(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmdArgs := append([]string{"-C", root}, args...)
+	cmd := exec.Command("git", cmdArgs...)
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %s: %v", strings.Join(cmdArgs, " "), strings.TrimSpace(string(raw)), err)
 	}
 }

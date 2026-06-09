@@ -44,6 +44,7 @@ type Service struct {
 	refinerService *refinerbiz.Service
 	searchService  *searchbiz.Service
 	topicService   *topicbiz.Service
+	gitCommits     gitCommitReader
 	jobs           *jobstore.Store
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
@@ -51,13 +52,18 @@ type Service struct {
 	synthesisAI    ai.SynthesisProvider
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
+type gitCommitReader interface {
+	RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord
+}
+
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitCommits gitCommitReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
 		refinerService: refinerService,
 		searchService:  searchService,
 		topicService:   topicService,
+		gitCommits:     gitCommits,
 		jobs:           jobs,
 		stream:         stream,
 		workspace:      workspace,
@@ -163,7 +169,9 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 		return
 	}
 	snapshot.Jobs = thoughtJobs(s.jobs, thoughtID, 20)
-	snapshot.GitCommits = recentGitCommits(ctx, s.workspace, snapshot.Thought.Path, thoughtID, 5)
+	if s.gitCommits != nil {
+		snapshot.GitCommits = s.gitCommits.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
+	}
 	writeJSON(res, req, http.StatusOK, snapshot)
 }
 
@@ -206,51 +214,6 @@ func thoughtJobs(store *jobstore.Store, thoughtID string, limit int) []models.Jo
 		ret = ret[:limit]
 	}
 	return ret
-}
-
-func recentGitCommits(ctx context.Context, ws *models.Workspace, relativePath string, resourceID string, limit int) []models.GitCommitRecord {
-	if ws == nil || strings.TrimSpace(ws.RootPath) == "" || strings.TrimSpace(relativePath) == "" || limit == 0 {
-		return nil
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		return nil
-	}
-	gitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if !gitCommandOK(gitCtx, ws.RootPath, "rev-parse", "--is-inside-work-tree") {
-		return nil
-	}
-	if limit < 0 {
-		limit = 5
-	}
-	raw, err := gitOutput(gitCtx, ws.RootPath, "log", "-n", strconv.Itoa(limit), "--format=%H%x1f%ct%x1f%s", "--", filepath.ToSlash(relativePath))
-	if err != nil {
-		return nil
-	}
-	records := []models.GitCommitRecord{}
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\x1f", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		seconds, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			continue
-		}
-		record := models.GitCommitRecord{
-			CommitHash:  parts[0],
-			Message:     parts[2],
-			Paths:       []string{filepath.ToSlash(relativePath)},
-			ResourceIDs: []string{resourceID},
-			CommittedAt: time.Unix(seconds, 0).UTC(),
-		}
-		records = append(records, record)
-	}
-	return records
 }
 
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {

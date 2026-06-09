@@ -17,6 +17,7 @@ import (
 
 	"thoughtflow/internal/modules/application/thoughtflow/service"
 	"thoughtflow/internal/modules/capture"
+	"thoughtflow/internal/modules/git_sync"
 	"thoughtflow/internal/modules/refiner"
 	"thoughtflow/internal/modules/search"
 	"thoughtflow/internal/modules/topic"
@@ -94,6 +95,10 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	if topicService == nil {
 		return cd.NewError(cd.Unexpected, "topic service is not ready")
 	}
+	gitService := git_sync.Current()
+	if gitService == nil {
+		return cd.NewError(cd.Unexpected, "git-sync service is not ready")
+	}
 
 	m.stream = eventstream.New(200)
 	setCurrentStream(m.stream)
@@ -120,7 +125,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 
 	jobs := jobstore.New(ws.JobsPath)
 	registry := engine.NewRouteRegistry()
-	httpService := service.New(registry, captureService, refinerService, searchService, topicService, jobs, m.stream, ws)
+	httpService := service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, m.stream, ws)
 	httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
 	if err != nil {
