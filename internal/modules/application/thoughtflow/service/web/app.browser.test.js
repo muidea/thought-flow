@@ -7,85 +7,122 @@ const { spawn } = require("node:child_process");
 const test = require("node:test");
 
 const chromePath = process.env.CHROME_PATH || findChrome();
+const browserTargets = discoverBrowserTargets();
 
-test("embedded UI browser smoke matrix", { skip: chromePath ? false : "Chrome executable not found" }, async (t) => {
+test("embedded UI browser smoke matrix", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
 
   const baseURL = `http://127.0.0.1:${server.address().port}`;
-  for (const viewport of [
-    { name: "desktop", width: 1280, height: 800 },
-    { name: "mobile", width: 390, height: 844 },
-  ]) {
-    await t.test(viewport.name, async () => {
-      const browser = await launchChrome(viewport);
-      try {
-        const page = await connectPage(browser);
-        const errors = [];
-        page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
-        page.onEvent("Log.entryAdded", (event) => {
-          if (event.entry?.level === "error") errors.push(event.entry.text);
+  for (const target of browserTargets) {
+    await t.test(target.name, { skip: target.skip }, async (browserTest) => {
+      for (const viewport of viewports()) {
+        await browserTest.test(viewport.name, async () => {
+          const browser = await target.launch(viewport);
+          try {
+            await runBrowserSmoke(browser, `${baseURL}/`);
+          } finally {
+            await browser.close();
+          }
         });
-        await page.send("Runtime.enable");
-        await page.send("Log.enable");
-        await page.send("Page.enable");
-        await page.navigate(`${baseURL}/`);
-        await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
-        await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
-        await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
-
-        const state = await page.evaluate(() => {
-          document.querySelector('[data-tab="review"]').click();
-          const reviewActive = document.querySelector("#tab-review").classList.contains("active");
-          document.querySelector('[data-tab="synthesis"]').click();
-          const synthesisActive = document.querySelector("#tab-synthesis").classList.contains("active");
-          const shell = document.querySelector(".app-shell").getBoundingClientRect();
-          const capture = document.querySelector("#capture-form").getBoundingClientRect();
-          const clientWidth = document.documentElement.clientWidth;
-          const wideElements = Array.from(document.querySelectorAll("body *"))
-            .map((node) => {
-              const rect = node.getBoundingClientRect();
-              return {
-                tag: node.tagName.toLowerCase(),
-                id: node.id,
-                className: String(node.className || ""),
-                width: Math.round(rect.width),
-                right: Math.round(rect.right),
-              };
-            })
-            .filter((item) => item.right > clientWidth + 4)
-            .slice(0, 8);
-          return {
-            title: document.querySelector("h1")?.textContent,
-            status: document.querySelector("#system-status")?.textContent,
-            topicItems: document.querySelectorAll(".topic-item").length,
-            searchItems: document.querySelectorAll(".result-item").length,
-            reviewActive,
-            synthesisActive,
-            shellWidth: shell.width,
-            captureWidth: capture.width,
-            scrollWidth: document.documentElement.scrollWidth,
-            clientWidth,
-            wideElements,
-          };
-        });
-
-        assert.equal(state.title, "ThoughtFlow");
-        assert.match(state.status, /browser \/ ready/);
-        assert.equal(state.topicItems, 1);
-        assert.equal(state.searchItems, 1);
-        assert.equal(state.reviewActive, true);
-        assert.equal(state.synthesisActive, true);
-        assert.ok(state.shellWidth > 0);
-        assert.ok(state.captureWidth > 0);
-        assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
-        assert.deepEqual(errors, []);
-      } finally {
-        await browser.close();
       }
     });
   }
 });
+
+function discoverBrowserTargets() {
+  return [
+    {
+      name: "chrome",
+      skip: chromePath ? false : "Chrome executable not found",
+      launch: launchChrome,
+    },
+    {
+      name: "firefox",
+      skip: firefoxSkipReason(),
+      launch: async () => {
+        throw new Error("Firefox automation is unavailable");
+      },
+    },
+    {
+      name: "safari",
+      skip: safariSkipReason(),
+      launch: async () => {
+        throw new Error("Safari automation is unavailable");
+      },
+    },
+  ];
+}
+
+function viewports() {
+  return [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "mobile", width: 390, height: 844 },
+  ];
+}
+
+async function runBrowserSmoke(browser, url) {
+  const page = await connectPage(browser);
+  const errors = [];
+  page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+  page.onEvent("Log.entryAdded", (event) => {
+    if (event.entry?.level === "error") errors.push(event.entry.text);
+  });
+  await page.send("Runtime.enable");
+  await page.send("Log.enable");
+  await page.send("Page.enable");
+  await page.navigate(url);
+  await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
+  await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
+  await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
+
+  const state = await page.evaluate(() => {
+    document.querySelector('[data-tab="review"]').click();
+    const reviewActive = document.querySelector("#tab-review").classList.contains("active");
+    document.querySelector('[data-tab="synthesis"]').click();
+    const synthesisActive = document.querySelector("#tab-synthesis").classList.contains("active");
+    const shell = document.querySelector(".app-shell").getBoundingClientRect();
+    const capture = document.querySelector("#capture-form").getBoundingClientRect();
+    const clientWidth = document.documentElement.clientWidth;
+    const wideElements = Array.from(document.querySelectorAll("body *"))
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          tag: node.tagName.toLowerCase(),
+          id: node.id,
+          className: String(node.className || ""),
+          width: Math.round(rect.width),
+          right: Math.round(rect.right),
+        };
+      })
+      .filter((item) => item.right > clientWidth + 4)
+      .slice(0, 8);
+    return {
+      title: document.querySelector("h1")?.textContent,
+      status: document.querySelector("#system-status")?.textContent,
+      topicItems: document.querySelectorAll(".topic-item").length,
+      searchItems: document.querySelectorAll(".result-item").length,
+      reviewActive,
+      synthesisActive,
+      shellWidth: shell.width,
+      captureWidth: capture.width,
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth,
+      wideElements,
+    };
+  });
+
+  assert.equal(state.title, "ThoughtFlow");
+  assert.match(state.status, /browser \/ ready/);
+  assert.equal(state.topicItems, 1);
+  assert.equal(state.searchItems, 1);
+  assert.equal(state.reviewActive, true);
+  assert.equal(state.synthesisActive, true);
+  assert.ok(state.shellWidth > 0);
+  assert.ok(state.captureWidth > 0);
+  assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
+  assert.deepEqual(errors, []);
+}
 
 function findChrome() {
   for (const candidate of ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
@@ -93,6 +130,46 @@ function findChrome() {
   }
   return "";
 }
+
+function firefoxSkipReason() {
+  const firefoxPath = process.env.FIREFOX_PATH || findFirefox();
+  const geckodriverPath = process.env.GECKODRIVER_PATH || findExecutable("geckodriver");
+  if (!firefoxPath) return "Firefox executable not found";
+  if (isUnavailableSnapWrapper(firefoxPath)) return "Firefox snap wrapper is present but Firefox is not installed";
+  if (!geckodriverPath) return "geckodriver executable not found";
+  return "Firefox WebDriver smoke is not wired yet";
+}
+
+function safariSkipReason() {
+  if (process.platform !== "darwin") return "Safari/WebKit automation is unavailable on this Linux test host";
+  return "Safari WebDriver smoke is not wired yet";
+}
+
+function findFirefox() {
+  return findExecutable("firefox") || findExecutable("firefox-esr");
+}
+
+function findExecutable(name) {
+  const paths = String(process.env.PATH || "").split(path.delimiter);
+  for (const dir of paths) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+function isUnavailableSnapWrapper(filePath) {
+  try {
+    const body = fs.readFileSync(filePath, "utf8");
+    return body.includes("requires the firefox snap to be installed");
+  } catch {
+    return false;
+  }
+}
+
+test("browser smoke matrix declares cross-browser targets", () => {
+  assert.deepEqual(browserTargets.map((target) => target.name), ["chrome", "firefox", "safari"]);
+});
 
 function startFixtureServer() {
   const webRoot = __dirname;

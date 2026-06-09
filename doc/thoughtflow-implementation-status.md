@@ -229,6 +229,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 7. 浏览器 smoke 测试矩阵：
    - `node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js`
    - 使用本机 Google Chrome headless 和 mock API server 覆盖 desktop/mobile 视口。
+   - 测试矩阵显式声明 Chrome、Firefox、Safari 目标；当前环境 Firefox 为未安装 snap wrapper，Safari/WebKit 自动化在 Linux host 不可用，因此对应 subtest 以稳定原因 skip，不计入实际覆盖。
    - 校验首屏渲染、topic/search 数据加载、tab 切换、控制台错误和移动端水平溢出。
 
 验证：
@@ -245,7 +246,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 
 UI：
 
-1. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；还没有 Firefox/Safari 覆盖。
+1. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；Firefox/Safari 已进入测试目标声明和环境探测，但当前本机无法实际执行 Firefox/Safari 覆盖。
 
 当前限制：
 
