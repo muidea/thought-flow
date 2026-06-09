@@ -24,6 +24,9 @@ const (
 	IndexStatusIndexed   = "indexed"
 	IndexStatusFailed    = "failed"
 	TopicStatusUnmatched = "unmatched"
+	TopicStatusMatched   = "matched"
+	TopicStatusUpdated   = "updated"
+	TopicStatusFailed    = "failed"
 
 	JobStatusQueued    = "queued"
 	JobStatusRunning   = "running"
@@ -61,14 +64,15 @@ const (
 )
 
 type Workspace struct {
-	ID           string    `json:"id"`
-	RootPath     string    `json:"root_path"`
-	ThoughtsPath string    `json:"thoughts_path"`
-	TopicsPath   string    `json:"topics_path"`
-	RuntimePath  string    `json:"runtime_path"`
-	JobsPath     string    `json:"jobs_path"`
-	GitEnabled   bool      `json:"git_enabled"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	RootPath        string    `json:"root_path"`
+	ThoughtsPath    string    `json:"thoughts_path"`
+	TopicsPath      string    `json:"topics_path"`
+	AttachmentsPath string    `json:"attachments_path"`
+	RuntimePath     string    `json:"runtime_path"`
+	JobsPath        string    `json:"jobs_path"`
+	GitEnabled      bool      `json:"git_enabled"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type Thought struct {

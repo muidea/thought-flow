@@ -63,7 +63,8 @@ func (s *Store) Init(ctx context.Context) error {
 			capture_status VARCHAR,
 			refine_status VARCHAR,
 			index_status VARCHAR,
-			topic_status VARCHAR
+			topic_status VARCHAR,
+			topic_ids VARCHAR
 		)`,
 		`CREATE TABLE IF NOT EXISTS thought_contents (
 			thought_id VARCHAR PRIMARY KEY,
@@ -85,6 +86,20 @@ func (s *Store) Init(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, query); err != nil {
 			return err
 		}
+	}
+	if err := execIgnoreColumnExists(ctx, s.db, `ALTER TABLE thoughts ADD COLUMN topic_ids VARCHAR`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func execIgnoreColumnExists(ctx context.Context, db *sql.DB, query string) error {
+	if _, err := db.ExecContext(ctx, query); err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "already exists") || strings.Contains(message, "duplicate") {
+			return nil
+		}
+		return err
 	}
 	return nil
 }
@@ -116,10 +131,11 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO thoughts (
 		id, path, title, type, url, created_at, updated_at, content_hash,
-		capture_status, refine_status, index_status, topic_status
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		capture_status, refine_status, index_status, topic_status, topic_ids
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		thought.ID, thought.Path, title, thought.Type, thought.URL, thought.CreatedAt, thought.UpdatedAt,
 		thought.ContentHash, thought.CaptureStatus, thought.RefineStatus, models.IndexStatusIndexed, thought.TopicStatus,
+		strings.Join(thought.TopicIDs, ","),
 	)
 	if err != nil {
 		return err
@@ -186,6 +202,24 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		where = "(lower(c.search_text) LIKE ? OR lower(t.title) LIKE ?)"
 		args = append(args, pattern, pattern)
 	}
+	if strings.TrimSpace(query.TopicID) != "" {
+		where = where + " AND lower(coalesce(t.topic_ids, '')) LIKE ?"
+		args = append(args, "%"+strings.ToLower(strings.TrimSpace(query.TopicID))+"%")
+	}
+	if len(query.Tags) > 0 {
+		tagClauses := []string{}
+		for _, tag := range query.Tags {
+			tag = strings.TrimSpace(tag)
+			if tag == "" {
+				continue
+			}
+			tagClauses = append(tagClauses, "lower(c.tags) LIKE ?")
+			args = append(args, "%"+strings.ToLower(tag)+"%")
+		}
+		if len(tagClauses) > 0 {
+			where = where + " AND (" + strings.Join(tagClauses, " OR ") + ")"
+		}
+	}
 
 	countQuery := fmt.Sprintf(`SELECT count(*) FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id WHERE %s`, where)
 	var total int
@@ -193,7 +227,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		return models.SearchResponse{}, err
 	}
 
-	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags
+	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, '')
 		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
 		WHERE %s
 		ORDER BY t.updated_at DESC
@@ -209,7 +243,8 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		var item models.SearchResult
 		var searchText string
 		var tags string
-		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags); err != nil {
+		var topicIDs string
+		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs); err != nil {
 			return models.SearchResponse{}, err
 		}
 		item.Snippet = snippet(searchText, query.Query)
@@ -218,6 +253,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		item.RecencyScore = 0
 		item.Score = item.KeywordScore
 		item.Tags = splitCSV(tags)
+		item.Topics = splitCSV(topicIDs)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -238,9 +274,11 @@ func buildSearchText(thought models.Thought, content models.ThoughtContent) stri
 		thought.Summary,
 		strings.Join(thought.UserTags, " "),
 		strings.Join(thought.AITags, " "),
+		strings.Join(thought.TopicIDs, " "),
 		content.Original,
 		content.ExtractedContent,
 		content.AINotes,
+		content.Links,
 	}
 	return strings.Join(parts, "\n")
 }

@@ -19,7 +19,7 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	for _, dir := range []string{ws.RootPath, ws.ThoughtsPath, ws.TopicsPath, ws.RuntimePath, ws.JobsPath} {
+	for _, dir := range []string{ws.RootPath, ws.ThoughtsPath, ws.TopicsPath, ws.AttachmentsPath, ws.RuntimePath, ws.JobsPath} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatalf("expected directory %s: %v", dir, err)

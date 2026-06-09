@@ -34,7 +34,14 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(targetPath, RenderThought(thought, content), 0o644)
+	tmpPath := fmt.Sprintf("%s.%d.tmp", targetPath, time.Now().UnixNano())
+	if err := os.WriteFile(tmpPath, RenderThought(thought, content), 0o644); err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	return os.Rename(tmpPath, targetPath)
 }
 
 func ReadThought(rootPath string, thoughtID string) (models.Thought, models.ThoughtContent, error) {

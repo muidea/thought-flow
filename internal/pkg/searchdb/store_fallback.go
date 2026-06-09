@@ -123,6 +123,12 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	s.mu.RLock()
 	all := make([]indexedThought, 0, len(s.items))
 	for _, item := range s.items {
+		if query.TopicID != "" && !containsFold(item.thought.TopicIDs, query.TopicID) {
+			continue
+		}
+		if len(query.Tags) > 0 && !hasAnyFold(item.tags, query.Tags) {
+			continue
+		}
 		if q == "" || strings.Contains(strings.ToLower(item.text), q) || strings.Contains(strings.ToLower(item.thought.DisplayTitle), q) {
 			all = append(all, item)
 		}
@@ -173,11 +179,31 @@ func buildSearchText(thought models.Thought, content models.ThoughtContent) stri
 		thought.Summary,
 		strings.Join(thought.UserTags, " "),
 		strings.Join(thought.AITags, " "),
+		strings.Join(thought.TopicIDs, " "),
 		content.Original,
 		content.ExtractedContent,
 		content.AINotes,
+		content.Links,
 	}
 	return strings.Join(parts, "\n")
+}
+
+func containsFold(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyFold(values []string, expected []string) bool {
+	for _, item := range expected {
+		if containsFold(values, item) {
+			return true
+		}
+	}
+	return false
 }
 
 func snippet(text string, query string) string {

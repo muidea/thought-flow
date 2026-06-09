@@ -30,6 +30,7 @@ func TestIndexAndSearchThought(t *testing.T) {
 		ContentHash:   models.ContentHash("hybrid search"),
 		UserTags:      []string{"search"},
 		AITags:        []string{"engineering"},
+		TopicIDs:      []string{"duckdb-notes"},
 		Summary:       "DuckDB keyword search baseline",
 		CaptureStatus: models.CaptureStatusCaptured,
 		RefineStatus:  models.RefineStatusRefined,
@@ -56,5 +57,23 @@ func TestIndexAndSearchThought(t *testing.T) {
 	}
 	if result.Items[0].KeywordScore <= 0 {
 		t.Fatalf("expected positive keyword score")
+	}
+	if len(result.Items[0].Topics) != 1 || result.Items[0].Topics[0] != "duckdb-notes" {
+		t.Fatalf("topics = %#v", result.Items[0].Topics)
+	}
+
+	filtered, err := store.Search(ctx, models.SearchQuery{Query: "duckdb", TopicID: "duckdb-notes", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search() with topic filter error = %v", err)
+	}
+	if filtered.Total != 1 {
+		t.Fatalf("topic filtered total = %d", filtered.Total)
+	}
+	empty, err := store.Search(ctx, models.SearchQuery{Query: "duckdb", TopicID: "other-topic", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search() with unmatched topic filter error = %v", err)
+	}
+	if empty.Total != 0 {
+		t.Fatalf("unmatched topic filtered total = %d", empty.Total)
 	}
 }

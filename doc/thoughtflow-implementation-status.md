@@ -23,9 +23,10 @@
 5. 工作区初始化：
    - `thoughts/`
    - `topics/`
+   - `attachments/`
    - `.thoughtflow/jobs`
    - `.thoughtflow/logs`
-6. 原子笔记 Markdown 写入和读取。
+6. 原子笔记 Markdown 原子写入和读取。
 7. `Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitCommitRecord` 等 M1 模型。
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。
@@ -50,6 +51,7 @@ go build ./cmd/thoughtflow
 6. refined 结果回写原子 Markdown 的 front matter 和 `AI Notes` 分区。
 7. `search` 运行单元。
 8. `thought.captured` / `thought.refined` 触发后台 index Job。
+   - `topic.updated` 触发 workspace reindex，刷新专题过滤视图。
 9. `GET /api/search`。
 10. `POST /api/system/reindex`。
 11. `POST /api/thoughts/{id}/retry-refine`。
@@ -57,6 +59,7 @@ go build ./cmd/thoughtflow
 13. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
 14. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
 15. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
+16. 搜索索引返回 `topics` 字段，并支持 `topic_id` 与 `tags` 过滤。
 
 验证：
 
@@ -86,17 +89,18 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./internal/pkg/searchdb
    - semantic 配置字段
 5. `thought.refined` / `search.index_updated` 触发后台 topic match Job。
 6. 命中专题后自动追加专题文档分区和来源链接。
-7. `topic.created`、`topic.matched`、`topic.updated`、`topic.rebuild_started`、`topic.rebuild_failed` 事件。
-8. 专题变更触发 `git.commit_requested`。
-9. 专题 API：
+7. 命中专题后同步回写原子笔记 `topic_ids`、`topic_status` 与 `Links` 分区。
+8. `topic.created`、`topic.matched`、`topic.updated`、`topic.rebuild_started`、`topic.rebuild_failed` 事件。
+9. 专题变更触发 `git.commit_requested`，并包含被专题回写的原子笔记路径。
+10. 专题 API：
    - `GET /api/topics`
    - `POST /api/topics`
    - `GET /api/topics/{id}`
    - `PUT /api/topics/{id}`
    - `POST /api/topics/{id}/rebuild`
-10. 本地 synthesis 草稿 API：`POST /api/synthesis`。
-11. synthesis 会读取指定 thoughts，生成本地 Markdown 草稿并返回 source links。
-12. M3 topic store 和 topic service 单元测试。
+11. 本地 synthesis 草稿 API：`POST /api/synthesis`。
+12. synthesis 会读取指定 thoughts，生成本地 Markdown 草稿并返回 source links。
+13. M3 topic store 和 topic service 单元测试。
 
 验证：
 
@@ -119,7 +123,7 @@ M3：
 
 1. AI 智能缝合仍是本地规则追加，不是 LLM patch/merge。
 2. semantic rule 仅保留模型字段，尚未接入 embedding 或向量相似度。
-3. 专题成员关系当前随 topic YAML 聚合存储，尚未拆为独立 membership 事实文件。
+3. 专题成员关系当前随 topic YAML 和 Thought front matter/Links 聚合存储，尚未拆为独立 membership 事实文件。
 4. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
 5. 前端 UI 尚未实现。
 

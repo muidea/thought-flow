@@ -69,6 +69,16 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 	if !strings.Contains(detail.Document, "DuckDB indexes should support") {
 		t.Fatalf("expected matched content in topic document:\n%s", detail.Document)
 	}
+	updatedThought, updatedContent, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if updatedThought.TopicStatus != models.TopicStatusMatched {
+		t.Fatalf("topic status = %q", updatedThought.TopicStatus)
+	}
+	if !strings.Contains(updatedContent.Links, "<!-- topic:engineering-search -->") {
+		t.Fatalf("expected topic backlink in thought links:\n%s", updatedContent.Links)
+	}
 }
 
 func serviceTestThought(id string, title string) models.Thought {

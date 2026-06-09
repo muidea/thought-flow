@@ -18,20 +18,22 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 	}
 
 	ws := &models.Workspace{
-		ID:           "local",
-		RootPath:     rootPath,
-		ThoughtsPath: filepath.Join(rootPath, "thoughts"),
-		TopicsPath:   filepath.Join(rootPath, "topics"),
-		RuntimePath:  filepath.Join(rootPath, ".thoughtflow"),
-		JobsPath:     filepath.Join(rootPath, ".thoughtflow", "jobs"),
-		GitEnabled:   cfg.GitSync.Enabled,
-		CreatedAt:    time.Now().UTC(),
+		ID:              "local",
+		RootPath:        rootPath,
+		ThoughtsPath:    filepath.Join(rootPath, "thoughts"),
+		TopicsPath:      filepath.Join(rootPath, "topics"),
+		AttachmentsPath: filepath.Join(rootPath, "attachments"),
+		RuntimePath:     filepath.Join(rootPath, ".thoughtflow"),
+		JobsPath:        filepath.Join(rootPath, ".thoughtflow", "jobs"),
+		GitEnabled:      cfg.GitSync.Enabled,
+		CreatedAt:       time.Now().UTC(),
 	}
 
 	dirs := []string{
 		ws.RootPath,
 		ws.ThoughtsPath,
 		ws.TopicsPath,
+		ws.AttachmentsPath,
 		ws.RuntimePath,
 		ws.JobsPath,
 		filepath.Join(ws.RuntimePath, "logs"),

@@ -40,8 +40,15 @@ func (s *Service) ID() string {
 
 func (s *Service) Notify(ev event.Event, result event.Result) {
 	domainEvent, ok := ev.Data().(models.DomainEvent)
-	if ok && domainEvent.ResourceID != "" {
-		_, _ = s.IndexAsync(domainEvent.ResourceID)
+	if ok {
+		switch domainEvent.ResourceType {
+		case models.ResourceTypeThought:
+			if domainEvent.ResourceID != "" {
+				_, _ = s.IndexAsync(domainEvent.ResourceID)
+			}
+		case models.ResourceTypeTopic:
+			_, _ = s.ReindexWorkspace(context.Background())
+		}
 	}
 	if result != nil {
 		result.Set(nil, nil)

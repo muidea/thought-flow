@@ -53,7 +53,7 @@ func (s *Service) CreateTopic(ctx context.Context, req models.TopicCreateRequest
 	if err != nil {
 		return models.Topic{}, err
 	}
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicCreated, s.workspace.ID, topic.ID, topic))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicCreated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, topic))
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update"))
 	return topic, nil
 }
@@ -63,7 +63,7 @@ func (s *Service) UpdateTopic(ctx context.Context, id string, req models.TopicUp
 	if err != nil {
 		return models.Topic{}, err
 	}
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, topic.ID, topic))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, topic))
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update"))
 	return topic, nil
 }
@@ -105,7 +105,7 @@ func (s *Service) RebuildTopic(ctx context.Context, id string) (models.Job, erro
 	if err != nil {
 		return models.Job{}, err
 	}
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildStarted, s.workspace.ID, id, job))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildStarted, s.workspace.ID, models.ResourceTypeTopic, id, job))
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	run := func() {
 		s.rebuildTopicJob(job)
@@ -127,13 +127,13 @@ func (s *Service) matchThoughtJob(job models.Job) {
 		errRef := models.NewErrorRef("thoughtflow.topic.match_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, job.ResourceID, errRef))
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, models.ResourceTypeThought, job.ResourceID, errRef))
 		return
 	}
 	job, _ = s.jobs.MarkSucceeded(job, "topic match succeeded")
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	if len(memberships) > 0 {
-		eventutil.Post(s.eventHub, topicEvent(models.EventTopicMatched, s.workspace.ID, job.ResourceID, memberships))
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicMatched, s.workspace.ID, models.ResourceTypeThought, job.ResourceID, memberships))
 	}
 }
 
@@ -159,8 +159,8 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 				return memberships, err
 			}
 			if changed {
-				eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, updatedTopic.ID, updatedTopic))
-				eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update"))
+				eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
+				eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
 			}
 		}
 	}
@@ -170,19 +170,19 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 func (s *Service) rebuildTopicJob(job models.Job) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	topic, count, err := s.store.Rebuild(context.Background(), job.ResourceID)
+	topic, count, changedThoughtPaths, err := s.store.Rebuild(context.Background(), job.ResourceID)
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.topic.rebuild_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, job.ResourceID, errRef))
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, models.ResourceTypeTopic, job.ResourceID, errRef))
 		return
 	}
 	job.Message = "topic rebuilt"
 	job, _ = s.jobs.MarkSucceeded(job, "topic rebuilt")
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, topic.ID, map[string]any{"topic": topic, "matched_count": count}))
-	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update"))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, map[string]any{"topic": topic, "matched_count": count}))
+	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedThoughtPaths...))
 }
 
 func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
@@ -198,11 +198,7 @@ func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
 	}
 }
 
-func topicEvent(eventType string, workspaceID string, resourceID string, payload any) models.DomainEvent {
-	resourceType := models.ResourceTypeTopic
-	if strings.HasPrefix(resourceID, "20") {
-		resourceType = models.ResourceTypeThought
-	}
+func topicEvent(eventType string, workspaceID string, resourceType string, resourceID string, payload any) models.DomainEvent {
 	return models.DomainEvent{
 		EventType:      eventType,
 		SourceUnit:     "topic",
@@ -215,7 +211,12 @@ func topicEvent(eventType string, workspaceID string, resourceID string, payload
 	}
 }
 
-func gitTopicEvent(workspaceID string, topic models.Topic, reason string) models.DomainEvent {
+func gitTopicEvent(workspaceID string, topic models.Topic, reason string, extraPaths ...string) models.DomainEvent {
+	paths := []string{
+		"topics/" + topic.Slug + "/topic.yaml",
+		"topics/" + topic.Slug + "/index.md",
+	}
+	paths = append(paths, extraPaths...)
 	return models.DomainEvent{
 		EventType:    models.EventGitCommitRequested,
 		SourceUnit:   "topic",
@@ -224,13 +225,27 @@ func gitTopicEvent(workspaceID string, topic models.Topic, reason string) models
 		ResourceType: models.ResourceTypeTopic,
 		ResourceID:   topic.ID,
 		Payload: models.GitCommitRequestedPayload{
-			Paths: []string{
-				"topics/" + topic.Slug + "/topic.yaml",
-				"topics/" + topic.Slug + "/index.md",
-			},
+			Paths:       uniqueStrings(paths),
 			Reason:      reason,
 			ResourceIDs: []string{topic.ID},
 		},
 		PayloadVersion: 1,
 	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	ret := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		ret = append(ret, value)
+	}
+	return ret
 }

@@ -69,6 +69,19 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	if !strings.Contains(document, "Sources: [[../../thoughts/2026/06/20260609-143010-8f3a.md]]") {
 		t.Fatalf("expected relative source link in document:\n%s", document)
 	}
+	updatedThought, updatedContent, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if updatedThought.TopicStatus != models.TopicStatusMatched {
+		t.Fatalf("topic status = %q", updatedThought.TopicStatus)
+	}
+	if !containsString(updatedThought.TopicIDs, updated.ID) {
+		t.Fatalf("expected topic id on thought, got %#v", updatedThought.TopicIDs)
+	}
+	if !strings.Contains(updatedContent.Links, "<!-- topic:duckdb-notes -->") {
+		t.Fatalf("expected topic backlink in thought links:\n%s", updatedContent.Links)
+	}
 
 	_, changed, err = store.AddMembership(ctx, updated, thought, content, membership)
 	if err != nil {

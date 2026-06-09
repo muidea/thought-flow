@@ -231,10 +231,23 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 	if score > 1 {
 		score = 1
 	}
+	matchType := "keyword"
+	if len(reasons) > 0 {
+		allTagReasons := true
+		for _, reason := range reasons {
+			if !strings.HasPrefix(reason, "tag:") {
+				allTagReasons = false
+				break
+			}
+		}
+		if allTagReasons {
+			matchType = "tag"
+		}
+	}
 	return models.TopicMembership{
 		TopicID:   topic.ID,
 		ThoughtID: thought.ID,
-		MatchType: "rule",
+		MatchType: matchType,
 		Score:     score,
 		Reasons:   reasons,
 		Status:    "accepted",
@@ -246,7 +259,15 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {
 	_ = ctx
 	if contains(topic.Members, thought.ID) {
-		return topic, false, nil
+		currentThought, currentContent, err := markdown.ReadThought(s.rootPath, thought.ID)
+		if err == nil {
+			thought = currentThought
+			content = currentContent
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return models.Topic{}, false, err
+		}
+		changed, err := s.updateThoughtTopicLink(topic, thought, content, true)
+		return topic, changed, err
 	}
 	topic.Members = append(topic.Members, thought.ID)
 	sort.Strings(topic.Members)
@@ -271,19 +292,25 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 	if err := s.writeTopic(topic); err != nil {
 		return models.Topic{}, false, err
 	}
+	if _, err := s.updateThoughtTopicLink(topic, thought, content, true); err != nil {
+		return models.Topic{}, false, err
+	}
 	return topic, true, nil
 }
 
-func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, error) {
+func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []string, error) {
 	topic, err := s.Get(ctx, id)
 	if err != nil {
-		return models.Topic{}, 0, err
+		return models.Topic{}, 0, nil, err
 	}
+	previousMembers := append([]string{}, topic.Members...)
 	topic.Members = []string{}
 	topic.MemberCount = 0
 	topic.WordCount = 0
 	topic.LastActiveAt = nil
 	document := initialDocument(topic)
+	matchedThoughts := map[string]models.Thought{}
+	matchedContents := map[string]models.ThoughtContent{}
 	thoughtsRoot := filepath.Join(s.rootPath, "thoughts")
 	count := 0
 	err = filepath.WalkDir(thoughtsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -303,6 +330,8 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, erro
 			return nil
 		}
 		topic.Members = append(topic.Members, thought.ID)
+		matchedThoughts[thought.ID] = thought
+		matchedContents[thought.ID] = content
 		document = appendThoughtSection(s.rootPath, topic, document, thought, content, membership)
 		count++
 		return nil
@@ -311,7 +340,7 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, erro
 		err = nil
 	}
 	if err != nil {
-		return models.Topic{}, 0, err
+		return models.Topic{}, 0, nil, err
 	}
 	sort.Strings(topic.Members)
 	now := time.Now().UTC()
@@ -320,12 +349,41 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, erro
 	topic.LastActiveAt = &now
 	topic.UpdatedAt = now
 	if err := s.writeDocument(topic, document); err != nil {
-		return models.Topic{}, 0, err
+		return models.Topic{}, 0, nil, err
 	}
 	if err := s.writeTopic(topic); err != nil {
-		return models.Topic{}, 0, err
+		return models.Topic{}, 0, nil, err
 	}
-	return topic, count, nil
+	changedThoughtPaths := []string{}
+	for _, thoughtID := range topic.Members {
+		changed, err := s.updateThoughtTopicLink(topic, matchedThoughts[thoughtID], matchedContents[thoughtID], true)
+		if err != nil {
+			return models.Topic{}, 0, nil, err
+		}
+		if changed {
+			changedThoughtPaths = append(changedThoughtPaths, matchedThoughts[thoughtID].Path)
+		}
+	}
+	for _, thoughtID := range previousMembers {
+		if contains(topic.Members, thoughtID) {
+			continue
+		}
+		thought, content, err := markdown.ReadThought(s.rootPath, thoughtID)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return models.Topic{}, 0, nil, err
+		}
+		changed, err := s.updateThoughtTopicLink(topic, thought, content, false)
+		if err != nil {
+			return models.Topic{}, 0, nil, err
+		}
+		if changed {
+			changedThoughtPaths = append(changedThoughtPaths, thought.Path)
+		}
+	}
+	return topic, count, changedThoughtPaths, nil
 }
 
 func (s *Store) writeTopic(topic models.Topic) error {
@@ -340,7 +398,14 @@ func (s *Store) writeTopic(topic models.Topic) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(tmp)
+	}()
+	return os.Rename(tmp, path)
 }
 
 func (s *Store) writeDocument(topic models.Topic, document string) error {
@@ -351,10 +416,13 @@ func (s *Store) writeDocument(topic models.Topic, document string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
 	if err := os.WriteFile(tmp, []byte(document), 0o644); err != nil {
 		return err
 	}
+	defer func() {
+		_ = os.Remove(tmp)
+	}()
 	return os.Rename(tmp, path)
 }
 
@@ -435,6 +503,75 @@ func appendThoughtSection(rootPath string, topic models.Topic, document string, 
 	return builder.String()
 }
 
+func (s *Store) updateThoughtTopicLink(topic models.Topic, thought models.Thought, content models.ThoughtContent, include bool) (bool, error) {
+	if thought.ID == "" {
+		return false, errors.New("thought id is required")
+	}
+	nextTopicIDs := append([]string{}, thought.TopicIDs...)
+	if include {
+		nextTopicIDs = appendMissing(nextTopicIDs, topic.ID)
+	} else {
+		nextTopicIDs = removeValue(nextTopicIDs, topic.ID)
+	}
+	sort.Strings(nextTopicIDs)
+	nextLinks := setTopicLink(s.rootPath, topic, thought, content.Links, include)
+	nextStatus := models.TopicStatusUnmatched
+	if len(nextTopicIDs) > 0 {
+		nextStatus = models.TopicStatusMatched
+	}
+	if sameStringSet(thought.TopicIDs, nextTopicIDs) && strings.TrimSpace(content.Links) == strings.TrimSpace(nextLinks) && thought.TopicStatus == nextStatus {
+		return false, nil
+	}
+	thought.TopicIDs = nextTopicIDs
+	thought.TopicStatus = nextStatus
+	thought.UpdatedAt = time.Now().UTC()
+	content.Links = nextLinks
+	if err := markdown.WriteThought(s.rootPath, thought, content); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func setTopicLink(rootPath string, topic models.Topic, thought models.Thought, links string, include bool) string {
+	marker := topicLinkMarker(topic.ID)
+	lines := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(links), "\n") {
+		if strings.Contains(line, marker) {
+			continue
+		}
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if include {
+		if len(lines) > 0 && !contains(lines, "Topics:") {
+			lines = append(lines, "")
+		}
+		if !contains(lines, "Topics:") {
+			lines = append(lines, "Topics:")
+		}
+		lines = append(lines, topicLinkLine(rootPath, topic, thought))
+	}
+	if !include && len(lines) == 1 && lines[0] == "Topics:" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func topicLinkLine(rootPath string, topic models.Topic, thought models.Thought) string {
+	topicPath := filepath.Join(rootPath, "topics", topic.Slug, "index.md")
+	thoughtDir := filepath.Dir(filepath.Join(rootPath, filepath.FromSlash(thought.Path)))
+	relativePath := filepath.ToSlash(filepath.Join("topics", topic.Slug, "index.md"))
+	if rel, err := filepath.Rel(thoughtDir, topicPath); err == nil {
+		relativePath = filepath.ToSlash(rel)
+	}
+	return fmt.Sprintf("- [[%s|%s]] %s", relativePath, topic.Name, topicLinkMarker(topic.ID))
+}
+
+func topicLinkMarker(topicID string) string {
+	return "<!-- topic:" + topicID + " -->"
+}
+
 var slugCleanup = regexp.MustCompile(`[^a-z0-9\-]+`)
 
 func Slugify(value string) string {
@@ -471,6 +608,39 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func appendMissing(values []string, expected string) []string {
+	if contains(values, expected) {
+		return values
+	}
+	return append(values, expected)
+}
+
+func removeValue(values []string, expected string) []string {
+	ret := []string{}
+	for _, value := range values {
+		if value != expected {
+			ret = append(ret, value)
+		}
+	}
+	return ret
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	left = append([]string{}, left...)
+	right = append([]string{}, right...)
+	sort.Strings(left)
+	sort.Strings(right)
+	for idx := range left {
+		if left[idx] != right[idx] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsFold(values []string, expected string) bool {

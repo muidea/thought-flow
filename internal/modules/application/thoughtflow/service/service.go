@@ -290,12 +290,13 @@ func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWrite
 	_ = ctx
 	status := map[string]any{
 		"workspace": map[string]any{
-			"id":            s.workspace.ID,
-			"root_path":     s.workspace.RootPath,
-			"thoughts_path": s.workspace.ThoughtsPath,
-			"topics_path":   s.workspace.TopicsPath,
-			"runtime_path":  s.workspace.RuntimePath,
-			"git_enabled":   s.workspace.GitEnabled,
+			"id":               s.workspace.ID,
+			"root_path":        s.workspace.RootPath,
+			"thoughts_path":    s.workspace.ThoughtsPath,
+			"topics_path":      s.workspace.TopicsPath,
+			"attachments_path": s.workspace.AttachmentsPath,
+			"runtime_path":     s.workspace.RuntimePath,
+			"git_enabled":      s.workspace.GitEnabled,
 		},
 		"duckdb": map[string]any{
 			"status": "ready",
