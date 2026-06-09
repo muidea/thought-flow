@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -21,6 +24,9 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
 )
+
+//go:embed web/*
+var webAssets embed.FS
 
 type Service struct {
 	registry       engine.RouteRegistry
@@ -47,6 +53,10 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 }
 
 func (s *Service) RegisterRoutes() {
+	s.registry.AddHandler("/", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/index.html", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/styles.css", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/app.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
@@ -63,6 +73,37 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/system/reindex", engine.POST, s.handleReindex)
 	s.registry.AddHandler("/health/live", engine.GET, s.handleLive)
 	s.registry.AddHandler("/health/ready", engine.GET, s.handleReady)
+}
+
+func (s *Service) handleWeb(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	filePath := strings.TrimPrefix(path.Clean(req.URL.Path), "/")
+	if filePath == "." || filePath == "" {
+		filePath = "index.html"
+	}
+	if strings.Contains(filePath, "..") {
+		http.NotFound(res, req)
+		return
+	}
+	raw, err := webAssets.ReadFile(path.Join("web", filePath))
+	if errors.Is(err, fs.ErrNotExist) {
+		http.NotFound(res, req)
+		return
+	}
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.ui.asset_failed", err.Error())
+		return
+	}
+	switch path.Ext(filePath) {
+	case ".css":
+		res.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js":
+		res.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	default:
+		res.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write(raw)
 }
 
 func (s *Service) handleCreateThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {

@@ -127,6 +127,36 @@ go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
 
+## 2026-06-09 UI 基线
+
+已实现：
+
+1. 嵌入式前端资源，无需额外构建链。
+2. `magicEngine` 路由服务：
+   - `GET /`
+   - `GET /index.html`
+   - `GET /styles.css`
+   - `GET /app.js`
+3. 首屏工作台：
+   - 快速捕捉文本/URL
+   - `Ctrl+K` 聚焦搜索
+   - topic dashboard
+   - search hub，支持 keyword / semantic / hybrid 模式
+   - topic workspace，展示专题 Markdown 文档并可触发 rebuild
+   - synthesis 草稿视图
+   - thought preview
+   - SSE activity feed
+   - system AI/workspace 状态摘要
+4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
+5. 嵌入资产服务单元测试。
+
+验证：
+
+```bash
+go test ./...
+go build -o /tmp/thoughtflow ./cmd/thoughtflow
+```
+
 ## 尚未实现
 
 M2：
@@ -142,7 +172,11 @@ M3：
 2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
 3. 专题成员关系当前随 topic YAML 和 Thought front matter/Links 聚合存储，尚未拆为独立 membership 事实文件。
 4. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
-5. 前端 UI 尚未实现。
+
+UI：
+
+1. 还没有富 Markdown 渲染、diff/patch 审批视图和可视化规则编辑器。
+2. 还没有独立前端构建、组件测试和浏览器兼容性测试矩阵。
 
 当前限制：
 
