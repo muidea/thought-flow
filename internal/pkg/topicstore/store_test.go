@@ -69,6 +69,9 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	if !strings.Contains(document, "Sources: [[../../thoughts/2026/06/20260609-143010-8f3a.md]]") {
 		t.Fatalf("expected relative source link in document:\n%s", document)
 	}
+	if !strings.Contains(document, "members:\n  - 20260609-143010-8f3a") {
+		t.Fatalf("expected member snapshot in topic document front matter:\n%s", document)
+	}
 	updatedThought, updatedContent, err := markdown.ReadThought(root, thought.ID)
 	if err != nil {
 		t.Fatalf("ReadThought() error = %v", err)
@@ -89,6 +92,50 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	}
 	if changed {
 		t.Fatalf("duplicate membership should not change topic")
+	}
+}
+
+func TestStoreAddMembershipUsesWeaveProvider(t *testing.T) {
+	root := t.TempDir()
+	store := New(root, WithWeaveProvider(fakeWeaver{}))
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{
+		Name: "DuckDB Notes",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+		Outline: []models.OutlineNode{{Title: "Engineering Practice"}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	thought := testThought("20260609-143010-8f3a", "Query planner note", nil)
+	content := models.ThoughtContent{Original: "DuckDB query planner engineering practice."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	membership, ok := store.MatchThought(topic, thought, content)
+	if !ok {
+		t.Fatalf("expected topic rule match")
+	}
+
+	updated, changed, err := store.AddMembership(ctx, topic, thought, content, membership)
+	if err != nil {
+		t.Fatalf("AddMembership() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected membership change")
+	}
+	document, err := store.ReadDocument(ctx, updated.ID)
+	if err != nil {
+		t.Fatalf("ReadDocument() error = %v", err)
+	}
+	if !strings.Contains(document, "provider-woven") {
+		t.Fatalf("expected provider-generated document:\n%s", document)
+	}
+	if strings.Contains(document, "## Query planner note") {
+		t.Fatalf("fallback append should not be used when provider succeeds:\n%s", document)
 	}
 }
 
@@ -137,4 +184,15 @@ func containsString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+type fakeWeaver struct{}
+
+func (fakeWeaver) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
+	_ = ctx
+	return models.TopicWeaveResult{
+		Document: req.CurrentDocument + "\n\n<!-- provider-woven -->\n> Sources: [[" + req.SourceLink + "]]\n",
+		Model:    "fake",
+		Strategy: "test",
+	}, nil
 }

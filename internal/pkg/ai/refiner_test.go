@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,5 +87,72 @@ func TestOpenAICompatibleProviderRefineAndEmbed(t *testing.T) {
 	}
 	if len(refinement.Embedding.Vector) != 3 {
 		t.Fatalf("embedding vector = %#v", refinement.Embedding.Vector)
+	}
+}
+
+func TestLocalProviderWeaveInsertsIntoMatchingOutline(t *testing.T) {
+	provider := NewLocalRefineProvider()
+	result, err := provider.Weave(context.Background(), models.TopicWeaveRequest{
+		Topic: models.Topic{
+			ID:   "duckdb-notes",
+			Name: "DuckDB Notes",
+			Outline: []models.OutlineNode{
+				{Title: "Background"},
+				{Title: "Engineering Practice"},
+			},
+		},
+		CurrentDocument: "# DuckDB Notes\n\n## Background\n\n## Engineering Practice\n",
+		Thought:         models.Thought{ID: "thought-1", DisplayTitle: "Indexing note"},
+		Content:         models.ThoughtContent{Original: "Engineering practice for DuckDB semantic indexing."},
+		Membership:      models.TopicMembership{Reasons: []string{"keyword:duckdb"}},
+		SourceLink:      "../../thoughts/2026/06/thought-1.md",
+	})
+	if err != nil {
+		t.Fatalf("Weave() error = %v", err)
+	}
+	backgroundIdx := strings.Index(result.Document, "## Background")
+	practiceIdx := strings.Index(result.Document, "## Engineering Practice")
+	noteIdx := strings.Index(result.Document, "### Indexing note")
+	if backgroundIdx < 0 || practiceIdx < 0 || noteIdx < 0 {
+		t.Fatalf("unexpected woven document:\n%s", result.Document)
+	}
+	if !(backgroundIdx < practiceIdx && practiceIdx < noteIdx) {
+		t.Fatalf("note should be inserted under Engineering Practice:\n%s", result.Document)
+	}
+	if !strings.Contains(result.Document, "Sources: [[../../thoughts/2026/06/thought-1.md]]") {
+		t.Fatalf("expected source link:\n%s", result.Document)
+	}
+}
+
+func TestOpenAICompatibleProviderWeaveRequiresSourceLink(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": `{"document":"# Missing source"}`,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	})
+	_, err := provider.Weave(context.Background(), models.TopicWeaveRequest{
+		Topic:           models.Topic{ID: "duckdb-notes", Name: "DuckDB Notes"},
+		CurrentDocument: "# DuckDB Notes",
+		Thought:         models.Thought{ID: "thought-1"},
+		Content:         models.ThoughtContent{Original: "content"},
+		SourceLink:      "../../thoughts/2026/06/thought-1.md",
+	})
+	if err == nil {
+		t.Fatalf("expected missing source link error")
 	}
 }

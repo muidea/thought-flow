@@ -99,7 +99,10 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./internal/pkg/searchdb
    - manual include/exclude
    - semantic 配置字段
 5. `thought.refined` / `search.index_updated` 触发后台 topic match Job。
-6. 命中专题后自动追加专题文档分区和来源链接。
+6. 命中专题后通过 topic weave provider 更新专题文档：
+   - 配置 AI Key 时使用 OpenAI-compatible chat provider 生成完整 Markdown merge 结果。
+   - 未配置或 provider 失败时使用本地 outline-aware fallback，将内容插入匹配的大纲章节。
+   - 写入前校验结果必须包含 source link。
 7. 命中专题后同步回写原子笔记 `topic_ids`、`topic_status` 与 `Links` 分区。
 8. `topic.created`、`topic.matched`、`topic.updated`、`topic.rebuild_started`、`topic.rebuild_failed` 事件。
 9. 专题变更触发 `git.commit_requested`，并包含被专题回写的原子笔记路径。
@@ -111,7 +114,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./internal/pkg/searchdb
    - `POST /api/topics/{id}/rebuild`
 11. 本地 synthesis 草稿 API：`POST /api/synthesis`。
 12. synthesis 会读取指定 thoughts，生成本地 Markdown 草稿并返回 source links。
-13. M3 topic store 和 topic service 单元测试。
+13. M3 topic store、topic service 和 weave provider 单元测试。
 
 验证：
 
@@ -131,8 +134,8 @@ M2：
 
 M3：
 
-1. AI 智能缝合仍是本地规则追加，不是 LLM patch/merge。
-2. semantic rule 仅保留模型字段，尚未接入 embedding 或向量相似度。
+1. topic semantic rule 仅保留模型字段，尚未接入 topic 匹配阶段的 embedding 相似度。
+2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
 3. 专题成员关系当前随 topic YAML 和 Thought front matter/Links 聚合存储，尚未拆为独立 membership 事实文件。
 4. synthesis 当前是本地草稿生成，尚未接入云端模型和持久化审批流程。
 5. 前端 UI 尚未实现。

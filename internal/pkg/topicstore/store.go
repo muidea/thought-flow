@@ -21,10 +21,27 @@ import (
 
 type Store struct {
 	rootPath string
+	weaver   WeaveProvider
 }
 
-func New(rootPath string) *Store {
-	return &Store{rootPath: rootPath}
+type WeaveProvider interface {
+	Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error)
+}
+
+type Option func(*Store)
+
+func WithWeaveProvider(provider WeaveProvider) Option {
+	return func(s *Store) {
+		s.weaver = provider
+	}
+}
+
+func New(rootPath string, options ...Option) *Store {
+	store := &Store{rootPath: rootPath}
+	for _, option := range options {
+		option(store)
+	}
+	return store
 }
 
 func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (models.Topic, error) {
@@ -257,7 +274,6 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 }
 
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {
-	_ = ctx
 	if contains(topic.Members, thought.ID) {
 		currentThought, currentContent, err := markdown.ReadThought(s.rootPath, thought.ID)
 		if err == nil {
@@ -284,7 +300,8 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 			return models.Topic{}, false, err
 		}
 	}
-	document = appendThoughtSection(s.rootPath, topic, document, thought, content, membership)
+	document = s.weaveDocument(ctx, topic, document, thought, content, membership)
+	document = updateTopicDocumentMembers(document, topic.Members)
 	topic.WordCount = countWords(document)
 	if err := s.writeDocument(topic, document); err != nil {
 		return models.Topic{}, false, err
@@ -332,7 +349,7 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []st
 		topic.Members = append(topic.Members, thought.ID)
 		matchedThoughts[thought.ID] = thought
 		matchedContents[thought.ID] = content
-		document = appendThoughtSection(s.rootPath, topic, document, thought, content, membership)
+		document = s.weaveDocument(ctx, topic, document, thought, content, membership)
 		count++
 		return nil
 	})
@@ -344,6 +361,7 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []st
 	}
 	sort.Strings(topic.Members)
 	now := time.Now().UTC()
+	document = updateTopicDocumentMembers(document, topic.Members)
 	topic.MemberCount = len(topic.Members)
 	topic.WordCount = countWords(document)
 	topic.LastActiveAt = &now
@@ -473,15 +491,55 @@ func initialDocument(topic models.Topic) string {
 	return builder.String()
 }
 
+func updateTopicDocumentMembers(document string, members []string) string {
+	members = append([]string{}, members...)
+	sort.Strings(members)
+	block := renderMembersBlock(members)
+	if !strings.HasPrefix(document, "---\n") {
+		return "---\n" + block + "---\n\n" + strings.TrimLeft(document, "\n")
+	}
+	end := strings.Index(document[4:], "\n---")
+	if end < 0 {
+		return "---\n" + block + "---\n\n" + strings.TrimLeft(document, "\n")
+	}
+	frontMatter := document[4 : 4+end]
+	body := document[4+end:]
+	lines := strings.Split(frontMatter, "\n")
+	nextLines := []string{}
+	for idx := 0; idx < len(lines); idx++ {
+		line := lines[idx]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "members:") {
+			for idx+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[idx+1]), "-") {
+				idx++
+			}
+			continue
+		}
+		nextLines = append(nextLines, line)
+	}
+	return "---\n" + strings.Join(nextLines, "\n") + "\n" + block + body
+}
+
+func renderMembersBlock(members []string) string {
+	if len(members) == 0 {
+		return "members: []\n"
+	}
+	var builder strings.Builder
+	builder.WriteString("members:\n")
+	for _, member := range members {
+		builder.WriteString("  - ")
+		builder.WriteString(member)
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
 func appendThoughtSection(rootPath string, topic models.Topic, document string, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) string {
 	title := firstNonEmpty(thought.DisplayTitle, thought.UserTitle, thought.ExtractedTitle, thought.ID)
 	body := firstNonEmpty(thought.Summary, firstLine(content.AINotes), firstLine(content.ExtractedContent), firstLine(content.Original))
-	sourceRel := thought.Path
-	topicDir := filepath.Join(rootPath, "topics", topic.Slug)
-	thoughtPath := filepath.Join(rootPath, filepath.FromSlash(thought.Path))
-	if rel, err := filepath.Rel(topicDir, thoughtPath); err == nil {
-		sourceRel = filepath.ToSlash(rel)
-	}
+	sourceRel := sourceRelativePath(rootPath, topic, thought)
 
 	var builder strings.Builder
 	builder.WriteString(strings.TrimRight(document, "\n"))
@@ -501,6 +559,34 @@ func appendThoughtSection(rootPath string, topic models.Topic, document string, 
 	builder.WriteString(sourceRel)
 	builder.WriteString("]]\n")
 	return builder.String()
+}
+
+func (s *Store) weaveDocument(ctx context.Context, topic models.Topic, document string, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) string {
+	sourceRel := sourceRelativePath(s.rootPath, topic, thought)
+	if s.weaver != nil {
+		result, err := s.weaver.Weave(ctx, models.TopicWeaveRequest{
+			Topic:           topic,
+			CurrentDocument: document,
+			Thought:         thought,
+			Content:         content,
+			Membership:      membership,
+			SourceLink:      sourceRel,
+		})
+		if err == nil && strings.Contains(result.Document, sourceRel) {
+			return result.Document
+		}
+	}
+	return appendThoughtSection(s.rootPath, topic, document, thought, content, membership)
+}
+
+func sourceRelativePath(rootPath string, topic models.Topic, thought models.Thought) string {
+	sourceRel := thought.Path
+	topicDir := filepath.Join(rootPath, "topics", topic.Slug)
+	thoughtPath := filepath.Join(rootPath, filepath.FromSlash(thought.Path))
+	if rel, err := filepath.Rel(topicDir, thoughtPath); err == nil {
+		sourceRel = filepath.ToSlash(rel)
+	}
+	return sourceRel
 }
 
 func (s *Store) updateThoughtTopicLink(topic models.Topic, thought models.Thought, content models.ThoughtContent, include bool) (bool, error) {

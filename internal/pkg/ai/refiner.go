@@ -41,9 +41,14 @@ type EmbeddingProvider interface {
 	Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error)
 }
 
+type WeaveProvider interface {
+	Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error)
+}
+
 type Provider interface {
 	RefineProvider
 	EmbeddingProvider
+	WeaveProvider
 }
 
 type LocalRefineProvider struct{}
@@ -60,6 +65,13 @@ func NewRefineProvider(cfg appconfig.AIConfig) RefineProvider {
 }
 
 func NewEmbeddingProvider(cfg appconfig.AIConfig) EmbeddingProvider {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return NewLocalRefineProvider()
+	}
+	return NewOpenAICompatibleProvider(cfg)
+}
+
+func NewWeaveProvider(cfg appconfig.AIConfig) WeaveProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return NewLocalRefineProvider()
 	}
@@ -97,6 +109,24 @@ func (p *LocalRefineProvider) Embed(ctx context.Context, req EmbedRequest) (mode
 		ContentHash: models.ContentHash(req.Text),
 		CreatedAt:   time.Now().UTC(),
 	}, nil
+}
+
+func (p *LocalRefineProvider) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
+	_ = ctx
+	document := strings.TrimRight(req.CurrentDocument, "\n")
+	if document == "" {
+		document = localInitialTopicDocument(req.Topic)
+	}
+	if strings.Contains(document, req.SourceLink) {
+		return models.TopicWeaveResult{Document: document, Model: "local-rule", Strategy: "already-linked"}, nil
+	}
+	section := localThoughtSection(req, chooseOutlineSection(req))
+	if target := chooseOutlineSection(req); target != "" {
+		document = insertIntoOutlineSection(document, target, section)
+	} else {
+		document = strings.TrimRight(document, "\n") + "\n\n" + section
+	}
+	return models.TopicWeaveResult{Document: strings.TrimRight(document, "\n") + "\n", Model: "local-rule", Strategy: "outline-insert"}, nil
 }
 
 type OpenAICompatibleProvider struct {
@@ -203,6 +233,51 @@ func (p *OpenAICompatibleProvider) Embed(ctx context.Context, req EmbedRequest) 
 		ContentHash: models.ContentHash(text),
 		CreatedAt:   time.Now().UTC(),
 	}, nil
+}
+
+func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
+	if strings.TrimSpace(req.CurrentDocument) == "" {
+		req.CurrentDocument = localInitialTopicDocument(req.Topic)
+	}
+	section := localThoughtSection(req, "")
+	payload := map[string]any{
+		"model": p.chatModel,
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
+			},
+			{
+				"role": "user",
+				"content": "Topic name: " + req.Topic.Name +
+					"\nTopic description: " + req.Topic.Description +
+					"\nRequired source link substring: " + req.SourceLink +
+					"\nMatch reasons: " + strings.Join(req.Membership.Reasons, ", ") +
+					"\n\nCurrent topic Markdown:\n" + req.CurrentDocument +
+					"\n\nNew thought section to weave:\n" + section,
+			},
+		},
+		"temperature": 0.2,
+	}
+	var response chatCompletionResponse
+	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+		return models.TopicWeaveResult{}, err
+	}
+	if len(response.Choices) == 0 {
+		return models.TopicWeaveResult{}, errors.New("topic weave returned no choices")
+	}
+	var parsed topicWeaveJSON
+	if err := json.Unmarshal([]byte(extractJSONObject(response.Choices[0].Message.Content)), &parsed); err != nil {
+		return models.TopicWeaveResult{}, fmt.Errorf("parse topic weave json: %w", err)
+	}
+	document := strings.TrimSpace(parsed.Document)
+	if document == "" {
+		return models.TopicWeaveResult{}, errors.New("topic weave document is empty")
+	}
+	if !strings.Contains(document, req.SourceLink) {
+		return models.TopicWeaveResult{}, errors.New("topic weave document missing required source link")
+	}
+	return models.TopicWeaveResult{Document: document + "\n", Model: p.chatModel, Strategy: "llm-document-merge"}, nil
 }
 
 func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
@@ -343,6 +418,10 @@ type refineJSON struct {
 	Title     string   `json:"title"`
 }
 
+type topicWeaveJSON struct {
+	Document string `json:"document"`
+}
+
 func extractJSONObject(value string) string {
 	value = strings.TrimSpace(value)
 	start := strings.Index(value, "{")
@@ -380,4 +459,131 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func localInitialTopicDocument(topic models.Topic) string {
+	var builder strings.Builder
+	builder.WriteString("---\n")
+	builder.WriteString("id: ")
+	builder.WriteString(topic.ID)
+	builder.WriteString("\ntype: topic\nmembers: []\n---\n\n# ")
+	builder.WriteString(topic.Name)
+	builder.WriteString("\n")
+	if strings.TrimSpace(topic.Description) != "" {
+		builder.WriteString("\n")
+		builder.WriteString(strings.TrimSpace(topic.Description))
+		builder.WriteString("\n")
+	}
+	for _, node := range topic.Outline {
+		if strings.TrimSpace(node.Title) != "" {
+			builder.WriteString("\n## ")
+			builder.WriteString(strings.TrimSpace(node.Title))
+			builder.WriteString("\n")
+		}
+	}
+	return builder.String()
+}
+
+func localThoughtSection(req models.TopicWeaveRequest, outlineTitle string) string {
+	title := firstNonEmpty(req.Thought.DisplayTitle, req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
+	body := firstNonEmpty(req.Thought.Summary, firstLine(req.Content.AINotes), firstLine(req.Content.ExtractedContent), firstLine(req.Content.Original))
+	heading := "## "
+	if outlineTitle != "" {
+		heading = "### "
+	}
+	var builder strings.Builder
+	builder.WriteString(heading)
+	builder.WriteString(title)
+	builder.WriteString("\n\n")
+	if body != "" {
+		builder.WriteString(body)
+		builder.WriteString("\n\n")
+	}
+	if len(req.Membership.Reasons) > 0 {
+		builder.WriteString("Match: ")
+		builder.WriteString(strings.Join(req.Membership.Reasons, ", "))
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("> Sources: [[")
+	builder.WriteString(req.SourceLink)
+	builder.WriteString("]]")
+	return builder.String()
+}
+
+func chooseOutlineSection(req models.TopicWeaveRequest) string {
+	if len(req.Topic.Outline) == 0 {
+		return ""
+	}
+	searchText := strings.ToLower(strings.Join([]string{
+		req.Thought.UserTitle,
+		req.Thought.ExtractedTitle,
+		req.Thought.Summary,
+		req.Content.Original,
+		req.Content.ExtractedContent,
+		req.Content.AINotes,
+		strings.Join(req.Membership.Reasons, " "),
+	}, "\n"))
+	bestTitle := ""
+	bestScore := 0
+	for _, node := range req.Topic.Outline {
+		title := strings.TrimSpace(node.Title)
+		if title == "" {
+			continue
+		}
+		score := 0
+		for _, token := range outlineTokens(title) {
+			if strings.Contains(searchText, token) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestTitle = title
+			bestScore = score
+		}
+	}
+	if bestTitle != "" {
+		return bestTitle
+	}
+	return strings.TrimSpace(req.Topic.Outline[0].Title)
+}
+
+func insertIntoOutlineSection(document string, outlineTitle string, section string) string {
+	marker := "## " + strings.TrimSpace(outlineTitle)
+	start := strings.Index(document, marker)
+	if start < 0 {
+		return strings.TrimRight(document, "\n") + "\n\n" + section
+	}
+	bodyStart := start + len(marker)
+	next := strings.Index(document[bodyStart:], "\n## ")
+	if next < 0 {
+		return strings.TrimRight(document, "\n") + "\n\n" + section
+	}
+	insertAt := bodyStart + next
+	before := strings.TrimRight(document[:insertAt], "\n")
+	after := strings.TrimLeft(document[insertAt:], "\n")
+	return before + "\n\n" + section + "\n\n" + after
+}
+
+func outlineTokens(title string) []string {
+	raw := regexp.MustCompile(`[a-zA-Z0-9_\-\p{Han}]+`).FindAllString(strings.ToLower(title), -1)
+	ret := []string{}
+	for _, token := range raw {
+		if len([]rune(token)) <= 1 {
+			continue
+		}
+		ret = append(ret, token)
+	}
+	return ret
+}
+
+func firstLine(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	line := strings.TrimSpace(strings.Split(value, "\n")[0])
+	if len(line) > 240 {
+		return line[:240]
+	}
+	return line
 }

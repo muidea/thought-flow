@@ -288,6 +288,21 @@ type TopicMembership struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type TopicWeaveRequest struct {
+	Topic           Topic           `json:"topic"`
+	CurrentDocument string          `json:"current_document"`
+	Thought         Thought         `json:"thought"`
+	Content         ThoughtContent  `json:"content"`
+	Membership      TopicMembership `json:"membership"`
+	SourceLink      string          `json:"source_link"`
+}
+
+type TopicWeaveResult struct {
+	Document string `json:"document"`
+	Model    string `json:"model"`
+	Strategy string `json:"strategy"`
+}
+
 type TopicCreateRequest struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description"`
