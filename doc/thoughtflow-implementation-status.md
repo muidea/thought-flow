@@ -136,6 +136,10 @@ go build ./cmd/thoughtflow
    - `keyword_weight` / `semantic_weight` / `recency_weight` 任一正值会归一化并覆盖默认权重。
    - `explain=true` 时每条结果返回分数组件、最终公式、权重、关键词来源和语义来源。
    - 默认 fallback store 与 DuckDB tagged store 行为保持一致。
+27. search 运行单元补齐 `GetSearchPreview(thought_id)` 查询：
+   - DuckDB tagged store 和默认 fallback store 均可按 thought ID 返回索引预览。
+   - 返回内容包含 `thought_id`、标题、snippet、recency score、backlink path、topics 和 tags。
+   - thought 不存在时返回 not exist 语义，空 thought ID 会拒绝。
 
 验证：
 

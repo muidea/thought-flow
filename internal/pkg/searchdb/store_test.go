@@ -104,6 +104,20 @@ func TestIndexAndSearchThought(t *testing.T) {
 	if semantic.Items[0].SemanticScore <= 0 {
 		t.Fatalf("expected positive semantic score, got %v", semantic.Items[0].SemanticScore)
 	}
+
+	preview, err := store.GetSearchPreview(ctx, thought.ID)
+	if err != nil {
+		t.Fatalf("GetSearchPreview() error = %v", err)
+	}
+	if preview.ThoughtID != thought.ID || preview.Path != thought.Path {
+		t.Fatalf("preview = %#v", preview)
+	}
+	if preview.Snippet == "" || preview.Title != thought.DisplayTitle {
+		t.Fatalf("preview content = %#v", preview)
+	}
+	if len(preview.Topics) != 1 || preview.Topics[0] != "duckdb-notes" {
+		t.Fatalf("preview topics = %#v", preview.Topics)
+	}
 }
 
 func TestSearchSortWeightsAndExplain(t *testing.T) {

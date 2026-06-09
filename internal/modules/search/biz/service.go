@@ -151,6 +151,13 @@ func (s *Service) Search(ctx context.Context, query models.SearchQuery) (models.
 	return s.store.Search(ctx, query)
 }
 
+func (s *Service) GetSearchPreview(ctx context.Context, thoughtID string) (models.SearchResult, error) {
+	if s == nil || s.store == nil {
+		return models.SearchResult{}, errors.New("search service is not ready")
+	}
+	return s.store.GetSearchPreview(ctx, thoughtID)
+}
+
 func (s *Service) RuntimeStatus(ctx context.Context) models.DuckDBRuntimeStatus {
 	_ = ctx
 	status := models.DuckDBRuntimeStatus{Status: "ready"}

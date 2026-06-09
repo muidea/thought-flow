@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
@@ -69,6 +70,41 @@ func TestRuntimeStatusReportsUnreadySearchStore(t *testing.T) {
 
 	if status.Status != "degraded" || status.Error == "" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestGetSearchPreviewReturnsIndexedSnippet(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "local",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	store, err := searchdb.Open(context.Background(), filepath.Join(root, ".thoughtflow", "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	thought := models.Thought{
+		ID:           "20260610-100000-preview",
+		DisplayTitle: "Preview note",
+		Path:         "thoughts/2026/06/20260610-100000-preview.md",
+		UpdatedAt:    time.Date(2026, 6, 10, 10, 0, 0, 0, time.UTC),
+		UserTags:     []string{"preview"},
+		TopicIDs:     []string{"search"},
+	}
+	content := models.ThoughtContent{Original: "Search preview should return an indexed snippet and backlink path."}
+	if err := store.IndexThought(context.Background(), thought, content); err != nil {
+		t.Fatalf("IndexThought() error = %v", err)
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, "")
+
+	preview, err := service.GetSearchPreview(context.Background(), thought.ID)
+	if err != nil {
+		t.Fatalf("GetSearchPreview() error = %v", err)
+	}
+	if preview.ThoughtID != thought.ID || preview.Snippet == "" || preview.Path != thought.Path {
+		t.Fatalf("preview = %#v", preview)
 	}
 }
 

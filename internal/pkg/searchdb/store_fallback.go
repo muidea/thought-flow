@@ -251,6 +251,29 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	}, nil
 }
 
+func (s *Store) GetSearchPreview(ctx context.Context, thoughtID string) (models.SearchResult, error) {
+	_ = ctx
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return models.SearchResult{}, errors.New("thought id is required")
+	}
+	s.mu.RLock()
+	item, ok := s.items[thoughtID]
+	s.mu.RUnlock()
+	if !ok {
+		return models.SearchResult{}, os.ErrNotExist
+	}
+	return models.SearchResult{
+		ThoughtID:    item.thought.ID,
+		Title:        item.thought.DisplayTitle,
+		Snippet:      snippet(item.text, ""),
+		RecencyScore: recencyScore(item.thought.UpdatedAt),
+		Path:         item.thought.Path,
+		Topics:       item.thought.TopicIDs,
+		Tags:         item.tags,
+	}, nil
+}
+
 func buildSearchText(thought models.Thought, content models.ThoughtContent) string {
 	parts := []string{
 		thought.UserTitle,

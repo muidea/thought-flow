@@ -755,6 +755,32 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	}, nil
 }
 
+func (s *Store) GetSearchPreview(ctx context.Context, thoughtID string) (models.SearchResult, error) {
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return models.SearchResult{}, errors.New("thought id is required")
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at
+		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
+		WHERE t.id = ?`, thoughtID)
+	var item models.SearchResult
+	var searchText string
+	var tags string
+	var topicIDs string
+	var updatedAt time.Time
+	if err := row.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.SearchResult{}, os.ErrNotExist
+		}
+		return models.SearchResult{}, err
+	}
+	item.Snippet = snippet(searchText, "")
+	item.RecencyScore = recencyScore(updatedAt)
+	item.Tags = splitCSV(tags)
+	item.Topics = splitCSV(topicIDs)
+	return item, nil
+}
+
 func (s *Store) embeddingForThought(ctx context.Context, thoughtID string, model string) models.EmbeddingRecord {
 	record, _ := s.GetEmbedding(ctx, thoughtID, model)
 	return record
