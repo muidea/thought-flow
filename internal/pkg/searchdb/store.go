@@ -12,7 +12,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -498,12 +497,24 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if mode == "" {
 		mode = "hybrid"
 	}
+	sortMode := normalizedSearchSort(query.Sort)
 	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 	trimmedQuery := strings.TrimSpace(query.Query)
 	ftsScores, useFTS := s.keywordScoresFromFTS(ctx, trimmedQuery)
 	semanticScores, useDuckDBVector := map[string]float64{}, false
 	if useVector {
 		semanticScores, useDuckDBVector = s.semanticScoresFromDuckDB(ctx, query.QueryVector, query.EmbeddingModel)
+	}
+	keywordSource := "like"
+	if useFTS {
+		keywordSource = "duckdb_fts"
+	}
+	semanticSource := "none"
+	if useVector {
+		semanticSource = "json_cosine"
+		if useDuckDBVector {
+			semanticSource = "duckdb_array"
+		}
 	}
 
 	where, args := searchFilterWhere(query)
@@ -548,20 +559,17 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 			item.SemanticScore = semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
 		}
 		item.RecencyScore = recencyScore(updatedAt)
-		item.Score = combinedScore(mode, item.KeywordScore, item.SemanticScore, item.RecencyScore, useVector)
+		weights := models.SearchWeights{}
+		item.Score, weights = scoreWithWeights(mode, item.KeywordScore, item.SemanticScore, item.RecencyScore, useVector, query.Weights)
 		item.Tags = splitCSV(tags)
 		item.Topics = splitCSV(topicIDs)
+		item.Explain = explainSearchResult(query, mode, sortMode, weights, keywordSource, semanticSource, item)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return models.SearchResponse{}, err
 	}
-	sort.Slice(items, func(left, right int) bool {
-		if items[left].Score == items[right].Score {
-			return items[left].ThoughtID > items[right].ThoughtID
-		}
-		return items[left].Score > items[right].Score
-	})
+	sortSearchResults(items, sortMode)
 	total := len(items)
 	start := offset
 	if start > total {

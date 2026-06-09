@@ -81,6 +81,11 @@ go build ./cmd/thoughtflow
    - 同步写入按维度隔离的 `thought_embedding_vectors_{dimension}` 表，使用 `FLOAT[n]` 固定长度向量列。
    - `mode=semantic` / `mode=hybrid` 有 query vector 时，优先使用 DuckDB `array_cosine_similarity` 计算 `semantic_score`。
    - DuckDB ARRAY 向量表缺失或查询失败时，保留原 JSON embedding + Go cosine 降级路径。
+24. 混合搜索支持排序策略、权重配置和 explain 信息：
+   - `sort=score|keyword|semantic|recency`。
+   - `keyword_weight` / `semantic_weight` / `recency_weight` 任一正值会归一化并覆盖默认权重。
+   - `explain=true` 时每条结果返回分数组件、最终公式、权重、关键词来源和语义来源。
+   - 默认 fallback store 与 DuckDB tagged store 行为保持一致。
 
 验证：
 
@@ -173,7 +178,6 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 M2：
 
 1. DuckDB VSS/HNSW ANN 索引尚未启用；官方文档仍将持久化 HNSW 标为实验能力，当前先使用可持久化的 ARRAY 表与原生相似度函数。
-2. 混合搜索已有 keyword/semantic/recency 基础加权，但还没有可配置排序策略和 explain 信息。
 
 M3：
 

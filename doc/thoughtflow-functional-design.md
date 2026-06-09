@@ -501,9 +501,12 @@ payload
 | --- | --- |
 | `q` | 查询文本 |
 | `mode` | `keyword`、`semantic`、`hybrid` |
+| `sort` | 可选，`score`、`keyword`、`semantic`、`recency`，默认 `score` |
 | `topic_id` | 可选专题过滤 |
 | `tags` | 可选标签过滤 |
 | `from` / `to` | 时间范围 |
+| `explain` | 可选，`true` 时返回分数组件、权重和检索来源 |
+| `keyword_weight` / `semantic_weight` / `recency_weight` | 可选，混合排序权重；传入任一正值时归一化后覆盖默认权重 |
 
 返回：
 
@@ -517,8 +520,18 @@ payload
       "score": 0.91,
       "keyword_score": 0.72,
       "semantic_score": 0.88,
+      "recency_score": 0.67,
       "path": "thoughts/2026/06/20260609-143010-8f3a.md",
-      "topics": ["ai-research"]
+      "topics": ["ai-research"],
+      "explain": {
+        "mode": "hybrid",
+        "sort": "score",
+        "score_formula": "score = keyword_score*0.45 + semantic_score*0.45 + recency_score*0.1",
+        "weights": {"keyword": 0.45, "semantic": 0.45, "recency": 0.1},
+        "components": {"keyword": 0.72, "semantic": 0.88, "recency": 0.67},
+        "keyword_source": "duckdb_fts",
+        "semantic_source": "duckdb_array"
+      }
     }
   ],
   "page": 1,

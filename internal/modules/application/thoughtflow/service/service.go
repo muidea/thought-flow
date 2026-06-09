@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,10 +159,17 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	searchQuery := models.SearchQuery{
 		Query:    query.Get("q"),
 		Mode:     firstNonEmpty(query.Get("mode"), "hybrid"),
+		Sort:     query.Get("sort"),
 		TopicID:  query.Get("topic_id"),
 		Tags:     splitCSV(query.Get("tags")),
 		Page:     intQuery(query.Get("page"), 1),
 		PageSize: intQuery(query.Get("page_size"), 20),
+		Explain:  boolQuery(query.Get("explain")),
+		Weights: models.SearchWeights{
+			Keyword:  floatQuery(firstNonEmpty(query.Get("keyword_weight"), query.Get("weight_keyword")), 0),
+			Semantic: floatQuery(firstNonEmpty(query.Get("semantic_weight"), query.Get("weight_semantic")), 0),
+			Recency:  floatQuery(firstNonEmpty(query.Get("recency_weight"), query.Get("weight_recency")), 0),
+		},
 	}
 	result, err := s.searchService.Search(ctx, searchQuery)
 	if err != nil {
@@ -434,6 +442,26 @@ func intQuery(value string, fallback int) int {
 	var ret int
 	_, err := fmt.Sscanf(value, "%d", &ret)
 	if err != nil || ret <= 0 {
+		return fallback
+	}
+	return ret
+}
+
+func boolQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func floatQuery(value string, fallback float64) float64 {
+	if value == "" {
+		return fallback
+	}
+	ret, err := strconv.ParseFloat(value, 64)
+	if err != nil {
 		return fallback
 	}
 	return ret

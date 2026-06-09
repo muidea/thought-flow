@@ -204,27 +204,47 @@ type GitCommitRecord struct {
 }
 
 type SearchQuery struct {
-	Query          string    `json:"q"`
-	Mode           string    `json:"mode"`
-	TopicID        string    `json:"topic_id,omitempty"`
-	Tags           []string  `json:"tags,omitempty"`
-	Page           int       `json:"page"`
-	PageSize       int       `json:"page_size"`
-	QueryVector    []float64 `json:"-"`
-	EmbeddingModel string    `json:"-"`
+	Query          string        `json:"q"`
+	Mode           string        `json:"mode"`
+	Sort           string        `json:"sort,omitempty"`
+	TopicID        string        `json:"topic_id,omitempty"`
+	Tags           []string      `json:"tags,omitempty"`
+	Page           int           `json:"page"`
+	PageSize       int           `json:"page_size"`
+	Explain        bool          `json:"explain,omitempty"`
+	Weights        SearchWeights `json:"weights,omitempty"`
+	QueryVector    []float64     `json:"-"`
+	EmbeddingModel string        `json:"-"`
+}
+
+type SearchWeights struct {
+	Keyword  float64 `json:"keyword"`
+	Semantic float64 `json:"semantic"`
+	Recency  float64 `json:"recency"`
+}
+
+type SearchExplain struct {
+	Mode           string        `json:"mode"`
+	Sort           string        `json:"sort"`
+	ScoreFormula   string        `json:"score_formula"`
+	Weights        SearchWeights `json:"weights"`
+	Components     SearchWeights `json:"components"`
+	KeywordSource  string        `json:"keyword_source,omitempty"`
+	SemanticSource string        `json:"semantic_source,omitempty"`
 }
 
 type SearchResult struct {
-	ThoughtID     string   `json:"thought_id"`
-	Title         string   `json:"title"`
-	Snippet       string   `json:"snippet"`
-	Score         float64  `json:"score"`
-	KeywordScore  float64  `json:"keyword_score"`
-	SemanticScore float64  `json:"semantic_score"`
-	RecencyScore  float64  `json:"recency_score"`
-	Path          string   `json:"path"`
-	Topics        []string `json:"topics,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
+	ThoughtID     string         `json:"thought_id"`
+	Title         string         `json:"title"`
+	Snippet       string         `json:"snippet"`
+	Score         float64        `json:"score"`
+	KeywordScore  float64        `json:"keyword_score"`
+	SemanticScore float64        `json:"semantic_score"`
+	RecencyScore  float64        `json:"recency_score"`
+	Path          string         `json:"path"`
+	Topics        []string       `json:"topics,omitempty"`
+	Tags          []string       `json:"tags,omitempty"`
+	Explain       *SearchExplain `json:"explain,omitempty"`
 }
 
 type SearchResponse struct {

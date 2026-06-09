@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +145,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if mode == "" {
 		mode = "hybrid"
 	}
+	sortMode := normalizedSearchSort(query.Sort)
 	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 
 	s.mu.RLock()
@@ -169,27 +169,29 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		keywordScore := keywordScore(item.text, query.Query)
 		semanticScore := semanticScore(query.QueryVector, embedding.Vector, query.EmbeddingModel, embedding.Model)
 		recencyScore := recencyScore(item.thought.UpdatedAt)
-		items = append(items, models.SearchResult{
+		score, weights := scoreWithWeights(mode, keywordScore, semanticScore, recencyScore, useVector, query.Weights)
+		result := models.SearchResult{
 			ThoughtID:     item.thought.ID,
 			Title:         item.thought.DisplayTitle,
 			Snippet:       snippet(item.text, query.Query),
-			Score:         combinedScore(mode, keywordScore, semanticScore, recencyScore, useVector),
+			Score:         score,
 			KeywordScore:  keywordScore,
 			SemanticScore: semanticScore,
 			RecencyScore:  recencyScore,
 			Path:          item.thought.Path,
 			Topics:        item.thought.TopicIDs,
 			Tags:          item.tags,
-		})
+		}
+		semanticSource := "none"
+		if useVector {
+			semanticSource = "memory_cosine"
+		}
+		result.Explain = explainSearchResult(query, mode, sortMode, weights, "memory_contains", semanticSource, result)
+		items = append(items, result)
 	}
 	s.mu.RUnlock()
 
-	sort.Slice(items, func(left, right int) bool {
-		if items[left].Score == items[right].Score {
-			return items[left].ThoughtID > items[right].ThoughtID
-		}
-		return items[left].Score > items[right].Score
-	})
+	sortSearchResults(items, sortMode)
 	total := len(items)
 	start := (page - 1) * pageSize
 	if start > total {
