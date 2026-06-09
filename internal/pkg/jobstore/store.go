@@ -21,6 +21,30 @@ func New(rootPath string) *Store {
 	return &Store{rootPath: rootPath}
 }
 
+func (s *Store) RuntimeStatus() models.BackgroundRuntimeStatus {
+	status := models.BackgroundRuntimeStatus{Status: "degraded"}
+	if s == nil || s.rootPath == "" {
+		status.Error = "job store is not ready"
+		return status
+	}
+	status.JobsPath = s.rootPath
+	if err := os.MkdirAll(s.rootPath, 0o755); err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmp, err := os.CreateTemp(s.rootPath, ".status-*.tmp")
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath)
+	status.Writable = true
+	status.Status = "ready"
+	return status
+}
+
 func (s *Store) Create(jobType, resourceType, resourceID, message string) (models.Job, error) {
 	return s.CreateWithMaxAttempts(jobType, resourceType, resourceID, message, 1)
 }

@@ -1,10 +1,28 @@
 package jobstore
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"thoughtflow/internal/pkg/models"
 )
+
+func TestRuntimeStatusCreatesWritableJobDirectory(t *testing.T) {
+	rootPath := filepath.Join(t.TempDir(), "jobs")
+	status := New(rootPath).RuntimeStatus()
+
+	if status.Status != "ready" || !status.Writable || status.JobsPath != rootPath || status.Error != "" {
+		t.Fatalf("RuntimeStatus() = %#v", status)
+	}
+	info, err := os.Stat(rootPath)
+	if err != nil {
+		t.Fatalf("expected jobs directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected %s to be directory", rootPath)
+	}
+}
 
 func TestStoreJobStateTransitions(t *testing.T) {
 	store := New(t.TempDir())

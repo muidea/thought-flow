@@ -626,8 +626,9 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	}
 	stream := eventstream.New(10)
 	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured})
-	searchService := searchbiz.NewService(ws, jobstore.New(ws.JobsPath), searchStore, nil, nil, nil, duckdbPath)
-	service := &Service{workspace: ws, stream: stream, searchService: searchService}
+	jobs := jobstore.New(ws.JobsPath)
+	searchService := searchbiz.NewService(ws, jobs, searchStore, nil, nil, nil, duckdbPath)
+	service := &Service{workspace: ws, jobs: jobs, stream: stream, searchService: searchService}
 
 	status := service.systemStatus(context.Background(), appconfig.Config{
 		AI: appconfig.AIConfig{

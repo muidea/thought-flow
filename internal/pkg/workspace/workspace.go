@@ -67,3 +67,34 @@ func EnsureInside(rootPath, targetPath string) error {
 	}
 	return nil
 }
+
+func RuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus {
+	status := models.WorkspaceRuntimeStatus{Status: "degraded"}
+	if ws == nil {
+		status.Error = "workspace is not ready"
+		return status
+	}
+	status.ID = ws.ID
+	status.RootPath = ws.RootPath
+	status.ThoughtsPath = ws.ThoughtsPath
+	status.TopicsPath = ws.TopicsPath
+	status.AttachmentsPath = ws.AttachmentsPath
+	status.RuntimePath = ws.RuntimePath
+	status.JobsPath = ws.JobsPath
+	status.GitEnabled = ws.GitEnabled
+	if err := os.MkdirAll(ws.RuntimePath, 0o755); err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmp, err := os.CreateTemp(ws.RuntimePath, ".status-*.tmp")
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath)
+	status.Writable = true
+	status.Status = "ready"
+	return status
+}

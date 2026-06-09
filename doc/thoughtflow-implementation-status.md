@@ -43,11 +43,11 @@
     - 支持 `types` 查询参数按事件类型过滤历史和实时事件。
 12. `GET /api/system/status` 返回结构化运行态健康信息：
     - top-level `status` / `ready`。
-    - workspace 读写状态。
+    - workspace 包提供工作区配置路径和运行态目录写入状态。
     - search 运行单元提供 DuckDB 配置路径和文件存在状态。
     - AI provider 配置状态。
     - git-sync 提供 Git 仓库、用户身份和未提交变更只读探测。
-    - background jobs 目录写入状态。
+    - jobstore 提供 background jobs 目录写入状态。
     - SSE history/subscriber 统计。
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
     - `thoughtflow_capture_total` 通过 capture 运行单元从工作区 Markdown thought 事实源计算。
@@ -280,3 +280,4 @@ UI：
 
 1. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
 2. `.thoughtflow/` 运行时数据只作为本地任务快照，不是长期事实源。
+3. synthesis 草稿 API 已可用，但草稿 store 和 AI provider 仍由 `application/thoughtflow` 装配，后续需要按设计进一步下沉到独立 owner 层或运行单元。

@@ -28,6 +28,7 @@ import (
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/synthesisstore"
+	"thoughtflow/internal/pkg/workspace"
 )
 
 //go:embed web/*
@@ -920,7 +921,7 @@ func sanitizePrometheusLabel(value string) string {
 }
 
 func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models.SystemStatus {
-	workspaceStatus := workspaceRuntimeStatus(s.workspace)
+	workspaceStatus := workspace.RuntimeStatus(s.workspace)
 	duckdbStatus := models.DuckDBRuntimeStatus{Status: "degraded", Error: "search service is not ready"}
 	if s.searchService != nil {
 		duckdbStatus = s.searchService.RuntimeStatus(ctx)
@@ -930,7 +931,10 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	if s.gitQueries != nil {
 		gitStatus = s.gitQueries.RuntimeStatus(ctx)
 	}
-	backgroundStatus := backgroundRuntimeStatus(s.workspace)
+	backgroundStatus := models.BackgroundRuntimeStatus{Status: "degraded", Error: "job store is not ready"}
+	if s.jobs != nil {
+		backgroundStatus = s.jobs.RuntimeStatus()
+	}
 	eventsStatus := eventsRuntimeStatus(s.stream)
 
 	ready := workspaceStatus.Status == "ready" &&
@@ -953,37 +957,6 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	}
 }
 
-func workspaceRuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus {
-	status := models.WorkspaceRuntimeStatus{Status: "degraded"}
-	if ws == nil {
-		status.Error = "workspace is not ready"
-		return status
-	}
-	status.ID = ws.ID
-	status.RootPath = ws.RootPath
-	status.ThoughtsPath = ws.ThoughtsPath
-	status.TopicsPath = ws.TopicsPath
-	status.AttachmentsPath = ws.AttachmentsPath
-	status.RuntimePath = ws.RuntimePath
-	status.JobsPath = ws.JobsPath
-	status.GitEnabled = ws.GitEnabled
-	if err := os.MkdirAll(ws.RuntimePath, 0o755); err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	tmp, err := os.CreateTemp(ws.RuntimePath, ".status-*.tmp")
-	if err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	_ = os.Remove(tmpPath)
-	status.Writable = true
-	status.Status = "ready"
-	return status
-}
-
 func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
 	status := "not_configured"
 	configured := strings.TrimSpace(cfg.AI.APIKey) != ""
@@ -997,30 +970,6 @@ func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
 		ChatModel:      cfg.AI.ChatModel,
 		EmbeddingModel: cfg.AI.EmbeddingModel,
 	}
-}
-
-func backgroundRuntimeStatus(ws *models.Workspace) models.BackgroundRuntimeStatus {
-	status := models.BackgroundRuntimeStatus{Status: "degraded"}
-	if ws == nil {
-		status.Error = "workspace is not ready"
-		return status
-	}
-	status.JobsPath = ws.JobsPath
-	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	tmp, err := os.CreateTemp(ws.JobsPath, ".status-*.tmp")
-	if err != nil {
-		status.Error = err.Error()
-		return status
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	_ = os.Remove(tmpPath)
-	status.Writable = true
-	status.Status = "ready"
-	return status
 }
 
 func eventsRuntimeStatus(stream *eventstream.Stream) models.EventsRuntimeStatus {

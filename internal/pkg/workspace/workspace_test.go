@@ -33,6 +33,32 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusCreatesWritableRuntimeDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace")
+	ws, err := Open(context.Background(), appconfig.Config{
+		Workspace: appconfig.WorkspaceConfig{Root: root},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := os.RemoveAll(ws.RuntimePath); err != nil {
+		t.Fatalf("RemoveAll(runtime) error = %v", err)
+	}
+
+	status := RuntimeStatus(ws)
+
+	if status.Status != "ready" || !status.Writable || status.RuntimePath != ws.RuntimePath || status.Error != "" {
+		t.Fatalf("RuntimeStatus() = %#v", status)
+	}
+	info, err := os.Stat(ws.RuntimePath)
+	if err != nil {
+		t.Fatalf("expected runtime directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected %s to be directory", ws.RuntimePath)
+	}
+}
+
 func TestEnsureInsideRejectsOutsidePath(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(filepath.Dir(root), "outside.md")
