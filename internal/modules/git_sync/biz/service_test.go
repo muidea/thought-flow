@@ -135,6 +135,39 @@ func TestRecentCommitsReturnsPathHistory(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusReportsRepositoryIdentityAndDirtyState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	root := t.TempDir()
+	runGitForTest(t, root, "init")
+	runGitForTest(t, root, "config", "user.name", "ThoughtFlow Test")
+	runGitForTest(t, root, "config", "user.email", "thoughtflow-test@example.test")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	service := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+	status := service.RuntimeStatus(context.Background())
+
+	if status.Status != "ready" ||
+		!status.Enabled ||
+		!status.Repository ||
+		!status.IdentityConfigured ||
+		!status.Dirty {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestRuntimeStatusReportsDisabledGit(t *testing.T) {
+	service := NewService(&models.Workspace{ID: "local", RootPath: t.TempDir()}, nil, nil, nil, false, time.Hour)
+	status := service.RuntimeStatus(context.Background())
+
+	if status.Status != "disabled" || status.Enabled {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func runGitForTest(t *testing.T, root string, args ...string) {
 	t.Helper()
 	cmdArgs := append([]string{"-C", root}, args...)

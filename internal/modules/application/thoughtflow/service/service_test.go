@@ -177,7 +177,7 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 		captureService: captureService,
 		jobs:           jobs,
 		workspace:      ws,
-		gitCommits: fakeGitCommitReader{records: []models.GitCommitRecord{{
+		gitQueries: fakeGitQueryReader{records: []models.GitCommitRecord{{
 			CommitHash:  "abc123",
 			Message:     "thoughtflow: add detail thought",
 			Paths:       []string{thought.Path},
@@ -216,16 +216,21 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 	}
 }
 
-type fakeGitCommitReader struct {
+type fakeGitQueryReader struct {
 	records []models.GitCommitRecord
 }
 
-func (reader fakeGitCommitReader) RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord {
+func (reader fakeGitQueryReader) RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord {
 	_ = ctx
 	_ = relativePath
 	_ = resourceID
 	_ = limit
 	return reader.records
+}
+
+func (reader fakeGitQueryReader) RuntimeStatus(ctx context.Context) models.GitRuntimeStatus {
+	_ = ctx
+	return models.GitRuntimeStatus{Status: "disabled"}
 }
 
 func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {

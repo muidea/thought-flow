@@ -325,6 +325,53 @@ func (s *Service) RecentCommits(ctx context.Context, relativePath string, resour
 	return records
 }
 
+func (s *Service) RuntimeStatus(ctx context.Context) models.GitRuntimeStatus {
+	status := models.GitRuntimeStatus{Status: "disabled"}
+	if s == nil || s.workspace == nil {
+		status.Status = "degraded"
+		status.Error = "workspace is not ready"
+		return status
+	}
+	status.Enabled = s.enabled
+	if !s.enabled {
+		return status
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+	gitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	status.Repository = gitCommandOK(gitCtx, s.workspace.RootPath, "rev-parse", "--is-inside-work-tree")
+	nameOK := gitCommandOK(gitCtx, s.workspace.RootPath, "config", "--get", "user.name")
+	emailOK := gitCommandOK(gitCtx, s.workspace.RootPath, "config", "--get", "user.email")
+	status.IdentityConfigured = nameOK && emailOK
+	if status.Repository {
+		raw, err := outputGit(gitCtx, "-C", s.workspace.RootPath, "status", "--porcelain")
+		if err == nil {
+			status.Dirty = strings.TrimSpace(string(raw)) != ""
+		}
+	}
+	if !status.IdentityConfigured {
+		status.Status = "degraded"
+		status.Error = "git user.name and user.email are required for commits"
+		return status
+	}
+	if !status.Repository {
+		status.Status = "pending_init"
+		return status
+	}
+	status.Status = "ready"
+	return status
+}
+
+func gitCommandOK(ctx context.Context, rootPath string, args ...string) bool {
+	cmdArgs := append([]string{"-C", rootPath}, args...)
+	_, err := outputGit(ctx, cmdArgs...)
+	return err == nil
+}
+
 func parseUnixSeconds(value string) (int64, error) {
 	var seconds int64
 	_, err := fmt.Sscanf(value, "%d", &seconds)

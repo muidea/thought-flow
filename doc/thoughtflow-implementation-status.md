@@ -46,7 +46,7 @@
     - workspace 读写状态。
     - DuckDB 配置路径和文件存在状态。
     - AI provider 配置状态。
-    - Git 仓库、用户身份和未提交变更只读探测。
+    - git-sync 提供 Git 仓库、用户身份和未提交变更只读探测。
     - background jobs 目录写入状态。
     - SSE history/subscriber 统计。
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：

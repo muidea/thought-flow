@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -44,7 +43,7 @@ type Service struct {
 	refinerService *refinerbiz.Service
 	searchService  *searchbiz.Service
 	topicService   *topicbiz.Service
-	gitCommits     gitCommitReader
+	gitQueries     gitQueryReader
 	jobs           *jobstore.Store
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
@@ -52,18 +51,19 @@ type Service struct {
 	synthesisAI    ai.SynthesisProvider
 }
 
-type gitCommitReader interface {
+type gitQueryReader interface {
 	RecentCommits(ctx context.Context, relativePath string, resourceID string, limit int) []models.GitCommitRecord
+	RuntimeStatus(ctx context.Context) models.GitRuntimeStatus
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitCommits gitCommitReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace) *Service {
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
 		refinerService: refinerService,
 		searchService:  searchService,
 		topicService:   topicService,
-		gitCommits:     gitCommits,
+		gitQueries:     gitQueries,
 		jobs:           jobs,
 		stream:         stream,
 		workspace:      workspace,
@@ -169,8 +169,8 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 		return
 	}
 	snapshot.Jobs = thoughtJobs(s.jobs, thoughtID, 20)
-	if s.gitCommits != nil {
-		snapshot.GitCommits = s.gitCommits.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
+	if s.gitQueries != nil {
+		snapshot.GitCommits = s.gitQueries.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
 	}
 	writeJSON(res, req, http.StatusOK, snapshot)
 }
@@ -948,7 +948,10 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	workspaceStatus := workspaceRuntimeStatus(s.workspace)
 	duckdbStatus := duckDBRuntimeStatus(s.workspace, cfg)
 	aiStatus := aiRuntimeStatus(cfg)
-	gitStatus := gitRuntimeStatus(ctx, s.workspace)
+	gitStatus := models.GitRuntimeStatus{Status: "disabled"}
+	if s.gitQueries != nil {
+		gitStatus = s.gitQueries.RuntimeStatus(ctx)
+	}
 	backgroundStatus := backgroundRuntimeStatus(s.workspace)
 	eventsStatus := eventsRuntimeStatus(s.stream)
 
@@ -1046,47 +1049,6 @@ func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
 	}
 }
 
-func gitRuntimeStatus(ctx context.Context, ws *models.Workspace) models.GitRuntimeStatus {
-	status := models.GitRuntimeStatus{Status: "disabled"}
-	if ws == nil {
-		status.Status = "degraded"
-		status.Error = "workspace is not ready"
-		return status
-	}
-	status.Enabled = ws.GitEnabled
-	if !ws.GitEnabled {
-		return status
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		status.Status = "degraded"
-		status.Error = err.Error()
-		return status
-	}
-	gitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	status.Repository = gitCommandOK(gitCtx, ws.RootPath, "rev-parse", "--is-inside-work-tree")
-	nameOK := gitCommandOK(gitCtx, ws.RootPath, "config", "--get", "user.name")
-	emailOK := gitCommandOK(gitCtx, ws.RootPath, "config", "--get", "user.email")
-	status.IdentityConfigured = nameOK && emailOK
-	if status.Repository {
-		raw, err := gitOutput(gitCtx, ws.RootPath, "status", "--porcelain")
-		if err == nil {
-			status.Dirty = strings.TrimSpace(string(raw)) != ""
-		}
-	}
-	if !status.IdentityConfigured {
-		status.Status = "degraded"
-		status.Error = "git user.name and user.email are required for commits"
-		return status
-	}
-	if !status.Repository {
-		status.Status = "pending_init"
-		return status
-	}
-	status.Status = "ready"
-	return status
-}
-
 func backgroundRuntimeStatus(ws *models.Workspace) models.BackgroundRuntimeStatus {
 	status := models.BackgroundRuntimeStatus{Status: "degraded"}
 	if ws == nil {
@@ -1122,17 +1084,6 @@ func eventsRuntimeStatus(stream *eventstream.Stream) models.EventsRuntimeStatus 
 		Limit:       stats.Limit,
 		Subscribers: stats.Subscribers,
 	}
-}
-
-func gitCommandOK(ctx context.Context, rootPath string, args ...string) bool {
-	_, err := gitOutput(ctx, rootPath, args...)
-	return err == nil
-}
-
-func gitOutput(ctx context.Context, rootPath string, args ...string) ([]byte, error) {
-	cmdArgs := append([]string{"-C", rootPath}, args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-	return cmd.CombinedOutput()
 }
 
 func (s *Service) handleReindex(ctx context.Context, res http.ResponseWriter, req *http.Request) {
