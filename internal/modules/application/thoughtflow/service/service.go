@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	mcevent "github.com/muidea/magicCommon/event"
 	engine "github.com/muidea/magicEngine/http"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
@@ -40,6 +41,8 @@ type Service struct {
 	topicService   *topicbiz.Service
 	gitQueries     gitQueryReader
 	jobs           jobQueryReader
+	events         eventPublisher
+	background     backgroundTaskAcceptor
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
 	config         appconfig.Config
@@ -57,7 +60,15 @@ type jobQueryReader interface {
 	RuntimeStatus() models.BackgroundRuntimeStatus
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs jobQueryReader, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
+type eventPublisher interface {
+	Post(event mcevent.Event)
+}
+
+type backgroundTaskAcceptor interface {
+	AsyncFunction(function func()) error
+}
+
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
@@ -66,6 +77,8 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		topicService:   topicService,
 		gitQueries:     gitQueries,
 		jobs:           jobs,
+		events:         events,
+		background:     background,
 		stream:         stream,
 		workspace:      workspace,
 		config:         cfg,
@@ -889,7 +902,8 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	if s.jobs != nil {
 		backgroundStatus = s.jobs.RuntimeStatus()
 	}
-	eventsStatus := eventsRuntimeStatus(s.stream)
+	backgroundStatus = backgroundRuntimeStatus(backgroundStatus, s.background)
+	eventsStatus := eventsRuntimeStatus(s.stream, s.events)
 
 	ready := workspaceStatus.Status == "ready" &&
 		duckdbStatus.Status == "ready" &&
@@ -926,17 +940,42 @@ func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
 	}
 }
 
-func eventsRuntimeStatus(stream *eventstream.Stream) models.EventsRuntimeStatus {
+func backgroundRuntimeStatus(status models.BackgroundRuntimeStatus, background backgroundTaskAcceptor) models.BackgroundRuntimeStatus {
+	if status.Status != "ready" {
+		return status
+	}
+	if background == nil {
+		status.Status = "degraded"
+		status.Error = "background routine is not ready"
+		return status
+	}
+	if err := background.AsyncFunction(func() {}); err != nil {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+	status.AcceptingTasks = true
+	return status
+}
+
+func eventsRuntimeStatus(stream *eventstream.Stream, publisher eventPublisher) models.EventsRuntimeStatus {
 	if stream == nil {
 		return models.EventsRuntimeStatus{Status: "degraded"}
 	}
 	stats := stream.Stats()
-	return models.EventsRuntimeStatus{
+	status := models.EventsRuntimeStatus{
 		Status:      "ready",
 		HistorySize: stats.HistorySize,
 		Limit:       stats.Limit,
 		Subscribers: stats.Subscribers,
 	}
+	if publisher == nil {
+		status.Status = "degraded"
+		return status
+	}
+	publisher.Post(mcevent.NewEvent("thoughtflow.system.health_probe", "application.thoughtflow", "", mcevent.NewHeader(), nil))
+	status.Publishable = true
+	return status
 }
 
 func (s *Service) handleReindex(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -955,8 +994,12 @@ func (s *Service) handleLive(ctx context.Context, res http.ResponseWriter, req *
 }
 
 func (s *Service) handleReady(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	_ = ctx
-	writeJSON(res, req, http.StatusOK, map[string]string{"status": "ready"})
+	status := s.systemStatus(ctx, s.config)
+	if !status.Ready {
+		writeJSON(res, req, http.StatusServiceUnavailable, status)
+		return
+	}
+	writeJSON(res, req, http.StatusOK, status)
 }
 
 func writeJSON(res http.ResponseWriter, req *http.Request, status int, data any) {

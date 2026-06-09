@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	mcevent "github.com/muidea/magicCommon/event"
+
 	capturebiz "thoughtflow/internal/modules/capture/biz"
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
@@ -235,6 +237,28 @@ func (reader fakeGitQueryReader) RecentCommits(ctx context.Context, relativePath
 func (reader fakeGitQueryReader) RuntimeStatus(ctx context.Context) models.GitRuntimeStatus {
 	_ = ctx
 	return models.GitRuntimeStatus{Status: "disabled"}
+}
+
+type fakeEventPublisher struct {
+	events []mcevent.Event
+}
+
+func (publisher *fakeEventPublisher) Post(event mcevent.Event) {
+	publisher.events = append(publisher.events, event)
+}
+
+type fakeBackgroundAcceptor struct {
+	err error
+}
+
+func (acceptor fakeBackgroundAcceptor) AsyncFunction(function func()) error {
+	if acceptor.err != nil {
+		return acceptor.err
+	}
+	if function != nil {
+		function()
+	}
+	return nil
 }
 
 func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {
@@ -630,7 +654,8 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured})
 	jobs := jobstore.New(ws.JobsPath)
 	searchService := searchbiz.NewService(ws, jobs, searchStore, nil, nil, nil, duckdbPath)
-	service := &Service{workspace: ws, jobs: jobs, stream: stream, searchService: searchService}
+	events := &fakeEventPublisher{}
+	service := &Service{workspace: ws, jobs: jobs, events: events, background: fakeBackgroundAcceptor{}, stream: stream, searchService: searchService}
 
 	status := service.systemStatus(context.Background(), appconfig.Config{
 		AI: appconfig.AIConfig{
@@ -653,11 +678,35 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	if status.Git.Status != "disabled" || status.Git.Enabled {
 		t.Fatalf("git status = %#v", status.Git)
 	}
-	if !status.Background.Writable || status.Background.Status != "ready" {
+	if !status.Background.Writable || !status.Background.AcceptingTasks || status.Background.Status != "ready" {
 		t.Fatalf("background status = %#v", status.Background)
 	}
-	if status.Events.HistorySize != 1 || status.Events.Limit != 10 {
+	if !status.Events.Publishable || status.Events.HistorySize != 1 || status.Events.Limit != 10 {
 		t.Fatalf("events status = %#v", status.Events)
+	}
+	if len(events.events) != 1 || events.events[0].ID() != "thoughtflow.system.health_probe" {
+		t.Fatalf("probe events = %#v", events.events)
+	}
+}
+
+func TestHandleReadyReturnsUnavailableWhenRuntimeIsNotReady(t *testing.T) {
+	service := &Service{}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+
+	service.handleReady(context.Background(), res, req)
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.SystemStatus `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Ready {
+		t.Fatalf("ready status = %#v", payload.Data)
 	}
 }
 

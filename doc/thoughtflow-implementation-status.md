@@ -47,8 +47,9 @@
     - search 运行单元提供 DuckDB 配置路径和文件存在状态。
     - AI provider 配置状态。
     - git-sync 提供 Git 仓库、用户身份和未提交变更只读探测。
-    - jobstore 提供 background jobs 目录写入状态和资源维度 Job 查询。
-    - SSE history/subscriber 统计。
+    - jobstore 提供 background jobs 目录写入状态和资源维度 Job 查询，application 运行态探针验证 `BackgroundRoutine` 可接受任务。
+    - SSE history/subscriber 统计，application 运行态探针验证 EventHub 可发布事件。
+    - `GET /health/ready` 复用同一套系统状态；未 ready 时返回 503。
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
     - `thoughtflow_capture_total` 通过 capture 运行单元从工作区 Markdown thought 事实源计算。
     - `thoughtflow_refine_duration_seconds` 从 refine job 开始/完成时间计算。

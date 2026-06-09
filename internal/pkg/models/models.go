@@ -293,14 +293,16 @@ type GitRuntimeStatus struct {
 }
 
 type BackgroundRuntimeStatus struct {
-	Status   string `json:"status"`
-	JobsPath string `json:"jobs_path"`
-	Writable bool   `json:"writable"`
-	Error    string `json:"error,omitempty"`
+	Status         string `json:"status"`
+	JobsPath       string `json:"jobs_path"`
+	Writable       bool   `json:"writable"`
+	AcceptingTasks bool   `json:"accepting_tasks"`
+	Error          string `json:"error,omitempty"`
 }
 
 type EventsRuntimeStatus struct {
 	Status      string `json:"status"`
+	Publishable bool   `json:"publishable"`
 	HistorySize int    `json:"history_size"`
 	Limit       int    `json:"limit"`
 	Subscribers int    `json:"subscribers"`
