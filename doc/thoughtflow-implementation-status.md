@@ -211,10 +211,16 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - topic weave review，支持审批队列/历史、patch hunk、diff 查看、候选文档编辑和确认写入
 4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 5. 嵌入资产服务单元测试。
+6. 原生前端组件测试：
+   - `node --check internal/modules/application/thoughtflow/service/web/app.js`
+   - `node --test internal/modules/application/thoughtflow/service/web/app.test.js`
+   - 覆盖轻量 Markdown 安全渲染、diff 展示、synthesis source link 去重和 outline helper。
 
 验证：
 
 ```bash
+node --check internal/modules/application/thoughtflow/service/web/app.js
+node --test internal/modules/application/thoughtflow/service/web/app.test.js
 go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
@@ -232,7 +238,7 @@ M3：
 UI：
 
 1. Diff/patch 审批视图已有轻量 Review tab 和独立审批队列；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
-2. 还没有独立前端构建、组件测试和浏览器兼容性测试矩阵。
+2. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试；还没有浏览器兼容性测试矩阵。
 
 当前限制：
 

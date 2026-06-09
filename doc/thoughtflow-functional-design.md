@@ -918,6 +918,7 @@ running -> retrying -> running
 4. 主题规则匹配。
 5. 混合搜索分数归一化。
 6. Git debounce 队列。
+7. 原生前端组件测试：Markdown 渲染、diff 展示、synthesis source link 去重和 outline helper。
 
 ### 15.2 集成测试
 
@@ -927,6 +928,7 @@ running -> retrying -> running
 4. DuckDB 从 Markdown 全量重建。
 5. 专题重组失败不破坏旧 `index.md`。
 6. SSE 能收到任务状态并支持断线后查询补偿。
+7. 嵌入式前端资源通过 JS syntax gate 和 Node 组件测试。
 
 ### 15.3 验收标准
 
