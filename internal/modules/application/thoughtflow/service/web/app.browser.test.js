@@ -107,6 +107,8 @@ function startFixtureServer() {
         return serveFile(res, path.join(webRoot, "styles.css"), "text/css; charset=utf-8");
       case "/app.js":
         return serveFile(res, path.join(webRoot, "app.js"), "application/javascript; charset=utf-8");
+      case "/vendor/markdown-it.min.js":
+        return serveFile(res, path.join(webRoot, "vendor", "markdown-it.min.js"), "application/javascript; charset=utf-8");
       case "/favicon.ico":
         res.writeHead(204);
         return res.end();

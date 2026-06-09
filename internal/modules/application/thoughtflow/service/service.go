@@ -68,6 +68,8 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/index.html", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/styles.css", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/app.js", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/vendor/markdown-it.min.js", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
@@ -117,6 +119,8 @@ func (s *Service) handleWeb(ctx context.Context, res http.ResponseWriter, req *h
 		res.Header().Set("Content-Type", "text/css; charset=utf-8")
 	case ".js":
 		res.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case ".LICENSE":
+		res.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	default:
 		res.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}

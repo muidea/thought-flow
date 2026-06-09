@@ -39,6 +39,9 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "ThoughtFlow") {
 		t.Fatalf("expected embedded index body")
 	}
+	if !strings.Contains(res.Body.String(), `/vendor/markdown-it.min.js`) {
+		t.Fatalf("expected markdown parser script in embedded index")
+	}
 	if !strings.Contains(res.Body.String(), `id="topic-edit-form"`) {
 		t.Fatalf("expected topic rules editor in embedded index")
 	}
@@ -79,6 +82,24 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "patch hunks") {
 		t.Fatalf("expected structured patch hunk indicator in embedded app script")
+	}
+}
+
+func TestHandleWebServesMarkdownParserVendorScript(t *testing.T) {
+	service := &Service{}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/vendor/markdown-it.min.js", nil)
+
+	service.handleWeb(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d", res.Code)
+	}
+	if contentType := res.Header().Get("Content-Type"); !strings.Contains(contentType, "application/javascript") {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if !strings.Contains(res.Body.String(), "markdown-it 14.2.0") {
+		t.Fatalf("expected vendored markdown-it script")
 	}
 }
 

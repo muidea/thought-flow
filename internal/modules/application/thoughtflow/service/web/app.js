@@ -10,6 +10,8 @@ const state = {
   weaveProposals: [],
 };
 
+let markdownParser = null;
+
 const $ = (selector) => document.querySelector(selector);
 
 function toast(message) {
@@ -100,15 +102,154 @@ function renderInlineMarkdown(value) {
   return text;
 }
 
-function safeMarkdownHref(value) {
+function cleanMarkdownHref(value) {
   const href = String(value || "").trim();
   if (/^(https?:|mailto:|#|\/|\.\/|\.\.\/)/i.test(href)) {
-    return escapeHTML(href);
+    return href;
   }
   return "";
 }
 
+function safeMarkdownHref(value) {
+  const href = cleanMarkdownHref(value);
+  return href ? escapeHTML(href) : "";
+}
+
+function getMarkdownParser() {
+  if (markdownParser) return markdownParser;
+  const factory =
+    typeof markdownit === "function" ? markdownit : typeof window !== "undefined" && typeof window.markdownit === "function" ? window.markdownit : null;
+  if (!factory) return null;
+  const parser = factory({
+    html: false,
+    linkify: false,
+    typographer: false,
+  });
+  parser.validateLink = (href) => Boolean(cleanMarkdownHref(href));
+  installObsidianLinkRule(parser);
+  installTaskListRule(parser);
+  installSafeLinkRenderers(parser);
+  markdownParser = parser;
+  return markdownParser;
+}
+
+function installSafeLinkRenderers(parser) {
+  const defaultLinkOpen = parser.renderer.rules.link_open || ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+  parser.renderer.rules.link_open = (tokens, index, options, env, self) => {
+    const token = tokens[index];
+    const href = cleanMarkdownHref(token.attrGet("href"));
+    if (!href) {
+      token.attrSet("href", "#");
+      token.attrSet("aria-disabled", "true");
+    } else {
+      token.attrSet("href", href);
+    }
+    token.attrSet("target", "_blank");
+    token.attrSet("rel", "noreferrer");
+    return defaultLinkOpen(tokens, index, options, env, self);
+  };
+
+  const defaultImage = parser.renderer.rules.image || ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+  parser.renderer.rules.image = (tokens, index, options, env, self) => {
+    const token = tokens[index];
+    const src = cleanMarkdownHref(token.attrGet("src"));
+    if (!src) return escapeHTML(token.content || "");
+    token.attrSet("src", src);
+    token.attrSet("loading", "lazy");
+    return defaultImage(tokens, index, options, env, self);
+  };
+}
+
+function installObsidianLinkRule(parser) {
+  parser.renderer.rules.thoughtflow_obsidian_link = (tokens, index) => {
+    const token = tokens[index];
+    return `<code title="${escapeHTML(token.attrGet("title") || "")}">${escapeHTML(token.content || "")}</code>`;
+  };
+  parser.inline.ruler.before("emphasis", "thoughtflow_obsidian_link", (stateInline, silent) => {
+    const start = stateInline.pos;
+    if (stateInline.src.charCodeAt(start) !== 0x5b || stateInline.src.charCodeAt(start + 1) !== 0x5b) return false;
+    const end = stateInline.src.indexOf("]]", start + 2);
+    if (end < 0) return false;
+    if (!silent) {
+      const raw = stateInline.src.slice(start + 2, end);
+      const separator = raw.indexOf("|");
+      const target = (separator >= 0 ? raw.slice(0, separator) : raw).trim();
+      const label = (separator >= 0 ? raw.slice(separator + 1) : raw).trim();
+      const token = stateInline.push("thoughtflow_obsidian_link", "code", 0);
+      token.content = label || target;
+      token.attrSet("title", target);
+    }
+    stateInline.pos = end + 2;
+    return true;
+  });
+}
+
+function installTaskListRule(parser) {
+  parser.core.ruler.after("inline", "thoughtflow_task_lists", (parserState) => {
+    const tokens = parserState.tokens;
+    for (let index = 2; index < tokens.length; index++) {
+      const inlineToken = tokens[index];
+      if (inlineToken.type !== "inline") continue;
+      if (tokens[index - 1]?.type !== "paragraph_open" || tokens[index - 2]?.type !== "list_item_open") continue;
+      const marker = inlineToken.content.match(/^\[([ xX])\]\s+/);
+      if (!marker) continue;
+      const checked = marker[1].toLowerCase() === "x";
+      tokens[index - 2].attrJoin("class", "task-item");
+      inlineToken.content = inlineToken.content.slice(marker[0].length);
+      stripTaskMarkerFromChildren(inlineToken, marker[0].length);
+      const checkbox = new parserState.Token("html_inline", "", 0);
+      checkbox.content = `<input type="checkbox" disabled${checked ? " checked" : ""}>`;
+      inlineToken.children = [checkbox, ...(inlineToken.children || [])];
+    }
+  });
+}
+
+function stripTaskMarkerFromChildren(inlineToken, markerLength) {
+  let remaining = markerLength;
+  for (const child of inlineToken.children || []) {
+    if (remaining <= 0) return;
+    if (child.type !== "text") continue;
+    if (child.content.length <= remaining) {
+      remaining -= child.content.length;
+      child.content = "";
+    } else {
+      child.content = child.content.slice(remaining);
+      remaining = 0;
+    }
+  }
+}
+
 function renderMarkdown(value) {
+  const parser = getMarkdownParser();
+  if (parser) {
+    const { frontMatter, body } = splitFrontMatter(value);
+    return `${frontMatter}${parser.render(sanitizeMarkdownInput(body || ""))}`;
+  }
+  return renderMarkdownFallback(value);
+}
+
+function sanitizeMarkdownInput(value) {
+  return String(value || "")
+    .replace(/!\[([^\]]*)\]\(((?:[^()\s]+|\([^)]*\))+)\)/g, (match, alt, src) => (cleanMarkdownHref(src) ? match : alt))
+    .replace(/\[([^\]]+)\]\(((?:[^()\s]+|\([^)]*\))+)\)/g, (match, label, href) => (cleanMarkdownHref(href) ? match : label));
+}
+
+function splitFrontMatter(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") {
+    return { frontMatter: "", body: String(value || "") };
+  }
+  const end = lines.slice(1).findIndex((line) => line.trim() === "---");
+  if (end < 0) {
+    return { frontMatter: "", body: String(value || "") };
+  }
+  return {
+    frontMatter: renderFrontMatter(lines.slice(1, end + 1)),
+    body: lines.slice(end + 2).join("\n"),
+  };
+}
+
+function renderMarkdownFallback(value) {
   const lines = String(value || "").split(/\r?\n/);
   const html = [];
   let listType = "";

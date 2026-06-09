@@ -6,6 +6,8 @@ const vm = require("node:vm");
 
 function loadAppFunctions() {
   const appPath = path.join(__dirname, "app.js");
+  const parserPath = path.join(__dirname, "vendor", "markdown-it.min.js");
+  const parserCode = fs.readFileSync(parserPath, "utf8");
   const code = fs.readFileSync(appPath, "utf8").replace(/\nboot\(\)\.catch\(\(error\) => toast\(error\.message\)\);\s*$/, "");
   const context = {
     document: {
@@ -22,7 +24,8 @@ function loadAppFunctions() {
     console,
   };
   return vm.runInNewContext(
-    `${code}
+    `${parserCode}
+    ${code}
     ({
       escapeHTML,
       renderMarkdown,
@@ -82,14 +85,39 @@ type: topic
   assert.match(html, /<th>Name<\/th>/);
   assert.match(html, /<a href="https:\/\/example\.test\/a" target="_blank" rel="noreferrer">Open<\/a>/);
   assert.doesNotMatch(html, /javascript:alert/);
-  assert.match(html, /<ol><li>First<\/li><li>Second<\/li><\/ol>/);
+  assert.match(html, /<ol>\s*<li>First<\/li>\s*<li>Second<\/li>\s*<\/ol>/);
   assert.match(html, /<li class="task-item"><input type="checkbox" disabled checked>Done<\/li>/);
   assert.match(html, /<li class="task-item"><input type="checkbox" disabled>Todo<\/li>/);
   assert.match(html, /<hr>/);
   assert.match(html, /<em>emphasis<\/em>/);
-  assert.match(html, /<del>removed<\/del>/);
-  assert.match(html, /<img src=".\/attachments\/diagram\.png" alt="Diagram">/);
+  assert.match(html, /<s>removed<\/s>/);
+  assert.match(html, /<img src=".\/attachments\/diagram\.png" alt="Diagram" loading="lazy">/);
   assert.doesNotMatch(html, /<img src="javascript/);
+});
+
+test("renderMarkdown uses CommonMark block parsing with GFM extensions", () => {
+  const app = loadAppFunctions();
+
+  const html = app.renderMarkdown(`Paragraph
+continues on the next line.
+
+> Quote
+>
+> - nested
+
+    indented code
+
+~~strike~~
+
+| A | B |
+| --- | --- |
+| 1 | 2 |`);
+
+  assert.match(html, /<p>Paragraph\ncontinues on the next line\.<\/p>/);
+  assert.match(html, /<blockquote>\n<p>Quote<\/p>\n<ul>\n<li>nested<\/li>\n<\/ul>\n<\/blockquote>/);
+  assert.match(html, /<pre><code>indented code\n<\/code><\/pre>/);
+  assert.match(html, /<s>strike<\/s>/);
+  assert.match(html, /<table>/);
 });
 
 test("renderDiff marks added and removed lines", () => {
