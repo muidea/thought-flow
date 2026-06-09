@@ -30,13 +30,15 @@
    - `.thoughtflow/logs`
 6. 原子笔记 Markdown 原子写入和读取：
    - 写入已有 thought 文件时保留未知 front matter 字段块，保证未来字段和外部工具字段向后兼容。
+   - `errors` front matter 字段支持 `ErrorRef` 写入和读取，用于持久化采集、抓取和加工告警/失败原因。
 7. `Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitCommitRecord` 等 M1 模型。
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
-9. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。
-10. SSE 事件流基础推送。
+9. capture 会按 `content_hash` 扫描已有 thought；重复内容默认设置 `duplicate_warned` 和 `thoughtflow.capture.duplicate_warned`，但仍写入新 Markdown，不静默丢弃用户输入。
+10. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。
+11. SSE 事件流基础推送。
     - 支持 `Last-Event-ID` 从内存历史中断点续传。
     - 支持 `types` 查询参数按事件类型过滤历史和实时事件。
-11. `GET /api/system/status` 返回结构化运行态健康信息：
+12. `GET /api/system/status` 返回结构化运行态健康信息：
     - top-level `status` / `ready`。
     - workspace 读写状态。
     - DuckDB 配置路径和文件存在状态。
@@ -44,7 +46,7 @@
     - Git 仓库、用户身份和未提交变更只读探测。
     - background jobs 目录写入状态。
     - SSE history/subscriber 统计。
-12. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
+13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
     - `thoughtflow_capture_total` 从工作区 Markdown thought 事实源计算。
     - `thoughtflow_refine_duration_seconds` 从 refine job 开始/完成时间计算。
     - `thoughtflow_ai_request_total` 统计 AI Provider 调用次数。
@@ -53,11 +55,11 @@
     - `thoughtflow_topic_weave_total` 统计专题文档缝合次数。
     - `thoughtflow_git_commit_total` 从成功 git commit job 计算。
     - `thoughtflow_background_jobs` 从持久化 job 快照计算，并按 status/type 输出 label 维度。
-13. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
+14. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
     - 监听地址使用 `THOUGHTFLOW_HOST` + `THOUGHTFLOW_PORT`。
     - `application.Shutdown(ctx)` 触发 application module `Teardown(ctx)` 时调用 `http.Server.Shutdown(ctx)`。
     - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
-14. 配置分层加载：
+15. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
     - 启动时按工作区读取 `.thoughtflow/config.local.yaml`。
     - 环境变量保持最高优先级，覆盖本地配置中的端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。

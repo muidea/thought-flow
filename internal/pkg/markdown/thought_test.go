@@ -27,6 +27,14 @@ func TestWriteAndReadThought(t *testing.T) {
 		RefineStatus:  models.RefineStatusPending,
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
+		Errors: []models.ErrorRef{
+			{
+				Code:       "thoughtflow.capture.duplicate_warned",
+				Message:    "possible duplicate content",
+				OccurredAt: now,
+				Retryable:  false,
+			},
+		},
 	}
 	content := models.ThoughtContent{Original: "hello"}
 
@@ -45,6 +53,13 @@ func TestWriteAndReadThought(t *testing.T) {
 	}
 	if gotContent.Original != "hello" {
 		t.Fatalf("original = %q", gotContent.Original)
+	}
+	if len(gotThought.Errors) != 1 ||
+		gotThought.Errors[0].Code != "thoughtflow.capture.duplicate_warned" ||
+		gotThought.Errors[0].Message != "possible duplicate content" ||
+		gotThought.Errors[0].OccurredAt.IsZero() ||
+		gotThought.Errors[0].Retryable {
+		t.Fatalf("errors = %#v", gotThought.Errors)
 	}
 }
 

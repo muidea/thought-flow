@@ -92,7 +92,7 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeScalar(&buf, "index_status", thought.IndexStatus)
 	writeScalar(&buf, "topic_status", thought.TopicStatus)
 	writeUnknownFrontMatter(&buf, unknownFrontMatter)
-	buf.WriteString("errors: []\n")
+	writeErrors(&buf, thought.Errors)
 	buf.WriteString("---\n\n")
 	writeSection(&buf, "Original", content.Original)
 	writeSection(&buf, "Extracted Content", content.ExtractedContent)
@@ -164,6 +164,27 @@ func writeUnknownFrontMatter(buf *bytes.Buffer, lines []string) {
 	for _, line := range lines {
 		_, _ = fmt.Fprintln(buf, strings.TrimRight(line, "\r"))
 	}
+}
+
+func writeErrors(buf *bytes.Buffer, errors []models.ErrorRef) {
+	if len(errors) == 0 {
+		buf.WriteString("errors: []\n")
+		return
+	}
+	buf.WriteString("errors:\n")
+	for _, errRef := range errors {
+		_, _ = fmt.Fprintf(buf, "  - code: %q\n", errRef.Code)
+		_, _ = fmt.Fprintf(buf, "    message: %q\n", errRef.Message)
+		writeIndentedTime(buf, "    ", "occurred_at", errRef.OccurredAt)
+		_, _ = fmt.Fprintf(buf, "    retryable: %t\n", errRef.Retryable)
+	}
+}
+
+func writeIndentedTime(buf *bytes.Buffer, indent string, key string, value time.Time) {
+	if value.IsZero() {
+		return
+	}
+	_, _ = fmt.Fprintf(buf, "%s%s: %q\n", indent, key, value.Format(time.RFC3339))
 }
 
 func unknownFrontMatterLines(raw []byte) []string {
@@ -315,7 +336,65 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.IndexStatus = value
 		case "topic_status":
 			thought.TopicStatus = value
+		case "errors":
+			thought.Errors = parseErrors(lines, &idx, value)
 		}
+	}
+}
+
+func parseErrors(lines []string, idx *int, value string) []models.ErrorRef {
+	if strings.TrimSpace(value) == "[]" {
+		return nil
+	}
+	errors := []models.ErrorRef{}
+	for *idx+1 < len(lines) {
+		next := strings.TrimSpace(lines[*idx+1])
+		if !strings.HasPrefix(next, "-") {
+			break
+		}
+		errRef := models.ErrorRef{}
+		first := strings.TrimSpace(strings.TrimPrefix(next, "-"))
+		if strings.Contains(first, ":") {
+			applyErrorField(&errRef, first)
+		}
+		*idx = *idx + 1
+		for *idx+1 < len(lines) {
+			child := lines[*idx+1]
+			if strings.TrimSpace(child) == "" {
+				*idx = *idx + 1
+				continue
+			}
+			if !strings.HasPrefix(child, " ") && !strings.HasPrefix(child, "\t") {
+				break
+			}
+			trimmed := strings.TrimSpace(child)
+			if strings.HasPrefix(trimmed, "-") {
+				break
+			}
+			applyErrorField(&errRef, trimmed)
+			*idx = *idx + 1
+		}
+		errors = append(errors, errRef)
+	}
+	return errors
+}
+
+func applyErrorField(errRef *models.ErrorRef, line string) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return
+	}
+	key := strings.TrimSpace(parts[0])
+	value := strings.Trim(strings.TrimSpace(parts[1]), `"`)
+	switch key {
+	case "code":
+		errRef.Code = value
+	case "message":
+		errRef.Message = value
+	case "occurred_at":
+		errRef.OccurredAt = parseTime(value)
+	case "retryable":
+		errRef.Retryable = strings.EqualFold(value, "true")
 	}
 }
 

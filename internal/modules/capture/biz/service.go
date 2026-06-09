@@ -3,7 +3,10 @@ package biz
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,19 +20,35 @@ import (
 )
 
 type Service struct {
-	workspace *models.Workspace
-	jobs      *jobstore.Store
-	eventHub  event.Hub
-	now       func() time.Time
+	workspace       *models.Workspace
+	jobs            *jobstore.Store
+	eventHub        event.Hub
+	now             func() time.Time
+	duplicatePolicy string
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub) *Service {
-	return &Service{
-		workspace: workspace,
-		jobs:      jobs,
-		eventHub:  eventHub,
-		now:       func() time.Time { return time.Now().UTC() },
+type Option func(*Service)
+
+func WithDuplicatePolicy(policy string) Option {
+	return func(s *Service) {
+		if strings.TrimSpace(policy) != "" {
+			s.duplicatePolicy = strings.ToLower(strings.TrimSpace(policy))
+		}
 	}
+}
+
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, options ...Option) *Service {
+	service := &Service{
+		workspace:       workspace,
+		jobs:            jobs,
+		eventHub:        eventHub,
+		now:             func() time.Time { return time.Now().UTC() },
+		duplicatePolicy: "warn",
+	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (models.CaptureResult, error) {
@@ -47,6 +66,21 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		source = models.ThoughtSourceManual
 	}
 	original := originalContent(cmd)
+	contentHash := models.ContentHash(original)
+	captureStatus := models.CaptureStatusCaptured
+	errorRefs := []models.ErrorRef{}
+	duplicates, err := findDuplicateThoughts(s.workspace.RootPath, contentHash, "")
+	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	if len(duplicates) > 0 && s.duplicatePolicy != "allow" {
+		captureStatus = models.CaptureStatusDuplicateWarned
+		errorRefs = append(errorRefs, models.NewErrorRef(
+			"thoughtflow.capture.duplicate_warned",
+			fmt.Sprintf("possible duplicate content with thought(s): %s", strings.Join(duplicates, ", ")),
+			false,
+		))
+	}
 	thoughtID := models.NewThoughtID(now, original)
 	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	thought := models.Thought{
@@ -58,10 +92,11 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		Path:          relPath,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-		ContentHash:   models.ContentHash(original),
+		ContentHash:   contentHash,
 		UserTags:      normalizeList(cmd.Tags),
 		TopicIDs:      normalizeList(cmd.TopicHints),
-		CaptureStatus: models.CaptureStatusCaptured,
+		Errors:        errorRefs,
+		CaptureStatus: captureStatus,
 		RefineStatus:  models.RefineStatusPending,
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
@@ -116,6 +151,38 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 
 func (s *Service) Workspace() *models.Workspace {
 	return s.workspace
+}
+
+func findDuplicateThoughts(rootPath string, contentHash string, currentID string) ([]string, error) {
+	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(contentHash) == "" {
+		return []string{}, nil
+	}
+	thoughtsPath := filepath.Join(rootPath, "thoughts")
+	duplicates := []string{}
+	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
+			return nil
+		}
+		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		if thoughtID == currentID {
+			return nil
+		}
+		thought, _, err := markdown.ReadThought(rootPath, thoughtID)
+		if err != nil {
+			return err
+		}
+		if thought.ContentHash == contentHash {
+			duplicates = append(duplicates, thought.ID)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	return duplicates, err
 }
 
 func validateCaptureCommand(cmd models.CaptureCommand) error {
