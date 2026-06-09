@@ -83,6 +83,7 @@ go build ./cmd/thoughtflow
    - `THOUGHTFLOW_AI_CHAT_MODEL`
    - `THOUGHTFLOW_AI_EMBEDDING_MODEL`
    - `THOUGHTFLOW_AI_TIMEOUT_SECONDS`
+   - AI HTTP 请求使用 DNS cache client、超时配置、最多 3 次 transient retry，并通过 `ProviderError` 区分 transient status、HTTP status、网络失败和 JSON 解析失败。
 5. 未配置 AI Key 时使用本地规则 provider，并生成 deterministic local embedding，保证开发环境可运行。
 6. URL 笔记正文抓取基础链路，抓取失败会保留原始笔记并发布失败事件。
 7. `thought.refine_started`、`thought.refined`、`thought.refine_failed` 事件。

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,6 +88,71 @@ func TestOpenAICompatibleProviderRefineAndEmbed(t *testing.T) {
 	}
 	if len(refinement.Embedding.Vector) != 3 {
 		t.Fatalf("embedding vector = %#v", refinement.Embedding.Vector)
+	}
+}
+
+func TestOpenAICompatibleProviderRetriesTransientStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.Error(res, "temporary provider outage", http.StatusBadGateway)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"data": []map[string]any{
+				{"embedding": []float64{0.4, 0.5}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+		BaseURL:        server.URL,
+		APIKey:         "test-key",
+		EmbeddingModel: "embedding-model",
+		Timeout:        time.Second,
+	})
+	embedding, err := provider.Embed(context.Background(), EmbedRequest{ThoughtID: "thought-1", Text: "retry embedding"})
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+	if attempts != openAIMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, openAIMaxAttempts)
+	}
+	if embedding.Dimension != 2 {
+		t.Fatalf("embedding = %#v", embedding)
+	}
+}
+
+func TestOpenAICompatibleProviderDoesNotRetryNonRetryableStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		attempts++
+		http.Error(res, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+		BaseURL:        server.URL,
+		APIKey:         "test-key",
+		EmbeddingModel: "embedding-model",
+		Timeout:        time.Second,
+	})
+	_, err := provider.Embed(context.Background(), EmbedRequest{ThoughtID: "thought-1", Text: "bad embedding"})
+	if err == nil {
+		t.Fatalf("expected provider error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	var providerErr ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error type = %T, want ProviderError", err)
+	}
+	if providerErr.Retryable || providerErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("provider error = %#v", providerErr)
 	}
 }
 

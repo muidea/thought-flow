@@ -23,6 +23,7 @@ import (
 )
 
 const localEmbeddingModel = "local-hash-embedding-v1"
+const openAIMaxAttempts = 3
 
 type RefineRequest struct {
 	Thought models.Thought
@@ -63,6 +64,20 @@ type Provider interface {
 	EmbeddingProvider
 	WeaveProvider
 	SynthesisProvider
+}
+
+type ProviderError struct {
+	Code       string
+	StatusCode int
+	Message    string
+	Retryable  bool
+}
+
+func (e ProviderError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("%s: status %d: %s", e.Code, e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 type LocalRefineProvider struct{}
@@ -423,28 +438,78 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, pa
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.apiURL(path), bytes.NewReader(raw))
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 1; attempt <= openAIMaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.apiURL(path), bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+		resp, err := p.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lastErr = ProviderError{Code: "thoughtflow.ai.request_failed", Message: err.Error(), Retryable: true}
+			if attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
+				continue
+			}
+			return lastErr
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = ProviderError{Code: "thoughtflow.ai.read_failed", Message: readErr.Error(), Retryable: true}
+			if attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
+				continue
+			}
+			return lastErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			providerErr := classifyProviderStatus(resp.StatusCode, body)
+			lastErr = providerErr
+			if providerErr.Retryable && attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
+				continue
+			}
+			return providerErr
+		}
+		if err := json.Unmarshal(body, target); err != nil {
+			return ProviderError{Code: "thoughtflow.ai.invalid_json", Message: err.Error(), Retryable: false}
+		}
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return err
+	return lastErr
+}
+
+func classifyProviderStatus(statusCode int, body []byte) ProviderError {
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = http.StatusText(statusCode)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return err
+	retryable := statusCode == http.StatusTooManyRequests || statusCode >= 500
+	code := "thoughtflow.ai.http_status"
+	if retryable {
+		code = "thoughtflow.ai.transient_status"
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("ai provider returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	return ProviderError{
+		Code:       code,
+		StatusCode: statusCode,
+		Message:    message,
+		Retryable:  retryable,
 	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return err
+}
+
+func waitRetryBackoff(ctx context.Context, attempt int) error {
+	delay := time.Duration(attempt*attempt) * 10 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return nil
 }
 
 func (p *OpenAICompatibleProvider) apiURL(path string) string {
