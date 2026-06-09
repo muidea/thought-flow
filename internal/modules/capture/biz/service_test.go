@@ -116,6 +116,14 @@ func TestCaptureDuplicateContentWarnsWithoutDropping(t *testing.T) {
 	if snapshot.Thought.CaptureStatus != models.CaptureStatusDuplicateWarned || len(snapshot.Thought.Errors) != 1 {
 		t.Fatalf("persisted duplicate warning = %#v", snapshot.Thought)
 	}
+
+	duplicates, err := service.FindDuplicatesByContentHash(context.Background(), first.Thought.ContentHash, second.Thought.ID)
+	if err != nil {
+		t.Fatalf("FindDuplicatesByContentHash() error = %v", err)
+	}
+	if len(duplicates) != 1 || duplicates[0].ID != first.Thought.ID {
+		t.Fatalf("duplicates excluding current = %#v", duplicates)
+	}
 }
 
 func TestListThoughtsReturnsWorkspaceThoughts(t *testing.T) {

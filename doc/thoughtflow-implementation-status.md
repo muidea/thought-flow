@@ -37,6 +37,7 @@
    - jobstore 支持创建、查询、列表、进度更新、运行、重试中、成功、失败和取消状态持久化。
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. capture 会按 `content_hash` 扫描已有 thought；重复内容默认设置 `duplicate_warned` 和 `thoughtflow.capture.duplicate_warned`，但仍写入新 Markdown，不静默丢弃用户输入。
+   - capture 运行单元提供 `FindDuplicatesByContentHash` 查询，用于按 content hash 查询疑似重复笔记并支持排除当前 Thought。
 10. Git 自动提交队列，包含 `GitChangeSet` debounce 快照、workspace 内路径校验、`.thoughtflow/` 和 DuckDB 文件排除。
 11. SSE 事件流基础推送。
     - 支持 `Last-Event-ID` 从内存历史中断点续传。

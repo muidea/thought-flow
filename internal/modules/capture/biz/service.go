@@ -157,6 +157,14 @@ func (s *Service) ListThoughts(ctx context.Context) ([]models.Thought, error) {
 	return listThoughts(s.workspace.RootPath)
 }
 
+func (s *Service) FindDuplicatesByContentHash(ctx context.Context, contentHash string, currentID string) ([]models.Thought, error) {
+	_ = ctx
+	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.RootPath) == "" {
+		return []models.Thought{}, nil
+	}
+	return findDuplicateThoughtRecords(s.workspace.RootPath, contentHash, currentID)
+}
+
 func (s *Service) Workspace() *models.Workspace {
 	return s.workspace
 }
@@ -189,11 +197,23 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 }
 
 func findDuplicateThoughts(rootPath string, contentHash string, currentID string) ([]string, error) {
+	records, err := findDuplicateThoughtRecords(rootPath, contentHash, currentID)
+	if err != nil {
+		return nil, err
+	}
+	duplicates := make([]string, 0, len(records))
+	for _, thought := range records {
+		duplicates = append(duplicates, thought.ID)
+	}
+	return duplicates, nil
+}
+
+func findDuplicateThoughtRecords(rootPath string, contentHash string, currentID string) ([]models.Thought, error) {
 	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(contentHash) == "" {
-		return []string{}, nil
+		return []models.Thought{}, nil
 	}
 	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	duplicates := []string{}
+	duplicates := []models.Thought{}
 	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -210,12 +230,12 @@ func findDuplicateThoughts(rootPath string, contentHash string, currentID string
 			return err
 		}
 		if thought.ContentHash == contentHash {
-			duplicates = append(duplicates, thought.ID)
+			duplicates = append(duplicates, thought)
 		}
 		return nil
 	})
 	if errors.Is(err, os.ErrNotExist) {
-		return []string{}, nil
+		return []models.Thought{}, nil
 	}
 	return duplicates, err
 }
