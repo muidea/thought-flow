@@ -76,6 +76,109 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	}
 }
 
+func TestRefineNowSkipsUnchangedRefinedThought(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	original := "Already refined input should not call provider again."
+	now := time.Date(2026, 6, 9, 15, 10, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID:            "20260609-151000-skip",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-151000-skip")),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash(original),
+		Summary:       "existing summary",
+		KeyPoints:     []string{"existing point"},
+		AITags:        []string{"existing"},
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	content := models.ThoughtContent{Original: original, AINotes: "Summary: existing summary"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	provider := &countingRefineProvider{}
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, provider, webfetch.New(time.Second))
+	refinement, err := service.RefineNow(context.Background(), thought.ID)
+	if err != nil {
+		t.Fatalf("RefineNow() error = %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d", provider.calls)
+	}
+	if refinement.Model != skippedUnchangedModel || refinement.InputHash != thought.ContentHash {
+		t.Fatalf("refinement = %#v", refinement)
+	}
+	gotThought, gotContent, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if !gotThought.UpdatedAt.Equal(now) || gotContent.AINotes != content.AINotes {
+		t.Fatalf("thought should not be rewritten: %#v %#v", gotThought, gotContent)
+	}
+}
+
+func TestForceRefineIgnoresUnchangedSkip(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	original := "Retry should force refinement even when input is unchanged."
+	now := time.Date(2026, 6, 9, 15, 20, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID:            "20260609-152000-force",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-152000-force")),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash(original),
+		Summary:       "existing summary",
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	content := models.ThoughtContent{Original: original, AINotes: "Summary: existing summary"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	provider := &countingRefineProvider{summary: "forced summary"}
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, provider, webfetch.New(time.Second))
+	refinement, err := service.refineNow(context.Background(), thought.ID, true)
+	if err != nil {
+		t.Fatalf("refineNow(force) error = %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider calls = %d", provider.calls)
+	}
+	if refinement.Model == skippedUnchangedModel || refinement.Summary != "forced summary" {
+		t.Fatalf("refinement = %#v", refinement)
+	}
+}
+
 func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
@@ -113,7 +216,7 @@ func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWithMaxAttempts() error = %v", err)
 	}
-	service.refineJob(job)
+	service.refineJob(job, false)
 
 	loaded, err := jobs.Get(job.ID)
 	if err != nil {
@@ -152,6 +255,30 @@ func (p *flakyRefineProvider) Refine(ctx context.Context, req ai.RefineRequest) 
 		Summary:     "retry succeeded",
 		KeyPoints:   []string{"retried"},
 		AITags:      []string{"retry"},
+		GeneratedAt: time.Now().UTC(),
+	}, nil
+}
+
+type countingRefineProvider struct {
+	calls   int
+	summary string
+}
+
+func (p *countingRefineProvider) Refine(ctx context.Context, req ai.RefineRequest) (models.ThoughtRefinement, error) {
+	_ = ctx
+	p.calls++
+	summary := p.summary
+	if summary == "" {
+		summary = "counted summary"
+	}
+	return models.ThoughtRefinement{
+		ThoughtID:   req.Thought.ID,
+		Status:      models.RefineStatusRefined,
+		Summary:     summary,
+		KeyPoints:   []string{"counted"},
+		AITags:      []string{"counted"},
+		Model:       "counting",
+		InputHash:   models.ContentHash(req.Content.Original),
 		GeneratedAt: time.Now().UTC(),
 	}, nil
 }

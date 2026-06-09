@@ -195,7 +195,7 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.refiner.invalid_request", "thought id is required")
 		return
 	}
-	job, err := s.refinerService.RefineAsync(thoughtID)
+	job, err := s.refinerService.RetryRefineAsync(thoughtID)
 	if err != nil {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.refiner.invalid_request", err.Error())
 		return

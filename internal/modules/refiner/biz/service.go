@@ -30,6 +30,7 @@ type Service struct {
 }
 
 const refineMaxAttempts = 3
+const skippedUnchangedModel = "cached-unchanged"
 
 type retryableRefineError struct {
 	err error
@@ -92,6 +93,14 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 }
 
 func (s *Service) RefineAsync(thoughtID string) (models.Job, error) {
+	return s.refineAsync(thoughtID, false)
+}
+
+func (s *Service) RetryRefineAsync(thoughtID string) (models.Job, error) {
+	return s.refineAsync(thoughtID, true)
+}
+
+func (s *Service) refineAsync(thoughtID string, force bool) (models.Job, error) {
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
@@ -101,7 +110,7 @@ func (s *Service) RefineAsync(thoughtID string) (models.Job, error) {
 	}
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	run := func() {
-		s.refineJob(job)
+		s.refineJob(job, force)
 	}
 	if s.background != nil {
 		if err := s.background.AsyncFunction(run); err == nil {
@@ -113,11 +122,15 @@ func (s *Service) RefineAsync(thoughtID string) (models.Job, error) {
 }
 
 func (s *Service) RefineNow(ctx context.Context, thoughtID string) (models.ThoughtRefinement, error) {
+	return s.refineNow(ctx, thoughtID, false)
+}
+
+func (s *Service) refineNow(ctx context.Context, thoughtID string, force bool) (models.ThoughtRefinement, error) {
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {
 		return models.ThoughtRefinement{}, err
 	}
-	return s.refine(ctx, thought, content)
+	return s.refine(ctx, thought, content, force)
 }
 
 func (s *Service) CreateSynthesisDraft(ctx context.Context, request models.SynthesisRequest, snapshots []models.ThoughtSnapshot, sourceLinks []string) (models.SynthesisDraft, error) {
@@ -172,7 +185,7 @@ func (s *Service) MarkSynthesisSaved(ctx context.Context, draftID string, conten
 	return s.synthesisStore.MarkSaved(ctx, draftID, content, thought)
 }
 
-func (s *Service) refineJob(job models.Job) {
+func (s *Service) refineJob(job models.Job, force bool) {
 	ctx := context.Background()
 	for {
 		job, _ = s.jobs.MarkRunning(job)
@@ -188,10 +201,17 @@ func (s *Service) refineJob(job models.Job) {
 			Payload:        job,
 		})
 
-		refinement, err := s.RefineNow(ctx, job.ResourceID)
+		refinement, err := s.refineNow(ctx, job.ResourceID, force)
 		if err == nil {
-			job, _ = s.jobs.MarkSucceeded(job, "refine succeeded")
+			message := "refine succeeded"
+			if refinementSkipped(refinement) {
+				message = "refine skipped: input unchanged"
+			}
+			job, _ = s.jobs.MarkSucceeded(job, message)
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+			if refinementSkipped(refinement) {
+				return
+			}
 			eventutil.Post(s.eventHub, models.DomainEvent{
 				EventType:      models.EventThoughtRefined,
 				SourceUnit:     "refiner",
@@ -241,7 +261,12 @@ func (s *Service) refineJob(job models.Job) {
 	}
 }
 
-func (s *Service) refine(ctx context.Context, thought models.Thought, content models.ThoughtContent) (models.ThoughtRefinement, error) {
+func (s *Service) refine(ctx context.Context, thought models.Thought, content models.ThoughtContent, force bool) (models.ThoughtRefinement, error) {
+	if !force {
+		if refinement, ok := unchangedRefinement(thought, content); ok {
+			return refinement, nil
+		}
+	}
 	thought.RefineStatus = models.RefineStatusRunning
 	if thought.Type == models.ThoughtTypeURL && thought.URL != "" {
 		fetched, err := s.fetcher.Fetch(ctx, thought.URL)
@@ -283,6 +308,34 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
+}
+
+func unchangedRefinement(thought models.Thought, content models.ThoughtContent) (models.ThoughtRefinement, bool) {
+	if thought.RefineStatus != models.RefineStatusRefined {
+		return models.ThoughtRefinement{}, false
+	}
+	if strings.TrimSpace(content.AINotes) == "" {
+		return models.ThoughtRefinement{}, false
+	}
+	inputHash := models.ContentHash(content.Original)
+	if thought.ContentHash == "" || thought.ContentHash != inputHash {
+		return models.ThoughtRefinement{}, false
+	}
+	return models.ThoughtRefinement{
+		ThoughtID:      thought.ID,
+		Status:         models.RefineStatusRefined,
+		ExtractedTitle: thought.ExtractedTitle,
+		Summary:        thought.Summary,
+		KeyPoints:      thought.KeyPoints,
+		AITags:         thought.AITags,
+		Model:          skippedUnchangedModel,
+		InputHash:      inputHash,
+		GeneratedAt:    time.Now().UTC(),
+	}, true
+}
+
+func refinementSkipped(refinement models.ThoughtRefinement) bool {
+	return refinement.Model == skippedUnchangedModel
 }
 
 func isRetryableRefineError(err error) bool {
