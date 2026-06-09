@@ -132,6 +132,8 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - `GET /api/topics/{id}`
    - `PUT /api/topics/{id}`
    - `POST /api/topics/{id}/rebuild`
+   - `POST /api/topics/{id}/weave-preview`
+   - `POST /api/topics/{id}/weave-accept`
 12. 本地 synthesis 草稿 API：`POST /api/synthesis`。
 13. synthesis 会读取指定 thoughts，生成本地 Markdown 草稿并返回 source links。
 14. M3 topic store、topic service 和 weave provider 单元测试。
@@ -151,6 +153,11 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 保存动作复用 capture 运行单元创建 Markdown，不在 application handler 中直接写文件。
    - 新 Thought 的 `source` 标记为 `synthesis`，并在内容中保留来源 Thought 链接。
    - 嵌入式 UI 的 synthesis 面板支持编辑草稿后保存。
+18. topic weave 支持人工确认主链路：
+   - `weave-preview` 生成候选专题文档和逐行 diff，不写入 Markdown。
+   - `weave-accept` 校验 source link 后写入用户确认的文档。
+   - 确认后同步 membership 事实文件、Thought backlink、`topic.updated` 和 git commit 请求。
+   - 嵌入式 UI 增加 Review tab，用于查看 diff、编辑候选文档并确认写入。
 
 验证：
 
@@ -181,6 +188,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - system AI/workspace 状态摘要
    - topic rules editor，支持编辑 keywords/tags/manual include/manual exclude/semantic/outline/auto_weave
    - topic document 和 thought preview 的基础 Markdown 渲染
+   - topic weave review，支持 diff 查看、候选文档编辑和确认写入
 4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 5. 嵌入资产服务单元测试。
 
@@ -200,12 +208,12 @@ M2：
 M3：
 
 1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
-2. topic weave 已支持 LLM full-document merge，但尚未实现独立 patch 审批、diff 展示和用户确认流程。
+2. topic weave 已支持 preview/diff/accept 主链路，但尚未实现独立持久化 patch 审批队列、审批历史和结构化 patch apply 引擎。
 3. synthesis 当前已支持本地草稿保存为 Thought，尚未接入云端模型、独立草稿仓库和审批历史。
 
 UI：
 
-1. 还没有 diff/patch 审批视图；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
+1. Diff/patch 审批视图已有轻量 Review tab，但尚未接入独立审批队列；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
 2. 还没有独立前端构建、组件测试和浏览器兼容性测试矩阵。
 
 当前限制：

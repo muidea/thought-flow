@@ -5,6 +5,7 @@ const state = {
   lastResults: [],
   synthesisDraft: null,
   activeTopicDetail: null,
+  weaveProposal: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -144,6 +145,19 @@ function renderMarkdown(value) {
   closeList();
   if (inCode) html.push("</code></pre>");
   return html.join("");
+}
+
+function renderDiff(lines) {
+  if (!lines || lines.length === 0) {
+    return '<div class="topic-meta">No document changes.</div>';
+  }
+  return lines
+    .map((line) => {
+      const op = line.op || "context";
+      const marker = op === "add" ? "+" : op === "remove" ? "-" : " ";
+      return `<div class="diff-line ${escapeHTML(op)}"><span>${marker}</span><code>${escapeHTML(line.text || "")}</code></div>`;
+    })
+    .join("");
 }
 
 async function loadStatus() {
@@ -377,6 +391,7 @@ function renderResults(response) {
                 <span class="pill">kw ${score(item.keyword_score)}</span>
                 <span class="pill">sem ${score(item.semantic_score)}</span>
                 ${tags}
+                <button class="mini-button" data-weave-id="${escapeHTML(item.thought_id)}" ${state.activeTopicId ? "" : "disabled"}>Review weave</button>
               </div>
             </div>
           </div>
@@ -392,6 +407,9 @@ function renderResults(response) {
   });
   list.querySelectorAll("[data-preview-id]").forEach((button) => {
     button.addEventListener("click", () => previewThought(button.dataset.previewId));
+  });
+  list.querySelectorAll("[data-weave-id]").forEach((button) => {
+    button.addEventListener("click", () => previewWeave(button.dataset.weaveId).catch((error) => toast(error.message)));
   });
 }
 
@@ -437,6 +455,49 @@ async function createSynthesis(event) {
   $("#synthesis-output").value = renderSynthesisDraft(draft);
   $("#save-synthesis").disabled = false;
   activateTab("synthesis");
+}
+
+async function previewWeave(thoughtId) {
+  if (!state.activeTopicId) {
+    toast("Select a topic first");
+    return;
+  }
+  const proposal = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/weave-preview`, {
+    method: "POST",
+    body: JSON.stringify({ thought_id: thoughtId }),
+  });
+  state.weaveProposal = proposal;
+  $("#weave-review-title").textContent = `Weave ${proposal.thought_id}`;
+  $("#weave-diff").innerHTML = renderDiff(proposal.diff || []);
+  $("#weave-document").value = proposal.proposed_document || "";
+  $("#accept-weave").disabled = false;
+  activateTab("review");
+}
+
+async function acceptWeave() {
+  if (!state.weaveProposal) {
+    toast("Create a weave preview first");
+    return;
+  }
+  const document = $("#weave-document").value.trim();
+  if (!document) {
+    toast("Proposed document is required");
+    return;
+  }
+  const detail = await api(`/api/topics/${encodeURIComponent(state.weaveProposal.topic_id)}/weave-accept`, {
+    method: "POST",
+    body: JSON.stringify({
+      thought_id: state.weaveProposal.thought_id,
+      document,
+    }),
+  });
+  toast("Weave accepted");
+  state.weaveProposal = null;
+  $("#accept-weave").disabled = true;
+  $("#weave-diff").innerHTML = '<div class="topic-meta">No pending weave review.</div>';
+  $("#weave-document").value = "";
+  await loadTopics();
+  await openTopic(detail.topic.id);
 }
 
 function renderSynthesisDraft(draft) {
@@ -537,6 +598,7 @@ function bind() {
   $("#search-form").addEventListener("submit", (event) => runSearch(event).catch((error) => toast(error.message)));
   $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
   $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
+  $("#accept-weave").addEventListener("click", () => acceptWeave().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
   $("#rebuild-topic").addEventListener("click", () => rebuildTopic().catch((error) => toast(error.message)));
   $("#reindex-button").addEventListener("click", () => reindex().catch((error) => toast(error.message)));

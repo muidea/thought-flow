@@ -218,6 +218,70 @@ func TestStoreAddMembershipUsesWeaveProvider(t *testing.T) {
 	}
 }
 
+func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{
+		Name: "DuckDB Notes",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	thought := testThought("20260609-143010-8f3a", "Query planner note", nil)
+	content := models.ThoughtContent{Original: "DuckDB query planner notes."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	membership, ok := store.MatchThought(topic, thought, content)
+	if !ok {
+		t.Fatalf("expected topic rule match")
+	}
+
+	baseDocument, proposedDocument, sourceLink, err := store.PreviewMembership(ctx, topic, thought, content, membership)
+	if err != nil {
+		t.Fatalf("PreviewMembership() error = %v", err)
+	}
+	if strings.Contains(baseDocument, sourceLink) {
+		t.Fatalf("base document should not contain source link before apply:\n%s", baseDocument)
+	}
+	if !strings.Contains(proposedDocument, sourceLink) {
+		t.Fatalf("proposed document missing source link %q:\n%s", sourceLink, proposedDocument)
+	}
+	confirmedDocument := proposedDocument + "\n\nConfirmed edit.\n"
+	updated, changed, err := store.ApplyMembershipDocument(ctx, topic, thought, content, membership, confirmedDocument)
+	if err != nil {
+		t.Fatalf("ApplyMembershipDocument() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected apply to change topic")
+	}
+	document, err := store.ReadDocument(ctx, updated.ID)
+	if err != nil {
+		t.Fatalf("ReadDocument() error = %v", err)
+	}
+	if !strings.Contains(document, "Confirmed edit.") {
+		t.Fatalf("expected confirmed document to be written:\n%s", document)
+	}
+	if !strings.Contains(document, "members:\n  - 20260609-143010-8f3a") {
+		t.Fatalf("expected member snapshot in confirmed document:\n%s", document)
+	}
+	updatedThought, updatedContent, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if updatedThought.TopicStatus != models.TopicStatusMatched || !containsString(updatedThought.TopicIDs, topic.ID) {
+		t.Fatalf("thought topic state = %#v", updatedThought)
+	}
+	if !strings.Contains(updatedContent.Links, "<!-- topic:duckdb-notes -->") {
+		t.Fatalf("expected topic backlink:\n%s", updatedContent.Links)
+	}
+}
+
 func TestStoreMatchHonorsManualExclude(t *testing.T) {
 	store := New(t.TempDir())
 	thought := testThought("20260609-143010-8f3a", "Excluded", nil)

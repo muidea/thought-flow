@@ -309,6 +309,16 @@ p {
   border-color: #b9d6c8;
 }
 
+.mini-button {
+  min-height: 22px;
+  border-color: var(--line);
+  border-radius: 999px;
+  background: white;
+  color: var(--accent-strong);
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .tabs {
   display: flex;
   gap: 6px;
@@ -427,6 +437,47 @@ textarea.markdown-preview {
   background: transparent;
   padding: 0;
   color: inherit;
+}
+
+.diff-view {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+  margin-bottom: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  border-bottom: 1px solid #eef1f5;
+}
+
+.diff-line:last-child {
+  border-bottom: 0;
+}
+
+.diff-line span {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.diff-line code {
+  min-height: 24px;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+}
+
+.diff-line.add {
+  background: #edf8f1;
+}
+
+.diff-line.remove {
+  background: #fff1f1;
 }
 
 .toggle-row {

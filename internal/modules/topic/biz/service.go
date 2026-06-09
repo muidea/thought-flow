@@ -87,6 +87,75 @@ func (s *Service) GetTopic(ctx context.Context, id string) (models.TopicDetail, 
 	return s.store.Detail(ctx, id)
 }
 
+func (s *Service) PreviewWeave(ctx context.Context, topicID string, thoughtID string) (models.TopicWeaveProposal, error) {
+	topic, thought, content, membership, err := s.weaveInput(ctx, topicID, thoughtID)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	baseDocument, proposedDocument, sourceLink, err := s.store.PreviewMembership(ctx, topic, thought, content, membership)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	return models.TopicWeaveProposal{
+		TopicID:          topic.ID,
+		ThoughtID:        thought.ID,
+		SourceLink:       sourceLink,
+		Membership:       membership,
+		BaseDocument:     baseDocument,
+		ProposedDocument: proposedDocument,
+		Diff:             documentLineDiff(baseDocument, proposedDocument),
+		CreatedAt:        time.Now().UTC(),
+	}, nil
+}
+
+func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
+	topic, thought, content, membership, err := s.weaveInput(ctx, topicID, req.ThoughtID)
+	if err != nil {
+		return models.TopicDetail{}, err
+	}
+	updatedTopic, changed, err := s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document)
+	if err != nil {
+		return models.TopicDetail{}, err
+	}
+	if changed {
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
+		eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
+	}
+	return s.store.Detail(ctx, updatedTopic.ID)
+}
+
+func (s *Service) weaveInput(ctx context.Context, topicID string, thoughtID string) (models.Topic, models.Thought, models.ThoughtContent, models.TopicMembership, error) {
+	if strings.TrimSpace(topicID) == "" {
+		return models.Topic{}, models.Thought{}, models.ThoughtContent{}, models.TopicMembership{}, errors.New("topic id is required")
+	}
+	if strings.TrimSpace(thoughtID) == "" {
+		return models.Topic{}, models.Thought{}, models.ThoughtContent{}, models.TopicMembership{}, errors.New("thought id is required")
+	}
+	topic, err := s.store.Get(ctx, topicID)
+	if err != nil {
+		return models.Topic{}, models.Thought{}, models.ThoughtContent{}, models.TopicMembership{}, err
+	}
+	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		return models.Topic{}, models.Thought{}, models.ThoughtContent{}, models.TopicMembership{}, err
+	}
+	membership, ok := s.matchTopic(ctx, topic, thought, content)
+	if !ok {
+		now := time.Now().UTC()
+		membership = models.TopicMembership{
+			TopicID:   topic.ID,
+			ThoughtID: thought.ID,
+			MatchType: "manual",
+			Score:     1,
+			Reasons:   []string{"manual weave"},
+			Status:    "accepted",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+	return topic, thought, content, membership, nil
+}
+
 func (s *Service) MatchThoughtAsync(thoughtID string) (models.Job, error) {
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
@@ -388,6 +457,61 @@ func uniqueStrings(values []string) []string {
 		ret = append(ret, value)
 	}
 	return ret
+}
+
+func documentLineDiff(baseDocument string, proposedDocument string) []models.TopicDocumentDiffLine {
+	baseLines := splitDocumentLines(baseDocument)
+	proposedLines := splitDocumentLines(proposedDocument)
+	lcs := make([][]int, len(baseLines)+1)
+	for idx := range lcs {
+		lcs[idx] = make([]int, len(proposedLines)+1)
+	}
+	for left := len(baseLines) - 1; left >= 0; left-- {
+		for right := len(proposedLines) - 1; right >= 0; right-- {
+			if baseLines[left] == proposedLines[right] {
+				lcs[left][right] = lcs[left+1][right+1] + 1
+				continue
+			}
+			if lcs[left+1][right] >= lcs[left][right+1] {
+				lcs[left][right] = lcs[left+1][right]
+			} else {
+				lcs[left][right] = lcs[left][right+1]
+			}
+		}
+	}
+	diff := []models.TopicDocumentDiffLine{}
+	left, right := 0, 0
+	for left < len(baseLines) && right < len(proposedLines) {
+		switch {
+		case baseLines[left] == proposedLines[right]:
+			diff = append(diff, models.TopicDocumentDiffLine{Op: "context", Text: baseLines[left]})
+			left++
+			right++
+		case lcs[left+1][right] >= lcs[left][right+1]:
+			diff = append(diff, models.TopicDocumentDiffLine{Op: "remove", Text: baseLines[left]})
+			left++
+		default:
+			diff = append(diff, models.TopicDocumentDiffLine{Op: "add", Text: proposedLines[right]})
+			right++
+		}
+	}
+	for left < len(baseLines) {
+		diff = append(diff, models.TopicDocumentDiffLine{Op: "remove", Text: baseLines[left]})
+		left++
+	}
+	for right < len(proposedLines) {
+		diff = append(diff, models.TopicDocumentDiffLine{Op: "add", Text: proposedLines[right]})
+		right++
+	}
+	return diff
+}
+
+func splitDocumentLines(document string) []string {
+	document = strings.TrimRight(document, "\n")
+	if document == "" {
+		return []string{}
+	}
+	return strings.Split(document, "\n")
 }
 
 func contains(values []string, expected string) bool {

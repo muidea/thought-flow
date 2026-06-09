@@ -443,6 +443,82 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 	return topic, true, nil
 }
 
+func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (string, string, string, error) {
+	if strings.TrimSpace(thought.ID) == "" {
+		return "", "", "", errors.New("thought id is required")
+	}
+	document, err := s.ReadDocument(ctx, topic.ID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			document = initialDocument(topic)
+		} else {
+			return "", "", "", err
+		}
+	}
+	now := time.Now().UTC()
+	membership = normalizeMembership(topic, thought.ID, membership, now)
+	proposed := s.weaveDocument(ctx, topic, document, thought, content, membership)
+	members := appendMissing(append([]string{}, topic.Members...), thought.ID)
+	sort.Strings(members)
+	proposed = updateTopicDocumentMembers(proposed, members)
+	sourceRel := sourceRelativePath(s.rootPath, topic, thought)
+	if !strings.Contains(proposed, sourceRel) {
+		return "", "", "", errors.New("topic weave document missing required source link")
+	}
+	return document, proposed, sourceRel, nil
+}
+
+func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string) (models.Topic, bool, error) {
+	if strings.TrimSpace(thought.ID) == "" {
+		return models.Topic{}, false, errors.New("thought id is required")
+	}
+	document = strings.TrimSpace(document)
+	if document == "" {
+		return models.Topic{}, false, errors.New("topic document is required")
+	}
+	sourceRel := sourceRelativePath(s.rootPath, topic, thought)
+	if !strings.Contains(document, sourceRel) {
+		return models.Topic{}, false, errors.New("topic weave document missing required source link")
+	}
+	currentDocument, err := s.ReadDocument(ctx, topic.ID)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return models.Topic{}, false, err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		currentDocument = initialDocument(topic)
+	}
+
+	now := time.Now().UTC()
+	memberChanged := false
+	if !contains(topic.Members, thought.ID) {
+		topic.Members = append(topic.Members, thought.ID)
+		sort.Strings(topic.Members)
+		memberChanged = true
+	}
+	document = updateTopicDocumentMembers(document, topic.Members)
+	topic.MemberCount = len(topic.Members)
+	topic.WordCount = countWords(document)
+	topic.LastActiveAt = &now
+	topic.UpdatedAt = now
+	if err := s.writeDocument(topic, document); err != nil {
+		return models.Topic{}, false, err
+	}
+	membership = normalizeMembership(topic, thought.ID, membership, now)
+	_, membershipChanged, err := s.upsertMembership(topic, thought.ID, membership, now)
+	if err != nil {
+		return models.Topic{}, false, err
+	}
+	if err := s.writeTopic(topic); err != nil {
+		return models.Topic{}, false, err
+	}
+	linkChanged, err := s.updateThoughtTopicLink(topic, thought, content, true)
+	if err != nil {
+		return models.Topic{}, false, err
+	}
+	documentChanged := strings.TrimSpace(currentDocument) != strings.TrimSpace(document)
+	return topic, memberChanged || documentChanged || membershipChanged || linkChanged, nil
+}
+
 func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []string, error) {
 	return s.RebuildWithMatcher(ctx, id, func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
 		return s.MatchThought(topic, thought, content)

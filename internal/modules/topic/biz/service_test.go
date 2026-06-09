@@ -208,6 +208,71 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 	}
 }
 
+func TestServicePreviewAndAcceptWeave(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Manual Weave",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	thought := serviceTestThought("20260609-143010-weave", "Weave note")
+	content := models.ThoughtContent{Original: "DuckDB weave review should show a diff."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	proposal, err := service.PreviewWeave(ctx, topic.ID, thought.ID)
+	if err != nil {
+		t.Fatalf("PreviewWeave() error = %v", err)
+	}
+	if proposal.TopicID != topic.ID || proposal.ThoughtID != thought.ID {
+		t.Fatalf("proposal ids = %#v", proposal)
+	}
+	if !strings.Contains(proposal.ProposedDocument, proposal.SourceLink) {
+		t.Fatalf("proposal missing source link %q:\n%s", proposal.SourceLink, proposal.ProposedDocument)
+	}
+	if !hasDiffOp(proposal.Diff, "add") {
+		t.Fatalf("expected added diff lines, got %#v", proposal.Diff)
+	}
+
+	confirmed := proposal.ProposedDocument + "\n\nAccepted edit.\n"
+	detail, err := service.AcceptWeave(ctx, topic.ID, models.TopicWeaveAcceptRequest{
+		ThoughtID: thought.ID,
+		Document:  confirmed,
+	})
+	if err != nil {
+		t.Fatalf("AcceptWeave() error = %v", err)
+	}
+	if detail.Topic.MemberCount != 1 {
+		t.Fatalf("member count = %d", detail.Topic.MemberCount)
+	}
+	if !strings.Contains(detail.Document, "Accepted edit.") {
+		t.Fatalf("expected accepted document edit:\n%s", detail.Document)
+	}
+	if len(detail.Members) != 1 || detail.Members[0].ThoughtID != thought.ID {
+		t.Fatalf("detail members = %#v", detail.Members)
+	}
+}
+
 type testEmbeddingCache struct {
 	record models.EmbeddingRecord
 	calls  int
@@ -263,4 +328,13 @@ func serviceTestThought(id string, title string) models.Thought {
 		IndexStatus:   models.IndexStatusIndexed,
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
+}
+
+func hasDiffOp(lines []models.TopicDocumentDiffLine, op string) bool {
+	for _, line := range lines {
+		if line.Op == op {
+			return true
+		}
+	}
+	return false
 }

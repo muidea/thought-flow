@@ -69,6 +69,8 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/topics", engine.GET, s.handleListTopics)
 	s.registry.AddHandler("/api/topics", engine.POST, s.handleCreateTopic)
 	s.registry.AddHandler("/api/topics/:id/rebuild", engine.POST, s.handleRebuildTopic)
+	s.registry.AddHandler("/api/topics/:id/weave-preview", engine.POST, s.handlePreviewWeave)
+	s.registry.AddHandler("/api/topics/:id/weave-accept", engine.POST, s.handleAcceptWeave)
 	s.registry.AddHandler("/api/topics/:id", engine.GET, s.handleGetTopic)
 	s.registry.AddHandler("/api/topics/:id", engine.PUT, s.handleUpdateTopic)
 	s.registry.AddHandler("/api/jobs/:id", engine.GET, s.handleGetJob)
@@ -393,6 +395,44 @@ func (s *Service) handleRebuildTopic(ctx context.Context, res http.ResponseWrite
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, job)
+}
+
+func (s *Service) handlePreviewWeave(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/weave-preview")
+	if topicID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
+		return
+	}
+	var request models.TopicWeavePreviewRequest
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_json", err.Error())
+		return
+	}
+	proposal, err := s.topicService.PreviewWeave(ctx, topicID, request.ThoughtID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.weave_preview_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, proposal)
+}
+
+func (s *Service) handleAcceptWeave(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/weave-accept")
+	if topicID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
+		return
+	}
+	var request models.TopicWeaveAcceptRequest
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_json", err.Error())
+		return
+	}
+	detail, err := s.topicService.AcceptWeave(ctx, topicID, request)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.weave_accept_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, detail)
 }
 
 func (s *Service) handleGetJob(ctx context.Context, res http.ResponseWriter, req *http.Request) {

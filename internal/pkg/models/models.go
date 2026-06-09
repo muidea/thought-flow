@@ -323,6 +323,31 @@ type TopicWeaveResult struct {
 	Strategy string `json:"strategy"`
 }
 
+type TopicWeavePreviewRequest struct {
+	ThoughtID string `json:"thought_id"`
+}
+
+type TopicWeaveAcceptRequest struct {
+	ThoughtID string `json:"thought_id"`
+	Document  string `json:"document"`
+}
+
+type TopicWeaveProposal struct {
+	TopicID          string                  `json:"topic_id"`
+	ThoughtID        string                  `json:"thought_id"`
+	SourceLink       string                  `json:"source_link"`
+	Membership       TopicMembership         `json:"membership"`
+	BaseDocument     string                  `json:"base_document"`
+	ProposedDocument string                  `json:"proposed_document"`
+	Diff             []TopicDocumentDiffLine `json:"diff"`
+	CreatedAt        time.Time               `json:"created_at"`
+}
+
+type TopicDocumentDiffLine struct {
+	Op   string `json:"op"`
+	Text string `json:"text"`
+}
+
 type TopicCreateRequest struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description"`

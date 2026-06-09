@@ -581,7 +581,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `UpdateTopic` | topic_id/rules/outline/auto_weave | Topic | `topic.updated` |
 | `MatchThought` | thought_id | TopicMembership 列表 | `topic.matched` |
 | `RebuildTopic` | topic_id | Job | `topic.rebuild_started`、`topic.updated`、`topic.rebuild_failed` |
-| `WeaveThoughtIntoTopic` | topic_id/thought_id | Job | `topic.updated`、`topic.rebuild_failed` |
+| `PreviewWeave` | topic_id/thought_id | TopicWeaveProposal | 无写入事件 |
+| `AcceptWeave` | topic_id/thought_id/document | TopicDetail | `topic.updated` |
 
 查询：
 
@@ -634,6 +635,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `GET /api/topics/{id}` | `GetTopic` |
 | `PUT /api/topics/{id}` | `UpdateTopic` |
 | `POST /api/topics/{id}/rebuild` | `RebuildTopic` |
+| `POST /api/topics/{id}/weave-preview` | `PreviewWeave` |
+| `POST /api/topics/{id}/weave-accept` | `AcceptWeave` |
 | `GET /api/events` | SSE 事件流 |
 | `GET /api/jobs/{id}` | `GetJob` |
 | `GET /api/system/status` | `GetSystemStatus` |

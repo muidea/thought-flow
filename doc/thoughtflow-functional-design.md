@@ -616,6 +616,31 @@ payload
 
 手动重建专题主文档，返回后台任务 ID。
 
+`POST /api/topics/{id}/weave-preview`
+
+请求：
+
+```json
+{
+  "thought_id": "20260609-143010-8f3a"
+}
+```
+
+返回当前 `index.md`、候选新版文档、source link、membership 和逐行 diff。该接口只生成预览，不写入 Markdown。
+
+`POST /api/topics/{id}/weave-accept`
+
+请求：
+
+```json
+{
+  "thought_id": "20260609-143010-8f3a",
+  "document": "# AI 研究\n\n..."
+}
+```
+
+确认用户审阅后的候选文档，校验 source link 后原子写入 `topics/{slug}/index.md`，同步 membership 事实文件和 Thought backlink。
+
 ### 8.4 Events
 
 `GET /api/events`

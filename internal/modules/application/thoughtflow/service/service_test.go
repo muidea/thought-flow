@@ -35,6 +35,9 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), `id="topic-edit-form"`) {
 		t.Fatalf("expected topic rules editor in embedded index")
 	}
+	if !strings.Contains(res.Body.String(), `id="tab-review"`) {
+		t.Fatalf("expected weave review panel in embedded index")
+	}
 }
 
 func TestHandleWebServesEmbeddedScript(t *testing.T) {
@@ -58,6 +61,12 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "renderMarkdown") {
 		t.Fatalf("expected markdown renderer in embedded app script")
+	}
+	if !strings.Contains(res.Body.String(), "weave-preview") || !strings.Contains(res.Body.String(), "weave-accept") {
+		t.Fatalf("expected weave preview and accept API calls in embedded app script")
+	}
+	if !strings.Contains(res.Body.String(), "renderDiff") {
+		t.Fatalf("expected diff renderer in embedded app script")
 	}
 }
 
