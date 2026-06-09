@@ -1,6 +1,6 @@
 # ThoughtFlow 功能设计文档
 
-> 本文基于 [ThoughtFlow PRD](./thoughtflow-prd.md) 输出功能级设计，用于指导后续 Go 单二进制应用实现。当前仓库尚未包含 `go.mod`、入口代码和运行单元实现，因此本文描述的是目标架构与落地约束，不代表现有代码已经完成 `magicCommon/framework` 与 `magicEngine` 接入。
+> 本文基于 [ThoughtFlow PRD](./thoughtflow-prd.md) 输出功能级设计，用于指导 Go 单二进制应用实现与后续代码收口。当前代码已进入实现收口阶段，具体完成度与剩余限制以 [实现状态](./thoughtflow-implementation-status.md) 为准。
 
 ## 1. 设计目标
 
