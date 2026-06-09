@@ -36,6 +36,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `TopicRule` | 专题匹配规则 | topic | `topic.yaml` |
 | `TopicOutline` | 专题大纲 | topic | `topic.yaml` + `index.md` |
 | `TopicMembership` | 碎片与专题的关系 | topic/search | `topics/{slug}/memberships/{thought_id}.yaml` + DuckDB 缓存 |
+| `TopicWeaveProposal` | 专题文档候选变更和审批历史 | topic | `topics/{slug}/approvals/{proposal_id}.yaml` |
 | `SearchIndex` | 关键词和语义索引 | search | DuckDB |
 | `SearchResult` | 检索结果视图 | search | 运行态响应 |
 | `SynthesisDraft` | 即席合稿草稿 | refiner/application | 运行态，保存后转 Thought |
@@ -342,7 +343,35 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 4. 分页、过滤、排序。
 5. 提供预览和回跳路径。
 
-### 4.5 SynthesisDraft
+### 4.5 TopicWeaveProposal
+
+`TopicWeaveProposal` 是 topic weave 生成的候选文档变更和审批历史。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string | proposal ID |
+| `topic_id` | string | 关联专题 |
+| `thought_id` | string | 待写入专题的 Thought |
+| `status` | enum | `pending`、`accepted` |
+| `source_link` | string | 候选文档必须保留的来源链接 |
+| `membership` | TopicMembership | 本次 weave 使用的匹配事实 |
+| `base_document` | string | 生成预览时的专题文档 |
+| `proposed_document` | string | 候选专题文档 |
+| `accepted_document` | string | 用户最终确认写入的文档 |
+| `diff` | []TopicDocumentDiffLine | 逐行差异 |
+| `created_at` | time | 创建时间 |
+| `updated_at` | time | 更新时间 |
+| `accepted_at` | time | 确认时间 |
+
+功能定义：
+
+1. `weave-preview` 创建 pending proposal，不直接改写 `index.md`。
+2. 用户确认后将 `accepted_document` 写入 `index.md`，并把 proposal 标记为 `accepted`。
+3. proposal 文件进入 Git，作为 topic weave 审批队列和历史。
+
+### 4.6 SynthesisDraft
 
 `SynthesisDraft` 是用户基于搜索结果生成的临时合稿。
 

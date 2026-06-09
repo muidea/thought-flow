@@ -176,27 +176,35 @@ p {
 
 .topic-list,
 .results-list,
-.event-list {
+.event-list,
+.approval-list {
   display: grid;
   gap: 8px;
 }
 
 .topic-item,
 .result-item,
-.event-item {
+.event-item,
+.approval-item {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: white;
   padding: 10px;
 }
 
-.topic-item {
+.topic-item,
+.approval-item {
   cursor: pointer;
 }
 
 .topic-item.active {
   border-color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.approval-item.active {
+  border-color: var(--accent);
+  background: #f6fbfc;
 }
 
 .topic-meta,
@@ -445,6 +453,7 @@ textarea.markdown-preview {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfcfd;
+  margin-top: 10px;
   margin-bottom: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;

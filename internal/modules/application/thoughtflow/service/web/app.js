@@ -6,6 +6,7 @@ const state = {
   synthesisDraft: null,
   activeTopicDetail: null,
   weaveProposal: null,
+  weaveProposals: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -160,6 +161,37 @@ function renderDiff(lines) {
     .join("");
 }
 
+function renderWeaveProposals() {
+  const list = $("#weave-proposals");
+  if (!list) return;
+  if (!state.activeTopicId) {
+    list.innerHTML = '<div class="topic-meta">Select a topic to see weave proposals.</div>';
+    return;
+  }
+  if (!state.weaveProposals || state.weaveProposals.length === 0) {
+    list.innerHTML = '<div class="topic-meta">No weave proposals for this topic.</div>';
+    return;
+  }
+  list.innerHTML = state.weaveProposals
+    .map((proposal) => {
+      const active = state.weaveProposal?.id === proposal.id ? " active" : "";
+      const status = proposal.status || "pending";
+      return `
+        <article class="approval-item${active}" data-proposal-id="${escapeHTML(proposal.id)}">
+          <strong>${escapeHTML(proposal.thought_id || proposal.id)}</strong>
+          <div class="topic-meta">
+            <span class="pill">${escapeHTML(status)}</span>
+            <span>${escapeHTML(fmtDate(proposal.updated_at || proposal.created_at))}</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  list.querySelectorAll("[data-proposal-id]").forEach((item) => {
+    item.addEventListener("click", () => loadWeaveProposal(item.dataset.proposalId).catch((error) => toast(error.message)));
+  });
+}
+
 async function loadStatus() {
   try {
     const status = await api("/api/system/status");
@@ -187,6 +219,9 @@ function renderTopics() {
     $("#topic-title").textContent = "Topic Workspace";
     $("#topic-document").innerHTML = renderMarkdown("Select a topic from the left.");
     $("#rebuild-topic").disabled = true;
+    state.weaveProposals = [];
+    state.weaveProposal = null;
+    renderWeaveProposals();
     list.innerHTML = '<div class="topic-meta">No topics yet.</div>';
     return;
   }
@@ -217,7 +252,18 @@ async function openTopic(topicId) {
   $("#rebuild-topic").disabled = false;
   populateTopicEditor(detail.topic);
   renderTopics();
+  await loadWeaveProposals(topicId);
   await runSearch();
+}
+
+async function loadWeaveProposals(topicId = state.activeTopicId) {
+  if (!topicId) {
+    state.weaveProposals = [];
+    renderWeaveProposals();
+    return;
+  }
+  state.weaveProposals = await api(`/api/topics/${encodeURIComponent(topicId)}/weave-proposals`);
+  renderWeaveProposals();
 }
 
 function populateTopicEditor(topic) {
@@ -471,6 +517,19 @@ async function previewWeave(thoughtId) {
   $("#weave-diff").innerHTML = renderDiff(proposal.diff || []);
   $("#weave-document").value = proposal.proposed_document || "";
   $("#accept-weave").disabled = false;
+  await loadWeaveProposals(state.activeTopicId);
+  activateTab("review");
+}
+
+async function loadWeaveProposal(proposalId) {
+  if (!state.activeTopicId || !proposalId) return;
+  const proposal = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/weave-proposals/${encodeURIComponent(proposalId)}`);
+  state.weaveProposal = proposal;
+  $("#weave-review-title").textContent = `Weave ${proposal.thought_id}`;
+  $("#weave-diff").innerHTML = renderDiff(proposal.diff || []);
+  $("#weave-document").value = proposal.accepted_document || proposal.proposed_document || "";
+  $("#accept-weave").disabled = (proposal.status || "pending") !== "pending";
+  renderWeaveProposals();
   activateTab("review");
 }
 
@@ -487,6 +546,7 @@ async function acceptWeave() {
   const detail = await api(`/api/topics/${encodeURIComponent(state.weaveProposal.topic_id)}/weave-accept`, {
     method: "POST",
     body: JSON.stringify({
+      proposal_id: state.weaveProposal.id,
       thought_id: state.weaveProposal.thought_id,
       document,
     }),
@@ -497,6 +557,7 @@ async function acceptWeave() {
   $("#weave-diff").innerHTML = '<div class="topic-meta">No pending weave review.</div>';
   $("#weave-document").value = "";
   await loadTopics();
+  await loadWeaveProposals(detail.topic.id);
   await openTopic(detail.topic.id);
 }
 

@@ -12,11 +12,13 @@ import (
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/topicstore"
 )
 
 func TestHandleWebServesEmbeddedIndex(t *testing.T) {
@@ -65,11 +67,98 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "renderMarkdown") {
 		t.Fatalf("expected markdown renderer in embedded app script")
 	}
-	if !strings.Contains(res.Body.String(), "weave-preview") || !strings.Contains(res.Body.String(), "weave-accept") {
-		t.Fatalf("expected weave preview and accept API calls in embedded app script")
+	if !strings.Contains(res.Body.String(), "weave-preview") ||
+		!strings.Contains(res.Body.String(), "weave-accept") ||
+		!strings.Contains(res.Body.String(), "weave-proposals") {
+		t.Fatalf("expected weave preview, accept, and proposal API calls in embedded app script")
 	}
 	if !strings.Contains(res.Body.String(), "renderDiff") {
 		t.Fatalf("expected diff renderer in embedded app script")
+	}
+}
+
+func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	service := &Service{topicService: topicService}
+	ctx := context.Background()
+	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Weave Queue",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"duckdb"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	thought := models.Thought{
+		ID:            "20260609-143010-queue",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     "Queue note",
+		DisplayTitle:  "Queue note",
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-143010-queue")),
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+		ContentHash:   models.ContentHash("Queue note"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "DuckDB queue review note."}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	proposal, err := topicService.PreviewWeave(ctx, topic.ID, thought.ID)
+	if err != nil {
+		t.Fatalf("PreviewWeave() error = %v", err)
+	}
+
+	listRes := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/topics/"+topic.ID+"/weave-proposals", nil)
+	service.handleListWeaveProposals(ctx, listRes, listReq)
+
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+	var listPayload struct {
+		Data []models.TopicWeaveProposal `json:"data"`
+	}
+	if err := json.Unmarshal(listRes.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("Unmarshal(list) error = %v", err)
+	}
+	if len(listPayload.Data) != 1 || listPayload.Data[0].ID != proposal.ID {
+		t.Fatalf("list payload = %#v", listPayload.Data)
+	}
+
+	getRes := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/topics/"+topic.ID+"/weave-proposals/"+proposal.ID, nil)
+	service.handleGetWeaveProposal(ctx, getRes, getReq)
+
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
+	}
+	var getPayload struct {
+		Data models.TopicWeaveProposal `json:"data"`
+	}
+	if err := json.Unmarshal(getRes.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("Unmarshal(get) error = %v", err)
+	}
+	if getPayload.Data.ID != proposal.ID || getPayload.Data.Status != "pending" {
+		t.Fatalf("get payload = %#v", getPayload.Data)
 	}
 }
 

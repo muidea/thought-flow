@@ -247,17 +247,27 @@ func TestServicePreviewAndAcceptWeave(t *testing.T) {
 	if proposal.TopicID != topic.ID || proposal.ThoughtID != thought.ID {
 		t.Fatalf("proposal ids = %#v", proposal)
 	}
+	if proposal.ID == "" || proposal.Status != "pending" {
+		t.Fatalf("proposal should be persisted as pending, got %#v", proposal)
+	}
 	if !strings.Contains(proposal.ProposedDocument, proposal.SourceLink) {
 		t.Fatalf("proposal missing source link %q:\n%s", proposal.SourceLink, proposal.ProposedDocument)
 	}
 	if !hasDiffOp(proposal.Diff, "add") {
 		t.Fatalf("expected added diff lines, got %#v", proposal.Diff)
 	}
+	proposals, err := service.ListWeaveProposals(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListWeaveProposals() error = %v", err)
+	}
+	if len(proposals) != 1 || proposals[0].ID != proposal.ID {
+		t.Fatalf("proposals = %#v", proposals)
+	}
 
 	confirmed := proposal.ProposedDocument + "\n\nAccepted edit.\n"
 	detail, err := service.AcceptWeave(ctx, topic.ID, models.TopicWeaveAcceptRequest{
-		ThoughtID: thought.ID,
-		Document:  confirmed,
+		ProposalID: proposal.ID,
+		Document:   confirmed,
 	})
 	if err != nil {
 		t.Fatalf("AcceptWeave() error = %v", err)
@@ -270,6 +280,16 @@ func TestServicePreviewAndAcceptWeave(t *testing.T) {
 	}
 	if len(detail.Members) != 1 || detail.Members[0].ThoughtID != thought.ID {
 		t.Fatalf("detail members = %#v", detail.Members)
+	}
+	accepted, err := service.GetWeaveProposal(ctx, topic.ID, proposal.ID)
+	if err != nil {
+		t.Fatalf("GetWeaveProposal() error = %v", err)
+	}
+	if accepted.Status != "accepted" || accepted.AcceptedAt == nil {
+		t.Fatalf("accepted proposal = %#v", accepted)
+	}
+	if !strings.Contains(accepted.AcceptedDocument, "Accepted edit.") {
+		t.Fatalf("accepted document = %q", accepted.AcceptedDocument)
 	}
 }
 

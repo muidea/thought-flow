@@ -73,6 +73,8 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/topics/:id/rebuild", engine.POST, s.handleRebuildTopic)
 	s.registry.AddHandler("/api/topics/:id/weave-preview", engine.POST, s.handlePreviewWeave)
 	s.registry.AddHandler("/api/topics/:id/weave-accept", engine.POST, s.handleAcceptWeave)
+	s.registry.AddHandler("/api/topics/:id/weave-proposals/:proposal_id", engine.GET, s.handleGetWeaveProposal)
+	s.registry.AddHandler("/api/topics/:id/weave-proposals", engine.GET, s.handleListWeaveProposals)
 	s.registry.AddHandler("/api/topics/:id", engine.GET, s.handleGetTopic)
 	s.registry.AddHandler("/api/topics/:id", engine.PUT, s.handleUpdateTopic)
 	s.registry.AddHandler("/api/jobs/:id", engine.GET, s.handleGetJob)
@@ -437,6 +439,34 @@ func (s *Service) handleAcceptWeave(ctx context.Context, res http.ResponseWriter
 	writeJSON(res, req, http.StatusOK, detail)
 }
 
+func (s *Service) handleListWeaveProposals(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/weave-proposals")
+	if topicID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
+		return
+	}
+	proposals, err := s.topicService.ListWeaveProposals(ctx, topicID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.weave_proposals_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, proposals)
+}
+
+func (s *Service) handleGetWeaveProposal(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	topicID, proposalID := topicWeaveProposalPath(req.URL.Path)
+	if topicID == "" || proposalID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id and proposal id are required")
+		return
+	}
+	proposal, err := s.topicService.GetWeaveProposal(ctx, topicID, proposalID)
+	if err != nil {
+		writeError(res, req, http.StatusNotFound, "thoughtflow.topic.weave_proposal_not_found", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, proposal)
+}
+
 func (s *Service) handleGetJob(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	_ = ctx
 	jobID := pathID(req.URL.Path, "/api/jobs/")
@@ -740,6 +770,15 @@ func pathID(path string, prefix string) string {
 		return ""
 	}
 	return strings.Trim(strings.TrimPrefix(path, prefix), "/")
+}
+
+func topicWeaveProposalPath(value string) (string, string) {
+	tail := pathID(value, "/api/topics/")
+	parts := strings.Split(tail, "/")
+	if len(parts) != 3 || parts[1] != "weave-proposals" {
+		return "", ""
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[2])
 }
 
 func firstNonEmpty(values ...string) string {

@@ -96,19 +96,54 @@ func (s *Service) PreviewWeave(ctx context.Context, topicID string, thoughtID st
 	if err != nil {
 		return models.TopicWeaveProposal{}, err
 	}
-	return models.TopicWeaveProposal{
+	now := time.Now().UTC()
+	proposal, err := s.store.SaveWeaveProposal(ctx, topic, models.TopicWeaveProposal{
+		ID:               models.NewJobID("topic-weave-proposal", now),
 		TopicID:          topic.ID,
 		ThoughtID:        thought.ID,
+		Status:           "pending",
 		SourceLink:       sourceLink,
 		Membership:       membership,
 		BaseDocument:     baseDocument,
 		ProposedDocument: proposedDocument,
 		Diff:             documentLineDiff(baseDocument, proposedDocument),
-		CreatedAt:        time.Now().UTC(),
-	}, nil
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	})
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_weave_proposal"))
+	return proposal, nil
+}
+
+func (s *Service) ListWeaveProposals(ctx context.Context, topicID string) ([]models.TopicWeaveProposal, error) {
+	return s.store.ListWeaveProposals(ctx, topicID)
+}
+
+func (s *Service) GetWeaveProposal(ctx context.Context, topicID string, proposalID string) (models.TopicWeaveProposal, error) {
+	return s.store.GetWeaveProposal(ctx, topicID, proposalID)
 }
 
 func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
+	if strings.TrimSpace(req.ProposalID) != "" {
+		proposal, err := s.store.GetWeaveProposal(ctx, topicID, req.ProposalID)
+		if err != nil {
+			return models.TopicDetail{}, err
+		}
+		if proposal.Status != "" && proposal.Status != "pending" {
+			return models.TopicDetail{}, errors.New("proposal is not pending")
+		}
+		if strings.TrimSpace(req.ThoughtID) == "" {
+			req.ThoughtID = proposal.ThoughtID
+		}
+		if req.ThoughtID != proposal.ThoughtID {
+			return models.TopicDetail{}, errors.New("proposal thought id does not match request")
+		}
+		if strings.TrimSpace(req.Document) == "" {
+			req.Document = proposal.ProposedDocument
+		}
+	}
 	topic, thought, content, membership, err := s.weaveInput(ctx, topicID, req.ThoughtID)
 	if err != nil {
 		return models.TopicDetail{}, err
@@ -116,6 +151,12 @@ func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.To
 	updatedTopic, changed, err := s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document)
 	if err != nil {
 		return models.TopicDetail{}, err
+	}
+	if strings.TrimSpace(req.ProposalID) != "" {
+		if _, err := s.store.MarkWeaveProposalAccepted(ctx, updatedTopic, req.ProposalID, req.Document); err != nil {
+			return models.TopicDetail{}, err
+		}
+		changed = true
 	}
 	if changed {
 		eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
@@ -424,6 +465,7 @@ func gitTopicEvent(workspaceID string, topic models.Topic, reason string, extraP
 		"topics/" + topic.Slug + "/topic.yaml",
 		"topics/" + topic.Slug + "/index.md",
 		"topics/" + topic.Slug + "/memberships",
+		"topics/" + topic.Slug + "/approvals",
 	}
 	paths = append(paths, extraPaths...)
 	return models.DomainEvent{

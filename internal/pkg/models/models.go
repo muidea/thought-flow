@@ -391,19 +391,25 @@ type TopicWeavePreviewRequest struct {
 }
 
 type TopicWeaveAcceptRequest struct {
-	ThoughtID string `json:"thought_id"`
-	Document  string `json:"document"`
+	ProposalID string `json:"proposal_id,omitempty"`
+	ThoughtID  string `json:"thought_id"`
+	Document   string `json:"document"`
 }
 
 type TopicWeaveProposal struct {
+	ID               string                  `json:"id" yaml:"id"`
 	TopicID          string                  `json:"topic_id"`
 	ThoughtID        string                  `json:"thought_id"`
+	Status           string                  `json:"status" yaml:"status"`
 	SourceLink       string                  `json:"source_link"`
 	Membership       TopicMembership         `json:"membership"`
 	BaseDocument     string                  `json:"base_document"`
 	ProposedDocument string                  `json:"proposed_document"`
+	AcceptedDocument string                  `json:"accepted_document,omitempty" yaml:"accepted_document,omitempty"`
 	Diff             []TopicDocumentDiffLine `json:"diff"`
 	CreatedAt        time.Time               `json:"created_at"`
+	UpdatedAt        time.Time               `json:"updated_at" yaml:"updated_at"`
+	AcceptedAt       *time.Time              `json:"accepted_at,omitempty" yaml:"accepted_at,omitempty"`
 }
 
 type TopicDocumentDiffLine struct {

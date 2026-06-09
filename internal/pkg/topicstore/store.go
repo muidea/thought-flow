@@ -468,6 +468,84 @@ func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thoug
 	return document, proposed, sourceRel, nil
 }
 
+func (s *Store) SaveWeaveProposal(ctx context.Context, topic models.Topic, proposal models.TopicWeaveProposal) (models.TopicWeaveProposal, error) {
+	_ = ctx
+	now := time.Now().UTC()
+	proposal = normalizeWeaveProposal(topic, proposal, now)
+	if strings.TrimSpace(proposal.ThoughtID) == "" {
+		return models.TopicWeaveProposal{}, errors.New("thought id is required")
+	}
+	if strings.TrimSpace(proposal.ProposedDocument) == "" {
+		return models.TopicWeaveProposal{}, errors.New("proposed document is required")
+	}
+	if strings.TrimSpace(proposal.SourceLink) != "" && !strings.Contains(proposal.ProposedDocument, proposal.SourceLink) {
+		return models.TopicWeaveProposal{}, errors.New("topic weave proposal missing required source link")
+	}
+	if err := s.writeWeaveProposal(topic, proposal); err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	return proposal, nil
+}
+
+func (s *Store) ListWeaveProposals(ctx context.Context, topicID string) ([]models.TopicWeaveProposal, error) {
+	topic, err := s.Get(ctx, topicID)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := s.weaveProposalDir(topic)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.TopicWeaveProposal{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	proposals := []models.TopicWeaveProposal{}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		proposalID := strings.TrimSuffix(entry.Name(), ".yaml")
+		proposal, err := s.readWeaveProposal(topic, proposalID)
+		if err != nil {
+			return nil, err
+		}
+		proposals = append(proposals, proposal)
+	}
+	sort.Slice(proposals, func(left, right int) bool {
+		return proposals[left].CreatedAt.After(proposals[right].CreatedAt)
+	})
+	return proposals, nil
+}
+
+func (s *Store) GetWeaveProposal(ctx context.Context, topicID string, proposalID string) (models.TopicWeaveProposal, error) {
+	topic, err := s.Get(ctx, topicID)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	return s.readWeaveProposal(topic, proposalID)
+}
+
+func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topic, proposalID string, document string) (models.TopicWeaveProposal, error) {
+	_ = ctx
+	proposal, err := s.readWeaveProposal(topic, proposalID)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	now := time.Now().UTC()
+	proposal.Status = "accepted"
+	proposal.AcceptedDocument = strings.TrimSpace(document)
+	proposal.UpdatedAt = now
+	proposal.AcceptedAt = &now
+	if err := s.writeWeaveProposal(topic, proposal); err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	return proposal, nil
+}
+
 func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string) (models.Topic, bool, error) {
 	if strings.TrimSpace(thought.ID) == "" {
 		return models.Topic{}, false, errors.New("thought id is required")
@@ -710,6 +788,44 @@ func (s *Store) writeMembership(topic models.Topic, membership models.TopicMembe
 	return os.Rename(tmp, path)
 }
 
+func (s *Store) writeWeaveProposal(topic models.Topic, proposal models.TopicWeaveProposal) error {
+	path, err := s.weaveProposalPath(topic, proposal.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(proposal)
+	if err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(tmp)
+	}()
+	return os.Rename(tmp, path)
+}
+
+func (s *Store) readWeaveProposal(topic models.Topic, proposalID string) (models.TopicWeaveProposal, error) {
+	path, err := s.weaveProposalPath(topic, proposalID)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	var proposal models.TopicWeaveProposal
+	if err := yaml.Unmarshal(raw, &proposal); err != nil {
+		return models.TopicWeaveProposal{}, err
+	}
+	return normalizeWeaveProposal(topic, proposal, time.Now().UTC()), nil
+}
+
 func (s *Store) readMembership(topic models.Topic, thoughtID string) (models.TopicMembership, error) {
 	path, err := s.membershipPath(topic, thoughtID)
 	if err != nil {
@@ -822,6 +938,37 @@ func (s *Store) membershipPath(topic models.Topic, thoughtID string) (string, er
 	return path, nil
 }
 
+func (s *Store) weaveProposalDir(topic models.Topic) (string, error) {
+	slug := Slugify(firstNonEmpty(topic.Slug, topic.ID))
+	if slug == "" {
+		return "", errors.New("topic id is required")
+	}
+	path := filepath.Join(s.rootPath, "topics", slug, "approvals")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) weaveProposalPath(topic models.Topic, proposalID string) (string, error) {
+	proposalID = strings.TrimSpace(proposalID)
+	if proposalID == "" {
+		return "", errors.New("proposal id is required")
+	}
+	if strings.ContainsAny(proposalID, `/\`) {
+		return "", fmt.Errorf("invalid proposal id %q", proposalID)
+	}
+	dir, err := s.weaveProposalDir(topic)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, proposalID+".yaml")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func (s *Store) topicPath(id string) (string, error) {
 	slug := Slugify(id)
 	if slug == "" {
@@ -889,6 +1036,25 @@ func normalizeMembershipForRead(topic models.Topic, thoughtID string, membership
 		membership.UpdatedAt = topic.UpdatedAt
 	}
 	return membership
+}
+
+func normalizeWeaveProposal(topic models.Topic, proposal models.TopicWeaveProposal, now time.Time) models.TopicWeaveProposal {
+	if proposal.ID == "" {
+		proposal.ID = models.NewJobID("topic-weave-proposal", now)
+	}
+	if topic.ID != "" {
+		proposal.TopicID = topic.ID
+	}
+	if proposal.Status == "" {
+		proposal.Status = "pending"
+	}
+	if proposal.CreatedAt.IsZero() {
+		proposal.CreatedAt = now
+	}
+	if proposal.UpdatedAt.IsZero() {
+		proposal.UpdatedAt = proposal.CreatedAt
+	}
+	return proposal
 }
 
 func sameMembershipFact(left models.TopicMembership, right models.TopicMembership) bool {

@@ -252,6 +252,37 @@ func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
 	if !strings.Contains(proposedDocument, sourceLink) {
 		t.Fatalf("proposed document missing source link %q:\n%s", sourceLink, proposedDocument)
 	}
+	proposal, err := store.SaveWeaveProposal(ctx, topic, models.TopicWeaveProposal{
+		ID:               "proposal-test",
+		TopicID:          topic.ID,
+		ThoughtID:        thought.ID,
+		SourceLink:       sourceLink,
+		Membership:       membership,
+		BaseDocument:     baseDocument,
+		ProposedDocument: proposedDocument,
+		Diff:             []models.TopicDocumentDiffLine{{Op: "add", Text: "added"}},
+	})
+	if err != nil {
+		t.Fatalf("SaveWeaveProposal() error = %v", err)
+	}
+	if proposal.Status != "pending" || proposal.CreatedAt.IsZero() || proposal.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected saved proposal = %#v", proposal)
+	}
+	proposalPath := filepath.Join(root, "topics", topic.Slug, "approvals", "proposal-test.yaml")
+	proposalRaw, err := os.ReadFile(proposalPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", proposalPath, err)
+	}
+	if !strings.Contains(string(proposalRaw), "status: pending") || !strings.Contains(string(proposalRaw), "thought_id: 20260609-143010-8f3a") {
+		t.Fatalf("unexpected proposal YAML:\n%s", string(proposalRaw))
+	}
+	proposals, err := store.ListWeaveProposals(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListWeaveProposals() error = %v", err)
+	}
+	if len(proposals) != 1 || proposals[0].ID != proposal.ID {
+		t.Fatalf("proposals = %#v", proposals)
+	}
 	confirmedDocument := proposedDocument + "\n\nConfirmed edit.\n"
 	updated, changed, err := store.ApplyMembershipDocument(ctx, topic, thought, content, membership, confirmedDocument)
 	if err != nil {
@@ -279,6 +310,16 @@ func TestStorePreviewAndApplyMembershipDocument(t *testing.T) {
 	}
 	if !strings.Contains(updatedContent.Links, "<!-- topic:duckdb-notes -->") {
 		t.Fatalf("expected topic backlink:\n%s", updatedContent.Links)
+	}
+	accepted, err := store.MarkWeaveProposalAccepted(ctx, updated, proposal.ID, confirmedDocument)
+	if err != nil {
+		t.Fatalf("MarkWeaveProposalAccepted() error = %v", err)
+	}
+	if accepted.Status != "accepted" || accepted.AcceptedAt == nil {
+		t.Fatalf("accepted proposal = %#v", accepted)
+	}
+	if !strings.Contains(accepted.AcceptedDocument, "Confirmed edit.") {
+		t.Fatalf("accepted document = %q", accepted.AcceptedDocument)
 	}
 }
 
