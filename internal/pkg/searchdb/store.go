@@ -29,6 +29,11 @@ type Store struct {
 	ftsAvailable bool
 	ftsDirty     bool
 	ftsErr       error
+	vssMu        sync.Mutex
+	vssChecked   bool
+	vssAvailable bool
+	vssErr       error
+	hnswIndexes  map[int]bool
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -42,7 +47,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &Store{db: db, ftsDirty: true}
+	store := &Store{db: db, ftsDirty: true, hnswIndexes: map[int]bool{}}
 	if err := store.Init(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -102,6 +107,17 @@ func (s *Store) Init(ctx context.Context) error {
 }
 
 func execIgnoreColumnExists(ctx context.Context, db *sql.DB, query string) error {
+	if _, err := db.ExecContext(ctx, query); err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "already exists") || strings.Contains(message, "duplicate") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func execIgnoreIndexExists(ctx context.Context, db *sql.DB, query string) error {
 	if _, err := db.ExecContext(ctx, query); err != nil {
 		message := strings.ToLower(err.Error())
 		if strings.Contains(message, "already exists") || strings.Contains(message, "duplicate") {
@@ -281,6 +297,63 @@ func (s *Store) loadFTS(ctx context.Context) error {
 	})
 }
 
+func (s *Store) ensureHNSWIndex(ctx context.Context, dimension int) bool {
+	tableName, err := embeddingVectorTableName(dimension)
+	if err != nil {
+		return false
+	}
+
+	s.vssMu.Lock()
+	defer s.vssMu.Unlock()
+
+	if !s.vssChecked {
+		s.vssChecked = true
+		if err := s.loadVSS(ctx); err != nil {
+			s.vssAvailable = false
+			s.vssErr = err
+			return false
+		}
+		s.vssAvailable = true
+		s.vssErr = nil
+	}
+	if !s.vssAvailable {
+		return false
+	}
+	if s.hnswIndexes == nil {
+		s.hnswIndexes = map[int]bool{}
+	}
+	if s.hnswIndexes[dimension] {
+		return true
+	}
+	indexName := embeddingHNSWIndexName(dimension)
+	query := fmt.Sprintf(`CREATE INDEX %s ON %s USING HNSW (vector) WITH (metric = 'cosine')`, indexName, tableName)
+	if err := execIgnoreIndexExists(ctx, s.db, query); err != nil {
+		s.vssErr = err
+		return false
+	}
+	s.hnswIndexes[dimension] = true
+	s.vssErr = nil
+	return true
+}
+
+func (s *Store) loadVSS(ctx context.Context) error {
+	return withNormalizedProxyEnv(func() error {
+		s.configureDuckDBProxy(ctx)
+		if _, err := s.db.ExecContext(ctx, `LOAD vss`); err == nil {
+			_, _ = s.db.ExecContext(ctx, `SET hnsw_enable_experimental_persistence = true`)
+			return nil
+		}
+		if _, err := s.db.ExecContext(ctx, `INSTALL vss`); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `LOAD vss`); err != nil {
+			return err
+		}
+		_, _ = s.db.ExecContext(ctx, `SET hnsw_enable_experimental_persistence = true`)
+		return nil
+	})
+}
+
 func (s *Store) configureDuckDBProxy(ctx context.Context) {
 	for _, key := range []string{"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"} {
 		value, ok := os.LookupEnv(key)
@@ -367,6 +440,10 @@ func embeddingVectorTableName(dimension int) (string, error) {
 	return fmt.Sprintf("thought_embedding_vectors_%d", dimension), nil
 }
 
+func embeddingHNSWIndexName(dimension int) string {
+	return fmt.Sprintf("thought_embedding_vectors_%d_hnsw_cosine", dimension)
+}
+
 func arrayValueExpression(dimension int) string {
 	parts := make([]string, dimension)
 	for idx := range parts {
@@ -416,11 +493,16 @@ func (s *Store) keywordScoresFromFTS(ctx context.Context, query string) (map[str
 	return scores, true
 }
 
-func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []float64, model string) (map[string]float64, bool) {
+func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, bool, string) {
 	dimension := len(queryVector)
 	tableName, err := embeddingVectorTableName(dimension)
 	if err != nil {
-		return nil, false
+		return nil, false, ""
+	}
+	if s.ensureHNSWIndex(ctx, dimension) {
+		if scores, ok := s.semanticScoresFromHNSW(ctx, tableName, queryVector, model, limit); ok {
+			return scores, true, "duckdb_hnsw"
+		}
 	}
 	args := make([]any, 0, dimension+1)
 	for _, value := range queryVector {
@@ -435,7 +517,7 @@ func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []floa
 		FROM %s
 		WHERE %s`, arrayValueExpression(dimension), tableName, where), args...)
 	if err != nil {
-		return nil, false
+		return nil, false, ""
 	}
 	defer rows.Close()
 
@@ -444,7 +526,7 @@ func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []floa
 		var thoughtID string
 		var score float64
 		if err := rows.Scan(&thoughtID, &score); err != nil {
-			return nil, false
+			return nil, false, ""
 		}
 		if score < 0 {
 			score = 0
@@ -454,9 +536,86 @@ func (s *Store) semanticScoresFromDuckDB(ctx context.Context, queryVector []floa
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, false, ""
+	}
+	return scores, true, "duckdb_array"
+}
+
+func (s *Store) semanticScoresFromHNSW(ctx context.Context, tableName string, queryVector []float64, model string, limit int) (map[string]float64, bool) {
+	dimension := len(queryVector)
+	if limit <= 0 {
+		limit = 100
+	}
+	firstVectorArgs := make([]any, 0, dimension)
+	secondVectorArgs := make([]any, 0, dimension)
+	for _, value := range queryVector {
+		firstVectorArgs = append(firstVectorArgs, value)
+		secondVectorArgs = append(secondVectorArgs, value)
+	}
+	where := "1=1"
+	args := []any{}
+	args = append(args, firstVectorArgs...)
+	if strings.TrimSpace(model) != "" {
+		where = "model = ?"
+		args = append(args, model)
+	}
+	args = append(args, secondVectorArgs...)
+	args = append(args, limit)
+	vectorExpr := arrayValueExpression(dimension)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT thought_id, 1 - distance AS score
+		FROM (
+			SELECT thought_id, array_cosine_distance(vector, %s) AS distance
+			FROM %s
+			WHERE %s
+			ORDER BY array_cosine_distance(vector, %s)
+			LIMIT ?
+		) ranked`, vectorExpr, tableName, where, vectorExpr), args...)
+	if err != nil {
+		s.vssErr = err
+		return nil, false
+	}
+	defer rows.Close()
+
+	scores := map[string]float64{}
+	for rows.Next() {
+		var thoughtID string
+		var score float64
+		if err := rows.Scan(&thoughtID, &score); err != nil {
+			s.vssErr = err
+			return nil, false
+		}
+		if score < 0 {
+			score = 0
+		}
+		if score > 1 {
+			score = 1
+		}
+		if existing, ok := scores[thoughtID]; !ok || score > existing {
+			scores[thoughtID] = score
+		}
+	}
+	if err := rows.Err(); err != nil {
+		s.vssErr = err
 		return nil, false
 	}
 	return scores, true
+}
+
+func semanticCandidateLimit(page int, pageSize int) int {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	limit := page * pageSize * 4
+	if limit < 100 {
+		return 100
+	}
+	if limit > 1000 {
+		return 1000
+	}
+	return limit
 }
 
 func searchFilterWhere(query models.SearchQuery) (string, []any) {
@@ -501,9 +660,9 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	useVector := len(query.QueryVector) > 0 && (mode == "semantic" || mode == "hybrid")
 	trimmedQuery := strings.TrimSpace(query.Query)
 	ftsScores, useFTS := s.keywordScoresFromFTS(ctx, trimmedQuery)
-	semanticScores, useDuckDBVector := map[string]float64{}, false
+	semanticScores, useDuckDBVector, duckDBSemanticSource := map[string]float64{}, false, ""
 	if useVector {
-		semanticScores, useDuckDBVector = s.semanticScoresFromDuckDB(ctx, query.QueryVector, query.EmbeddingModel)
+		semanticScores, useDuckDBVector, duckDBSemanticSource = s.semanticScoresFromDuckDB(ctx, query.QueryVector, query.EmbeddingModel, semanticCandidateLimit(page, pageSize))
 	}
 	keywordSource := "like"
 	if useFTS {
@@ -513,7 +672,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if useVector {
 		semanticSource = "json_cosine"
 		if useDuckDBVector {
-			semanticSource = "duckdb_array"
+			semanticSource = duckDBSemanticSource
 		}
 	}
 
@@ -612,6 +771,11 @@ func (s *Store) GetEmbedding(ctx context.Context, thoughtID string, model string
 		return models.EmbeddingRecord{}, false
 	}
 	return record, true
+}
+
+func (s *Store) SemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool) {
+	scores, ok, source := s.semanticScoresFromDuckDB(ctx, queryVector, model, limit)
+	return scores, source, ok
 }
 
 func buildSearchText(thought models.Thought, content models.ThoughtContent) string {

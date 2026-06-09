@@ -89,9 +89,12 @@ func TestDuckDBArrayVectorSemanticSearch(t *testing.T) {
 		t.Fatalf("IndexEmbedding(distant) error = %v", err)
 	}
 
-	scores, ok := store.semanticScoresFromDuckDB(ctx, []float64{1, 0, 0}, "test-embedding")
+	scores, ok, source := store.semanticScoresFromDuckDB(ctx, []float64{1, 0, 0}, "test-embedding", 100)
 	if !ok {
-		t.Fatalf("expected DuckDB ARRAY vector scores")
+		t.Fatalf("expected DuckDB vector scores")
+	}
+	if source != "duckdb_array" && source != "duckdb_hnsw" {
+		t.Fatalf("semantic source = %q", source)
 	}
 	if scores[nearest.ID] <= scores[distant.ID] {
 		t.Fatalf("semantic scores = %#v", scores)
@@ -116,6 +119,72 @@ func TestDuckDBArrayVectorSemanticSearch(t *testing.T) {
 	}
 	if result.Items[0].SemanticScore < 0.99 {
 		t.Fatalf("top semantic score = %v", result.Items[0].SemanticScore)
+	}
+}
+
+func TestDuckDBHNSWSemanticSearchWhenVSSAvailable(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 9, 18, 45, 0, 0, time.UTC)
+	nearest := searchTestThought("20260609-184500-hnsw-a", "HNSW nearest note", now)
+	distant := searchTestThought("20260609-184500-hnsw-b", "HNSW distant note", now.Add(-time.Minute))
+	for _, thought := range []models.Thought{nearest, distant} {
+		if err := store.IndexThought(ctx, thought, models.ThoughtContent{Original: "HNSW semantic fixture."}); err != nil {
+			t.Fatalf("IndexThought(%s) error = %v", thought.ID, err)
+		}
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID:   nearest.ID,
+		Model:       "test-embedding",
+		Dimension:   3,
+		Vector:      []float64{1, 0, 0},
+		ContentHash: models.ContentHash(nearest.ID),
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding(nearest) error = %v", err)
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID:   distant.ID,
+		Model:       "test-embedding",
+		Dimension:   3,
+		Vector:      []float64{0, 1, 0},
+		ContentHash: models.ContentHash(distant.ID),
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding(distant) error = %v", err)
+	}
+
+	scores, ok, source := store.semanticScoresFromDuckDB(ctx, []float64{1, 0, 0}, "test-embedding", 1)
+	if !ok || source != "duckdb_hnsw" {
+		t.Skipf("DuckDB VSS/HNSW is unavailable in this environment: source=%q err=%v", source, store.vssErr)
+	}
+	if len(scores) != 1 || scores[nearest.ID] < 0.99 {
+		t.Fatalf("hnsw scores = %#v", scores)
+	}
+
+	result, err := store.Search(ctx, models.SearchQuery{
+		Query:          "hnsw",
+		Mode:           "semantic",
+		Sort:           "semantic",
+		Explain:        true,
+		QueryVector:    []float64{1, 0, 0},
+		EmbeddingModel: "test-embedding",
+		Page:           1,
+		PageSize:       10,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(result.Items) == 0 || result.Items[0].ThoughtID != nearest.ID {
+		t.Fatalf("result items = %#v", result.Items)
+	}
+	if result.Items[0].Explain == nil || result.Items[0].Explain.SemanticSource != "duckdb_hnsw" {
+		t.Fatalf("semantic explain = %#v", result.Items[0].Explain)
 	}
 }
 

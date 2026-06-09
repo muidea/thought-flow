@@ -154,6 +154,13 @@ func (s *Service) CachedEmbedding(ctx context.Context, thoughtID string, model s
 	return s.store.GetEmbedding(ctx, thoughtID, model)
 }
 
+func (s *Service) CachedSemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool) {
+	if s == nil || s.store == nil || len(queryVector) == 0 {
+		return nil, "", false
+	}
+	return s.store.SemanticScores(ctx, queryVector, model, limit)
+}
+
 func (s *Service) indexJob(job models.Job, embedding *models.EmbeddingRecord) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))

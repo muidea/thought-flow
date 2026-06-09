@@ -89,9 +89,14 @@ go build ./cmd/thoughtflow
 23. DuckDB tagged store 已接入原生 ARRAY 向量检索路径：
    - embedding 继续写入 `thought_embeddings` JSON 表，作为兼容和降级数据。
    - 同步写入按维度隔离的 `thought_embedding_vectors_{dimension}` 表，使用 `FLOAT[n]` 固定长度向量列。
-   - `mode=semantic` / `mode=hybrid` 有 query vector 时，优先使用 DuckDB `array_cosine_similarity` 计算 `semantic_score`。
+   - `mode=semantic` / `mode=hybrid` 有 query vector 时，使用 DuckDB `array_cosine_similarity` 计算 `semantic_score`。
    - DuckDB ARRAY 向量表缺失或查询失败时，保留原 JSON embedding + Go cosine 降级路径。
-24. 混合搜索支持排序策略、权重配置和 explain 信息：
+24. DuckDB tagged store 已接入 VSS/HNSW ANN 检索路径：
+   - 按 embedding 维度为 `thought_embedding_vectors_{dimension}.vector` 创建 cosine HNSW index。
+   - `mode=semantic` / `mode=hybrid` 有 query vector 时，优先通过 `ORDER BY array_cosine_distance(...) LIMIT ...` 使用 HNSW 候选。
+   - VSS extension 安装、加载或 HNSW 查询不可用时自动降级到 DuckDB ARRAY 全量相似度。
+   - `explain.semantic_source` 会返回 `duckdb_hnsw`、`duckdb_array`、`json_cosine` 或 fallback store 的 `memory_cosine`。
+25. 混合搜索支持排序策略、权重配置和 explain 信息：
    - `sort=score|keyword|semantic|recency`。
    - `keyword_weight` / `semantic_weight` / `recency_weight` 任一正值会归一化并覆盖默认权重。
    - `explain=true` 时每条结果返回分数组件、最终公式、权重、关键词来源和语义来源。
@@ -149,7 +154,8 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
 14. M3 topic store、topic service 和 weave provider 单元测试。
 15. topic semantic matching 已复用 search embedding cache：
    - topic 运行单元通过窄接口读取 search 运行单元缓存的 `EmbeddingRecord`。
-   - semantic rule 匹配时先生成 topic 定义向量，再优先读取同模型 thought embedding cache。
+   - semantic rule 匹配时先生成 topic 定义向量，再优先读取 search cache 提供的语义候选分数；DuckDB tagged store 可走 `duckdb_hnsw` 或 `duckdb_array`，默认 fallback store 走 `memory_cosine`。
+   - 当前 thought 未出现在语义候选分数中时，再读取同模型 thought embedding cache。
    - 缓存缺失或维度不匹配时才回退即时 embedding。
    - `search.index_updated` 仍会触发 topic match，确保 refined embedding 写入索引后可再次复用缓存匹配。
 16. 专题成员关系已拆为独立事实文件：
@@ -231,14 +237,6 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
 
 ## 尚未实现
-
-M2：
-
-1. DuckDB VSS/HNSW ANN 索引尚未启用；官方文档仍将持久化 HNSW 标为实验能力，当前先使用可持久化的 ARRAY 表与原生相似度函数。
-
-M3：
-
-1. topic semantic matching 尚未启用 ANN 索引；当前复用 search embedding cache，并在缓存缺失时回退即时 embedding。
 
 UI：
 

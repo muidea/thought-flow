@@ -79,6 +79,27 @@ func (s *Store) GetEmbedding(ctx context.Context, thoughtID string, model string
 	return record, true
 }
 
+func (s *Store) SemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	scores := map[string]float64{}
+	for thoughtID, embedding := range s.embeddings {
+		score := semanticScore(queryVector, embedding.Vector, model, embedding.Model)
+		if score > 0 {
+			scores[thoughtID] = score
+		}
+	}
+	if limit <= 0 || len(scores) <= limit {
+		return scores, "memory_cosine", true
+	}
+	trimmed := map[string]float64{}
+	for _, thoughtID := range topSemanticThoughtIDs(scores, limit) {
+		trimmed[thoughtID] = scores[thoughtID]
+	}
+	return trimmed, "memory_cosine", true
+}
+
 func (s *Store) Init(ctx context.Context) error {
 	_ = ctx
 	return nil

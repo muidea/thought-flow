@@ -110,3 +110,20 @@ func sortValue(item models.SearchResult, sortMode string) float64 {
 		return item.Score
 	}
 }
+
+func topSemanticThoughtIDs(scores map[string]float64, limit int) []string {
+	ids := make([]string, 0, len(scores))
+	for id := range scores {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(left, right int) bool {
+		if scores[ids[left]] == scores[ids[right]] {
+			return ids[left] > ids[right]
+		}
+		return scores[ids[left]] > scores[ids[right]]
+	})
+	if limit > 0 && len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids
+}

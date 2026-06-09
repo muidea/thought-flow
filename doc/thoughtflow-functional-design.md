@@ -553,7 +553,7 @@ payload
         "weights": {"keyword": 0.45, "semantic": 0.45, "recency": 0.1},
         "components": {"keyword": 0.72, "semantic": 0.88, "recency": 0.67},
         "keyword_source": "duckdb_fts",
-        "semantic_source": "duckdb_array"
+        "semantic_source": "duckdb_hnsw"
       }
     }
   ],
@@ -562,6 +562,8 @@ payload
   "total": 1
 }
 ```
+
+`semantic_source` 可能为 `duckdb_hnsw`、`duckdb_array`、`json_cosine` 或默认 fallback store 的 `memory_cosine`；VSS/HNSW 不可用时自动降级。
 
 `POST /api/synthesis`
 

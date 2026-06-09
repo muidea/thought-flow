@@ -208,6 +208,69 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 	}
 }
 
+func TestServiceSemanticMatchUsesCachedSemanticScores(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	cache := &testSemanticScoreCache{
+		scores: map[string]float64{"20260609-143010-ann": 0.96},
+	}
+	embedder := &countingEmbeddingProvider{
+		record: models.EmbeddingRecord{
+			Model:     "test-embedding",
+			Dimension: 3,
+			Vector:    []float64{1, 0, 0},
+		},
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache)
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:        "ANN Semantic Retrieval",
+		Description: "vector embeddings semantic retrieval",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 0.9},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	thought := serviceTestThought("20260609-143010-ann", "ANN embedding note")
+	content := models.ThoughtContent{Original: "semantic retrieval with hnsw cached scores"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	memberships, err := service.MatchThought(ctx, thought.ID)
+	if err != nil {
+		t.Fatalf("MatchThought() error = %v", err)
+	}
+	if len(memberships) != 1 || memberships[0].TopicID != topic.ID {
+		t.Fatalf("memberships = %#v", memberships)
+	}
+	if cache.semanticCalls != 1 {
+		t.Fatalf("semantic score cache calls = %d, want 1", cache.semanticCalls)
+	}
+	if cache.embeddingCalls != 0 {
+		t.Fatalf("embedding cache calls = %d, want 0", cache.embeddingCalls)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("embedder calls = %d, want only topic embedding call", embedder.calls)
+	}
+}
+
 func TestServicePreviewAndAcceptWeave(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
@@ -409,6 +472,29 @@ func (c *testEmbeddingCache) CachedEmbedding(ctx context.Context, thoughtID stri
 		return models.EmbeddingRecord{}, false
 	}
 	return c.record, true
+}
+
+type testSemanticScoreCache struct {
+	scores         map[string]float64
+	semanticCalls  int
+	embeddingCalls int
+}
+
+func (c *testSemanticScoreCache) CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
+	_ = ctx
+	_ = thoughtID
+	_ = model
+	c.embeddingCalls++
+	return models.EmbeddingRecord{}, false
+}
+
+func (c *testSemanticScoreCache) CachedSemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool) {
+	_ = ctx
+	_ = queryVector
+	_ = model
+	_ = limit
+	c.semanticCalls++
+	return c.scores, "duckdb_hnsw", true
 }
 
 type countingEmbeddingProvider struct {

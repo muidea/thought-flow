@@ -33,6 +33,10 @@ type EmbeddingCache interface {
 	CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool)
 }
 
+type SemanticScoreCache interface {
+	CachedSemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool)
+}
+
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, cache EmbeddingCache) *Service {
 	return &Service{
 		workspace:  workspace,
@@ -337,6 +341,16 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 	if err != nil {
 		return models.TopicMembership{}, false
 	}
+	threshold := topic.Rules.Semantic.Threshold
+	if threshold <= 0 {
+		threshold = 0.75
+	}
+	if score, ok := s.cachedSemanticScore(ctx, thought.ID, topicEmbedding); ok {
+		if score < threshold {
+			return models.TopicMembership{}, false
+		}
+		return semanticMembership(topic.ID, thought.ID, score), true
+	}
 	thoughtEmbedding, ok := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
 	if ok && len(thoughtEmbedding.Vector) != len(topicEmbedding.Vector) {
 		ok = false
@@ -348,24 +362,24 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 		}
 	}
 	score := cosine(topicEmbedding.Vector, thoughtEmbedding.Vector)
-	threshold := topic.Rules.Semantic.Threshold
-	if threshold <= 0 {
-		threshold = 0.75
-	}
 	if score < threshold {
 		return models.TopicMembership{}, false
 	}
+	return semanticMembership(topic.ID, thought.ID, score), true
+}
+
+func semanticMembership(topicID string, thoughtID string, score float64) models.TopicMembership {
 	now := time.Now().UTC()
 	return models.TopicMembership{
-		TopicID:   topic.ID,
-		ThoughtID: thought.ID,
+		TopicID:   topicID,
+		ThoughtID: thoughtID,
 		MatchType: "semantic",
 		Score:     score,
 		Reasons:   []string{fmt.Sprintf("semantic:%.3f", score)},
 		Status:    "accepted",
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, true
+	}
 }
 
 func (s *Service) cachedThoughtEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {
@@ -377,6 +391,25 @@ func (s *Service) cachedThoughtEmbedding(ctx context.Context, thoughtID string, 
 		return models.EmbeddingRecord{}, false
 	}
 	return record, true
+}
+
+func (s *Service) cachedSemanticScore(ctx context.Context, thoughtID string, embedding models.EmbeddingRecord) (float64, bool) {
+	if s.cache == nil || strings.TrimSpace(thoughtID) == "" || len(embedding.Vector) == 0 {
+		return 0, false
+	}
+	scoreCache, ok := s.cache.(SemanticScoreCache)
+	if !ok {
+		return 0, false
+	}
+	scores, _, ok := scoreCache.CachedSemanticScores(ctx, embedding.Vector, embedding.Model, 100)
+	if !ok {
+		return 0, false
+	}
+	score, ok := scores[thoughtID]
+	if !ok {
+		return 0, false
+	}
+	return score, true
 }
 
 func semanticHardExcluded(topic models.Topic, thought models.Thought, content models.ThoughtContent) bool {
