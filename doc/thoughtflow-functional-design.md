@@ -928,7 +928,7 @@ running -> retrying -> running
 4. DuckDB 从 Markdown 全量重建。
 5. 专题重组失败不破坏旧 `index.md`。
 6. SSE 能收到任务状态并支持断线后查询补偿。
-7. 嵌入式前端资源通过 JS syntax gate 和 Node 组件测试。
+7. 嵌入式前端资源通过 JS syntax gate、Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵。
 
 ### 15.3 验收标准
 

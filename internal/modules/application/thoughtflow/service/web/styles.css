@@ -108,6 +108,15 @@ p {
   padding: 18px;
 }
 
+.sidebar,
+.right-rail,
+.panel,
+.main-grid,
+.search-panel,
+.detail-panel {
+  min-width: 0;
+}
+
 .brand {
   display: grid;
   grid-template-columns: 42px 1fr;
@@ -249,6 +258,9 @@ p {
 .segmented input {
   position: absolute;
   opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
 }
 
 .segmented label:has(input:checked) {
@@ -544,6 +556,16 @@ textarea.markdown-preview {
   .right-rail,
   .workspace {
     padding: 12px;
+  }
+
+  .section-title,
+  .panel-header,
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar select {
+    min-width: 0;
   }
 
   .capture-form textarea {

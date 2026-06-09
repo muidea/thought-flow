@@ -215,12 +215,17 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - `node --check internal/modules/application/thoughtflow/service/web/app.js`
    - `node --test internal/modules/application/thoughtflow/service/web/app.test.js`
    - 覆盖轻量 Markdown 安全渲染、diff 展示、synthesis source link 去重和 outline helper。
+7. 浏览器 smoke 测试矩阵：
+   - `node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js`
+   - 使用本机 Google Chrome headless 和 mock API server 覆盖 desktop/mobile 视口。
+   - 校验首屏渲染、topic/search 数据加载、tab 切换、控制台错误和移动端水平溢出。
 
 验证：
 
 ```bash
 node --check internal/modules/application/thoughtflow/service/web/app.js
 node --test internal/modules/application/thoughtflow/service/web/app.test.js
+node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js
 go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
@@ -238,7 +243,7 @@ M3：
 UI：
 
 1. Diff/patch 审批视图已有轻量 Review tab 和独立审批队列；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
-2. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试；还没有浏览器兼容性测试矩阵。
+2. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；还没有 Firefox/Safari 覆盖。
 
 当前限制：
 
