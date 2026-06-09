@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -30,7 +31,7 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 		}
 	}
 
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Engineering Search",
@@ -78,6 +79,66 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 	}
 	if !strings.Contains(updatedContent.Links, "<!-- topic:engineering-search -->") {
 		t.Fatalf("expected topic backlink in thought links:\n%s", updatedContent.Links)
+	}
+}
+
+func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, ai.NewLocalRefineProvider())
+	ctx := context.Background()
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:        "Semantic Retrieval",
+		Description: "vector embeddings semantic retrieval",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 0.4},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	thought := serviceTestThought("20260609-143010-semantic", "Embedding note")
+	content := models.ThoughtContent{Original: "semantic retrieval with vector embeddings for local notes"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	memberships, err := service.MatchThought(ctx, thought.ID)
+	if err != nil {
+		t.Fatalf("MatchThought() error = %v", err)
+	}
+	if len(memberships) != 1 {
+		t.Fatalf("membership count = %d, want 1", len(memberships))
+	}
+	if memberships[0].TopicID != topic.ID {
+		t.Fatalf("membership topic = %q, want %q", memberships[0].TopicID, topic.ID)
+	}
+	if memberships[0].MatchType != "semantic" {
+		t.Fatalf("match type = %q", memberships[0].MatchType)
+	}
+	if memberships[0].Score < 0.4 {
+		t.Fatalf("semantic score = %v", memberships[0].Score)
+	}
+	detail, err := service.GetTopic(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if len(detail.Members) != 1 || detail.Members[0].MatchType != "semantic" {
+		t.Fatalf("detail members = %#v", detail.Members)
 	}
 }
 

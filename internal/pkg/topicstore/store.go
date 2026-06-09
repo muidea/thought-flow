@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ type Store struct {
 	rootPath string
 	weaver   WeaveProvider
 }
+
+type MatchFunc func(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool)
 
 type WeaveProvider interface {
 	Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error)
@@ -130,17 +133,109 @@ func (s *Store) Detail(ctx context.Context, id string) (models.TopicDetail, erro
 	document, _ := s.ReadDocument(ctx, topic.ID)
 	memberships := make([]models.TopicMembership, 0, len(topic.Members))
 	for _, thoughtID := range topic.Members {
-		memberships = append(memberships, models.TopicMembership{
-			TopicID:   topic.ID,
-			ThoughtID: thoughtID,
-			MatchType: "accepted",
-			Score:     1,
-			Status:    "woven",
-			CreatedAt: topic.CreatedAt,
-			UpdatedAt: topic.UpdatedAt,
-		})
+		membership := inferDocumentMembership(document, topic.ID, thoughtID)
+		if membership.CreatedAt.IsZero() {
+			membership.CreatedAt = topic.CreatedAt
+		}
+		if membership.UpdatedAt.IsZero() {
+			membership.UpdatedAt = topic.UpdatedAt
+		}
+		memberships = append(memberships, membership)
 	}
 	return models.TopicDetail{Topic: topic, Document: document, Members: memberships}, nil
+}
+
+func inferDocumentMembership(document string, topicID string, thoughtID string) models.TopicMembership {
+	membership := models.TopicMembership{
+		TopicID:   topicID,
+		ThoughtID: thoughtID,
+		MatchType: "accepted",
+		Score:     1,
+		Status:    "woven",
+	}
+	section := documentSectionForThought(document, thoughtID)
+	matchLine := firstMatchLine(section)
+	if matchLine == "" {
+		return membership
+	}
+	reasons := parseMatchReasons(matchLine)
+	if len(reasons) == 0 {
+		return membership
+	}
+	membership.Reasons = reasons
+	membership.MatchType = matchTypeFromReasons(reasons)
+	if strings.HasPrefix(reasons[0], "semantic:") {
+		if score, err := strconv.ParseFloat(strings.TrimPrefix(reasons[0], "semantic:"), 64); err == nil {
+			membership.Score = score
+		}
+	}
+	return membership
+}
+
+func documentSectionForThought(document string, thoughtID string) string {
+	sourceIdx := strings.Index(document, thoughtID+".md")
+	if sourceIdx < 0 {
+		return ""
+	}
+	start := strings.LastIndex(document[:sourceIdx], "\n## ")
+	altStart := strings.LastIndex(document[:sourceIdx], "\n### ")
+	if altStart > start {
+		start = altStart
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := strings.Index(document[sourceIdx:], "\n## ")
+	if end < 0 {
+		return document[start:]
+	}
+	return document[start : sourceIdx+end]
+}
+
+func firstMatchLine(section string) string {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Match:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Match:"))
+		}
+	}
+	return ""
+}
+
+func parseMatchReasons(matchLine string) []string {
+	ret := []string{}
+	for _, item := range strings.Split(matchLine, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			ret = append(ret, item)
+		}
+	}
+	return ret
+}
+
+func matchTypeFromReasons(reasons []string) string {
+	if len(reasons) == 0 {
+		return "accepted"
+	}
+	allTags := true
+	for _, reason := range reasons {
+		switch {
+		case strings.HasPrefix(reason, "semantic:"):
+			return "semantic"
+		case strings.HasPrefix(reason, "keyword:") || reason == "keywords.all":
+			return "keyword"
+		case strings.HasPrefix(reason, "tag:"):
+		default:
+			allTags = false
+		}
+	}
+	if allTags {
+		return "tag"
+	}
+	if contains(reasons, "manual include") {
+		return "manual"
+	}
+	return "accepted"
 }
 
 func (s *Store) List(ctx context.Context) ([]models.Topic, error) {
@@ -316,9 +411,20 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 }
 
 func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []string, error) {
+	return s.RebuildWithMatcher(ctx, id, func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+		return s.MatchThought(topic, thought, content)
+	})
+}
+
+func (s *Store) RebuildWithMatcher(ctx context.Context, id string, matcher MatchFunc) (models.Topic, int, []string, error) {
 	topic, err := s.Get(ctx, id)
 	if err != nil {
 		return models.Topic{}, 0, nil, err
+	}
+	if matcher == nil {
+		matcher = func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+			return s.MatchThought(topic, thought, content)
+		}
 	}
 	previousMembers := append([]string{}, topic.Members...)
 	topic.Members = []string{}
@@ -342,7 +448,7 @@ func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []st
 		if err != nil {
 			return err
 		}
-		membership, ok := s.MatchThought(topic, thought, content)
+		membership, ok := matcher(ctx, topic, thought, content)
 		if !ok {
 			return nil
 		}

@@ -3,12 +3,15 @@ package biz
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/muidea/magicCommon/event"
 	"github.com/muidea/magicCommon/task"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -22,15 +25,17 @@ type Service struct {
 	store      *topicstore.Store
 	eventHub   event.Hub
 	background task.BackgroundRoutine
+	embedder   ai.EmbeddingProvider
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine) *Service {
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider) *Service {
 	return &Service{
 		workspace:  workspace,
 		jobs:       jobs,
 		store:      store,
 		eventHub:   eventHub,
 		background: background,
+		embedder:   embedder,
 	}
 }
 
@@ -148,7 +153,7 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 	}
 	memberships := []models.TopicMembership{}
 	for _, topic := range topics {
-		membership, ok := s.store.MatchThought(topic, thought, content)
+		membership, ok := s.matchTopic(ctx, topic, thought, content)
 		if !ok {
 			continue
 		}
@@ -170,7 +175,7 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 func (s *Service) rebuildTopicJob(job models.Job) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	topic, count, changedThoughtPaths, err := s.store.Rebuild(context.Background(), job.ResourceID)
+	topic, count, changedThoughtPaths, err := s.store.RebuildWithMatcher(context.Background(), job.ResourceID, s.matchTopic)
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.topic.rebuild_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
@@ -183,6 +188,117 @@ func (s *Service) rebuildTopicJob(job models.Job) {
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, map[string]any{"topic": topic, "matched_count": count}))
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedThoughtPaths...))
+}
+
+func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+	if membership, ok := s.store.MatchThought(topic, thought, content); ok {
+		return membership, true
+	}
+	if !topic.Rules.Semantic.Enabled || s.embedder == nil || semanticHardExcluded(topic, thought, content) {
+		return models.TopicMembership{}, false
+	}
+	topicText := semanticTopicText(topic)
+	thoughtText := semanticThoughtText(thought, content)
+	if strings.TrimSpace(topicText) == "" || strings.TrimSpace(thoughtText) == "" {
+		return models.TopicMembership{}, false
+	}
+	topicEmbedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{Text: topicText})
+	if err != nil {
+		return models.TopicMembership{}, false
+	}
+	thoughtEmbedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: thoughtText})
+	if err != nil {
+		return models.TopicMembership{}, false
+	}
+	score := cosine(topicEmbedding.Vector, thoughtEmbedding.Vector)
+	threshold := topic.Rules.Semantic.Threshold
+	if threshold <= 0 {
+		threshold = 0.75
+	}
+	if score < threshold {
+		return models.TopicMembership{}, false
+	}
+	now := time.Now().UTC()
+	return models.TopicMembership{
+		TopicID:   topic.ID,
+		ThoughtID: thought.ID,
+		MatchType: "semantic",
+		Score:     score,
+		Reasons:   []string{fmt.Sprintf("semantic:%.3f", score)},
+		Status:    "accepted",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, true
+}
+
+func semanticHardExcluded(topic models.Topic, thought models.Thought, content models.ThoughtContent) bool {
+	if contains(topic.Rules.ManualExclude, thought.ID) {
+		return true
+	}
+	searchText := strings.ToLower(semanticThoughtText(thought, content))
+	for _, excluded := range topic.Rules.Keywords.Exclude {
+		excluded = strings.TrimSpace(strings.ToLower(excluded))
+		if excluded != "" && strings.Contains(searchText, excluded) {
+			return true
+		}
+	}
+	for _, required := range topic.Rules.Keywords.All {
+		required = strings.TrimSpace(strings.ToLower(required))
+		if required != "" && !strings.Contains(searchText, required) {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticTopicText(topic models.Topic) string {
+	parts := []string{
+		topic.Name,
+		topic.Description,
+		strings.Join(topic.Rules.Keywords.Any, " "),
+		strings.Join(topic.Rules.Keywords.All, " "),
+		strings.Join(topic.Rules.Tags.Any, " "),
+	}
+	for _, node := range topic.Outline {
+		parts = append(parts, node.Title)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func semanticThoughtText(thought models.Thought, content models.ThoughtContent) string {
+	return strings.Join([]string{
+		thought.UserTitle,
+		thought.ExtractedTitle,
+		thought.DisplayTitle,
+		thought.Summary,
+		strings.Join(thought.UserTags, " "),
+		strings.Join(thought.AITags, " "),
+		content.Original,
+		content.ExtractedContent,
+		content.AINotes,
+	}, "\n")
+}
+
+func cosine(left []float64, right []float64) float64 {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0
+	}
+	dot := 0.0
+	leftNorm := 0.0
+	rightNorm := 0.0
+	for idx := range left {
+		dot += left[idx] * right[idx]
+		leftNorm += left[idx] * left[idx]
+		rightNorm += right[idx] * right[idx]
+	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0
+	}
+	score := dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm))
+	if score < 0 {
+		return 0
+	}
+	return score
 }
 
 func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
@@ -248,4 +364,13 @@ func uniqueStrings(values []string) []string {
 		ret = append(ret, value)
 	}
 	return ret
+}
+
+func contains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
