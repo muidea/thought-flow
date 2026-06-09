@@ -195,6 +195,15 @@ type GitCommitRequestedPayload struct {
 	ResourceIDs []string `json:"resource_ids"`
 }
 
+type GitChangeSet struct {
+	ID            string    `json:"id"`
+	Paths         []string  `json:"paths"`
+	Reason        string    `json:"reason"`
+	ResourceIDs   []string  `json:"resource_ids"`
+	CreatedAt     time.Time `json:"created_at"`
+	DebounceUntil time.Time `json:"debounce_until"`
+}
+
 type GitCommitRecord struct {
 	CommitHash  string    `json:"commit_hash,omitempty"`
 	Message     string    `json:"message"`

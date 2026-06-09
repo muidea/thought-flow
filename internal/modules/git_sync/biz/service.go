@@ -31,6 +31,10 @@ type Service struct {
 	mu          sync.Mutex
 	pending     map[string]struct{}
 	resourceIDs map[string]struct{}
+	reasons     map[string]struct{}
+	changeSetID string
+	createdAt   time.Time
+	debounceTo  time.Time
 	timer       *time.Timer
 }
 
@@ -44,6 +48,7 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub even
 		debounce:    debounce,
 		pending:     map[string]struct{}{},
 		resourceIDs: map[string]struct{}{},
+		reasons:     map[string]struct{}{},
 	}
 }
 
@@ -60,20 +65,25 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 	if !ok {
 		return
 	}
-	s.Enqueue(payload.Paths, payload.ResourceIDs)
+	s.EnqueueChangeSet(payload.Paths, payload.Reason, payload.ResourceIDs)
 	if result != nil {
 		result.Set(nil, nil)
 	}
 }
 
 func (s *Service) Enqueue(paths []string, resourceIDs []string) {
+	_ = s.EnqueueChangeSet(paths, "", resourceIDs)
+}
+
+func (s *Service) EnqueueChangeSet(paths []string, reason string, resourceIDs []string) models.GitChangeSet {
 	if !s.enabled {
-		return
+		return models.GitChangeSet{}
 	}
+	now := time.Now().UTC()
 	s.mu.Lock()
 	for _, path := range paths {
-		path = filepath.ToSlash(strings.TrimSpace(path))
-		if path == "" || strings.HasPrefix(path, ".thoughtflow/") {
+		path, ok := normalizedCommitPath(path)
+		if !ok {
 			continue
 		}
 		s.pending[path] = struct{}{}
@@ -83,6 +93,17 @@ func (s *Service) Enqueue(paths []string, resourceIDs []string) {
 			s.resourceIDs[id] = struct{}{}
 		}
 	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		s.reasons[reason] = struct{}{}
+	}
+	if len(s.pending) == 0 {
+		s.mu.Unlock()
+		return models.GitChangeSet{}
+	}
+	if s.changeSetID == "" {
+		s.changeSetID = models.NewJobID("git_changeset", now)
+		s.createdAt = now
+	}
 	if s.timer != nil {
 		s.timer.Stop()
 	}
@@ -90,10 +111,13 @@ func (s *Service) Enqueue(paths []string, resourceIDs []string) {
 	if delay < 0 {
 		delay = 0
 	}
+	s.debounceTo = now.Add(delay)
 	s.timer = time.AfterFunc(delay, func() {
 		s.flushAsync()
 	})
+	changeSet := s.pendingChangeSetLocked()
 	s.mu.Unlock()
+	return changeSet
 }
 
 func (s *Service) Flush(ctx context.Context, timeout time.Duration) {
@@ -167,9 +191,59 @@ func (s *Service) takePending() ([]string, []string) {
 	}
 	s.pending = map[string]struct{}{}
 	s.resourceIDs = map[string]struct{}{}
+	s.reasons = map[string]struct{}{}
+	s.changeSetID = ""
+	s.createdAt = time.Time{}
+	s.debounceTo = time.Time{}
 	sort.Strings(paths)
 	sort.Strings(resourceIDs)
 	return paths, resourceIDs
+}
+
+func (s *Service) pendingChangeSetLocked() models.GitChangeSet {
+	paths := make([]string, 0, len(s.pending))
+	for path := range s.pending {
+		paths = append(paths, path)
+	}
+	resourceIDs := make([]string, 0, len(s.resourceIDs))
+	for id := range s.resourceIDs {
+		resourceIDs = append(resourceIDs, id)
+	}
+	reasons := make([]string, 0, len(s.reasons))
+	for reason := range s.reasons {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(paths)
+	sort.Strings(resourceIDs)
+	sort.Strings(reasons)
+	return models.GitChangeSet{
+		ID:            s.changeSetID,
+		Paths:         paths,
+		Reason:        strings.Join(reasons, ","),
+		ResourceIDs:   resourceIDs,
+		CreatedAt:     s.createdAt,
+		DebounceUntil: s.debounceTo,
+	}
+}
+
+func normalizedCommitPath(value string) (string, bool) {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	if value == "" {
+		return "", false
+	}
+	value = filepath.ToSlash(filepath.Clean(filepath.FromSlash(value)))
+	if value == "." || value == ".." || strings.HasPrefix(value, "../") || filepath.IsAbs(value) {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	if lower == ".thoughtflow" || strings.HasPrefix(lower, ".thoughtflow/") {
+		return "", false
+	}
+	base := strings.ToLower(filepath.Base(value))
+	if strings.HasSuffix(base, ".duckdb") || strings.Contains(base, ".duckdb.") {
+		return "", false
+	}
+	return value, true
 }
 
 func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []string) (models.GitCommitRecord, error) {
