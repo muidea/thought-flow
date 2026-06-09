@@ -32,6 +32,9 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "ThoughtFlow") {
 		t.Fatalf("expected embedded index body")
 	}
+	if !strings.Contains(res.Body.String(), `id="topic-edit-form"`) {
+		t.Fatalf("expected topic rules editor in embedded index")
+	}
 }
 
 func TestHandleWebServesEmbeddedScript(t *testing.T) {
@@ -49,6 +52,12 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "EventSource") {
 		t.Fatalf("expected embedded app script")
+	}
+	if !strings.Contains(res.Body.String(), "saveTopicRules") {
+		t.Fatalf("expected topic rules save handler in embedded app script")
+	}
+	if !strings.Contains(res.Body.String(), "renderMarkdown") {
+		t.Fatalf("expected markdown renderer in embedded app script")
 	}
 }
 

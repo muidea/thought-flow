@@ -179,6 +179,8 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - thought preview
    - SSE activity feed
    - system AI/workspace 状态摘要
+   - topic rules editor，支持编辑 keywords/tags/manual include/manual exclude/semantic/outline/auto_weave
+   - topic document 和 thought preview 的基础 Markdown 渲染
 4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 5. 嵌入资产服务单元测试。
 
@@ -203,7 +205,7 @@ M3：
 
 UI：
 
-1. 还没有富 Markdown 渲染、diff/patch 审批视图和可视化规则编辑器。
+1. 还没有 diff/patch 审批视图；Markdown 渲染仍是轻量内置渲染器，尚未接入完整 Markdown 扩展能力。
 2. 还没有独立前端构建、组件测试和浏览器兼容性测试矩阵。
 
 当前限制：

@@ -73,7 +73,7 @@
                 <h2 id="topic-title">Topic Workspace</h2>
                 <button id="rebuild-topic" disabled>Rebuild</button>
               </div>
-              <pre id="topic-document" class="markdown-preview">Select a topic from the left.</pre>
+              <div id="topic-document" class="markdown-preview markdown-rendered">Select a topic from the left.</div>
             </div>
 
             <div id="tab-synthesis" class="tab-panel">
@@ -115,9 +115,30 @@
 
         <section class="panel">
           <div class="panel-header">
+            <h2>Topic Rules</h2>
+          </div>
+          <form id="topic-edit-form" class="stack-form">
+            <input id="edit-topic-name" type="text" placeholder="Name" disabled>
+            <textarea id="edit-topic-description" placeholder="Description" disabled></textarea>
+            <input id="edit-keywords-any" type="text" placeholder="keywords any" disabled>
+            <input id="edit-keywords-all" type="text" placeholder="keywords all" disabled>
+            <input id="edit-keywords-exclude" type="text" placeholder="keywords exclude" disabled>
+            <input id="edit-tags-any" type="text" placeholder="tags any" disabled>
+            <input id="edit-manual-include" type="text" placeholder="manual include thought ids" disabled>
+            <input id="edit-manual-exclude" type="text" placeholder="manual exclude thought ids" disabled>
+            <label class="toggle-row"><input id="edit-semantic" type="checkbox" disabled> Semantic</label>
+            <input id="edit-threshold" type="number" min="0" max="1" step="0.05" value="0.75" aria-label="Semantic threshold" disabled>
+            <label class="toggle-row"><input id="edit-auto-weave" type="checkbox" disabled> Auto weave</label>
+            <textarea id="edit-outline" placeholder="outline, one heading per line" disabled></textarea>
+            <button id="save-topic-rules" type="submit" disabled>Save rules</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
             <h2>Preview</h2>
           </div>
-          <pre id="thought-preview" class="preview-box">No thought selected.</pre>
+          <div id="thought-preview" class="preview-box markdown-rendered">No thought selected.</div>
         </section>
       </aside>
     </div>

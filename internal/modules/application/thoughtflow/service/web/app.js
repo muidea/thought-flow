@@ -4,6 +4,7 @@ const state = {
   selectedThoughts: new Set(),
   lastResults: [],
   synthesisDraft: null,
+  activeTopicDetail: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -56,6 +57,95 @@ function score(value) {
   return value.toFixed(2);
 }
 
+function joinCSV(values) {
+  return (values || []).join(", ");
+}
+
+function outlineText(outline) {
+  return (outline || []).map((node) => node.title).filter(Boolean).join("\n");
+}
+
+function outlineFromText(value) {
+  return value
+    .split("\n")
+    .map((title) => title.trim())
+    .filter(Boolean)
+    .map((title) => ({ title }));
+}
+
+function renderInlineMarkdown(value) {
+  let text = escapeHTML(value);
+  text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target, label) => {
+    const cleanTarget = String(target || "").trim();
+    const cleanLabel = String(label || target || "").trim();
+    return `<code title="${escapeHTML(cleanTarget)}">${escapeHTML(cleanLabel)}</code>`;
+  });
+  text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return text;
+}
+
+function renderMarkdown(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  const html = [];
+  let inList = false;
+  let inCode = false;
+  const closeList = () => {
+    if (inList) {
+      html.push("</ul>");
+      inList = false;
+    }
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        html.push("</code></pre>");
+        inCode = false;
+      } else {
+        closeList();
+        html.push("<pre><code>");
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      html.push(`${escapeHTML(line)}\n`);
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const listItem = line.match(/^[-*]\s+(.+)$/);
+    if (listItem) {
+      if (!inList) {
+        html.push("<ul>");
+        inList = true;
+      }
+      html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`);
+      continue;
+    }
+    if (line.startsWith(">")) {
+      closeList();
+      html.push(`<blockquote>${renderInlineMarkdown(line.replace(/^>\s?/, ""))}</blockquote>`);
+      continue;
+    }
+    closeList();
+    html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+  }
+  closeList();
+  if (inCode) html.push("</code></pre>");
+  return html.join("");
+}
+
 async function loadStatus() {
   try {
     const status = await api("/api/system/status");
@@ -77,6 +167,12 @@ async function loadTopics() {
 function renderTopics() {
   const list = $("#topic-list");
   if (state.topics.length === 0) {
+    state.activeTopicId = "";
+    state.activeTopicDetail = null;
+    populateTopicEditor(null);
+    $("#topic-title").textContent = "Topic Workspace";
+    $("#topic-document").innerHTML = renderMarkdown("Select a topic from the left.");
+    $("#rebuild-topic").disabled = true;
     list.innerHTML = '<div class="topic-meta">No topics yet.</div>';
     return;
   }
@@ -101,11 +197,53 @@ async function openTopic(topicId) {
   if (!topicId) return;
   const detail = await api(`/api/topics/${encodeURIComponent(topicId)}`);
   state.activeTopicId = topicId;
+  state.activeTopicDetail = detail;
   $("#topic-title").textContent = detail.topic.name;
-  $("#topic-document").textContent = detail.document || "No topic document.";
+  $("#topic-document").innerHTML = renderMarkdown(detail.document || "No topic document.");
   $("#rebuild-topic").disabled = false;
+  populateTopicEditor(detail.topic);
   renderTopics();
   await runSearch();
+}
+
+function populateTopicEditor(topic) {
+  const fields = [
+    "edit-topic-name",
+    "edit-topic-description",
+    "edit-keywords-any",
+    "edit-keywords-all",
+    "edit-keywords-exclude",
+    "edit-tags-any",
+    "edit-manual-include",
+    "edit-manual-exclude",
+    "edit-semantic",
+    "edit-threshold",
+    "edit-auto-weave",
+    "edit-outline",
+    "save-topic-rules",
+  ];
+  const enabled = Boolean(topic);
+  fields.forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) node.disabled = !enabled;
+  });
+  if (!topic) return;
+  const rules = topic.rules || {};
+  const keywords = rules.keywords || {};
+  const tags = rules.tags || {};
+  const semantic = rules.semantic || {};
+  $("#edit-topic-name").value = topic.name || "";
+  $("#edit-topic-description").value = topic.description || "";
+  $("#edit-keywords-any").value = joinCSV(keywords.any);
+  $("#edit-keywords-all").value = joinCSV(keywords.all);
+  $("#edit-keywords-exclude").value = joinCSV(keywords.exclude);
+  $("#edit-tags-any").value = joinCSV(tags.any);
+  $("#edit-manual-include").value = joinCSV(rules.manual_include);
+  $("#edit-manual-exclude").value = joinCSV(rules.manual_exclude);
+  $("#edit-semantic").checked = Boolean(semantic.enabled);
+  $("#edit-threshold").value = Number.isFinite(semantic.threshold) && semantic.threshold > 0 ? semantic.threshold : 0.75;
+  $("#edit-auto-weave").checked = topic.auto_weave !== false;
+  $("#edit-outline").value = outlineText(topic.outline);
 }
 
 async function createTopic(event) {
@@ -133,6 +271,38 @@ async function createTopic(event) {
   event.target.reset();
   $("#topic-threshold").value = "0.75";
   toast("Topic created");
+  await loadTopics();
+  await openTopic(topic.id);
+}
+
+async function saveTopicRules(event) {
+  event.preventDefault();
+  if (!state.activeTopicId) {
+    toast("Select a topic first");
+    return;
+  }
+  const threshold = Number.parseFloat($("#edit-threshold").value || "0.75");
+  const topic = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: $("#edit-topic-name").value.trim(),
+      description: $("#edit-topic-description").value.trim(),
+      rules: {
+        keywords: {
+          any: csv($("#edit-keywords-any").value),
+          all: csv($("#edit-keywords-all").value),
+          exclude: csv($("#edit-keywords-exclude").value),
+        },
+        tags: { any: csv($("#edit-tags-any").value) },
+        semantic: { enabled: $("#edit-semantic").checked, threshold },
+        manual_include: csv($("#edit-manual-include").value),
+        manual_exclude: csv($("#edit-manual-exclude").value),
+      },
+      outline: outlineFromText($("#edit-outline").value),
+      auto_weave: $("#edit-auto-weave").checked,
+    }),
+  });
+  toast("Topic rules saved");
   await loadTopics();
   await openTopic(topic.id);
 }
@@ -229,7 +399,7 @@ async function previewThought(thoughtId) {
   const snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`);
   const thought = snapshot.thought;
   const content = snapshot.content || {};
-  $("#thought-preview").textContent = [
+  $("#thought-preview").innerHTML = renderMarkdown([
     `# ${thought.display_title || thought.user_title || thought.id}`,
     "",
     `status: ${thought.refine_status} / ${thought.index_status} / ${thought.topic_status}`,
@@ -245,7 +415,7 @@ async function previewThought(thoughtId) {
     content.links ? `## Links\n${content.links}` : "",
   ]
     .filter(Boolean)
-    .join("\n");
+    .join("\n"));
 }
 
 async function createSynthesis(event) {
@@ -363,6 +533,7 @@ function activateTab(name) {
 function bind() {
   $("#capture-form").addEventListener("submit", (event) => captureThought(event).catch((error) => toast(error.message)));
   $("#topic-form").addEventListener("submit", (event) => createTopic(event).catch((error) => toast(error.message)));
+  $("#topic-edit-form").addEventListener("submit", (event) => saveTopicRules(event).catch((error) => toast(error.message)));
   $("#search-form").addEventListener("submit", (event) => runSearch(event).catch((error) => toast(error.message)));
   $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
   $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
