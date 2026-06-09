@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
@@ -20,6 +22,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
+	"thoughtflow/internal/pkg/searchdb"
 	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/topicstore"
 )
@@ -609,15 +612,24 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 		}
 	}
 	duckdbPath := filepath.Join(ws.RuntimePath, "thoughtflow.duckdb")
-	if err := os.WriteFile(duckdbPath, []byte("duckdb"), 0o644); err != nil {
-		t.Fatalf("WriteFile(duckdb) error = %v", err)
+	searchStore, err := searchdb.Open(context.Background(), duckdbPath)
+	if err != nil {
+		t.Fatalf("Open(searchdb) error = %v", err)
+	}
+	defer searchStore.Close()
+	if _, err := os.Stat(duckdbPath); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(duckdbPath, []byte("duckdb"), 0o644); err != nil {
+			t.Fatalf("WriteFile(duckdb) error = %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("Stat(duckdb) error = %v", err)
 	}
 	stream := eventstream.New(10)
 	stream.Publish(models.DomainEvent{EventID: "evt-1", EventType: models.EventThoughtCaptured})
-	service := &Service{workspace: ws, stream: stream}
+	searchService := searchbiz.NewService(ws, jobstore.New(ws.JobsPath), searchStore, nil, nil, nil, duckdbPath)
+	service := &Service{workspace: ws, stream: stream, searchService: searchService}
 
 	status := service.systemStatus(context.Background(), appconfig.Config{
-		Search: appconfig.SearchConfig{DuckDBPath: filepath.ToSlash(filepath.Join(".thoughtflow", "thoughtflow.duckdb"))},
 		AI: appconfig.AIConfig{
 			APIKey:         "test-key",
 			BaseURL:        "https://api.example.test",

@@ -3,6 +3,8 @@ package biz
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,16 +23,18 @@ type Service struct {
 	workspace  *models.Workspace
 	jobs       *jobstore.Store
 	store      *searchdb.Store
+	indexPath  string
 	eventHub   event.Hub
 	background task.BackgroundRoutine
 	embedder   ai.EmbeddingProvider
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider) *Service {
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, indexPath string) *Service {
 	return &Service{
 		workspace:  workspace,
 		jobs:       jobs,
 		store:      store,
+		indexPath:  normalizeIndexPath(workspace, indexPath),
 		eventHub:   eventHub,
 		background: background,
 		embedder:   embedder,
@@ -145,6 +149,48 @@ func (s *Service) Search(ctx context.Context, query models.SearchQuery) (models.
 		}
 	}
 	return s.store.Search(ctx, query)
+}
+
+func (s *Service) RuntimeStatus(ctx context.Context) models.DuckDBRuntimeStatus {
+	_ = ctx
+	status := models.DuckDBRuntimeStatus{Status: "ready"}
+	if s == nil || s.workspace == nil {
+		status.Status = "degraded"
+		status.Error = "search service is not ready"
+		return status
+	}
+	status.Path = s.indexPath
+	if status.Path == "" {
+		status.Status = "degraded"
+		status.Error = "search index path is not configured"
+		return status
+	}
+	if s.store == nil {
+		status.Status = "degraded"
+		status.Error = "search index store is not ready"
+		return status
+	}
+	if _, err := os.Stat(status.Path); err == nil {
+		status.Exists = true
+		return status
+	} else if errors.Is(err, os.ErrNotExist) {
+		return status
+	} else {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+}
+
+func normalizeIndexPath(workspace *models.Workspace, indexPath string) string {
+	indexPath = strings.TrimSpace(indexPath)
+	if indexPath == "" {
+		indexPath = filepath.ToSlash(filepath.Join(".thoughtflow", "thoughtflow.duckdb"))
+	}
+	if filepath.IsAbs(indexPath) || workspace == nil || strings.TrimSpace(workspace.RootPath) == "" {
+		return indexPath
+	}
+	return filepath.Join(workspace.RootPath, filepath.FromSlash(indexPath))
 }
 
 func (s *Service) CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {

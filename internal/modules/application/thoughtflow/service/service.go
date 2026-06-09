@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -922,7 +921,10 @@ func sanitizePrometheusLabel(value string) string {
 
 func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models.SystemStatus {
 	workspaceStatus := workspaceRuntimeStatus(s.workspace)
-	duckdbStatus := duckDBRuntimeStatus(s.workspace, cfg)
+	duckdbStatus := models.DuckDBRuntimeStatus{Status: "degraded", Error: "search service is not ready"}
+	if s.searchService != nil {
+		duckdbStatus = s.searchService.RuntimeStatus(ctx)
+	}
 	aiStatus := aiRuntimeStatus(cfg)
 	gitStatus := models.GitRuntimeStatus{Status: "disabled"}
 	if s.gitQueries != nil {
@@ -980,34 +982,6 @@ func workspaceRuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus 
 	status.Writable = true
 	status.Status = "ready"
 	return status
-}
-
-func duckDBRuntimeStatus(ws *models.Workspace, cfg appconfig.Config) models.DuckDBRuntimeStatus {
-	status := models.DuckDBRuntimeStatus{Status: "ready"}
-	if ws == nil {
-		status.Status = "degraded"
-		status.Error = "workspace is not ready"
-		return status
-	}
-	pathValue := strings.TrimSpace(cfg.Search.DuckDBPath)
-	if pathValue == "" {
-		pathValue = ".thoughtflow/thoughtflow.duckdb"
-	}
-	if filepath.IsAbs(pathValue) {
-		status.Path = pathValue
-	} else {
-		status.Path = filepath.Join(ws.RootPath, filepath.FromSlash(pathValue))
-	}
-	if _, err := os.Stat(status.Path); err == nil {
-		status.Exists = true
-		return status
-	} else if errors.Is(err, os.ErrNotExist) {
-		return status
-	} else {
-		status.Status = "degraded"
-		status.Error = err.Error()
-		return status
-	}
 }
 
 func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {

@@ -73,7 +73,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		return cd.WrapError(cd.Unexpected, err, "open duckdb")
 	}
 	m.store = store
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), store, eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.AI))
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), store, eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.AI), dbPath)
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)
 	eventHub.Subscribe("thought.refined", m.service)
