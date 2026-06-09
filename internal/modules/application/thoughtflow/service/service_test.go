@@ -13,6 +13,7 @@ import (
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
@@ -412,7 +413,6 @@ func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{
-		"draft_id":"job-synthesis-test",
 		"thought_ids":["` + left.Thought.ID + `","` + right.Thought.ID + `"],
 		"goal":"Research outline",
 		"format":"outline",
@@ -464,7 +464,9 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	}
 	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
 	drafts := synthesisstore.New(root)
-	service := &Service{captureService: captureService, synthesisStore: drafts, workspace: ws, synthesisAI: fakeSynthesisProvider{}}
+	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
+	refinerService.ConfigureSynthesis(fakeSynthesisProvider{}, drafts)
+	service := &Service{captureService: captureService, refinerService: refinerService, workspace: ws}
 	ctx := context.Background()
 	result, err := captureService.Capture(ctx, models.CaptureCommand{
 		Type:    models.ThoughtTypeText,

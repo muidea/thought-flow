@@ -21,13 +21,11 @@ import (
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
-	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
-	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -46,8 +44,6 @@ type Service struct {
 	jobs           *jobstore.Store
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
-	synthesisStore *synthesisstore.Store
-	synthesisAI    ai.SynthesisProvider
 }
 
 type gitQueryReader interface {
@@ -66,8 +62,6 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		jobs:           jobs,
 		stream:         stream,
 		workspace:      workspace,
-		synthesisStore: newSynthesisStore(workspace),
-		synthesisAI:    ai.NewSynthesisProvider(appconfig.Load().AI),
 	}
 }
 
@@ -267,44 +261,34 @@ func (s *Service) handleSynthesis(ctx context.Context, res http.ResponseWriter, 
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "thought_ids is required")
 		return
 	}
+	if s.refinerService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
+		return
+	}
 	snapshots, sourceLinks, err := s.synthesisSources(ctx, request.ThoughtIDs)
 	if err != nil {
 		writeSynthesisSourceError(res, req, err)
 		return
 	}
-	thoughtIDs := make([]string, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		thoughtIDs = append(thoughtIDs, snapshot.Thought.ID)
-	}
-	provider := s.getSynthesisProvider()
-	draft, err := provider.Synthesize(ctx, ai.SynthesisRequest{
-		ThoughtIDs:  thoughtIDs,
-		Goal:        request.Goal,
-		Format:      request.Format,
-		Snapshots:   snapshots,
-		SourceLinks: sourceLinks,
-	})
+	draft, err := s.refinerService.CreateSynthesisDraft(ctx, request, snapshots, sourceLinks)
 	if err != nil {
-		writeError(res, req, http.StatusBadGateway, "thoughtflow.synthesis.generate_failed", err.Error())
-		return
-	}
-	if store := s.getSynthesisStore(); store != nil {
-		draft, err = store.SaveDraft(ctx, draft)
-		if err != nil {
+		var storeErr refinerbiz.SynthesisDraftStoreError
+		if errors.As(err, &storeErr) {
 			writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.draft_failed", err.Error())
 			return
 		}
+		writeError(res, req, http.StatusBadGateway, "thoughtflow.synthesis.generate_failed", err.Error())
+		return
 	}
 	writeJSON(res, req, http.StatusOK, draft)
 }
 
 func (s *Service) handleListSynthesisDrafts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	store := s.getSynthesisStore()
-	if store == nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.store_unavailable", "synthesis draft store is unavailable")
+	if s.refinerService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
 		return
 	}
-	drafts, err := store.ListDrafts(ctx)
+	drafts, err := s.refinerService.ListSynthesisDrafts(ctx)
 	if err != nil {
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.list_failed", err.Error())
 		return
@@ -318,12 +302,11 @@ func (s *Service) handleGetSynthesisDraft(ctx context.Context, res http.Response
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "draft id is required")
 		return
 	}
-	store := s.getSynthesisStore()
-	if store == nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.store_unavailable", "synthesis draft store is unavailable")
+	if s.refinerService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
 		return
 	}
-	draft, err := store.GetDraft(ctx, draftID)
+	draft, err := s.refinerService.GetSynthesisDraft(ctx, draftID)
 	if err != nil {
 		writeError(res, req, http.StatusNotFound, "thoughtflow.synthesis.draft_not_found", err.Error())
 		return
@@ -337,9 +320,12 @@ func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWrit
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_json", err.Error())
 		return
 	}
-	store := s.getSynthesisStore()
-	if store != nil && strings.TrimSpace(request.DraftID) != "" {
-		draft, err := store.GetDraft(ctx, request.DraftID)
+	if s.refinerService == nil && strings.TrimSpace(request.DraftID) != "" {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
+		return
+	}
+	if strings.TrimSpace(request.DraftID) != "" {
+		draft, err := s.refinerService.GetSynthesisDraft(ctx, request.DraftID)
 		if err != nil {
 			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_not_found", err.Error())
 			return
@@ -388,8 +374,8 @@ func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWrit
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.save_failed", err.Error())
 		return
 	}
-	if store != nil && strings.TrimSpace(request.DraftID) != "" {
-		if _, err := store.MarkSaved(ctx, request.DraftID, content, result.Thought); err != nil {
+	if strings.TrimSpace(request.DraftID) != "" {
+		if _, err := s.refinerService.MarkSynthesisSaved(ctx, request.DraftID, content, result.Thought); err != nil {
 			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_save_failed", err.Error())
 			return
 		}
@@ -399,29 +385,6 @@ func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWrit
 		Jobs:        result.Jobs,
 		SourceLinks: sourceLinks,
 	})
-}
-
-func (s *Service) getSynthesisStore() *synthesisstore.Store {
-	if s.synthesisStore != nil {
-		return s.synthesisStore
-	}
-	s.synthesisStore = newSynthesisStore(s.workspace)
-	return s.synthesisStore
-}
-
-func newSynthesisStore(workspace *models.Workspace) *synthesisstore.Store {
-	if workspace == nil || strings.TrimSpace(workspace.RootPath) == "" {
-		return nil
-	}
-	return synthesisstore.New(workspace.RootPath)
-}
-
-func (s *Service) getSynthesisProvider() ai.SynthesisProvider {
-	if s.synthesisAI != nil {
-		return s.synthesisAI
-	}
-	s.synthesisAI = ai.NewSynthesisProvider(appconfig.Load().AI)
-	return s.synthesisAI
 }
 
 func (s *Service) synthesisSources(ctx context.Context, thoughtIDs []string) ([]models.ThoughtSnapshot, []string, error) {
