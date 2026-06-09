@@ -125,6 +125,41 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsInvalidSemanticThreshold(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	_, err := store.Create(ctx, models.TopicCreateRequest{
+		Name: "Invalid semantic topic",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 1.2},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "semantic threshold") {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{
+		Name: "Valid semantic topic",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 0.7},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(valid) error = %v", err)
+	}
+	_, err = store.Update(ctx, topic.ID, models.TopicUpdateRequest{
+		Name: topic.Name,
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: -0.1},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "semantic threshold") {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
 func TestStoreRebuildRemovesStaleMembershipFacts(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

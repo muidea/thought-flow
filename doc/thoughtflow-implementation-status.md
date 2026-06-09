@@ -162,6 +162,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - tag any
    - manual include/exclude
    - semantic enabled/threshold
+   - semantic threshold 显式配置时必须位于 `[0,1]`，非法值在 create/update 时拒绝。
 5. `thought.refined` / `search.index_updated` 触发后台 topic match Job。
 6. topic semantic rule 已接入 embedding provider：
    - 关键词/标签规则未命中时，若 semantic rule 开启，会对 topic 定义文本和 thought 文本生成 embedding 并计算 cosine。

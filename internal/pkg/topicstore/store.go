@@ -65,12 +65,16 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 	if req.AutoWeave != nil {
 		autoWeave = *req.AutoWeave
 	}
+	rules, err := normalizeRule(req.Rules)
+	if err != nil {
+		return models.Topic{}, err
+	}
 	topic := models.Topic{
 		ID:          slug,
 		Name:        name,
 		Slug:        slug,
 		Description: strings.TrimSpace(req.Description),
-		Rules:       normalizeRule(req.Rules),
+		Rules:       rules,
 		Outline:     req.Outline,
 		AutoWeave:   autoWeave,
 		CreatedAt:   now,
@@ -95,8 +99,12 @@ func (s *Store) Update(ctx context.Context, id string, req models.TopicUpdateReq
 	if strings.TrimSpace(req.Name) != "" {
 		topic.Name = strings.TrimSpace(req.Name)
 	}
+	rules, err := normalizeRule(req.Rules)
+	if err != nil {
+		return models.Topic{}, err
+	}
 	topic.Description = strings.TrimSpace(req.Description)
-	topic.Rules = normalizeRule(req.Rules)
+	topic.Rules = rules
 	topic.Outline = req.Outline
 	if req.AutoWeave != nil {
 		topic.AutoWeave = *req.AutoWeave
@@ -997,14 +1005,17 @@ func (s *Store) topicPath(id string) (string, error) {
 	return path, nil
 }
 
-func normalizeRule(rule models.TopicRule) models.TopicRule {
+func normalizeRule(rule models.TopicRule) (models.TopicRule, error) {
+	if rule.Semantic.Threshold < 0 || rule.Semantic.Threshold > 1 {
+		return models.TopicRule{}, errors.New("semantic threshold must be between 0 and 1")
+	}
 	rule.Keywords.Any = normalizeList(rule.Keywords.Any)
 	rule.Keywords.All = normalizeList(rule.Keywords.All)
 	rule.Keywords.Exclude = normalizeList(rule.Keywords.Exclude)
 	rule.Tags.Any = normalizeList(rule.Tags.Any)
 	rule.ManualInclude = normalizeList(rule.ManualInclude)
 	rule.ManualExclude = normalizeList(rule.ManualExclude)
-	return rule
+	return rule, nil
 }
 
 func normalizeMembership(topic models.Topic, thoughtID string, membership models.TopicMembership, now time.Time) models.TopicMembership {
