@@ -32,6 +32,8 @@
    - 写入已有 thought 文件时保留未知 front matter 字段块，保证未来字段和外部工具字段向后兼容。
    - `errors` front matter 字段支持 `ErrorRef` 写入和读取，用于持久化采集、抓取和加工告警/失败原因。
 7. `Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitCommitRecord` 等 M1 模型。
+   - Job 状态常量覆盖 `queued`、`running`、`retrying`、`succeeded`、`failed`、`canceled`。
+   - jobstore 支持创建、查询、列表、进度更新、运行、重试中、成功、失败和取消状态持久化。
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. capture 会按 `content_hash` 扫描已有 thought；重复内容默认设置 `duplicate_warned` 和 `thoughtflow.capture.duplicate_warned`，但仍写入新 Markdown，不静默丢弃用户输入。
 10. Git 自动提交队列，包含 workspace 内路径校验和 `.thoughtflow/` 排除。

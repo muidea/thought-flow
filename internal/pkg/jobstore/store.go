@@ -22,6 +22,13 @@ func New(rootPath string) *Store {
 }
 
 func (s *Store) Create(jobType, resourceType, resourceID, message string) (models.Job, error) {
+	return s.CreateWithMaxAttempts(jobType, resourceType, resourceID, message, 1)
+}
+
+func (s *Store) CreateWithMaxAttempts(jobType, resourceType, resourceID, message string, maxAttempts int) (models.Job, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
 	now := time.Now().UTC()
 	job := models.Job{
 		ID:           models.NewJobID(jobType, now),
@@ -29,7 +36,7 @@ func (s *Store) Create(jobType, resourceType, resourceID, message string) (model
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
 		Status:       models.JobStatusQueued,
-		MaxAttempts:  1,
+		MaxAttempts:  maxAttempts,
 		Message:      message,
 		CreatedAt:    now,
 	}
@@ -104,9 +111,36 @@ func (s *Store) List() ([]models.Job, error) {
 func (s *Store) MarkRunning(job models.Job) (models.Job, error) {
 	now := time.Now().UTC()
 	job.Status = models.JobStatusRunning
-	job.StartedAt = &now
+	if job.StartedAt == nil {
+		job.StartedAt = &now
+	}
 	job.Attempt++
 	job.Progress = 0.1
+	job.Error = nil
+	return job, s.Save(job)
+}
+
+func (s *Store) UpdateProgress(job models.Job, progress float64, message string) (models.Job, error) {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+	job.Progress = progress
+	if message != "" {
+		job.Message = message
+	}
+	return job, s.Save(job)
+}
+
+func (s *Store) MarkRetrying(job models.Job, errRef models.ErrorRef, message string) (models.Job, error) {
+	job.Status = models.JobStatusRetrying
+	job.Error = &errRef
+	job.Progress = 0
+	if message != "" {
+		job.Message = message
+	}
 	return job, s.Save(job)
 }
 
@@ -116,6 +150,7 @@ func (s *Store) MarkSucceeded(job models.Job, message string) (models.Job, error
 	job.Message = message
 	job.Progress = 1
 	job.FinishedAt = &now
+	job.Error = nil
 	return job, s.Save(job)
 }
 
@@ -123,6 +158,16 @@ func (s *Store) MarkFailed(job models.Job, errRef models.ErrorRef) (models.Job, 
 	now := time.Now().UTC()
 	job.Status = models.JobStatusFailed
 	job.Error = &errRef
+	job.FinishedAt = &now
+	return job, s.Save(job)
+}
+
+func (s *Store) MarkCanceled(job models.Job, message string) (models.Job, error) {
+	now := time.Now().UTC()
+	job.Status = models.JobStatusCanceled
+	if message != "" {
+		job.Message = message
+	}
 	job.FinishedAt = &now
 	return job, s.Save(job)
 }

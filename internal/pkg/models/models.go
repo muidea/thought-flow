@@ -30,8 +30,10 @@ const (
 
 	JobStatusQueued    = "queued"
 	JobStatusRunning   = "running"
+	JobStatusRetrying  = "retrying"
 	JobStatusSucceeded = "succeeded"
 	JobStatusFailed    = "failed"
+	JobStatusCanceled  = "canceled"
 
 	JobTypeGitCommit  = "git_commit"
 	JobTypeRefine     = "refine"
