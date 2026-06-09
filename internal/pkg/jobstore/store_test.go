@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"thoughtflow/internal/pkg/models"
 )
@@ -98,5 +99,32 @@ func TestStoreCanCancelQueuedJob(t *testing.T) {
 	}
 	if job.Status != models.JobStatusCanceled || job.Message != "user canceled" || job.FinishedAt == nil {
 		t.Fatalf("canceled job = %#v", job)
+	}
+}
+
+func TestRecentByResourceReturnsNewestJobsFirst(t *testing.T) {
+	store := New(t.TempDir())
+	base := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	jobs := []models.Job{
+		{ID: "job-old", Type: models.JobTypeRefine, ResourceID: "thought-1", Status: models.JobStatusSucceeded, CreatedAt: base},
+		{ID: "job-other", Type: models.JobTypeRefine, ResourceID: "thought-2", Status: models.JobStatusSucceeded, CreatedAt: base.Add(1 * time.Minute)},
+		{ID: "job-new", Type: models.JobTypeRefine, ResourceID: "thought-1", Status: models.JobStatusRunning, CreatedAt: base.Add(2 * time.Minute)},
+		{ID: "job-mid", Type: models.JobTypeIndex, ResourceID: "thought-1", Status: models.JobStatusQueued, CreatedAt: base.Add(1 * time.Minute)},
+	}
+	for _, job := range jobs {
+		if err := store.Save(job); err != nil {
+			t.Fatalf("Save(%s) error = %v", job.ID, err)
+		}
+	}
+
+	recent, err := store.RecentByResource("thought-1", 2)
+	if err != nil {
+		t.Fatalf("RecentByResource() error = %v", err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("recent jobs = %#v", recent)
+	}
+	if recent[0].ID != "job-new" || recent[1].ID != "job-mid" {
+		t.Fatalf("recent order = %#v", recent)
 	}
 }

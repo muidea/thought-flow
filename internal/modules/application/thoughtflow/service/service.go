@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +22,6 @@ import (
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
-	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/workspace"
@@ -41,7 +39,7 @@ type Service struct {
 	searchService  *searchbiz.Service
 	topicService   *topicbiz.Service
 	gitQueries     gitQueryReader
-	jobs           *jobstore.Store
+	jobs           jobQueryReader
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
 	config         appconfig.Config
@@ -52,7 +50,14 @@ type gitQueryReader interface {
 	RuntimeStatus(ctx context.Context) models.GitRuntimeStatus
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs *jobstore.Store, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
+type jobQueryReader interface {
+	Get(jobID string) (models.Job, error)
+	List() ([]models.Job, error)
+	RecentByResource(resourceID string, limit int) ([]models.Job, error)
+	RuntimeStatus() models.BackgroundRuntimeStatus
+}
+
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs jobQueryReader, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
@@ -163,7 +168,7 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 		writeError(res, req, status, "thoughtflow.capture.not_found", err.Error())
 		return
 	}
-	snapshot.Jobs = thoughtJobs(s.jobs, thoughtID, 20)
+	snapshot.Jobs = recentJobsByResource(s.jobs, thoughtID, 20)
 	if s.gitQueries != nil {
 		snapshot.GitCommits = s.gitQueries.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
 	}
@@ -185,30 +190,15 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 	writeJSON(res, req, http.StatusAccepted, job)
 }
 
-func thoughtJobs(store *jobstore.Store, thoughtID string, limit int) []models.Job {
-	if store == nil || strings.TrimSpace(thoughtID) == "" {
+func recentJobsByResource(store jobQueryReader, resourceID string, limit int) []models.Job {
+	if store == nil || strings.TrimSpace(resourceID) == "" {
 		return nil
 	}
-	jobs, err := store.List()
+	jobs, err := store.RecentByResource(resourceID, limit)
 	if err != nil {
 		return nil
 	}
-	ret := []models.Job{}
-	for _, job := range jobs {
-		if job.ResourceID == thoughtID {
-			ret = append(ret, job)
-		}
-	}
-	sort.Slice(ret, func(left, right int) bool {
-		if ret[left].CreatedAt.Equal(ret[right].CreatedAt) {
-			return ret[left].ID > ret[right].ID
-		}
-		return ret[left].CreatedAt.After(ret[right].CreatedAt)
-	})
-	if limit > 0 && len(ret) > limit {
-		ret = ret[:limit]
-	}
-	return ret
+	return jobs
 }
 
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {

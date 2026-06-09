@@ -22,7 +22,7 @@
    - `GET /metrics`
    - `GET /health/live`
    - `GET /health/ready`
-   - `GET /api/thoughts/{id}` 会聚合原子笔记正文、相关后台 Job 和 git-sync 提供的最近 Git commit 摘要。
+   - `GET /api/thoughts/{id}` 会聚合原子笔记正文、jobstore 提供的相关后台 Job 和 git-sync 提供的最近 Git commit 摘要。
 5. 工作区初始化：
    - `thoughts/`
    - `topics/`
@@ -47,7 +47,7 @@
     - search 运行单元提供 DuckDB 配置路径和文件存在状态。
     - AI provider 配置状态。
     - git-sync 提供 Git 仓库、用户身份和未提交变更只读探测。
-    - jobstore 提供 background jobs 目录写入状态。
+    - jobstore 提供 background jobs 目录写入状态和资源维度 Job 查询。
     - SSE history/subscriber 统计。
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
     - `thoughtflow_capture_total` 通过 capture 运行单元从工作区 Markdown thought 事实源计算。

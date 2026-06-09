@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,6 +131,33 @@ func (s *Store) List() ([]models.Job, error) {
 		return jobs[left].CreatedAt.Before(jobs[right].CreatedAt)
 	})
 	return jobs, nil
+}
+
+func (s *Store) RecentByResource(resourceID string, limit int) ([]models.Job, error) {
+	resourceID = strings.TrimSpace(resourceID)
+	if resourceID == "" {
+		return []models.Job{}, nil
+	}
+	jobs, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	ret := []models.Job{}
+	for _, job := range jobs {
+		if job.ResourceID == resourceID {
+			ret = append(ret, job)
+		}
+	}
+	sort.Slice(ret, func(left, right int) bool {
+		if ret[left].CreatedAt.Equal(ret[right].CreatedAt) {
+			return ret[left].ID > ret[right].ID
+		}
+		return ret[left].CreatedAt.After(ret[right].CreatedAt)
+	})
+	if limit > 0 && len(ret) > limit {
+		ret = ret[:limit]
+	}
+	return ret, nil
 }
 
 func (s *Store) MarkRunning(job models.Job) (models.Job, error) {
