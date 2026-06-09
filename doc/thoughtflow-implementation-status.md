@@ -50,11 +50,11 @@
     - background jobs 目录写入状态。
     - SSE history/subscriber 统计。
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
-    - `thoughtflow_capture_total` 从工作区 Markdown thought 事实源计算。
+    - `thoughtflow_capture_total` 通过 capture 运行单元从工作区 Markdown thought 事实源计算。
     - `thoughtflow_refine_duration_seconds` 从 refine job 开始/完成时间计算。
     - `thoughtflow_ai_request_total` 统计 AI Provider 调用次数。
     - `thoughtflow_search_query_total` 统计搜索请求次数。
-    - `thoughtflow_index_lag_seconds` 统计待索引/失败索引 thought 的最大滞后。
+    - `thoughtflow_index_lag_seconds` 基于 capture 运行单元返回的 Thought 列表统计待索引/失败索引 thought 的最大滞后。
     - `thoughtflow_topic_weave_total` 统计专题文档缝合次数。
     - `thoughtflow_git_commit_total` 从成功 git commit job 计算。
     - `thoughtflow_background_jobs` 从持久化 job 快照计算，并按 status/type 输出 label 维度。

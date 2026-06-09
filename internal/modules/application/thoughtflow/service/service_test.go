@@ -728,7 +728,8 @@ func TestSystemMetricsReportsDesignedMetricNames(t *testing.T) {
 	observability.IncrementSearchQuery()
 	observability.AddTopicWeave(3)
 
-	service := &Service{workspace: ws, jobs: jobs}
+	captureService := capturebiz.NewService(ws, jobs, nil)
+	service := &Service{workspace: ws, jobs: jobs, captureService: captureService}
 	metrics, err := service.systemMetrics(context.Background(), now)
 	if err != nil {
 		t.Fatalf("systemMetrics() error = %v", err)

@@ -26,7 +26,6 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
-	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/synthesisstore"
@@ -779,9 +778,13 @@ func (s *Service) systemMetrics(ctx context.Context, now time.Time) (models.Syst
 		}
 		jobs = listed
 	}
-	thoughts, err := listWorkspaceThoughts(s.workspace)
-	if err != nil {
-		return models.SystemMetrics{}, err
+	thoughts := []models.Thought{}
+	if s.captureService != nil {
+		listed, err := s.captureService.ListThoughts(ctx)
+		if err != nil {
+			return models.SystemMetrics{}, err
+		}
+		thoughts = listed
 	}
 
 	captureTotal := len(thoughts)
@@ -811,33 +814,6 @@ func (s *Service) systemMetrics(ctx context.Context, now time.Time) (models.Syst
 		BackgroundJobs:        backgroundJobs,
 		ThoughtIndexLag:       indexLag,
 	}, nil
-}
-
-func listWorkspaceThoughts(ws *models.Workspace) ([]models.Thought, error) {
-	if ws == nil || strings.TrimSpace(ws.RootPath) == "" {
-		return []models.Thought{}, nil
-	}
-	thoughtsPath := filepath.Join(ws.RootPath, "thoughts")
-	thoughts := []models.Thought{}
-	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
-			return nil
-		}
-		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
-		thought, _, err := markdown.ReadThought(ws.RootPath, thoughtID)
-		if err != nil {
-			return err
-		}
-		thoughts = append(thoughts, thought)
-		return nil
-	})
-	if errors.Is(err, os.ErrNotExist) {
-		return []models.Thought{}, nil
-	}
-	return thoughts, err
 }
 
 func refineDurationMetric(jobs []models.Job) models.DurationMetric {

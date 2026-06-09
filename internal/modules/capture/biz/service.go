@@ -149,8 +149,43 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
 }
 
+func (s *Service) ListThoughts(ctx context.Context) ([]models.Thought, error) {
+	_ = ctx
+	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.RootPath) == "" {
+		return []models.Thought{}, nil
+	}
+	return listThoughts(s.workspace.RootPath)
+}
+
 func (s *Service) Workspace() *models.Workspace {
 	return s.workspace
+}
+
+func listThoughts(rootPath string) ([]models.Thought, error) {
+	if strings.TrimSpace(rootPath) == "" {
+		return []models.Thought{}, nil
+	}
+	thoughtsPath := filepath.Join(rootPath, "thoughts")
+	thoughts := []models.Thought{}
+	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
+			return nil
+		}
+		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		thought, _, err := markdown.ReadThought(rootPath, thoughtID)
+		if err != nil {
+			return err
+		}
+		thoughts = append(thoughts, thought)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.Thought{}, nil
+	}
+	return thoughts, err
 }
 
 func findDuplicateThoughts(rootPath string, contentHash string, currentID string) ([]string, error) {

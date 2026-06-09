@@ -118,6 +118,44 @@ func TestCaptureDuplicateContentWarnsWithoutDropping(t *testing.T) {
 	}
 }
 
+func TestListThoughtsReturnsWorkspaceThoughts(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.ThoughtsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil)
+
+	first, err := service.Capture(context.Background(), models.CaptureCommand{Type: models.ThoughtTypeText, Content: "First listed thought"})
+	if err != nil {
+		t.Fatalf("Capture(first) error = %v", err)
+	}
+	second, err := service.Capture(context.Background(), models.CaptureCommand{Type: models.ThoughtTypeText, Content: "Second listed thought"})
+	if err != nil {
+		t.Fatalf("Capture(second) error = %v", err)
+	}
+
+	thoughts, err := service.ListThoughts(context.Background())
+	if err != nil {
+		t.Fatalf("ListThoughts() error = %v", err)
+	}
+	if len(thoughts) != 2 {
+		t.Fatalf("thoughts = %#v", thoughts)
+	}
+	ids := map[string]bool{}
+	for _, thought := range thoughts {
+		ids[thought.ID] = true
+	}
+	if !ids[first.Thought.ID] || !ids[second.Thought.ID] {
+		t.Fatalf("thought ids = %#v", ids)
+	}
+}
+
 func TestCaptureRejectsInvalidURL(t *testing.T) {
 	service := NewService(&models.Workspace{RootPath: t.TempDir()}, jobstore.New(t.TempDir()), nil)
 	_, err := service.Capture(context.Background(), models.CaptureCommand{
