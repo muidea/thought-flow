@@ -159,6 +159,23 @@ func TestRuntimeStatusReportsRepositoryIdentityAndDirtyState(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusReportsMissingGitIdentity(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	root := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "global-gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	runGitForTest(t, root, "init")
+
+	service := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+	status := service.RuntimeStatus(context.Background())
+
+	if status.Status != "degraded" || status.IdentityConfigured || !strings.Contains(status.Error, "user.name and user.email") {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestRuntimeStatusReportsDisabledGit(t *testing.T) {
 	service := NewService(&models.Workspace{ID: "local", RootPath: t.TempDir()}, nil, nil, nil, false, time.Hour)
 	status := service.RuntimeStatus(context.Background())

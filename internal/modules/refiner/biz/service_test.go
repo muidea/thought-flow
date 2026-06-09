@@ -2,6 +2,8 @@ package biz
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +178,67 @@ func TestForceRefineIgnoresUnchangedSkip(t *testing.T) {
 	}
 	if refinement.Model == skippedUnchangedModel || refinement.Summary != "forced summary" {
 		t.Fatalf("refinement = %#v", refinement)
+	}
+}
+
+func TestRefineURLFetchFailurePreservesOriginalThought(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		http.Error(res, "origin unavailable", http.StatusBadGateway)
+	}))
+	defer origin.Close()
+	reader := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		http.Error(res, "reader unavailable", http.StatusBadGateway)
+	}))
+	defer reader.Close()
+
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	thoughtID := "20260609-152500-url-fail"
+	original := origin.URL
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeURL,
+		Source:        models.ThoughtSourceManual,
+		URL:           origin.URL,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
+		UpdatedAt:     time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
+		ContentHash:   models.ContentHash(original),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: original}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, ai.NewLocalRefineProvider(), webfetch.New(time.Second, webfetch.WithReaderBaseURL(reader.URL)))
+	_, err := service.RefineNow(context.Background(), thoughtID)
+	if err == nil {
+		t.Fatalf("expected fetch failure")
+	}
+	gotThought, gotContent, readErr := markdown.ReadThought(root, thoughtID)
+	if readErr != nil {
+		t.Fatalf("ReadThought() error = %v", readErr)
+	}
+	if gotContent.Original != original {
+		t.Fatalf("original content changed: %q", gotContent.Original)
+	}
+	if gotThought.RefineStatus != models.RefineStatusFailed || len(gotThought.Errors) == 0 {
+		t.Fatalf("thought after failure = %#v", gotThought)
+	}
+	if gotThought.Errors[0].Code != "thoughtflow.refiner.fetch_failed" || !gotThought.Errors[0].Retryable {
+		t.Fatalf("error ref = %#v", gotThought.Errors[0])
 	}
 }
 

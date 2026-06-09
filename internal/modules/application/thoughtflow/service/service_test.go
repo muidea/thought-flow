@@ -710,6 +710,23 @@ func TestHandleReadyReturnsUnavailableWhenRuntimeIsNotReady(t *testing.T) {
 	}
 }
 
+func TestJSONResponsesCarryRequestID(t *testing.T) {
+	service := &Service{}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	req.Header.Set("X-Request-ID", "req-test-123")
+
+	service.handleLive(context.Background(), res, req)
+
+	var payload models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.RequestID != "req-test-123" {
+		t.Fatalf("request_id = %q", payload.RequestID)
+	}
+}
+
 func TestSystemMetricsReportsDesignedMetricNames(t *testing.T) {
 	observability.ResetForTest()
 	defer observability.ResetForTest()

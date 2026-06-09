@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 )
 
@@ -117,6 +118,49 @@ func TestIndexAndSearchThought(t *testing.T) {
 	}
 	if len(preview.Topics) != 1 || preview.Topics[0] != "duckdb-notes" {
 		t.Fatalf("preview topics = %#v", preview.Topics)
+	}
+}
+
+func TestReindexWorkspaceBuildsIndexFromMarkdown(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := Open(ctx, filepath.Join(root, ".thoughtflow", "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	stale := searchRangeThought("20260609-160000-stale", "Stale note", time.Date(2026, 6, 9, 16, 0, 0, 0, time.UTC))
+	if err := store.IndexThought(ctx, stale, models.ThoughtContent{Original: "stale content"}); err != nil {
+		t.Fatalf("IndexThought(stale) error = %v", err)
+	}
+	thought := searchRangeThought("20260609-160500-reindex", "Reindexed note", time.Date(2026, 6, 9, 16, 5, 0, 0, time.UTC))
+	thought.TopicIDs = []string{"reindex-topic"}
+	content := models.ThoughtContent{Original: "Workspace reindex should rebuild search from Markdown."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	count, err := store.ReindexWorkspace(ctx, root)
+	if err != nil {
+		t.Fatalf("ReindexWorkspace() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("reindex count = %d", count)
+	}
+	result, err := store.Search(ctx, models.SearchQuery{Query: "rebuild", Mode: "keyword", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.Total != 1 || result.Items[0].ThoughtID != thought.ID || result.Items[0].Path != thought.Path {
+		t.Fatalf("search result = %#v", result)
+	}
+	staleResult, err := store.Search(ctx, models.SearchQuery{Query: "stale", Mode: "keyword", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search(stale) error = %v", err)
+	}
+	if staleResult.Total != 0 {
+		t.Fatalf("stale result = %#v", staleResult)
 	}
 }
 
