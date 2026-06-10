@@ -42,9 +42,6 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 		RefineStatus:  models.RefineStatusPending,
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
-		Errors: []models.ErrorRef{
-			models.NewErrorRef("thoughtflow.refiner.provider_failed", "old provider failure", true),
-		},
 	}
 	content := models.ThoughtContent{Original: "DuckDB and markdown search should work."}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
@@ -72,6 +69,9 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	}
 	if gotThought.Summary == "" {
 		t.Fatalf("expected summary")
+	}
+	if len(gotThought.Errors) != 0 {
+		t.Fatalf("expected successful refine to clear previous errors, got %#v", gotThought.Errors)
 	}
 	if !contains(gotThought.AITags, "engineering") {
 		t.Fatalf("expected engineering tag, got %#v", gotThought.AITags)
@@ -277,6 +277,7 @@ func TestRefineURLProviderFailurePreservesFetchedContent(t *testing.T) {
 		RefineStatus:  models.RefineStatusPending,
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
+		Errors:        []models.ErrorRef{models.NewErrorRef("thoughtflow.refiner.provider_failed", "old provider failure", true)},
 	}
 	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: origin.URL}); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
