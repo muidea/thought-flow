@@ -192,12 +192,12 @@ func (s *Service) RuntimeStatus(ctx context.Context) models.DuckDBRuntimeStatus 
 func normalizeIndexPath(workspace *models.Workspace, indexPath string) string {
 	indexPath = strings.TrimSpace(indexPath)
 	if indexPath == "" {
-		indexPath = filepath.ToSlash(filepath.Join(".thoughtflow", "thoughtflow.duckdb"))
+		indexPath = "thoughtflow.duckdb"
 	}
-	if filepath.IsAbs(indexPath) || workspace == nil || strings.TrimSpace(workspace.RootPath) == "" {
+	if filepath.IsAbs(indexPath) || workspace == nil || strings.TrimSpace(workspace.RuntimePath) == "" {
 		return indexPath
 	}
-	return filepath.Join(workspace.RootPath, filepath.FromSlash(indexPath))
+	return filepath.Join(workspace.RuntimePath, filepath.FromSlash(indexPath))
 }
 
 func (s *Service) CachedEmbedding(ctx context.Context, thoughtID string, model string) (models.EmbeddingRecord, bool) {

@@ -83,7 +83,7 @@ func (s *Service) EnqueueChangeSet(paths []string, reason string, resourceIDs []
 	s.mu.Lock()
 	for _, path := range paths {
 		path, ok := normalizedCommitPath(path)
-		if !ok {
+		if !ok || s.isRuntimeCommitPath(path) {
 			continue
 		}
 		s.pending[path] = struct{}{}
@@ -244,6 +244,26 @@ func normalizedCommitPath(value string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func (s *Service) isRuntimeCommitPath(path string) bool {
+	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.RootPath) == "" || strings.TrimSpace(s.workspace.RuntimePath) == "" {
+		return false
+	}
+	rel, err := filepath.Rel(s.workspace.RootPath, s.workspace.RuntimePath)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+		return false
+	}
+	lowerPath := strings.ToLower(filepath.ToSlash(path))
+	lowerRel := strings.ToLower(rel)
+	return lowerPath == lowerRel || strings.HasPrefix(lowerPath, lowerRel+"/")
 }
 
 func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []string) (models.GitCommitRecord, error) {

@@ -27,8 +27,8 @@
    - `thoughts/`
    - `topics/`
    - `attachments/`
-   - `.thoughtflow/jobs`
-   - `.thoughtflow/logs`
+   - `<workspace.data_dir>/jobs`
+   - `<workspace.data_dir>/logs`
 6. 原子笔记 Markdown 原子写入和读取：
    - 写入已有 thought 文件时保留未知 front matter 字段块，保证未来字段和外部工具字段向后兼容。
    - `errors` front matter 字段支持 `ErrorRef` 写入和读取，用于持久化采集、抓取和加工告警/失败原因。
@@ -38,7 +38,7 @@
 8. `thought.captured`、`git.commit_requested`、`git.commit_succeeded`、`git.commit_failed`、`job.updated` 事件。
 9. capture 会按 `content_hash` 扫描已有 thought；重复内容默认设置 `duplicate_warned` 和 `thoughtflow.capture.duplicate_warned`，但仍写入新 Markdown，不静默丢弃用户输入。
    - capture 运行单元提供 `FindDuplicatesByContentHash` 查询，用于按 content hash 查询疑似重复笔记并支持排除当前 Thought。
-10. Git 自动提交队列，包含 `GitChangeSet` debounce 快照、workspace 内路径校验、`.thoughtflow/` 和 DuckDB 文件排除。
+10. Git 自动提交队列，包含 `GitChangeSet` debounce 快照、workspace 内路径校验、运行态数据文件和 DuckDB 文件排除。
 11. SSE 事件流基础推送。
     - 支持 `Last-Event-ID` 从内存历史中断点续传。
     - 支持 `types` 查询参数按事件类型过滤历史和实时事件。
@@ -61,15 +61,15 @@
     - `thoughtflow_git_commit_total` 从成功 git commit job 计算。
     - `thoughtflow_background_jobs` 从持久化 job 快照计算，并按 status/type 输出 label 维度。
 14. HTTP 服务保留 magicEngine route/middleware handler，并由 ThoughtFlow 持有标准库 `http.Server`：
-    - 监听地址使用 `THOUGHTFLOW_HOST` + `THOUGHTFLOW_PORT`。
+    - 监听地址使用 `application.toml` 中的 `server.host` + `server.port`。
     - `application.Shutdown(ctx)` 触发 application module `Teardown(ctx)` 时调用 `http.Server.Shutdown(ctx)`。
     - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
 15. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
     - 启动时将 magicCommon framework `ConfigDir` 指向独立配置目录，并读取 `<config-dir>/application.toml`；默认配置目录来自 OS 用户配置目录。
-    - 启动前校验配置目录和 workspace 数据目录不相等、不嵌套，也不作为同一父目录下的同级目录。
-    - magicCommon 通用环境变量会先合入全局配置树，随后 `THOUGHTFLOW_*` 专用环境变量覆盖端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。
-    - 启动参数 `--host`、`--port`、`--workspace-root`、`--git-enabled`、`--duckdb-path`、`--ai-*` 等会先映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
+    - 运行态数据目录由 `workspace.data_dir` 定义，启动前校验配置目录和数据目录不相等、不嵌套。
+    - ThoughtFlow 读取 magicCommon 导出的原始 application 配置，不使用环境变量覆盖业务配置。
+    - 启动参数仅保留 `--config-dir`，用于定位配置目录。
 
 验证：
 
@@ -85,13 +85,7 @@ go build ./cmd/thoughtflow
 1. `refiner` 运行单元。
 2. `thought.captured` 触发后台 refine Job。
 3. 文本笔记本地摘要、核心观点和标签生成。
-4. OpenAI-compatible chat provider，可通过环境变量配置：
-   - `THOUGHTFLOW_AI_BASE_URL`
-   - `THOUGHTFLOW_AI_API_KEY`
-   - `THOUGHTFLOW_AI_CHAT_MODEL`
-   - `THOUGHTFLOW_AI_EMBEDDING_MODEL`
-   - `THOUGHTFLOW_AI_TIMEOUT_SECONDS`
-   - AI HTTP 请求使用 DNS cache client、超时配置、最多 3 次 transient retry，并通过 `ProviderError` 区分 transient status、HTTP status、网络失败和 JSON 解析失败。
+4. OpenAI-compatible chat provider，可通过 `application.toml` 的 `[ai]` 配置；AI HTTP 请求使用 DNS cache client、超时配置、最多 3 次 transient retry，并通过 `ProviderError` 区分 transient status、HTTP status、网络失败和 JSON 解析失败。
 5. 未配置 AI Key 时使用本地规则 provider，并生成 deterministic local embedding，保证开发环境可运行。
 6. URL 笔记正文抓取链路：
    - 优先使用本地 fetcher 抓取并清洗 HTML。
@@ -298,4 +292,4 @@ UI 验证环境：
 当前限制：
 
 1. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
-2. `.thoughtflow/` 运行时数据只作为本地任务快照，不是长期事实源。
+2. `workspace.data_dir` 运行时数据只作为本地任务快照，不是长期事实源。

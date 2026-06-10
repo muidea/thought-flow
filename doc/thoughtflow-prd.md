@@ -122,7 +122,7 @@
     *   新增采集源、AI Provider、检索策略和同步后端时，优先以 `magicCommon/framework` 运行单元或 focused package 扩展，避免堆叠到单一服务。
 *   **可维护性**：
     *   后端入口保持单二进制启动，框架模块由入口显式装配。
-    *   配置按全局配置与模块配置拆分，AI Key、DuckDB 路径、Git 策略、HTTP 端口均可通过配置或环境变量覆盖。
+    *   配置按全局配置与模块配置拆分，AI Key、DuckDB 路径、Git 策略、HTTP 端口均通过 `application.toml` 定义。
     *   关键任务需要暴露结构化日志和基础监控指标，便于定位采集失败、AI 调用失败、索引延迟和 Git 提交失败。
 
 ---

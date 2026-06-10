@@ -13,7 +13,12 @@ import (
 )
 
 func TestEnqueueChangeSetMergesAndFiltersPaths(t *testing.T) {
-	service := NewService(&models.Workspace{ID: "local"}, nil, nil, nil, true, time.Hour)
+	root := t.TempDir()
+	service := NewService(&models.Workspace{
+		ID:          "local",
+		RootPath:    root,
+		RuntimePath: filepath.Join(root, "runtime-data"),
+	}, nil, nil, nil, true, time.Hour)
 	if service.timer != nil {
 		defer service.timer.Stop()
 	}
@@ -25,6 +30,8 @@ func TestEnqueueChangeSetMergesAndFiltersPaths(t *testing.T) {
 			"topics/demo/index.md",
 			".thoughtflow/jobs/job.yaml",
 			".thoughtflow/thoughtflow.duckdb",
+			"runtime-data/jobs/job.yaml",
+			"runtime-data/logs/app.log",
 			"runtime.duckdb",
 			"runtime.duckdb.wal",
 			"../outside.md",

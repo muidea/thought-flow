@@ -16,6 +16,10 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 	if err != nil {
 		return nil, err
 	}
+	dataPath, err := appconfig.DataDir(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	ws := &models.Workspace{
 		ID:              "local",
@@ -23,8 +27,8 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 		ThoughtsPath:    filepath.Join(rootPath, "thoughts"),
 		TopicsPath:      filepath.Join(rootPath, "topics"),
 		AttachmentsPath: filepath.Join(rootPath, "attachments"),
-		RuntimePath:     filepath.Join(rootPath, ".thoughtflow"),
-		JobsPath:        filepath.Join(rootPath, ".thoughtflow", "jobs"),
+		RuntimePath:     dataPath,
+		JobsPath:        filepath.Join(dataPath, "jobs"),
 		GitEnabled:      cfg.GitSync.Enabled,
 		CreatedAt:       time.Now().UTC(),
 	}

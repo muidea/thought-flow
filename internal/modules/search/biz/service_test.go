@@ -109,9 +109,9 @@ func TestGetSearchPreviewReturnsIndexedSnippet(t *testing.T) {
 }
 
 func TestNormalizeIndexPathUsesWorkspaceDefault(t *testing.T) {
-	root := t.TempDir()
-	got := normalizeIndexPath(&models.Workspace{RootPath: root}, "")
-	want := filepath.Join(root, ".thoughtflow", "thoughtflow.duckdb")
+	dataDir := t.TempDir()
+	got := normalizeIndexPath(&models.Workspace{RuntimePath: dataDir}, "")
+	want := filepath.Join(dataDir, "thoughtflow.duckdb")
 	if got != want {
 		t.Fatalf("path = %q, want %q", got, want)
 	}

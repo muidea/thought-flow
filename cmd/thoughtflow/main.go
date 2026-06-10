@@ -31,14 +31,21 @@ type lifecycleController interface {
 	Shutdown(ctx context.Context)
 }
 
-type applicationLifecycle struct{}
+type configurableLifecycle interface {
+	SetConfigDir(configDir string)
+}
+
+type applicationLifecycle struct {
+	configDir string
+}
 
 func main() {
-	os.Exit(execute(os.Args[1:], interruptSignalContext, applicationLifecycle{}))
+	os.Exit(execute(os.Args[1:], interruptSignalContext, &applicationLifecycle{}))
 }
 
 func execute(args []string, newSignalContext func(context.Context) (context.Context, context.CancelFunc), lifecycle lifecycleController) int {
-	if err := applyStartupFlagEnv(args); err != nil {
+	startupOpts, err := parseStartupFlags(args)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -50,7 +57,10 @@ func execute(args []string, newSignalContext func(context.Context) (context.Cont
 		newSignalContext = interruptSignalContext
 	}
 	if lifecycle == nil {
-		lifecycle = applicationLifecycle{}
+		lifecycle = &applicationLifecycle{}
+	}
+	if configurable, ok := lifecycle.(configurableLifecycle); ok {
+		configurable.SetConfigDir(startupOpts.ConfigDir)
 	}
 
 	ctx, stop := newSignalContext(context.Background())
@@ -93,9 +103,12 @@ func execute(args []string, newSignalContext func(context.Context) (context.Cont
 	return 0
 }
 
-func (applicationLifecycle) Startup(ctx context.Context) error {
-	configDir := appconfig.ConfigDir()
-	cfg := appconfig.Load()
+func (a *applicationLifecycle) Startup(ctx context.Context) error {
+	configDir := a.configDir
+	if configDir == "" {
+		configDir = appconfig.ConfigDir()
+	}
+	cfg := appconfig.LoadWithConfigDir(configDir)
 	if err := appconfig.ValidateDirectorySeparation(configDir, cfg); err != nil {
 		return err
 	}
@@ -109,14 +122,18 @@ func (applicationLifecycle) Startup(ctx context.Context) error {
 	return nil
 }
 
-func (applicationLifecycle) Run(ctx context.Context) error {
+func (a *applicationLifecycle) SetConfigDir(configDir string) {
+	a.configDir = configDir
+}
+
+func (a *applicationLifecycle) Run(ctx context.Context) error {
 	if err := application.Run(ctx); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (applicationLifecycle) Shutdown(ctx context.Context) {
+func (a *applicationLifecycle) Shutdown(ctx context.Context) {
 	application.Shutdown(ctx)
 }
 
@@ -130,36 +147,16 @@ func shutdownLifecycle(lifecycle lifecycleController) {
 	lifecycle.Shutdown(ctx)
 }
 
-func applyStartupFlagEnv(args []string) error {
+type startupOptions struct {
+	ConfigDir string
+}
+
+func parseStartupFlags(args []string) (startupOptions, error) {
 	flags := flag.NewFlagSet("thoughtflow", flag.ContinueOnError)
-	flagToEnv := map[string]string{
-		"host":                 "THOUGHTFLOW_HOST",
-		"port":                 "THOUGHTFLOW_PORT",
-		"config-dir":           "THOUGHTFLOW_CONFIG_DIR",
-		"workspace-root":       "THOUGHTFLOW_WORKSPACE_ROOT",
-		"auto-init-git":        "THOUGHTFLOW_AUTO_INIT_GIT",
-		"git-enabled":          "THOUGHTFLOW_GIT_ENABLED",
-		"git-debounce-seconds": "THOUGHTFLOW_GIT_DEBOUNCE_SECONDS",
-		"duckdb-path":          "THOUGHTFLOW_DUCKDB_PATH",
-		"ai-base-url":          "THOUGHTFLOW_AI_BASE_URL",
-		"ai-api-key":           "THOUGHTFLOW_AI_API_KEY",
-		"ai-chat-model":        "THOUGHTFLOW_AI_CHAT_MODEL",
-		"ai-embedding-model":   "THOUGHTFLOW_AI_EMBEDDING_MODEL",
-		"ai-timeout-seconds":   "THOUGHTFLOW_AI_TIMEOUT_SECONDS",
-	}
-	values := map[string]*string{}
-	for name := range flagToEnv {
-		value := ""
-		values[name] = &value
-		flags.StringVar(&value, name, "", "override "+flagToEnv[name])
-	}
+	opts := startupOptions{}
+	flags.StringVar(&opts.ConfigDir, "config-dir", appconfig.ConfigDir(), "config directory containing application.toml")
 	if err := flags.Parse(args); err != nil {
-		return err
+		return startupOptions{}, err
 	}
-	flags.Visit(func(item *flag.Flag) {
-		if envKey, ok := flagToEnv[item.Name]; ok {
-			_ = os.Setenv(envKey, *values[item.Name])
-		}
-	})
-	return nil
+	return opts, nil
 }

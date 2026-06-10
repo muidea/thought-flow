@@ -240,7 +240,7 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.jobText, /job-capture/);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
   assert.doesNotMatch(state.settingsText, /\/tmp\/browser/);
-  assert.match(state.settingsText, /\.thoughtflow\/thoughtflow\.duckdb/);
+  assert.match(state.settingsText, /thoughtflow\.duckdb/);
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
@@ -325,7 +325,7 @@ function startFixtureServer() {
           workspace: { id: "browser", status: "ready", root_path: "/tmp/browser" },
           ai: { status: "ready", chat_model: "browser-chat" },
           git: { status: "disabled" },
-          duckdb: { status: "ready", path: "/tmp/browser/.thoughtflow/thoughtflow.duckdb" },
+          duckdb: { status: "ready", path: "/tmp/browser-data/thoughtflow.duckdb" },
           background: { status: "ready" },
           events: { status: "ready" },
         }));

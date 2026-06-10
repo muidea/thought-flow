@@ -211,17 +211,17 @@ thoughtflow-workspace/
       memberships/
         20260609-143010-8f3a.yaml
   attachments/
-  .thoughtflow/
-    thoughtflow.duckdb
-    jobs/
-    logs/
+thoughtflow-data/
+  thoughtflow.duckdb
+  jobs/
+  logs/
 ```
 
 说明：
 
 1. `thoughts/` 和 `topics/` 是用户知识资产，默认进入 Git。
-2. `.thoughtflow/` 是运行时目录，默认不进入 Git。
-3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，不放入 workspace `.thoughtflow/`，也不与 workspace 作为同一父目录下的同级目录。
+2. `thoughtflow-data/` 是运行时数据目录，默认不进入 Git。
+3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，运行态数据目录由 `workspace.data_dir` 明确定义。
 4. `attachments/` 存放未来上传文件、网页快照或图片资源。
 5. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
 
@@ -795,16 +795,15 @@ timeout_seconds = 60
 
 1. 默认配置：内置在二进制中。
 2. 独立配置目录：`<config-dir>/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
-3. magicCommon 通用环境变量注入。
-4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`，适合 API key、端口、路径和本地调试。
-5. 启动参数覆盖：启动参数会映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
+3. 启动参数 `--config-dir` 仅用于定位配置目录，不覆盖业务配置。
+
+业务配置只读取 `application.toml` 和内置默认值。虽然 magicCommon framework/configuration 内部支持环境变量合并，ThoughtFlow 读取配置时使用 framework 导出的原始 application 配置，避免环境变量改变运行时行为。
 
 目录约束：
 
-1. `config-dir` 与 `workspace.root` 必须使用不同目录层级。
-2. `config-dir` 不能等于、包含或位于 `workspace.root` 内。
-3. `config-dir` 不能指向 `<workspace>/.thoughtflow` 运行态目录。
-4. `config-dir` 与 `workspace.root` 不能作为同一父目录下的同级目录；推荐 `/etc/thoughtflow` 放配置，`/var/lib/thoughtflow` 放 workspace 数据。
+1. 数据目录由 `workspace.data_dir` 定义。
+2. `config-dir` 与 `workspace.data_dir` 不能相等。
+3. `config-dir` 与 `workspace.data_dir` 不能互相嵌套。
 
 关键配置：
 
@@ -815,6 +814,7 @@ port = 8080
 
 [workspace]
 root = "./thoughtflow-workspace"
+data_dir = "./thoughtflow-data"
 auto_init_git = true
 
 [capture]
@@ -825,7 +825,7 @@ concurrency = 2
 url_fetch_timeout_seconds = 30
 
 [search]
-duckdb_path = ".thoughtflow/thoughtflow.duckdb"
+duckdb_path = "thoughtflow.duckdb"
 default_mode = "hybrid"
 
 [topic]
@@ -895,7 +895,7 @@ running -> retrying -> running
 ## 13. 安全与隐私
 
 1. 默认只监听 `127.0.0.1`。
-2. API key 只从环境变量或本地配置读取，不写入 Markdown。
+2. API key 只从 `application.toml` 读取，不写入 Markdown。
 3. 发送到 AI Provider 的内容限定为当前任务所需片段。
 4. UI 明示哪些任务会调用云端 AI。
 5. Git remote push 默认关闭，首版只做本地 commit。

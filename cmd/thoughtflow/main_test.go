@@ -4,54 +4,44 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestApplyStartupFlagEnvOverridesSelectedValues(t *testing.T) {
-	t.Setenv("THOUGHTFLOW_HOST", "127.0.0.1")
-	t.Setenv("THOUGHTFLOW_PORT", "8080")
-	t.Setenv("THOUGHTFLOW_GIT_ENABLED", "true")
-
-	err := applyStartupFlagEnv([]string{
-		"--host", "0.0.0.0",
-		"--port", "9090",
-		"--config-dir", "/tmp/thoughtflow-config",
-		"--workspace-root", "/tmp/thoughtflow",
-		"--git-enabled", "false",
-		"--ai-api-key", "cli-key",
-	})
+func TestParseStartupFlagsAcceptsConfigDir(t *testing.T) {
+	opts, err := parseStartupFlags([]string{"--config-dir", "/tmp/thoughtflow-config"})
 	if err != nil {
-		t.Fatalf("applyStartupFlagEnv() error = %v", err)
+		t.Fatalf("parseStartupFlags() error = %v", err)
 	}
-
-	assertEnv(t, "THOUGHTFLOW_HOST", "0.0.0.0")
-	assertEnv(t, "THOUGHTFLOW_PORT", "9090")
-	assertEnv(t, "THOUGHTFLOW_CONFIG_DIR", "/tmp/thoughtflow-config")
-	assertEnv(t, "THOUGHTFLOW_WORKSPACE_ROOT", "/tmp/thoughtflow")
-	assertEnv(t, "THOUGHTFLOW_GIT_ENABLED", "false")
-	assertEnv(t, "THOUGHTFLOW_AI_API_KEY", "cli-key")
+	if opts.ConfigDir != "/tmp/thoughtflow-config" {
+		t.Fatalf("config dir = %q", opts.ConfigDir)
+	}
 }
 
-func TestApplyStartupFlagEnvLeavesUnspecifiedValuesUntouched(t *testing.T) {
-	t.Setenv("THOUGHTFLOW_PORT", "8080")
-
-	if err := applyStartupFlagEnv([]string{"--host", "0.0.0.0"}); err != nil {
-		t.Fatalf("applyStartupFlagEnv() error = %v", err)
-	}
-
-	assertEnv(t, "THOUGHTFLOW_HOST", "0.0.0.0")
-	assertEnv(t, "THOUGHTFLOW_PORT", "8080")
-}
-
-func TestApplyStartupFlagEnvReturnsFlagErrors(t *testing.T) {
-	if err := applyStartupFlagEnv([]string{"--unknown"}); err == nil {
+func TestParseStartupFlagsReturnsFlagErrors(t *testing.T) {
+	if _, err := parseStartupFlags([]string{"--unknown"}); err == nil {
 		t.Fatal("expected unknown flag error")
 	}
-	if err := applyStartupFlagEnv([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
+	if _, err := parseStartupFlags([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("help error = %v", err)
+	}
+}
+
+func TestExecutePassesConfigDirToConfigurableLifecycle(t *testing.T) {
+	lifecycle := &fakeLifecycle{}
+
+	code := execute([]string{"--config-dir", "/tmp/thoughtflow-config"}, func(parent context.Context) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx, func() {}
+	}, lifecycle)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if lifecycle.configDir != "/tmp/thoughtflow-config" {
+		t.Fatalf("config dir = %q", lifecycle.configDir)
 	}
 }
 
@@ -150,22 +140,20 @@ func TestExecuteReturnsFailureWhenRunFails(t *testing.T) {
 	}
 }
 
-func assertEnv(t *testing.T, key string, expected string) {
-	t.Helper()
-	if actual := os.Getenv(key); actual != expected {
-		t.Fatalf("%s = %q, want %q", key, actual, expected)
-	}
-}
-
 type fakeLifecycle struct {
 	startupErr   error
 	runErr       error
 	runFunc      func(context.Context) error
 	shutdownFunc func(context.Context)
+	configDir    string
 
 	startupCount  atomic.Int32
 	runCount      atomic.Int32
 	shutdownCount atomic.Int32
+}
+
+func (f *fakeLifecycle) SetConfigDir(configDir string) {
+	f.configDir = configDir
 }
 
 func (f *fakeLifecycle) Startup(ctx context.Context) error {

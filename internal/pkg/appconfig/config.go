@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type ServerConfig struct {
 
 type WorkspaceConfig struct {
 	Root        string
+	DataDir     string
 	AutoInitGit bool
 }
 
@@ -79,22 +81,19 @@ var (
 )
 
 func Load() Config {
+	return LoadWithConfigDir(ConfigDir())
+}
+
+func LoadWithConfigDir(configDir string) Config {
 	loadOnce.Do(func() {
 		loaded = defaultConfig()
-		ensureFrameworkConfigManager()
+		ensureFrameworkConfigManager(configDir)
 		applyFrameworkOverrides(&loaded)
-		applyEnvOverrides(&loaded)
 	})
 	return loaded
 }
 
 func ConfigDir() string {
-	if value := envString("THOUGHTFLOW_CONFIG_DIR", ""); value != "" {
-		return value
-	}
-	if value := envString("CONFIG_PATH", ""); value != "" {
-		return value
-	}
 	if value, err := os.UserConfigDir(); err == nil && value != "" {
 		return filepath.Join(value, "thoughtflow")
 	}
@@ -109,25 +108,29 @@ func ValidateDirectorySeparation(configDir string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("resolve config directory: %w", err)
 	}
-	absWorkspaceRoot, err := filepath.Abs(cfg.Workspace.Root)
+	absDataDir, err := DataDir(cfg)
 	if err != nil {
-		return fmt.Errorf("resolve workspace root: %w", err)
+		return err
 	}
-	runtimeDir := filepath.Join(absWorkspaceRoot, ".thoughtflow")
-
-	if samePath(absConfigDir, absWorkspaceRoot) {
-		return fmt.Errorf("config directory must be separate from workspace root: %s", absConfigDir)
+	if samePath(absConfigDir, absDataDir) {
+		return fmt.Errorf("config directory must be separate from data directory: %s", absConfigDir)
 	}
-	if samePath(absConfigDir, runtimeDir) {
-		return fmt.Errorf("config directory must be separate from workspace runtime data directory: %s", absConfigDir)
-	}
-	if nestedPath(absConfigDir, absWorkspaceRoot) || nestedPath(absWorkspaceRoot, absConfigDir) {
-		return fmt.Errorf("config directory and workspace root must not be nested: config=%s workspace=%s", absConfigDir, absWorkspaceRoot)
-	}
-	if filepath.Dir(absConfigDir) == filepath.Dir(absWorkspaceRoot) {
-		return fmt.Errorf("config directory and workspace root must not be sibling directories under the same parent: config=%s workspace=%s", absConfigDir, absWorkspaceRoot)
+	if nestedPath(absConfigDir, absDataDir) || nestedPath(absDataDir, absConfigDir) {
+		return fmt.Errorf("config directory and data directory must not be nested: config=%s data=%s", absConfigDir, absDataDir)
 	}
 	return nil
+}
+
+func DataDir(cfg Config) (string, error) {
+	dataDir := strings.TrimSpace(cfg.Workspace.DataDir)
+	if dataDir == "" {
+		dataDir = filepath.Join(cfg.Workspace.Root, ".thoughtflow")
+	}
+	absDataDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve data directory: %w", err)
+	}
+	return absDataDir, nil
 }
 
 func ResetForTesting() {
@@ -145,6 +148,7 @@ func defaultConfig() Config {
 		},
 		Workspace: WorkspaceConfig{
 			Root:        "./thoughtflow-workspace",
+			DataDir:     "./thoughtflow-data",
 			AutoInitGit: true,
 		},
 		Capture: CaptureConfig{
@@ -161,7 +165,7 @@ func defaultConfig() Config {
 			DebounceSeconds:  5,
 		},
 		Search: SearchConfig{
-			DuckDBPath:  ".thoughtflow/thoughtflow.duckdb",
+			DuckDBPath:  "thoughtflow.duckdb",
 			DefaultMode: "hybrid",
 		},
 		Topic: TopicConfig{
@@ -182,97 +186,161 @@ func defaultConfig() Config {
 	}
 }
 
-func ensureFrameworkConfigManager() {
+func ensureFrameworkConfigManager(configDir string) {
 	if configuration.GetDefaultConfigManager() != nil {
 		return
 	}
-	if err := configuration.InitDefaultConfigManager(ConfigDir()); err != nil {
+	if err := configuration.InitDefaultConfigManager(configDir); err != nil {
 		slog.Warn("initialize framework config manager failed", "error", err)
 	}
 }
 
 func applyFrameworkOverrides(cfg *Config) {
-	cfg.Server.Host = frameworkString("server.host", cfg.Server.Host)
-	cfg.Server.Port = frameworkString("server.port", cfg.Server.Port)
-	cfg.Workspace.Root = frameworkString("workspace.root", cfg.Workspace.Root)
-	cfg.Workspace.AutoInitGit = configuration.GetBoolWithDefault("workspace.auto_init_git", cfg.Workspace.AutoInitGit)
-	cfg.Capture.DuplicatePolicy = frameworkString("capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
-	cfg.Refiner.Concurrency = configuration.GetIntWithDefault("refiner.concurrency", cfg.Refiner.Concurrency)
-	cfg.Refiner.URLFetchTimeoutRaw = configuration.GetIntWithDefault("refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)
+	appConfig := applicationConfig()
+	cfg.Server.Host = configString(appConfig, "server.host", cfg.Server.Host)
+	cfg.Server.Port = configString(appConfig, "server.port", cfg.Server.Port)
+	cfg.Workspace.Root = configString(appConfig, "workspace.root", cfg.Workspace.Root)
+	cfg.Workspace.DataDir = configString(appConfig, "workspace.data_dir", cfg.Workspace.DataDir)
+	cfg.Workspace.AutoInitGit = configBool(appConfig, "workspace.auto_init_git", cfg.Workspace.AutoInitGit)
+	cfg.Capture.DuplicatePolicy = configString(appConfig, "capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
+	cfg.Refiner.Concurrency = configInt(appConfig, "refiner.concurrency", cfg.Refiner.Concurrency)
+	cfg.Refiner.URLFetchTimeoutRaw = configInt(appConfig, "refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)
 	cfg.Refiner.URLFetchTimeout = time.Duration(cfg.Refiner.URLFetchTimeoutRaw) * time.Second
-	cfg.GitSync.Enabled = configuration.GetBoolWithDefault("git_sync.enabled", cfg.GitSync.Enabled)
-	cfg.GitSync.DebounceSeconds = configuration.GetIntWithDefault("git_sync.debounce_seconds", cfg.GitSync.DebounceSeconds)
+	cfg.GitSync.Enabled = configBool(appConfig, "git_sync.enabled", cfg.GitSync.Enabled)
+	cfg.GitSync.DebounceSeconds = configInt(appConfig, "git_sync.debounce_seconds", cfg.GitSync.DebounceSeconds)
 	cfg.GitSync.DebounceDuration = time.Duration(cfg.GitSync.DebounceSeconds) * time.Second
-	cfg.Search.DuckDBPath = frameworkString("search.duckdb_path", cfg.Search.DuckDBPath)
-	cfg.Search.DefaultMode = frameworkString("search.default_mode", cfg.Search.DefaultMode)
-	cfg.Topic.AutoWeave = configuration.GetBoolWithDefault("topic.auto_weave", cfg.Topic.AutoWeave)
-	cfg.Topic.MinSemanticScore = configuration.GetFloat64WithDefault("topic.min_semantic_score", cfg.Topic.MinSemanticScore)
-	cfg.Events.SSEHeartbeatSeconds = configuration.GetIntWithDefault("events.sse_heartbeat_seconds", cfg.Events.SSEHeartbeatSeconds)
+	cfg.Search.DuckDBPath = configString(appConfig, "search.duckdb_path", cfg.Search.DuckDBPath)
+	cfg.Search.DefaultMode = configString(appConfig, "search.default_mode", cfg.Search.DefaultMode)
+	cfg.Topic.AutoWeave = configBool(appConfig, "topic.auto_weave", cfg.Topic.AutoWeave)
+	cfg.Topic.MinSemanticScore = configFloat64(appConfig, "topic.min_semantic_score", cfg.Topic.MinSemanticScore)
+	cfg.Events.SSEHeartbeatSeconds = configInt(appConfig, "events.sse_heartbeat_seconds", cfg.Events.SSEHeartbeatSeconds)
 	cfg.Events.SSEHeartbeat = time.Duration(cfg.Events.SSEHeartbeatSeconds) * time.Second
-	cfg.AI.BaseURL = frameworkString("ai.base_url", cfg.AI.BaseURL)
-	cfg.AI.APIKey = frameworkString("ai.api_key", cfg.AI.APIKey)
-	cfg.AI.ChatModel = frameworkString("ai.chat_model", cfg.AI.ChatModel)
-	cfg.AI.EmbeddingModel = frameworkString("ai.embedding_model", cfg.AI.EmbeddingModel)
-	cfg.AI.Timeout = time.Duration(configuration.GetIntWithDefault("ai.timeout_seconds", int(cfg.AI.Timeout/time.Second))) * time.Second
+	cfg.AI.BaseURL = configString(appConfig, "ai.base_url", cfg.AI.BaseURL)
+	cfg.AI.APIKey = configString(appConfig, "ai.api_key", cfg.AI.APIKey)
+	cfg.AI.ChatModel = configString(appConfig, "ai.chat_model", cfg.AI.ChatModel)
+	cfg.AI.EmbeddingModel = configString(appConfig, "ai.embedding_model", cfg.AI.EmbeddingModel)
+	cfg.AI.Timeout = time.Duration(configInt(appConfig, "ai.timeout_seconds", int(cfg.AI.Timeout/time.Second))) * time.Second
 }
 
-func frameworkString(key, fallback string) string {
+func applicationConfig() map[string]any {
 	manager := configuration.GetDefaultConfigManager()
 	if manager == nil {
-		return fallback
+		return nil
 	}
-	value, err := manager.Get(key)
-	if err != nil || value == nil {
+	exported, err := manager.ExportAllConfigs()
+	if err != nil {
+		return nil
+	}
+	appConfig, _ := exported["application"].(map[string]any)
+	return appConfig
+}
+
+func configString(root map[string]any, key string, fallback string) string {
+	value, ok := configValue(root, key)
+	if !ok || value == nil {
 		return fallback
 	}
 	return fmt.Sprint(value)
 }
 
-func applyEnvOverrides(cfg *Config) {
-	cfg.Server.Host = envString("THOUGHTFLOW_HOST", cfg.Server.Host)
-	cfg.Server.Port = envString("THOUGHTFLOW_PORT", cfg.Server.Port)
-	cfg.Workspace.Root = envString("THOUGHTFLOW_WORKSPACE_ROOT", cfg.Workspace.Root)
-	cfg.Workspace.AutoInitGit = envBool("THOUGHTFLOW_AUTO_INIT_GIT", cfg.Workspace.AutoInitGit)
-	cfg.GitSync.Enabled = envBool("THOUGHTFLOW_GIT_ENABLED", cfg.GitSync.Enabled)
-	cfg.GitSync.DebounceSeconds = envInt("THOUGHTFLOW_GIT_DEBOUNCE_SECONDS", cfg.GitSync.DebounceSeconds)
-	cfg.GitSync.DebounceDuration = time.Duration(cfg.GitSync.DebounceSeconds) * time.Second
-	cfg.Search.DuckDBPath = envString("THOUGHTFLOW_DUCKDB_PATH", cfg.Search.DuckDBPath)
-	cfg.AI.BaseURL = envString("THOUGHTFLOW_AI_BASE_URL", cfg.AI.BaseURL)
-	cfg.AI.APIKey = envString("THOUGHTFLOW_AI_API_KEY", cfg.AI.APIKey)
-	cfg.AI.ChatModel = envString("THOUGHTFLOW_AI_CHAT_MODEL", cfg.AI.ChatModel)
-	cfg.AI.EmbeddingModel = envString("THOUGHTFLOW_AI_EMBEDDING_MODEL", cfg.AI.EmbeddingModel)
-	cfg.AI.Timeout = time.Duration(envInt("THOUGHTFLOW_AI_TIMEOUT_SECONDS", int(cfg.AI.Timeout/time.Second))) * time.Second
-}
-
-func envString(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok && value != "" {
-		return value
+func configBool(root map[string]any, key string, fallback bool) bool {
+	value, ok := configValue(root, key)
+	if !ok {
+		return fallback
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, err := strconv.ParseBool(typed)
+		if err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }
 
-func envBool(key string, fallback bool) bool {
-	value, ok := os.LookupEnv(key)
-	if !ok || value == "" {
+func configInt(root map[string]any, key string, fallback int) int {
+	value, ok := configValue(root, key)
+	if !ok {
 		return fallback
 	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fallback
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		if err == nil {
+			return parsed
+		}
 	}
-	return parsed
+	return fallback
 }
 
-func envInt(key string, fallback int) int {
-	value, ok := os.LookupEnv(key)
-	if !ok || value == "" {
+func configFloat64(root map[string]any, key string, fallback float64) float64 {
+	value, ok := configValue(root, key)
+	if !ok {
 		return fallback
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case string:
+		parsed, err := strconv.ParseFloat(typed, 64)
+		if err == nil {
+			return parsed
+		}
 	}
-	return parsed
+	return fallback
+}
+
+func configValue(root map[string]any, key string) (any, bool) {
+	if root == nil {
+		return nil, false
+	}
+	current := root
+	parts := strings.Split(key, ".")
+	for index, part := range parts {
+		value, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		if index == len(parts)-1 {
+			return value, true
+		}
+		next, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return nil, false
 }
 
 func samePath(left, right string) bool {

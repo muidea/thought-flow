@@ -732,7 +732,7 @@ Configuration：
 
 1. 当前配置文件路径说明。
 2. 链接 `doc/application.example.toml`。
-3. 环境变量说明入口。
+3. 配置字段说明入口。
 
 验收标准：
 

@@ -66,7 +66,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	}
 	dbPath := cfg.Search.DuckDBPath
 	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(ws.RootPath, dbPath)
+		dbPath = filepath.Join(ws.RuntimePath, dbPath)
 	}
 	store, err := searchdb.Open(ctx, dbPath)
 	if err != nil {

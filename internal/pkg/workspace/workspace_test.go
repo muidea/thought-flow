@@ -10,9 +10,11 @@ import (
 )
 
 func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "workspace")
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	dataDir := filepath.Join(base, "data")
 	ws, err := Open(context.Background(), appconfig.Config{
-		Workspace: appconfig.WorkspaceConfig{Root: root},
+		Workspace: appconfig.WorkspaceConfig{Root: root, DataDir: dataDir},
 		GitSync:   appconfig.GitSyncConfig{Enabled: true},
 	})
 	if err != nil {
@@ -31,12 +33,17 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 	if !ws.GitEnabled {
 		t.Fatalf("expected git enabled flag to follow config")
 	}
+	if ws.RuntimePath != dataDir || ws.JobsPath != filepath.Join(dataDir, "jobs") {
+		t.Fatalf("runtime paths = %#v", ws)
+	}
 }
 
 func TestRuntimeStatusCreatesWritableRuntimeDirectory(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "workspace")
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	dataDir := filepath.Join(base, "data")
 	ws, err := Open(context.Background(), appconfig.Config{
-		Workspace: appconfig.WorkspaceConfig{Root: root},
+		Workspace: appconfig.WorkspaceConfig{Root: root, DataDir: dataDir},
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
