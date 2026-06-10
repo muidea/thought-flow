@@ -98,6 +98,52 @@ ai:
 	}
 }
 
+func TestConfigTemplateLoadsAsWorkspaceLocalConfig(t *testing.T) {
+	ResetForTesting()
+	t.Cleanup(ResetForTesting)
+	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
+	raw, err := os.ReadFile(filepath.Clean("../../../doc/config.local.example.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(template) error = %v", err)
+	}
+	writeLocalConfig(t, root, string(raw))
+
+	cfg := Load()
+
+	if cfg.Server.Host != "127.0.0.1" || cfg.Server.Port != "8080" {
+		t.Fatalf("server config = %#v", cfg.Server)
+	}
+	if cfg.Workspace.Root != root || !cfg.Workspace.AutoInitGit {
+		t.Fatalf("workspace config = %#v", cfg.Workspace)
+	}
+	if cfg.Capture.DuplicatePolicy != "warn" {
+		t.Fatalf("capture config = %#v", cfg.Capture)
+	}
+	if cfg.Refiner.Concurrency != 2 || cfg.Refiner.URLFetchTimeout != 30*time.Second {
+		t.Fatalf("refiner config = %#v", cfg.Refiner)
+	}
+	if !cfg.GitSync.Enabled || cfg.GitSync.DebounceDuration != 5*time.Second {
+		t.Fatalf("git config = %#v", cfg.GitSync)
+	}
+	if cfg.Search.DuckDBPath != ".thoughtflow/thoughtflow.duckdb" || cfg.Search.DefaultMode != "hybrid" {
+		t.Fatalf("search config = %#v", cfg.Search)
+	}
+	if !cfg.Topic.AutoWeave || cfg.Topic.MinSemanticScore != 0.78 {
+		t.Fatalf("topic config = %#v", cfg.Topic)
+	}
+	if cfg.Events.SSEHeartbeat != 20*time.Second {
+		t.Fatalf("events config = %#v", cfg.Events)
+	}
+	if cfg.AI.BaseURL != "https://api.openai.com" ||
+		cfg.AI.APIKey != "" ||
+		cfg.AI.ChatModel != "gpt-4o-mini" ||
+		cfg.AI.EmbeddingModel != "text-embedding-3-small" ||
+		cfg.AI.Timeout != 30*time.Second {
+		t.Fatalf("ai config = %#v", cfg.AI)
+	}
+}
+
 func TestLoadEnvironmentOverridesLocalConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)

@@ -78,13 +78,19 @@ attachments/           附件目录
 
 ## 5. 本地配置样例
 
+完整模板见：
+
+```text
+doc/config.local.example.yaml
+```
+
 示例路径：
 
 ```text
 thoughtflow-workspace/.thoughtflow/config.local.yaml
 ```
 
-示例内容：
+基础示例内容：
 
 ```yaml
 server:
