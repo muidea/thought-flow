@@ -275,7 +275,7 @@ async function launchChrome(viewport) {
       settled = true;
       clearTimeout(timer);
       chrome.kill("SIGTERM");
-      fs.rmSync(userDataDir, { recursive: true, force: true });
+      cleanupChromeUserDataDir(userDataDir);
       reject(error);
     };
     const pass = (url) => {
@@ -307,12 +307,37 @@ async function launchChrome(viewport) {
   return {
     wsURL,
     async close() {
-      const exited = new Promise((resolve) => chrome.once("exit", resolve));
       chrome.kill("SIGTERM");
-      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2000))]);
-      fs.rmSync(userDataDir, { recursive: true, force: true });
+      if (!await waitForProcessExit(chrome, 5000)) {
+        chrome.kill("SIGKILL");
+        await waitForProcessExit(chrome, 5000);
+      }
+      cleanupChromeUserDataDir(userDataDir);
     },
   };
+}
+
+function waitForProcessExit(child, timeout) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(false);
+    }, timeout);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once("exit", onExit);
+  });
+}
+
+function cleanupChromeUserDataDir(userDataDir) {
+  try {
+    fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (error) {
+    process.emitWarning(`failed to remove Chrome user data dir ${userDataDir}: ${error.message}`);
+  }
 }
 
 async function connectPage(browser) {
