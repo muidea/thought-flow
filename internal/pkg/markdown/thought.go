@@ -434,11 +434,29 @@ func parseSection(text string, section string) string {
 	body = strings.TrimPrefix(body, "\n")
 	body = strings.TrimPrefix(body, "\r")
 	body = strings.TrimPrefix(body, "\n")
-	next := strings.Index(body, "\n## ")
-	if next >= 0 {
-		body = body[:next]
+	lines := strings.Split(body, "\n")
+	for idx, line := range lines {
+		if idx == 0 {
+			continue
+		}
+		if isThoughtBodySection(line) {
+			body = strings.Join(lines[:idx], "\n")
+			break
+		}
 	}
 	return strings.TrimSpace(body)
+}
+
+func isThoughtBodySection(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "## Original",
+		"## Extracted Content",
+		"## AI Notes",
+		"## Links":
+		return true
+	default:
+		return false
+	}
 }
 
 func displayTitle(thought models.Thought, content models.ThoughtContent) string {

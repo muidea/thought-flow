@@ -63,6 +63,62 @@ func TestWriteAndReadThought(t *testing.T) {
 	}
 }
 
+func TestReadThoughtPreservesHeadingsInsideSections(t *testing.T) {
+	root := t.TempDir()
+	thoughtID := "20260610-091500-headings"
+	relPath := filepath.ToSlash(ThoughtRelativePath(thoughtID))
+	targetPath := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	raw := `---
+id: "20260610-091500-headings"
+type: "url"
+source: "manual"
+path: "thoughts/2026/06/20260610-091500-headings.md"
+errors: []
+---
+
+## Original
+
+https://github.com/example/project
+
+## Extracted Content
+
+# Project
+
+Intro paragraph.
+
+## Features
+
+- One
+- Two
+
+` + "```bash\nmake check\n```\n" + `
+## AI Notes
+
+Summary: generated
+`
+	if err := os.WriteFile(targetPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, content, err := ReadThought(root, thoughtID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if !strings.Contains(content.ExtractedContent, "## Features") ||
+		!strings.Contains(content.ExtractedContent, "make check") {
+		t.Fatalf("extracted content was truncated:\n%s", content.ExtractedContent)
+	}
+	if strings.Contains(content.ExtractedContent, "## AI Notes") {
+		t.Fatalf("extracted content crossed section boundary:\n%s", content.ExtractedContent)
+	}
+	if content.AINotes != "Summary: generated" {
+		t.Fatalf("ai notes = %q", content.AINotes)
+	}
+}
+
 func TestWriteThoughtPreservesUnknownFrontMatter(t *testing.T) {
 	root := t.TempDir()
 	thoughtID := "20260609-143010-8f3a"

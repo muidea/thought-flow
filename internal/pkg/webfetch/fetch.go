@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -50,13 +52,19 @@ func New(timeout time.Duration, options ...Option) *Fetcher {
 }
 
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
+	if github, err := f.fetchGitHubReadme(ctx, rawURL); err == nil && usefulContent(github.Content) {
+		return github, nil
+	}
 	local, err := f.fetchLocal(ctx, rawURL)
-	if err == nil && strings.TrimSpace(local.Content) != "" {
+	if err == nil && usefulContent(local.Content) && !noisyShellContent(local.Content) {
 		return local, nil
 	}
 	reader, readerErr := f.fetchReader(ctx, rawURL)
 	if readerErr == nil && strings.TrimSpace(reader.Content) != "" {
 		return reader, nil
+	}
+	if err == nil && strings.TrimSpace(local.Content) != "" {
+		return local, nil
 	}
 	if err != nil {
 		return Result{}, err
@@ -65,6 +73,85 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 		return Result{}, readerErr
 	}
 	return Result{}, errors.New("fetched content is empty")
+}
+
+func (f *Fetcher) fetchGitHubReadme(ctx context.Context, rawURL string) (Result, error) {
+	candidates, title := githubReadmeCandidates(rawURL)
+	if len(candidates) == 0 {
+		return Result{}, errors.New("not a github repository url")
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
+		if err != nil {
+			return Result{}, err
+		}
+		req.Header.Set("User-Agent", "ThoughtFlow/0.1")
+		res, err := f.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+		_ = res.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			lastErr = fmt.Errorf("github readme returned status %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+			continue
+		}
+		content := cleanReaderText(string(body))
+		if strings.TrimSpace(content) != "" {
+			return Result{Title: title, Content: content}, nil
+		}
+	}
+	if lastErr != nil {
+		return Result{}, lastErr
+	}
+	return Result{}, errors.New("github readme content is empty")
+}
+
+func githubReadmeCandidates(rawURL string) ([]string, string) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, ""
+	}
+	if !strings.EqualFold(parsed.Hostname(), "github.com") {
+		return nil, ""
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return nil, ""
+	}
+	owner, repo := parts[0], parts[1]
+	if len(parts) > 2 && parts[2] != "" && parts[2] != "tree" && parts[2] != "blob" {
+		return nil, ""
+	}
+	base := "https://raw.githubusercontent.com/" + owner + "/" + repo
+	return []string{
+		base + "/main/README.md",
+		base + "/master/README.md",
+		base + "/main/readme.md",
+		base + "/master/readme.md",
+	}, owner + "/" + repo
+}
+
+func usefulContent(content string) bool {
+	content = strings.TrimSpace(content)
+	if len([]rune(content)) < 400 {
+		return false
+	}
+	words := strings.Fields(content)
+	return len(words) >= 40
+}
+
+func noisyShellContent(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "skip to content") &&
+		strings.Contains(lower, "navigation menu") &&
+		strings.Contains(lower, "sign in")
 }
 
 func (f *Fetcher) fetchLocal(ctx context.Context, rawURL string) (Result, error) {
@@ -122,7 +209,7 @@ func (f *Fetcher) fetchReader(ctx context.Context, rawURL string) (Result, error
 var (
 	titleRe  = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	headRe   = regexp.MustCompile(`(?is)<head[^>]*>.*?</head>`)
-	scriptRe = regexp.MustCompile(`(?is)<(script|style)[^>]*>.*?</(script|style)>`)
+	scriptRe = regexp.MustCompile(`(?is)<(script|style|svg|noscript)[^>]*>.*?</(script|style|svg|noscript)>`)
 	tagRe    = regexp.MustCompile(`(?is)<[^>]+>`)
 	spaceRe  = regexp.MustCompile(`\s+`)
 )
@@ -138,8 +225,43 @@ func extractTitle(html string) string {
 func htmlToText(html string) string {
 	text := headRe.ReplaceAllString(html, " ")
 	text = scriptRe.ReplaceAllString(text, " ")
+	text = blockTagsToMarkdownBreaks(text)
 	text = tagRe.ReplaceAllString(text, " ")
-	return cleanText(text)
+	return cleanStructuredText(text)
+}
+
+func blockTagsToMarkdownBreaks(text string) string {
+	replacements := []struct {
+		pattern string
+		value   string
+	}{
+		{`(?is)<br\s*/?>`, "\n"},
+		{`(?is)<hr\s*/?>`, "\n\n---\n\n"},
+		{`(?is)<li[^>]*>`, "\n- "},
+		{`(?is)</li>`, ""},
+		{`(?is)<h1[^>]*>`, "\n\n# "},
+		{`(?is)<h2[^>]*>`, "\n\n## "},
+		{`(?is)<h3[^>]*>`, "\n\n### "},
+		{`(?is)<h4[^>]*>`, "\n\n#### "},
+		{`(?is)<h5[^>]*>`, "\n\n##### "},
+		{`(?is)<h6[^>]*>`, "\n\n###### "},
+		{`(?is)</h[1-6]>`, "\n\n"},
+		{`(?is)</p>`, "\n\n"},
+		{`(?is)</div>`, "\n"},
+		{`(?is)</section>`, "\n\n"},
+		{`(?is)</article>`, "\n\n"},
+		{`(?is)</main>`, "\n\n"},
+		{`(?is)</header>`, "\n\n"},
+		{`(?is)</footer>`, "\n\n"},
+		{`(?is)</blockquote>`, "\n\n"},
+		{`(?is)</pre>`, "\n\n"},
+		{`(?is)</tr>`, "\n"},
+		{`(?is)</table>`, "\n\n"},
+	}
+	for _, replacement := range replacements {
+		text = regexp.MustCompile(replacement.pattern).ReplaceAllString(text, replacement.value)
+	}
+	return text
 }
 
 func extractReaderTitle(content string) string {
@@ -178,16 +300,30 @@ func cleanReaderText(text string) string {
 }
 
 func cleanText(text string) string {
-	replacements := map[string]string{
-		"&nbsp;": " ",
-		"&amp;":  "&",
-		"&lt;":   "<",
-		"&gt;":   ">",
-		"&quot;": `"`,
-		"&#39;":  "'",
-	}
-	for old, replacement := range replacements {
-		text = strings.ReplaceAll(text, old, replacement)
-	}
+	text = html.UnescapeString(text)
 	return strings.TrimSpace(spaceRe.ReplaceAllString(text, " "))
+}
+
+func cleanStructuredText(text string) string {
+	text = html.UnescapeString(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := make([]string, 0, len(strings.Split(text, "\n")))
+	previousBlank := true
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(spaceRe.ReplaceAllString(line, " "))
+		if line == "" {
+			if !previousBlank {
+				lines = append(lines, "")
+			}
+			previousBlank = true
+			continue
+		}
+		lines = append(lines, line)
+		previousBlank = false
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
