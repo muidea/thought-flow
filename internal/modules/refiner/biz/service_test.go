@@ -42,6 +42,9 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 		RefineStatus:  models.RefineStatusPending,
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
+		Errors: []models.ErrorRef{
+			models.NewErrorRef("thoughtflow.refiner.provider_failed", "old provider failure", true),
+		},
 	}
 	content := models.ThoughtContent{Original: "DuckDB and markdown search should work."}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
@@ -242,6 +245,69 @@ func TestRefineURLFetchFailurePreservesOriginalThought(t *testing.T) {
 	}
 }
 
+func TestRefineURLProviderFailurePreservesFetchedContent(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = res.Write([]byte(`<html><head><title>Fetched title</title></head><body><main><h1>Fetched heading</h1><p>Useful URL body survives provider failure.</p></main></body></html>`))
+	}))
+	defer origin.Close()
+
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	thoughtID := "20260609-152700-url-provider-fail"
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeURL,
+		Source:        models.ThoughtSourceManual,
+		URL:           origin.URL,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     time.Date(2026, 6, 9, 15, 27, 0, 0, time.UTC),
+		UpdatedAt:     time.Date(2026, 6, 9, 15, 27, 0, 0, time.UTC),
+		ContentHash:   models.ContentHash(origin.URL),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: origin.URL}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, failingRefineProvider{}, webfetch.New(time.Second))
+	_, err := service.RefineNow(context.Background(), thoughtID)
+	if err == nil {
+		t.Fatalf("expected provider failure")
+	}
+	gotThought, gotContent, readErr := markdown.ReadThought(root, thoughtID)
+	if readErr != nil {
+		t.Fatalf("ReadThought() error = %v", readErr)
+	}
+	if gotThought.ExtractedTitle != "Fetched title" {
+		t.Fatalf("extracted title = %q", gotThought.ExtractedTitle)
+	}
+	if !strings.Contains(gotContent.ExtractedContent, "Useful URL body survives provider failure") {
+		t.Fatalf("extracted content = %q", gotContent.ExtractedContent)
+	}
+	if gotThought.RefineStatus != models.RefineStatusFailed || len(gotThought.Errors) == 0 {
+		t.Fatalf("thought after provider failure = %#v", gotThought)
+	}
+	if gotThought.Errors[0].Code != "thoughtflow.refiner.provider_failed" || !gotThought.Errors[0].Retryable {
+		t.Fatalf("error ref = %#v", gotThought.Errors[0])
+	}
+	if len(gotThought.Errors) != 1 || strings.Contains(gotThought.Errors[0].Message, "old provider failure") {
+		t.Fatalf("provider errors should be replaced, got %#v", gotThought.Errors)
+	}
+}
+
 func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
@@ -320,6 +386,18 @@ func (p *flakyRefineProvider) Refine(ctx context.Context, req ai.RefineRequest) 
 		AITags:      []string{"retry"},
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+type failingRefineProvider struct{}
+
+func (failingRefineProvider) Refine(ctx context.Context, req ai.RefineRequest) (models.ThoughtRefinement, error) {
+	_ = ctx
+	_ = req
+	return models.ThoughtRefinement{}, ai.ProviderError{
+		Code:      "thoughtflow.ai.request_failed",
+		Message:   "provider timeout",
+		Retryable: true,
+	}
 }
 
 type countingRefineProvider struct {

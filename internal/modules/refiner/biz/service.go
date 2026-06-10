@@ -273,7 +273,7 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 		if err != nil {
 			errRef := models.NewErrorRef("thoughtflow.refiner.fetch_failed", err.Error(), true)
 			thought.RefineStatus = models.RefineStatusFailed
-			thought.Errors = append(thought.Errors, errRef)
+			thought.Errors = replaceErrorRef(thought.Errors, errRef)
 			thought.UpdatedAt = time.Now().UTC()
 			_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
 			return models.ThoughtRefinement{
@@ -289,10 +289,17 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 		if fetched.Content != "" {
 			content.ExtractedContent = fetched.Content
 		}
+		thought.UpdatedAt = time.Now().UTC()
+		_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
 	}
 
 	refinement, err := s.provider.Refine(ctx, ai.RefineRequest{Thought: thought, Content: content})
 	if err != nil {
+		errRef := models.NewErrorRef("thoughtflow.refiner.provider_failed", err.Error(), isRetryableRefineError(err))
+		thought.RefineStatus = models.RefineStatusFailed
+		thought.Errors = replaceErrorRef(thought.Errors, errRef)
+		thought.UpdatedAt = time.Now().UTC()
+		_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
 		return models.ThoughtRefinement{}, err
 	}
 	if strings.TrimSpace(refinement.ExtractedTitle) != "" {
@@ -302,6 +309,7 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	thought.KeyPoints = refinement.KeyPoints
 	thought.AITags = refinement.AITags
 	thought.RefineStatus = models.RefineStatusRefined
+	thought.Errors = nil
 	thought.UpdatedAt = time.Now().UTC()
 	content.AINotes = renderAINotes(refinement)
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
@@ -345,6 +353,17 @@ func isRetryableRefineError(err error) bool {
 	}
 	var providerErr ai.ProviderError
 	return errors.As(err, &providerErr) && providerErr.Retryable
+}
+
+func replaceErrorRef(errors []models.ErrorRef, next models.ErrorRef) []models.ErrorRef {
+	ret := make([]models.ErrorRef, 0, len(errors)+1)
+	for _, item := range errors {
+		if item.Code == next.Code {
+			continue
+		}
+		ret = append(ret, item)
+	}
+	return append(ret, next)
 }
 
 func renderAINotes(refinement models.ThoughtRefinement) string {

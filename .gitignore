@@ -38,6 +38,7 @@ go.work.sum
 
 # ThoughtFlow local runtime
 thoughtflow-workspace/
+thoughtflow-runtime/
 
 # Local binary from `go build ./cmd/thoughtflow`
 /thoughtflow
