@@ -764,15 +764,13 @@ data: {"thought_id":"20260609-143010-8f3a","status":"refined"}
 
 配置项：
 
-```yaml
-ai:
-  provider: openai-compatible
-  base_url: https://api.example.com/v1
-  api_key_env: THOUGHTFLOW_AI_API_KEY
-  chat_model: deepseek-chat
-  embedding_model: text-embedding-3-small
-  timeout_seconds: 60
-  max_retries: 2
+```toml
+[ai]
+base_url = "https://api.example.com/v1"
+api_key = ""
+chat_model = "deepseek-chat"
+embedding_model = "text-embedding-3-small"
+timeout_seconds = 60
 ```
 
 ### 10.2 Prompt 任务
@@ -797,14 +795,13 @@ ai:
 
 1. 默认配置：内置在二进制中。
 2. 工作区配置：`.thoughtflow/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
-3. 环境变量覆盖：适合 API key、端口、路径。
-4. 启动参数覆盖：适合临时调试。
+3. magicCommon 通用环境变量注入。
+4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`，适合 API key、端口、路径和本地调试。
+5. 启动参数覆盖：启动参数会映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 
 关键配置：
 
 ```toml
-endpointName = "thoughtflow"
-
 [server]
 host = "127.0.0.1"
 port = 8080
@@ -834,6 +831,13 @@ debounce_seconds = 5
 
 [events]
 sse_heartbeat_seconds = 20
+
+[ai]
+base_url = "https://api.openai.com"
+api_key = ""
+chat_model = "gpt-4o-mini"
+embedding_model = "text-embedding-3-small"
+timeout_seconds = 30
 ```
 
 ## 12. 错误与状态设计

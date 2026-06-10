@@ -67,12 +67,13 @@ attachments/           附件目录
 
 ## 4. 配置加载顺序
 
-配置加载顺序为：
+有效配置加载顺序为：
 
 1. 内置默认值。
 2. magicCommon 应用配置：`<workspace>/.thoughtflow/application.toml`。
-3. 环境变量。
-4. CLI 参数。CLI 参数会先映射为对应环境变量，再进入统一配置加载。
+3. magicCommon 通用环境变量注入。
+4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`。
+5. CLI 参数。CLI 参数会先映射为对应 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 
 ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向 `<workspace>/.thoughtflow`。用于定位该目录的 workspace root 来自 `THOUGHTFLOW_WORKSPACE_ROOT`；未设置时使用默认 `./thoughtflow-workspace`。
 
@@ -93,11 +94,6 @@ thoughtflow-workspace/.thoughtflow/application.toml
 基础示例内容：
 
 ```toml
-endpointName = "thoughtflow"
-
-[debug]
-enabled = false
-
 [server]
 host = "127.0.0.1"
 port = 8080
@@ -145,10 +141,11 @@ timeout_seconds = 30
 说明：
 
 1. `search.duckdb_path` 为相对路径时，会解析到 workspace root 下。
-2. `endpointName`、`debug` 和 `serviceDependencies` 属于 magicCommon framework 规范字段。
-3. `workspace.root` 可以写入 `application.toml`，但 `THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 同时负责定位 `<workspace>/.thoughtflow`，并且优先级更高。
-4. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
-5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
+2. `serviceDependencies` 是 magicCommon framework/service 的可选字段；只有取消注释后才会参与启动依赖检查。
+3. 当前进程启动时显式设置服务名为 `thoughtflow`，因此模板不需要配置 `endpointName`。
+4. `workspace.root` 可以写入 `application.toml`，但 `THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 同时负责定位 `<workspace>/.thoughtflow`，并且优先级更高。
+5. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
+6. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
 
 ## 6. 环境变量
 
@@ -166,6 +163,8 @@ timeout_seconds = 30
 | `THOUGHTFLOW_AI_CHAT_MODEL` | `gpt-4o-mini` | 摘要、合稿和专题缝合使用的 chat model |
 | `THOUGHTFLOW_AI_EMBEDDING_MODEL` | `text-embedding-3-small` | embedding model |
 | `THOUGHTFLOW_AI_TIMEOUT_SECONDS` | `30` | AI 请求超时 |
+
+magicCommon 还会把普通环境变量合入全局配置树，例如 `SERVER_HOST` 会映射为 `server.host`。这属于 framework 通用能力，不是 ThoughtFlow 推荐的稳定配置入口；涉及下划线字段时映射并不等价，例如 `git_sync.enabled` 不能可靠通过 `GIT_SYNC_ENABLED` 表达。项目级覆盖请优先使用上表中的 `THOUGHTFLOW_*`，它们会在 magicCommon 通用环境变量之后生效。
 
 ## 7. CLI 参数
 
@@ -207,10 +206,10 @@ CLI 参数与环境变量一一对应：
 
 启用 Git 自动提交：
 
-```yaml
-git_sync:
-  enabled: true
-  debounce_seconds: 5
+```toml
+[git_sync]
+enabled = true
+debounce_seconds = 5
 ```
 
 提交前需要 workspace 是 Git 仓库，并配置用户身份：

@@ -7,12 +7,6 @@
 # 3. Environment variables.
 # 4. CLI flags mapped to environment variables.
 
-# magicCommon framework/application service identity.
-endpointName = "thoughtflow"
-
-[debug]
-enabled = false
-
 [server]
 # HTTP listen address.
 host = "127.0.0.1"

@@ -67,8 +67,8 @@
 15. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
     - 启动时将 magicCommon framework `ConfigDir` 指向 `<workspace>/.thoughtflow`，并读取 `.thoughtflow/application.toml`。
-    - 环境变量保持最高优先级，覆盖本地配置中的端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。
-    - 启动参数 `--host`、`--port`、`--workspace-root`、`--git-enabled`、`--duckdb-path`、`--ai-*` 等会先映射为环境变量，再复用同一套覆盖逻辑。
+    - magicCommon 通用环境变量会先合入全局配置树，随后 `THOUGHTFLOW_*` 专用环境变量覆盖端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。
+    - 启动参数 `--host`、`--port`、`--workspace-root`、`--git-enabled`、`--duckdb-path`、`--ai-*` 等会先映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 
 验证：
 

@@ -203,6 +203,25 @@ timeout_seconds = 17
 	}
 }
 
+func TestLoadAppliesThoughtflowEnvironmentAfterFrameworkEnvironment(t *testing.T) {
+	ResetForTesting()
+	t.Cleanup(ResetForTesting)
+	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
+	t.Setenv("SERVER_HOST", "0.0.0.0")
+	t.Setenv("SERVER_PORT", "6060")
+	t.Setenv("THOUGHTFLOW_PORT", "7070")
+
+	cfg := Load()
+
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Fatalf("server host = %q, want framework env value", cfg.Server.Host)
+	}
+	if cfg.Server.Port != "7070" {
+		t.Fatalf("server port = %q, want THOUGHTFLOW override", cfg.Server.Port)
+	}
+}
+
 func writeApplicationConfig(t *testing.T, root string, content string) {
 	t.Helper()
 	configDir := filepath.Join(root, ".thoughtflow")
