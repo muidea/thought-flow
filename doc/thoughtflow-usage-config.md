@@ -97,17 +97,6 @@ endpointName = "thoughtflow"
 app_name = "ThoughtFlow"
 version = "0.1.0"
 
-[applicationInfo]
-uuid = "thoughtflow-local"
-name = "ThoughtFlow"
-shortName = "thoughtflow"
-icon = "thoughtflow.png"
-version = "0.1.0"
-domain = "local"
-email = "thoughtflow@example.local"
-author = "ThoughtFlow"
-description = "Local-first thought capture and synthesis service"
-
 [debug]
 enabled = false
 
@@ -158,7 +147,7 @@ timeout_seconds = 30
 说明：
 
 1. `search.duckdb_path` 为相对路径时，会解析到 workspace root 下。
-2. `endpointName`、`applicationInfo`、`debug` 和 `serviceDependencies` 属于 magicCommon framework 规范字段。
+2. `endpointName`、`debug` 和 `serviceDependencies` 属于 magicCommon framework 规范字段。
 3. `workspace.root` 可以写入 `application.toml`，但 `THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 同时负责定位 `<workspace>/.thoughtflow`，并且优先级更高。
 4. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
 5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。

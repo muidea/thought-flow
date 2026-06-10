@@ -12,17 +12,6 @@ endpointName = "thoughtflow"
 app_name = "ThoughtFlow"
 version = "0.1.0"
 
-[applicationInfo]
-uuid = "thoughtflow-local"
-name = "ThoughtFlow"
-shortName = "thoughtflow"
-icon = "thoughtflow.png"
-version = "0.1.0"
-domain = "local"
-email = "thoughtflow@example.local"
-author = "ThoughtFlow"
-description = "Local-first thought capture and synthesis service"
-
 [debug]
 enabled = false
 
