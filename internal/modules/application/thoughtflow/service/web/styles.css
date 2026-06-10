@@ -22,16 +22,16 @@
   --tf-padding-sm: 12px;
   --tf-margin: 16px;
   --tf-box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08);
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --line: #d9dee7;
-  --text: #17202a;
-  --muted: #667085;
-  --accent: #1d6f8f;
-  --accent-strong: #14516a;
-  --green: #246b4f;
-  --amber: #9a6400;
-  --danger: #a43a3a;
+  --bg: var(--tf-color-bg-layout);
+  --surface: var(--tf-color-bg-container);
+  --line: var(--tf-color-border);
+  --text: var(--tf-color-text);
+  --muted: var(--tf-color-text-secondary);
+  --accent: var(--tf-color-primary);
+  --accent-strong: var(--tf-color-primary-active);
+  --green: var(--tf-color-success);
+  --amber: var(--tf-color-warning);
+  --danger: var(--tf-color-error);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
 }
 
@@ -66,8 +66,8 @@ button {
 
 button:disabled {
   cursor: not-allowed;
-  border-color: var(--line);
-  background: #e8ebef;
+  border-color: var(--tf-color-border);
+  background: #f5f5f5;
   color: var(--muted);
 }
 
@@ -269,15 +269,33 @@ p {
   font-size: 15px;
 }
 
+.tf-clickable-card {
+  cursor: pointer;
+}
+
+.tf-clickable-card:hover {
+  border-color: var(--tf-color-primary-hover);
+  box-shadow: var(--tf-box-shadow);
+}
+
 .tf-stat-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
 
-.tf-stat-grid .tf-card {
+.tf-stat-grid .tf-card,
+.tf-stat-grid .tf-stat-tile {
   display: grid;
   gap: 8px;
+}
+
+.tf-stat-tile {
+  min-width: 0;
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius);
+  background: #fafafa;
+  padding: 14px;
 }
 
 .tf-stat-grid strong {
@@ -431,7 +449,7 @@ p {
   height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #eaf2f5;
+  background: #e6f4ff;
   color: var(--accent-strong);
   font-weight: 700;
 }
@@ -512,7 +530,7 @@ p {
 
 .approval-item.active {
   border-color: var(--accent);
-  background: #f6fbfc;
+  background: #e6f4ff;
 }
 
 .topic-meta,
@@ -563,7 +581,7 @@ p {
 }
 
 .segmented label:has(input:checked) {
-  background: #eaf2f5;
+  background: #e6f4ff;
   color: var(--accent-strong);
 }
 
@@ -652,7 +670,7 @@ p {
 
 .tab.active {
   border-color: var(--accent);
-  background: #eaf2f5;
+  background: #e6f4ff;
   color: var(--accent-strong);
 }
 
@@ -970,6 +988,14 @@ textarea.markdown-preview {
   align-items: start;
 }
 
+.tf-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
 .tf-page .stack-form {
   display: grid;
   gap: 10px;
@@ -995,6 +1021,166 @@ textarea.markdown-preview {
   color: var(--tf-color-primary);
 }
 
+.tf-selection-bar,
+.tf-action-row,
+.topic-actions,
+.tf-job-links {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tf-selection-bar {
+  justify-content: space-between;
+  min-height: 38px;
+  margin-bottom: 12px;
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius);
+  background: #fafafa;
+  padding: 8px 10px;
+}
+
+.tf-action-row,
+.topic-actions {
+  margin-top: 8px;
+}
+
+.tf-empty {
+  color: var(--tf-color-text-secondary);
+  border: 1px dashed var(--tf-color-border);
+  border-radius: var(--tf-border-radius);
+  background: #fafafa;
+  padding: 16px;
+}
+
+.tf-alert {
+  margin-top: 12px;
+  border-radius: var(--tf-border-radius);
+  padding: 10px 12px;
+}
+
+.tf-alert-warning {
+  border: 1px solid #ffe58f;
+  background: #fffbe6;
+  color: #ad6800;
+}
+
+.tf-result {
+  display: grid;
+  gap: 10px;
+}
+
+.tf-description-list dl,
+.tf-result dl {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.tf-description-list dt,
+.tf-result dt {
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-description-list dd,
+.tf-result dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tf-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.tf-drawer.open {
+  display: flex;
+}
+
+.tf-drawer-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(680px, 100vw);
+  height: 100%;
+  background: var(--tf-color-bg-elevated);
+  box-shadow: var(--tf-box-shadow);
+  padding: 0;
+}
+
+.tf-drawer-header,
+.tf-drawer-footer,
+.tf-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--tf-color-border-secondary);
+  padding: 16px;
+}
+
+.tf-drawer-footer {
+  border-top: 1px solid var(--tf-color-border-secondary);
+  border-bottom: 0;
+  justify-content: flex-end;
+}
+
+.tf-drawer-panel > .preview-box,
+.tf-drawer-panel > .tf-form {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.tf-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: none;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 16px;
+}
+
+.tf-modal.open {
+  display: grid;
+}
+
+.tf-modal-panel {
+  display: grid;
+  gap: 12px;
+  width: min(440px, 100%);
+  border-radius: var(--tf-border-radius);
+  background: var(--tf-color-bg-elevated);
+  box-shadow: var(--tf-box-shadow);
+  padding: 20px;
+}
+
+.tf-modal-actions {
+  justify-content: flex-end;
+  border: 0;
+  padding: 0;
+}
+
+.tf-explain {
+  margin-top: 10px;
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius);
+  background: #fafafa;
+  padding: 8px 10px;
+}
+
+.tf-explain summary {
+  cursor: pointer;
+  color: var(--tf-color-primary);
+}
+
 @media (max-width: 1100px) {
   .tf-layout {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -1007,6 +1193,10 @@ textarea.markdown-preview {
 
   .tf-page .search-form {
     grid-template-columns: 1fr 140px;
+  }
+
+  .tf-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -1039,7 +1229,17 @@ textarea.markdown-preview {
   .tf-stat-grid,
   .tf-two-column,
   .tf-page .capture-form,
-  .tf-page .search-form {
+  .tf-page .search-form,
+  .tf-filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tf-description-list dl,
+  .tf-result dl {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-drawer-panel {
+    width: 100vw;
   }
 }

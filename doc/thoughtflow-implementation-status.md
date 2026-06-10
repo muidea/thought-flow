@@ -215,7 +215,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 保存动作复用 capture 运行单元创建 Markdown，不在 application handler 中直接写文件。
    - 新 Thought 的 `source` 标记为 `synthesis`，并在内容中保留来源 Thought 链接。
    - 保存后会将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
-   - 嵌入式 UI 的 synthesis 面板支持草稿列表/历史、编辑草稿后保存。
+   - 嵌入式 UI 的 Synthesis 页面支持草稿列表/历史、来源合稿篮、编辑草稿后保存，并在保存后提供新 Thought 入口。
 18. topic weave 支持人工确认主链路：
    - `weave-preview` 生成候选专题文档、逐行 diff 和 proposal ID，不写入专题主文档。
    - pending proposal 持久化为 `topics/{slug}/approvals/{proposal_id}.yaml`，作为可进入 Git 的审批队列。
@@ -225,7 +225,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 用户编辑候选文档时保留完整文档确认路径，继续校验 source link。
    - 确认成功后将 proposal 标记为 `accepted`。
    - 确认后同步 membership 事实文件、Thought backlink、`topic.updated` 和 git commit 请求。
-   - 嵌入式 UI 增加 Review tab，用于查看审批队列/历史、patch hunk、diff、编辑候选文档并确认写入。
+   - 嵌入式 UI 增加独立 Weave Review 页面，用于查看审批队列/历史、patch hunk、diff、编辑候选文档并确认写入。
 
 验证：
 
@@ -245,30 +245,37 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - `GET /styles.css`
    - `GET /app.js`
    - `GET /vendor/markdown-it.min.js`
-3. 首屏工作台：
-   - 快速捕捉文本/URL
-   - `Ctrl+K` 聚焦搜索
-   - topic dashboard
-   - search hub，支持 keyword / semantic / hybrid 模式
-   - topic workspace，展示专题 Markdown 文档并可触发 rebuild
-   - synthesis 草稿仓库视图，可载入历史草稿、编辑并保存为新 Thought
-   - thought preview
-   - SSE activity feed
-   - system AI/workspace 状态摘要
-   - topic rules editor，支持编辑 keywords/tags/manual include/manual exclude/semantic/outline/auto_weave
+3. Ant Design 风格 AppShell：
+   - 保持原生 HTML/CSS/JS 和嵌入式资源服务，不引入 React、AntD npm 包或前端构建链。
+   - 使用手工 CSS token 统一 primary/success/warning/error、layout/container/border/text、radius、control height 和 shadow。
+   - Sidebar 提供 Dashboard、Capture、Thoughts、Search、Topics、Synthesis、Jobs & Activity、Settings 独立入口。
+   - Topbar 展示 workspace、AI、Git、Search 运行态 badge。
+   - Hash route 支持 `#/dashboard`、`#/capture`、`#/thoughts?id=...`、`#/search`、`#/topics`、`#/topics/:id`、`#/topics/:id/review`、`#/synthesis`、`#/jobs?id=...`、`#/settings`。
+4. 页面化工作台：
+   - Dashboard 展示系统状态卡片、最近活动和快捷入口，不承载采集正文、专题规则或合稿编辑。
+   - Capture 独立页面支持 text/url 类型切换、URL 专用输入、topic hints、提交 loading/disabled、重复内容 warning、成功结果区、Thought 入口和 Job 入口。
+   - Thoughts 页面支持通过 Thought ID、路由或搜索结果打开详情，并提供 preview Drawer、加入合稿篮和 retry refine 入口。
+   - Search 页面支持 keyword / semantic / hybrid 模式、topic/tags/date/sort/explain 过滤、score/explain 展示、Thought preview Drawer、加入合稿篮、复制 path 和 weave preview 入口。
+   - Topics 页面提供列表、keyword/auto weave 前端过滤和明确创建入口；创建专题通过 Drawer 录入 keywords any/all/exclude、tags、manual include/exclude、semantic threshold、outline 和 auto_weave。
+   - Topic Detail 页面展示 document、members、rules、activity tabs；规则编辑通过 Drawer 进入，不再常驻右侧 rail；rebuild 使用确认 Modal 并跳转 Job。
+   - Weave Review 独立页面用于 proposal queue、diff、proposed document editor 和 accept confirmation。
+   - Synthesis 独立页面提供来源合稿篮、创建草稿 Drawer、草稿列表、草稿编辑器和保存为 Thought confirmation。
+   - Jobs & Activity 页面提供 Job ID 查询、失败信息展示、SSE activity feed 和 event type/resource 前端过滤。
+   - Settings 页面提供 Status、Metrics、Index、Git、Configuration tabs，reindex 使用确认 Modal。
+5. 复用能力：
+   - `Ctrl+K` 聚焦搜索。
    - topic document 和 thought preview 的 Markdown 渲染，基于 vendored `markdown-it@14.2.0` CommonMark parser，支持 front matter、标题、列表、任务列表、有序列表、表格、链接、图片、分隔线、引用、代码块、Obsidian 双链和常见行内样式
-   - topic weave review，支持审批队列/历史、patch hunk、diff 查看、候选文档编辑和确认写入
-4. UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
-5. 嵌入资产服务单元测试。
-6. 原生前端组件测试：
+   - UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
+6. 嵌入资产服务单元测试。
+7. 原生前端组件测试：
    - `node --check internal/modules/application/thoughtflow/service/web/app.js`
    - `node --test internal/modules/application/thoughtflow/service/web/app.test.js`
-   - 覆盖 Markdown CommonMark/GFM 安全渲染、Obsidian 双链、diff 展示、synthesis source link 去重和 outline helper。
-7. 浏览器 smoke 测试矩阵：
+   - 覆盖 Markdown CommonMark/GFM 安全渲染、Obsidian 双链、diff 展示、synthesis source link 去重、outline helper、route parser、导航 active 状态、status badge、search result score/explain 渲染和 synthesis basket helper。
+8. 浏览器 smoke 测试矩阵：
    - `node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js`
    - 使用本机 Google Chrome headless 和 mock API server 覆盖 desktop/mobile 视口。
    - 测试矩阵显式声明 Chrome、Firefox、Safari 目标；当前环境 Firefox 为未安装 snap wrapper，Safari/WebKit 自动化在 Linux host 不可用，因此对应 subtest 以稳定原因 skip，不计入实际覆盖。
-   - 校验首屏渲染、topic/search 数据加载、tab 切换、控制台错误和移动端水平溢出。
+   - 校验首屏渲染、Sidebar 路由切换、Capture 成功结果、Search 结果和 explain、Thought preview Drawer、合稿篮、Topic create/rules Drawer、Topic detail tabs、Synthesis create Drawer、Jobs 查询、Settings metrics、控制台错误和移动端水平溢出。
 
 验证：
 
@@ -285,6 +292,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 UI 验证环境：
 
 1. 当前按原生 HTML/CSS/JS 保持无构建链，已有 Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵；Firefox/Safari 已进入测试目标声明和环境探测，但当前本机无法实际执行 Firefox/Safari 覆盖。
+2. Thought 列表和 Job 列表 API 尚未新增；当前 UI 通过 Search/Activity/路由 ID 打开 Thought 详情，通过 Job ID 查询任务详情。
 
 当前限制：
 

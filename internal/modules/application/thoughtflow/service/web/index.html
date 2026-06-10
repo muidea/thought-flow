@@ -63,23 +63,24 @@
               </div>
             </div>
             <div class="tf-stat-grid">
-              <article class="tf-card">
+              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
                 <span class="tf-text-secondary">Workspace</span>
                 <strong id="dashboard-workspace">Loading</strong>
               </article>
-              <article class="tf-card">
+              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
                 <span class="tf-text-secondary">AI</span>
                 <strong id="dashboard-ai">Loading</strong>
               </article>
-              <article class="tf-card">
+              <article class="tf-card tf-clickable-card" data-dashboard-link="#/jobs">
                 <span class="tf-text-secondary">Git</span>
                 <strong id="dashboard-git">Loading</strong>
               </article>
-              <article class="tf-card">
+              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
                 <span class="tf-text-secondary">Search</span>
                 <strong id="dashboard-search">Loading</strong>
               </article>
             </div>
+            <div id="dashboard-alert" class="tf-alert tf-alert-warning" hidden></div>
             <section class="tf-card">
               <div class="tf-card-header">
                 <h3>Recent Activity</h3>
@@ -114,13 +115,28 @@
                   <input id="capture-tags" type="text" placeholder="tags, comma separated">
                 </label>
                 <label class="tf-form-item tf-form-item-wide">
-                  <span class="tf-label">Content or URL</span>
-                  <textarea id="capture-content" placeholder="Capture a thought or paste a URL"></textarea>
+                  <span class="tf-label">Topic hints</span>
+                  <input id="capture-topic-hints" type="text" placeholder="topic ids or hints, comma separated">
+                </label>
+                <label class="tf-form-item tf-form-item-wide" id="capture-url-row" hidden>
+                  <span class="tf-label">URL</span>
+                  <input id="capture-url" type="url" placeholder="https://example.com/article">
+                </label>
+                <label class="tf-form-item tf-form-item-wide">
+                  <span class="tf-label">Content</span>
+                  <textarea id="capture-content" placeholder="Capture a thought or add optional URL notes"></textarea>
                 </label>
                 <div class="tf-form-actions">
-                  <button class="tf-btn tf-btn-primary" type="submit">Capture</button>
+                  <button class="tf-btn tf-btn-primary" id="capture-submit" type="submit">Capture</button>
                 </div>
               </form>
+            </section>
+            <section class="tf-card">
+              <div class="tf-card-header">
+                <h3>Result</h3>
+                <span class="tf-text-secondary">Accepted thoughts can be refined, indexed, matched, and synced asynchronously.</span>
+              </div>
+              <div id="capture-result" class="tf-empty">No capture submitted yet.</div>
             </section>
           </section>
 
@@ -132,6 +148,10 @@
               </div>
             </div>
             <section class="tf-card">
+              <form id="thought-form" class="search-form">
+                <input id="thought-id" type="search" placeholder="Thought ID">
+                <button class="tf-btn tf-btn-primary" type="submit">Load thought</button>
+              </form>
               <div id="thought-preview" class="preview-box markdown-rendered">No thought selected.</div>
             </section>
           </section>
@@ -154,11 +174,29 @@
                 <input id="search-tags" type="text" placeholder="filter tags">
                 <button class="tf-btn tf-btn-primary" type="submit">Search</button>
               </form>
+              <div class="tf-filter-grid">
+                <input id="search-topic-id" type="text" placeholder="topic id">
+                <input id="search-from" type="date" aria-label="from date">
+                <input id="search-to" type="date" aria-label="to date">
+                <select id="search-sort" aria-label="sort">
+                  <option value="">Default sort</option>
+                  <option value="score">Score</option>
+                  <option value="recency">Recency</option>
+                  <option value="title">Title</option>
+                </select>
+                <label class="toggle-row"><input id="search-explain" type="checkbox"> Explain score</label>
+                <button class="tf-btn" id="reset-search" type="button">Reset filters</button>
+              </div>
             </section>
             <section class="tf-card">
               <div class="tf-card-header">
                 <h3>Results</h3>
                 <span class="tf-text-secondary">Select thoughts for synthesis or topic weaving.</span>
+              </div>
+              <div class="tf-selection-bar">
+                <span id="selected-count">0 selected</span>
+                <button class="tf-btn" id="add-selected-synthesis" type="button" disabled>Add to synthesis</button>
+                <button class="tf-btn" id="clear-selected" type="button" disabled>Clear</button>
               </div>
               <div id="search-results" class="results-list"></div>
             </section>
@@ -171,45 +209,21 @@
                 <p>Browse and create topic workspaces.</p>
               </div>
               <div class="tf-page-actions">
+                <button class="tf-btn tf-btn-primary" id="open-create-topic" type="button">Create topic</button>
                 <button class="tf-btn" id="refresh-topics" title="Refresh topics" aria-label="Refresh topics">Refresh</button>
               </div>
             </div>
-            <div class="tf-two-column">
-              <section class="tf-card">
-                <div class="tf-card-header">
-                  <h3>Topic List</h3>
-                </div>
-                <div id="topic-list" class="topic-list"></div>
-              </section>
-              <section class="tf-card">
-                <div class="tf-card-header">
-                  <h3>Create Topic</h3>
-                </div>
-                <form id="topic-form" class="tf-form stack-form">
-                  <label class="tf-form-item">
-                    <span class="tf-label">Name</span>
-                    <input id="topic-name" type="text" placeholder="Name">
-                  </label>
-                  <label class="tf-form-item">
-                    <span class="tf-label">Description</span>
-                    <textarea id="topic-description" placeholder="Description"></textarea>
-                  </label>
-                  <label class="tf-form-item">
-                    <span class="tf-label">Keywords</span>
-                    <input id="topic-keywords" type="text" placeholder="keywords">
-                  </label>
-                  <label class="tf-form-item">
-                    <span class="tf-label">Tags</span>
-                    <input id="topic-tags" type="text" placeholder="tags">
-                  </label>
-                  <label class="toggle-row"><input id="topic-semantic" type="checkbox"> Semantic</label>
-                  <input id="topic-threshold" type="number" min="0" max="1" step="0.05" value="0.75" aria-label="Semantic threshold">
-                  <div class="tf-form-actions">
-                    <button class="tf-btn tf-btn-primary" type="submit">Create</button>
-                  </div>
-                </form>
-              </section>
-            </div>
+            <section class="tf-card">
+              <div class="tf-card-header">
+                <h3>Topic List</h3>
+              </div>
+              <div class="tf-filter-grid">
+                <input id="topic-filter" type="search" placeholder="filter topics">
+                <label class="toggle-row"><input id="topic-auto-filter" type="checkbox"> Auto weave only</label>
+                <button class="tf-btn" id="reset-topic-filter" type="button">Reset filters</button>
+              </div>
+              <div id="topic-list" class="topic-list"></div>
+            </section>
           </section>
 
           <section class="tf-page" id="page-topic-detail" data-page="topic-detail">
@@ -220,43 +234,30 @@
               </div>
               <div class="tf-page-actions">
                 <button class="tf-btn" id="rebuild-topic" disabled>Rebuild</button>
+                <button class="tf-btn" id="open-topic-rules" type="button" disabled>Edit rules</button>
                 <a class="tf-btn" id="open-topic-review" href="#/topics">Review proposals</a>
               </div>
             </div>
-            <div class="tf-two-column">
-              <section class="tf-card">
-                <div class="tf-tabs" role="tablist">
-                  <button class="tab active" data-tab="topic">Document</button>
-                  <button class="tab" data-tab="activity">Activity</button>
-                </div>
-                <div id="tab-topic" class="tab-panel active">
-                  <div id="topic-document" class="markdown-preview markdown-rendered">Select a topic from Topics.</div>
-                </div>
-                <div id="tab-activity" class="tab-panel">
-                  <div id="event-list" class="event-list"></div>
-                </div>
-              </section>
-              <section class="tf-card">
-                <div class="tf-card-header">
-                  <h3>Topic Rules</h3>
-                </div>
-                <form id="topic-edit-form" class="tf-form stack-form">
-                  <input id="edit-topic-name" type="text" placeholder="Name" disabled>
-                  <textarea id="edit-topic-description" placeholder="Description" disabled></textarea>
-                  <input id="edit-keywords-any" type="text" placeholder="keywords any" disabled>
-                  <input id="edit-keywords-all" type="text" placeholder="keywords all" disabled>
-                  <input id="edit-keywords-exclude" type="text" placeholder="keywords exclude" disabled>
-                  <input id="edit-tags-any" type="text" placeholder="tags any" disabled>
-                  <input id="edit-manual-include" type="text" placeholder="manual include thought ids" disabled>
-                  <input id="edit-manual-exclude" type="text" placeholder="manual exclude thought ids" disabled>
-                  <label class="toggle-row"><input id="edit-semantic" type="checkbox" disabled> Semantic</label>
-                  <input id="edit-threshold" type="number" min="0" max="1" step="0.05" value="0.75" aria-label="Semantic threshold" disabled>
-                  <label class="toggle-row"><input id="edit-auto-weave" type="checkbox" disabled> Auto weave</label>
-                  <textarea id="edit-outline" placeholder="outline, one heading per line" disabled></textarea>
-                  <button class="tf-btn tf-btn-primary" id="save-topic-rules" type="submit" disabled>Save rules</button>
-                </form>
-              </section>
-            </div>
+            <section class="tf-card">
+              <div class="tf-tabs" role="tablist">
+                <button class="tab active" data-tab="topic">Document</button>
+                <button class="tab" data-tab="members">Members</button>
+                <button class="tab" data-tab="rules">Rules</button>
+                <button class="tab" data-tab="activity">Activity</button>
+              </div>
+              <div id="tab-topic" class="tab-panel active">
+                <div id="topic-document" class="markdown-preview markdown-rendered">Select a topic from Topics.</div>
+              </div>
+              <div id="tab-members" class="tab-panel">
+                <div id="topic-members" class="tf-empty">No topic members loaded.</div>
+              </div>
+              <div id="tab-rules" class="tab-panel">
+                <div id="topic-rules-summary" class="tf-description-list">No topic selected.</div>
+              </div>
+              <div id="tab-activity" class="tab-panel">
+                <div id="event-list" class="event-list"></div>
+              </div>
+            </section>
           </section>
 
           <section class="tf-page" id="page-topic-review" data-page="topic-review">
@@ -266,6 +267,7 @@
                 <p>Review pending topic document proposals before writing index.md.</p>
               </div>
               <div class="tf-page-actions">
+                <a class="tf-btn" id="back-topic-detail" href="#/topics">Back to topic</a>
                 <button class="tf-btn tf-btn-primary" id="accept-weave" disabled>Accept</button>
               </div>
             </div>
@@ -286,23 +288,26 @@
                 <h2>Synthesis</h2>
                 <p>Create, edit, and save synthesis drafts.</p>
               </div>
+              <div class="tf-page-actions">
+                <button class="tf-btn tf-btn-primary" id="open-synthesis-create" type="button">Create draft</button>
+                <button class="tf-btn" id="refresh-synthesis" type="button">Refresh</button>
+              </div>
             </div>
             <div class="tf-two-column">
               <section class="tf-card">
-                <form id="synthesis-form" class="tf-form stack-form">
-                  <input id="synthesis-goal" type="text" placeholder="Goal">
-                  <select id="synthesis-format">
-                    <option value="summary">Summary</option>
-                    <option value="outline">Outline</option>
-                    <option value="report">Report</option>
-                  </select>
-                  <button class="tf-btn tf-btn-primary" type="submit">Create draft</button>
-                  <button class="tf-btn" type="button" id="save-synthesis" disabled>Save as thought</button>
-                </form>
+                <div class="tf-selection-bar">
+                  <span id="synthesis-source-count">0 selected sources</span>
+                  <button class="tf-btn" id="clear-synthesis-basket" type="button" disabled>Clear basket</button>
+                </div>
                 <div id="synthesis-drafts" class="approval-list">No synthesis drafts.</div>
               </section>
               <section class="tf-card">
+                <div class="tf-card-header">
+                  <h3>Draft Editor</h3>
+                  <button class="tf-btn" type="button" id="save-synthesis" disabled>Save as thought</button>
+                </div>
                 <textarea id="synthesis-output" class="markdown-preview" spellcheck="false">Select search results, then create a draft.</textarea>
+                <div id="synthesis-save-result" class="tf-empty">No saved thought yet.</div>
               </section>
             </div>
           </section>
@@ -315,6 +320,22 @@
               </div>
             </div>
             <section class="tf-card">
+              <form id="job-form" class="search-form">
+                <input id="job-id" type="search" placeholder="Job ID">
+                <button class="tf-btn tf-btn-primary" type="submit">Load job</button>
+              </form>
+              <div id="job-detail" class="tf-empty">Enter a Job ID or follow a job link from another page.</div>
+            </section>
+            <section class="tf-card">
+              <div class="tf-card-header">
+                <h3>Activity</h3>
+                <span class="tf-text-secondary">Live SSE stream.</span>
+              </div>
+              <div class="tf-filter-grid">
+                <input id="event-type-filter" type="text" placeholder="event type">
+                <input id="event-resource-filter" type="text" placeholder="resource id">
+                <button class="tf-btn" id="reset-event-filter" type="button">Reset filters</button>
+              </div>
               <div id="jobs-event-list" class="event-list"></div>
             </section>
           </section>
@@ -329,32 +350,170 @@
                 <button class="tf-btn" id="reindex-button">Reindex</button>
               </div>
             </div>
-            <div class="tf-stat-grid">
-              <article class="tf-card">
-                <span class="tf-text-secondary">Workspace</span>
-                <strong id="settings-workspace">Loading</strong>
-              </article>
-              <article class="tf-card">
-                <span class="tf-text-secondary">DuckDB</span>
-                <strong id="settings-duckdb">Loading</strong>
-              </article>
-              <article class="tf-card">
-                <span class="tf-text-secondary">AI</span>
-                <strong id="settings-ai">Loading</strong>
-              </article>
-              <article class="tf-card">
-                <span class="tf-text-secondary">Git</span>
-                <strong id="settings-git">Loading</strong>
-              </article>
-            </div>
             <section class="tf-card">
-              <div class="tf-card-header">
-                <h3>Configuration</h3>
+              <div class="tf-tabs" role="tablist">
+                <button class="tab active" data-tab="settings-status">Status</button>
+                <button class="tab" data-tab="settings-metrics">Metrics</button>
+                <button class="tab" data-tab="settings-index">Index</button>
+                <button class="tab" data-tab="settings-git">Git</button>
+                <button class="tab" data-tab="settings-config">Configuration</button>
               </div>
-              <p class="tf-text-secondary">Use <code>&lt;workspace&gt;/.thoughtflow/config.local.yaml</code>. Template: <code>doc/config.local.example.yaml</code>.</p>
+              <div id="tab-settings-status" class="tab-panel active">
+                <div class="tf-stat-grid">
+                  <article class="tf-stat-tile">
+                    <span class="tf-text-secondary">Workspace</span>
+                    <strong id="settings-workspace">Loading</strong>
+                  </article>
+                  <article class="tf-stat-tile">
+                    <span class="tf-text-secondary">DuckDB</span>
+                    <strong id="settings-duckdb">Loading</strong>
+                  </article>
+                  <article class="tf-stat-tile">
+                    <span class="tf-text-secondary">AI</span>
+                    <strong id="settings-ai">Loading</strong>
+                  </article>
+                  <article class="tf-stat-tile">
+                    <span class="tf-text-secondary">Git</span>
+                    <strong id="settings-git">Loading</strong>
+                  </article>
+                </div>
+                <div id="settings-degraded" class="tf-alert tf-alert-warning" hidden></div>
+              </div>
+              <div id="tab-settings-metrics" class="tab-panel">
+                <div id="settings-metrics-json" class="tf-description-list">Metrics not loaded.</div>
+                <p class="tf-text-secondary"><a href="/metrics" target="_blank" rel="noreferrer">Open Prometheus metrics</a></p>
+              </div>
+              <div id="tab-settings-index" class="tab-panel">
+                <div id="settings-index-detail" class="tf-description-list">Index status not loaded.</div>
+              </div>
+              <div id="tab-settings-git" class="tab-panel">
+                <div id="settings-git-detail" class="tf-description-list">Git status not loaded.</div>
+              </div>
+              <div id="tab-settings-config" class="tab-panel">
+                <p class="tf-text-secondary">Use <code>&lt;workspace&gt;/.thoughtflow/config.local.yaml</code>. Template: <code>doc/config.local.example.yaml</code>. Environment variables are documented in <code>doc/thoughtflow-usage-config.md</code>.</p>
+              </div>
             </section>
           </section>
         </main>
+      </div>
+    </div>
+
+    <aside class="tf-drawer" id="thought-drawer" aria-hidden="true">
+      <div class="tf-drawer-panel">
+        <div class="tf-drawer-header">
+          <h2>Thought Preview</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="thought-drawer" type="button">Close</button>
+        </div>
+        <div id="thought-drawer-content" class="preview-box markdown-rendered">No thought selected.</div>
+        <div class="tf-drawer-footer">
+          <button class="tf-btn" id="drawer-add-synthesis" type="button" disabled>Add to synthesis</button>
+          <button class="tf-btn" id="retry-refine" type="button" disabled>Retry refine</button>
+        </div>
+      </div>
+    </aside>
+
+    <aside class="tf-drawer" id="topic-create-drawer" aria-hidden="true">
+      <div class="tf-drawer-panel">
+        <div class="tf-drawer-header">
+          <h2>Create Topic</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="topic-create-drawer" type="button">Close</button>
+        </div>
+        <form id="topic-form" class="tf-form stack-form">
+          <label class="tf-form-item">
+            <span class="tf-label">Name</span>
+            <input id="topic-name" type="text" placeholder="Name">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Description</span>
+            <textarea id="topic-description" placeholder="Description"></textarea>
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Keywords any</span>
+            <input id="topic-keywords" type="text" placeholder="keywords any">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Keywords all</span>
+            <input id="topic-keywords-all" type="text" placeholder="keywords all">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Keywords exclude</span>
+            <input id="topic-keywords-exclude" type="text" placeholder="keywords exclude">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Tags</span>
+            <input id="topic-tags" type="text" placeholder="tags">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Manual include</span>
+            <input id="topic-manual-include" type="text" placeholder="thought ids">
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label">Manual exclude</span>
+            <input id="topic-manual-exclude" type="text" placeholder="thought ids">
+          </label>
+          <label class="toggle-row"><input id="topic-semantic" type="checkbox"> Semantic</label>
+          <input id="topic-threshold" type="number" min="0" max="1" step="0.05" value="0.75" aria-label="Semantic threshold">
+          <label class="toggle-row"><input id="topic-auto-weave" type="checkbox" checked> Auto weave</label>
+          <textarea id="topic-outline" placeholder="outline, one heading per line">Notes
+Open Questions</textarea>
+          <div class="tf-form-actions">
+            <button class="tf-btn tf-btn-primary" type="submit">Create</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+
+    <aside class="tf-drawer" id="topic-rules-drawer" aria-hidden="true">
+      <div class="tf-drawer-panel">
+        <div class="tf-drawer-header">
+          <h2>Edit Topic Rules</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="topic-rules-drawer" type="button">Close</button>
+        </div>
+        <form id="topic-edit-form" class="tf-form stack-form">
+          <input id="edit-topic-name" type="text" placeholder="Name" disabled>
+          <textarea id="edit-topic-description" placeholder="Description" disabled></textarea>
+          <input id="edit-keywords-any" type="text" placeholder="keywords any" disabled>
+          <input id="edit-keywords-all" type="text" placeholder="keywords all" disabled>
+          <input id="edit-keywords-exclude" type="text" placeholder="keywords exclude" disabled>
+          <input id="edit-tags-any" type="text" placeholder="tags any" disabled>
+          <input id="edit-manual-include" type="text" placeholder="manual include thought ids" disabled>
+          <input id="edit-manual-exclude" type="text" placeholder="manual exclude thought ids" disabled>
+          <label class="toggle-row"><input id="edit-semantic" type="checkbox" disabled> Semantic</label>
+          <input id="edit-threshold" type="number" min="0" max="1" step="0.05" value="0.75" aria-label="Semantic threshold" disabled>
+          <label class="toggle-row"><input id="edit-auto-weave" type="checkbox" disabled> Auto weave</label>
+          <textarea id="edit-outline" placeholder="outline, one heading per line" disabled></textarea>
+          <button class="tf-btn tf-btn-primary" id="save-topic-rules" type="submit" disabled>Save rules</button>
+        </form>
+      </div>
+    </aside>
+
+    <aside class="tf-drawer" id="synthesis-create-drawer" aria-hidden="true">
+      <div class="tf-drawer-panel">
+        <div class="tf-drawer-header">
+          <h2>Create Draft</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="synthesis-create-drawer" type="button">Close</button>
+        </div>
+        <form id="synthesis-form" class="tf-form stack-form">
+          <div id="synthesis-source-list" class="tf-empty">No sources selected.</div>
+          <input id="synthesis-goal" type="text" placeholder="Goal">
+          <select id="synthesis-format">
+            <option value="summary">Summary</option>
+            <option value="outline">Outline</option>
+            <option value="report">Report</option>
+          </select>
+          <button class="tf-btn tf-btn-primary" type="submit">Create draft</button>
+        </form>
+      </div>
+    </aside>
+
+    <div class="tf-modal" id="confirm-modal" aria-hidden="true">
+      <div class="tf-modal-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">Confirm</h2>
+        <p id="confirm-message" class="tf-text-secondary">Confirm this action.</p>
+        <div class="tf-modal-actions">
+          <button class="tf-btn" id="confirm-cancel" type="button">Cancel</button>
+          <button class="tf-btn tf-btn-primary" id="confirm-ok" type="button">Confirm</button>
+        </div>
       </div>
     </div>
 

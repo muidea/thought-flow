@@ -36,7 +36,9 @@ function loadAppFunctions() {
       outlineText,
       parseRoute,
       navItemClass,
-      statusBadge
+      statusBadge,
+      renderSearchResultItem,
+      createSynthesisBasket
     });`,
     context,
     { filename: appPath },
@@ -81,6 +83,54 @@ test("navigation and status helpers map to AntD-style classes", () => {
   assert.equal(app.statusBadge("degraded"), "tf-badge tf-badge-warning");
   assert.equal(app.statusBadge("failed"), "tf-badge tf-badge-error");
   assert.equal(app.statusBadge("disabled"), "tf-badge tf-badge-default");
+});
+
+test("renderSearchResultItem exposes scores and action targets", () => {
+  const app = loadAppFunctions();
+
+  const html = app.renderSearchResultItem({
+    thought_id: "thought-1",
+    title: "Search Result",
+    snippet: "Snippet",
+    score: 0.91,
+    keyword_score: 0.8,
+    semantic_score: 0.7,
+    recency_score: 0.6,
+    tags: ["ui"],
+    path: "thoughts/demo.md",
+    explain: {
+      mode: "hybrid",
+      sort: "score",
+      score_formula: "kw + sem + rec",
+      weights: { keyword: 1, semantic: 1, recency: 0.2 },
+      keyword_source: "fts",
+      semantic_source: "embedding",
+    },
+  }, { selected: true, activeTopicId: "topic-1" });
+
+  assert.match(html, /data-select-id="thought-1" checked/);
+  assert.match(html, /score 0\.91/);
+  assert.match(html, /kw 0\.80/);
+  assert.match(html, /sem 0\.70/);
+  assert.match(html, /rec 0\.60/);
+  assert.match(html, /data-basket-id="thought-1"/);
+  assert.match(html, /data-weave-id="thought-1"/);
+  assert.match(html, /thoughts\/demo\.md/);
+  assert.match(html, /Score details/);
+  assert.match(html, /kw \+ sem \+ rec/);
+  assert.match(html, /embedding/);
+});
+
+test("synthesis basket helper deduplicates and clears sources", () => {
+  const app = loadAppFunctions();
+  const basket = app.createSynthesisBasket(["one", "one"]);
+  const values = (result) => JSON.parse(JSON.stringify(result));
+
+  assert.deepEqual(values(basket.values()), ["one"]);
+  assert.deepEqual(values(basket.add("two")), ["one", "two"]);
+  assert.deepEqual(values(basket.addMany(["two", "three"])), ["one", "two", "three"]);
+  assert.deepEqual(values(basket.clear()), []);
+  assert.deepEqual(values(basket.values()), []);
 });
 
 test("renderMarkdown supports extended document structures safely", () => {

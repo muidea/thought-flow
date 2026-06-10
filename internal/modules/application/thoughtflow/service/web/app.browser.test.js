@@ -83,11 +83,20 @@ async function runBrowserSmoke(browser, url) {
       window.location.hash = hash;
       await new Promise((resolve) => setTimeout(resolve, 0));
     };
+    const waitUntil = async (predicate) => {
+      for (let index = 0; index < 80; index++) {
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("timed out waiting for browser UI state");
+    };
     const routes = [
       ["capture", "#/capture", "#page-capture", "#capture-form"],
+      ["thoughts", "#/thoughts", "#page-thoughts", "#thought-form"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
       ["synthesis", "#/synthesis", "#page-synthesis", "#synthesis-drafts"],
+      ["jobs", "#/jobs", "#page-jobs", "#job-form"],
       ["settings", "#/settings", "#page-settings", "#settings-workspace"],
     ];
     const routeStates = [];
@@ -100,9 +109,57 @@ async function runBrowserSmoke(browser, url) {
         navActive: document.querySelector(`[data-nav="${name}"]`)?.classList.contains("active"),
       });
     }
+    await settleRoute("#/capture");
+    document.querySelector("#capture-title").value = "Browser capture";
+    document.querySelector("#capture-content").value = "Captured from browser smoke";
+    document.querySelector("#capture-form").requestSubmit();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const captureResult = document.querySelector("#capture-result")?.textContent || "";
+
+    await settleRoute("#/search");
+    document.querySelector("#search-explain").checked = true;
+    document.querySelector("#search-form").requestSubmit();
+    await waitUntil(() => document.querySelector(".tf-explain"));
+    const explainText = document.querySelector(".tf-explain")?.textContent || "";
+    document.querySelector("[data-preview-id='thought-1']")?.click();
+    await waitUntil(() => document.querySelector("#thought-drawer")?.classList.contains("open"));
+    const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
+    const thoughtDrawerText = document.querySelector("#thought-drawer-content")?.textContent || "";
+    document.querySelector("#drawer-add-synthesis")?.click();
+    const basketTextAfterDrawer = document.querySelector("#synthesis-source-count")?.textContent || "";
+    document.querySelector("[data-close-drawer='thought-drawer']")?.click();
+    document.querySelector("[data-select-id='thought-1']").checked = true;
+    document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector("#add-selected-synthesis").click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const synthesisActive = document.querySelector("#page-synthesis")?.classList.contains("active");
+    const basketText = document.querySelector("#synthesis-source-count")?.textContent || "";
+    document.querySelector("#open-synthesis-create").click();
+    const synthesisDrawerOpen = document.querySelector("#synthesis-create-drawer")?.classList.contains("open");
+    document.querySelector("[data-close-drawer='synthesis-create-drawer']")?.click();
+
+    await settleRoute("#/topics");
+    document.querySelector("#open-create-topic").click();
+    const createTopicDrawerOpen = document.querySelector("#topic-create-drawer")?.classList.contains("open");
+    document.querySelector("[data-close-drawer='topic-create-drawer']")?.click();
     await settleRoute("#/topics/demo");
     const topicRouteActive = document.querySelector("#page-topic-detail")?.classList.contains("active");
     const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
+    document.querySelector("[data-tab='members']").click();
+    const membersActive = document.querySelector("#tab-members")?.classList.contains("active");
+    document.querySelector("[data-tab='rules']").click();
+    await waitUntil(() => (document.querySelector("#topic-rules-summary")?.textContent || "").includes("Semantic"));
+    const rulesText = document.querySelector("#topic-rules-summary")?.textContent || "";
+    document.querySelector("#open-topic-rules").click();
+    const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
+    document.querySelector("[data-close-drawer='topic-rules-drawer']")?.click();
+
+    await settleRoute("#/jobs?id=job-capture");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const jobText = document.querySelector("#job-detail")?.textContent || "";
+    await settleRoute("#/settings");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const metricsText = document.querySelector("#settings-metrics-json")?.textContent || "";
     const shell = document.querySelector(".tf-layout").getBoundingClientRect();
     const clientWidth = document.documentElement.clientWidth;
     const wideElements = Array.from(document.querySelectorAll("body *"))
@@ -124,10 +181,24 @@ async function runBrowserSmoke(browser, url) {
       sidebar: !!document.querySelector(".tf-sider"),
       dashboardActive,
       topicItems: document.querySelectorAll(".topic-item").length,
-      searchItems: document.querySelectorAll(".result-item").length,
+      searchItems: document.querySelectorAll("#search-results .result-item").length,
       routeStates,
+      captureResult,
+      thoughtDrawerOpen,
+      explainText,
+      thoughtDrawerText,
+      basketTextAfterDrawer,
+      synthesisActive,
+      basketText,
+      synthesisDrawerOpen,
+      createTopicDrawerOpen,
       topicRouteActive,
       topicsNavActive,
+      membersActive,
+      rulesText,
+      rulesDrawerOpen,
+      jobText,
+      metricsText,
       shellWidth: shell.width,
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth,
@@ -143,13 +214,29 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.searchItems, 1);
   assert.deepEqual(state.routeStates, [
     { name: "capture", active: true, visible: true, navActive: true },
+    { name: "thoughts", active: true, visible: true, navActive: true },
     { name: "search", active: true, visible: true, navActive: true },
     { name: "topics", active: true, visible: true, navActive: true },
     { name: "synthesis", active: true, visible: true, navActive: true },
+    { name: "jobs", active: true, visible: true, navActive: true },
     { name: "settings", active: true, visible: true, navActive: true },
   ]);
+  assert.match(state.captureResult, /View thought/);
+  assert.equal(state.thoughtDrawerOpen, true);
+  assert.match(state.explainText, /Score details/);
+  assert.match(state.thoughtDrawerText, /Browser Thought/);
+  assert.match(state.basketTextAfterDrawer, /1 selected sources/);
+  assert.equal(state.synthesisActive, true);
+  assert.match(state.basketText, /1 selected sources/);
+  assert.equal(state.synthesisDrawerOpen, true);
+  assert.equal(state.createTopicDrawerOpen, true);
   assert.equal(state.topicRouteActive, true);
   assert.equal(state.topicsNavActive, true);
+  assert.equal(state.membersActive, true);
+  assert.match(state.rulesText, /Semantic/);
+  assert.equal(state.rulesDrawerOpen, true);
+  assert.match(state.jobText, /job-capture/);
+  assert.match(state.metricsText, /thoughtflow_background_jobs/);
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
@@ -238,6 +325,13 @@ function startFixtureServer() {
           background: { status: "ready" },
           events: { status: "ready" },
         }));
+      case "/api/system/metrics":
+        return json(res, api({
+          values: {
+            thoughtflow_background_jobs: 1,
+            thoughtflow_git_commit_total: 0,
+          },
+        }));
       case "/api/topics":
         if (req.method === "GET") {
           return json(res, api([{ id: "demo", name: "Demo Topic", member_count: 1, word_count: 12, description: "Browser smoke" }]));
@@ -245,13 +339,64 @@ function startFixtureServer() {
         return json(res, api({ id: "demo", name: "Demo Topic" }), 201);
       case "/api/topics/demo":
         return json(res, api({
-          topic: { id: "demo", name: "Demo Topic", rules: {}, auto_weave: true },
+          topic: {
+            id: "demo",
+            name: "Demo Topic",
+            rules: { keywords: { any: ["browser"] }, tags: { any: ["ui"] }, semantic: { enabled: true, threshold: 0.75 } },
+            outline: [{ title: "Notes" }],
+            auto_weave: true,
+          },
           document: "# Demo Topic\n\nBrowser smoke document.",
-          members: [],
+          members: [{ thought_id: "thought-1", title: "Browser Thought", match_type: "keyword", score: 0.9 }],
         }));
       case "/api/topics/demo/weave-proposals":
       case "/api/synthesis":
         return json(res, api([]));
+      case "/api/thoughts":
+        if (req.method === "POST") {
+          return json(res, api({
+            thought: {
+              id: "thought-capture",
+              title: "Browser capture",
+              status: "captured",
+              path: "thoughts/browser-capture.md",
+            },
+            jobs: [{ id: "job-capture", type: "refine", status: "queued" }],
+          }), 202);
+        }
+        break;
+      case "/api/thoughts/thought-1":
+        return json(res, api({
+          thought: {
+            id: "thought-1",
+            display_title: "Browser Thought",
+            user_title: "Browser Thought",
+            refine_status: "succeeded",
+            index_status: "succeeded",
+            topic_status: "matched",
+            path: "thoughts/browser.md",
+            summary: "Browser summary",
+          },
+          content: {
+            original: "Browser original",
+            extracted_content: "Browser extracted",
+            links: "- https://example.test",
+          },
+          jobs: [{ id: "job-capture", type: "refine", status: "succeeded" }],
+        }));
+      case "/api/jobs/job-capture":
+        return json(res, api({
+          id: "job-capture",
+          type: "refine",
+          resource_type: "thought",
+          resource_id: "thought-capture",
+          status: "succeeded",
+          message: "done",
+          attempt: 1,
+          max_attempts: 1,
+          progress: 1,
+          created_at: "2026-06-10T00:00:00Z",
+        }));
       case "/api/search":
         return json(res, api({
           items: [{
@@ -263,6 +408,14 @@ function startFixtureServer() {
             semantic_score: 0,
             recency_score: 0,
             tags: ["ui"],
+            explain: {
+              mode: "hybrid",
+              sort: "score",
+              score_formula: "keyword + semantic + recency",
+              weights: { keyword: 1, semantic: 1, recency: 0.2 },
+              keyword_source: "fts",
+              semantic_source: "embedding",
+            },
           }],
           page: 1,
           page_size: 20,
