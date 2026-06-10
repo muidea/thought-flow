@@ -1,4 +1,5 @@
 const state = {
+  route: { page: "dashboard", nav: "dashboard", params: {}, query: {} },
   topics: [],
   activeTopicId: "",
   selectedThoughts: new Set(),
@@ -13,6 +14,52 @@ const state = {
 let markdownParser = null;
 
 const $ = (selector) => document.querySelector(selector);
+
+function parseRoute(hash) {
+  const raw = String(hash || "").replace(/^#\/?/, "");
+  const [pathPart, queryPart = ""] = raw.split("?");
+  const parts = pathPart.split("/").filter(Boolean);
+  const query = Object.fromEntries(new URLSearchParams(queryPart).entries());
+  if (parts.length === 0) return { page: "dashboard", nav: "dashboard", params: {}, query };
+  if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
+    return { page: "topic-review", nav: "topics", params: { topicId: parts[1] }, query };
+  }
+  if (parts[0] === "topics" && parts[1]) {
+    return { page: "topic-detail", nav: "topics", params: { topicId: parts[1] }, query };
+  }
+  if (parts[0] === "thoughts") {
+    return { page: "thoughts", nav: "thoughts", params: { thoughtId: query.id || "" }, query };
+  }
+  if (parts[0] === "jobs") {
+    return { page: "jobs", nav: "jobs", params: { jobId: query.id || "" }, query };
+  }
+  const known = new Set(["dashboard", "capture", "search", "topics", "synthesis", "settings"]);
+  if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
+  return { page: "dashboard", nav: "dashboard", params: {}, query };
+}
+
+function navItemClass(route, nav) {
+  return route.nav === nav ? "tf-menu-item active" : "tf-menu-item";
+}
+
+function statusBadge(status) {
+  switch (String(status || "").toLowerCase()) {
+    case "ready":
+    case "configured":
+    case "ok":
+      return "tf-badge tf-badge-success";
+    case "degraded":
+    case "retrying":
+    case "not_configured":
+      return "tf-badge tf-badge-warning";
+    case "failed":
+    case "error":
+    case "unready":
+      return "tf-badge tf-badge-error";
+    default:
+      return "tf-badge tf-badge-default";
+  }
+}
 
 function toast(message) {
   const node = $("#toast");
@@ -479,18 +526,39 @@ async function loadStatus() {
   try {
     const status = await api("/api/system/status");
     $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
+    $("#workspace-summary").textContent = status.workspace.root_path || status.workspace.id || "local";
+    $("#dashboard-workspace").textContent = status.workspace?.status || status.status;
+    $("#dashboard-ai").textContent = status.ai?.status || "unknown";
+    $("#dashboard-git").textContent = status.git?.status || "unknown";
+    $("#dashboard-search").textContent = status.duckdb?.status || "unknown";
+    $("#settings-workspace").textContent = status.workspace?.root_path || status.workspace?.status || "unknown";
+    $("#settings-duckdb").textContent = status.duckdb?.path || status.duckdb?.status || "unknown";
+    $("#settings-ai").textContent = `${status.ai?.status || "unknown"} · ${status.ai?.chat_model || "local"}`;
+    $("#settings-git").textContent = status.git?.error || status.git?.status || "unknown";
+    renderTopbarStatus(status);
   } catch (error) {
     $("#system-status").textContent = "degraded";
   }
+}
+
+function renderTopbarStatus(status) {
+  const topbar = $("#topbar-status");
+  if (!topbar || !status) return;
+  const items = [
+    ["Workspace", status.workspace?.status],
+    ["AI", status.ai?.status],
+    ["Git", status.git?.status],
+    ["Search", status.duckdb?.status],
+  ];
+  topbar.innerHTML = items
+    .map(([label, value]) => `<span class="${statusBadge(value)}">${escapeHTML(label)} · ${escapeHTML(value || "unknown")}</span>`)
+    .join("");
 }
 
 async function loadTopics() {
   const topics = await api("/api/topics");
   state.topics = topics || [];
   renderTopics();
-  if (!state.activeTopicId && state.topics.length > 0) {
-    await openTopic(state.topics[0].id);
-  }
 }
 
 function renderTopics() {
@@ -521,8 +589,13 @@ function renderTopics() {
     })
     .join("");
   list.querySelectorAll(".topic-item").forEach((item) => {
-    item.addEventListener("click", () => openTopic(item.dataset.topicId));
+    item.addEventListener("click", () => navigateTopic(item.dataset.topicId));
   });
+}
+
+function navigateTopic(topicId, review = false) {
+  if (!topicId) return;
+  window.location.hash = review ? `#/topics/${encodeURIComponent(topicId)}/review` : `#/topics/${encodeURIComponent(topicId)}`;
 }
 
 async function openTopic(topicId) {
@@ -533,6 +606,7 @@ async function openTopic(topicId) {
   $("#topic-title").textContent = detail.topic.name;
   $("#topic-document").innerHTML = renderMarkdown(detail.document || "No topic document.");
   $("#rebuild-topic").disabled = false;
+  $("#open-topic-review").href = `#/topics/${encodeURIComponent(topicId)}/review`;
   populateTopicEditor(detail.topic);
   renderTopics();
   await loadWeaveProposals(topicId);
@@ -937,6 +1011,8 @@ function connectEvents() {
 
 function appendEvent(type, data) {
   const list = $("#event-list");
+  const jobsList = $("#jobs-event-list");
+  const dashboardList = $("#dashboard-events");
   const item = document.createElement("article");
   item.className = "event-item";
   let parsed = data;
@@ -947,13 +1023,44 @@ function appendEvent(type, data) {
     parsed = data;
   }
   item.innerHTML = `<strong>${escapeHTML(type)}</strong><div class="event-meta">${escapeHTML(parsed)}</div>`;
+  prependEventItem(list, item);
+  prependEventItem(jobsList, item.cloneNode(true));
+  prependEventItem(dashboardList, item.cloneNode(true), 8);
+}
+
+function prependEventItem(list, item, limit = 60) {
+  if (!list || !item) return;
   list.prepend(item);
-  while (list.children.length > 60) list.removeChild(list.lastChild);
+  while (list.children.length > limit) list.removeChild(list.lastChild);
 }
 
 function activateTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
+}
+
+function renderRoute(route = state.route) {
+  document.querySelectorAll(".tf-page").forEach((page) => {
+    page.classList.toggle("active", page.dataset.page === route.page);
+  });
+  document.querySelectorAll("[data-nav]").forEach((item) => {
+    item.className = navItemClass(route, item.dataset.nav);
+  });
+}
+
+async function applyRoute(hash = window.location.hash) {
+  const route = parseRoute(hash);
+  state.route = route;
+  renderRoute(route);
+  if ((route.page === "topic-detail" || route.page === "topic-review") && route.params.topicId) {
+    if (state.activeTopicId !== route.params.topicId || !state.activeTopicDetail) {
+      await openTopic(route.params.topicId);
+    }
+    if (route.page === "topic-review") await loadWeaveProposals(route.params.topicId);
+  }
+  if (route.page === "thoughts" && route.params.thoughtId) {
+    await previewThought(route.params.thoughtId);
+  }
 }
 
 function bind() {
@@ -968,6 +1075,7 @@ function bind() {
   $("#rebuild-topic").addEventListener("click", () => rebuildTopic().catch((error) => toast(error.message)));
   $("#reindex-button").addEventListener("click", () => reindex().catch((error) => toast(error.message)));
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => activateTab(tab.dataset.tab)));
+  window.addEventListener("hashchange", () => applyRoute().catch((error) => toast(error.message)));
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -978,10 +1086,14 @@ function bind() {
 
 async function boot() {
   bind();
+  if (!window.location.hash) window.location.hash = "#/dashboard";
+  state.route = parseRoute(window.location.hash);
+  renderRoute();
   await loadStatus();
   await loadTopics();
   await loadSynthesisDrafts();
   await runSearch();
+  await applyRoute();
   connectEvents();
 }
 

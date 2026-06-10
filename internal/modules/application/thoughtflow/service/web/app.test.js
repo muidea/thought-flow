@@ -19,6 +19,7 @@ function loadAppFunctions() {
       clearTimeout: () => {},
       setTimeout: () => 0,
     },
+    URLSearchParams,
     fetch: async () => ({ ok: true, json: async () => ({ data: null }) }),
     EventSource: function EventSource() {},
     console,
@@ -32,7 +33,10 @@ function loadAppFunctions() {
       renderDiff,
       renderSynthesisDraft,
       outlineFromText,
-      outlineText
+      outlineText,
+      parseRoute,
+      navItemClass,
+      statusBadge
     });`,
     context,
     { filename: appPath },
@@ -54,6 +58,29 @@ Text with **strong** and \`code\`.
   assert.match(html, /title="thoughts\/2026\/06\/source\.md">Source<\/code>/);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
+});
+
+test("parseRoute maps hash routes to pages and navigation groups", () => {
+  const app = loadAppFunctions();
+  const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
+
+  assert.deepEqual(route(""), { page: "dashboard", nav: "dashboard", params: {}, query: {} });
+  assert.deepEqual(route("#/topics/demo"), { page: "topic-detail", nav: "topics", params: { topicId: "demo" }, query: {} });
+  assert.deepEqual(route("#/topics/demo/review"), { page: "topic-review", nav: "topics", params: { topicId: "demo" }, query: {} });
+  assert.deepEqual(route("#/thoughts?id=abc"), { page: "thoughts", nav: "thoughts", params: { thoughtId: "abc" }, query: { id: "abc" } });
+  assert.deepEqual(route("#/jobs?id=job-1"), { page: "jobs", nav: "jobs", params: { jobId: "job-1" }, query: { id: "job-1" } });
+});
+
+test("navigation and status helpers map to AntD-style classes", () => {
+  const app = loadAppFunctions();
+  const topicRoute = app.parseRoute("#/topics/demo/review");
+
+  assert.equal(app.navItemClass(topicRoute, "topics"), "tf-menu-item active");
+  assert.equal(app.navItemClass(topicRoute, "search"), "tf-menu-item");
+  assert.equal(app.statusBadge("ready"), "tf-badge tf-badge-success");
+  assert.equal(app.statusBadge("degraded"), "tf-badge tf-badge-warning");
+  assert.equal(app.statusBadge("failed"), "tf-badge tf-badge-error");
+  assert.equal(app.statusBadge("disabled"), "tf-badge tf-badge-default");
 });
 
 test("renderMarkdown supports extended document structures safely", () => {

@@ -49,11 +49,13 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), `/vendor/markdown-it.min.js`) {
 		t.Fatalf("expected markdown parser script in embedded index")
 	}
-	if !strings.Contains(res.Body.String(), `id="topic-edit-form"`) {
-		t.Fatalf("expected topic rules editor in embedded index")
+	if !strings.Contains(res.Body.String(), `class="tf-sider"`) ||
+		!strings.Contains(res.Body.String(), `data-nav="dashboard"`) ||
+		!strings.Contains(res.Body.String(), `id="page-container"`) {
+		t.Fatalf("expected redesigned app shell in embedded index")
 	}
-	if !strings.Contains(res.Body.String(), `id="tab-review"`) {
-		t.Fatalf("expected weave review panel in embedded index")
+	if !strings.Contains(res.Body.String(), `id="page-topic-review"`) {
+		t.Fatalf("expected dedicated weave review page in embedded index")
 	}
 }
 

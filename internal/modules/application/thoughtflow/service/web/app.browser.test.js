@@ -73,16 +73,37 @@ async function runBrowserSmoke(browser, url) {
   await page.send("Page.enable");
   await page.navigate(url);
   await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
+  await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
   await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
 
-  const state = await page.evaluate(() => {
-    document.querySelector('[data-tab="review"]').click();
-    const reviewActive = document.querySelector("#tab-review").classList.contains("active");
-    document.querySelector('[data-tab="synthesis"]').click();
-    const synthesisActive = document.querySelector("#tab-synthesis").classList.contains("active");
-    const shell = document.querySelector(".app-shell").getBoundingClientRect();
-    const capture = document.querySelector("#capture-form").getBoundingClientRect();
+  const state = await page.evaluate(async () => {
+    const dashboardActive = document.querySelector("#page-dashboard")?.classList.contains("active");
+    const settleRoute = async (hash) => {
+      window.location.hash = hash;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    const routes = [
+      ["capture", "#/capture", "#page-capture", "#capture-form"],
+      ["search", "#/search", "#page-search", "#search-results"],
+      ["topics", "#/topics", "#page-topics", "#topic-list"],
+      ["synthesis", "#/synthesis", "#page-synthesis", "#synthesis-drafts"],
+      ["settings", "#/settings", "#page-settings", "#settings-workspace"],
+    ];
+    const routeStates = [];
+    for (const [name, hash, pageSelector, visibleSelector] of routes) {
+      await settleRoute(hash);
+      routeStates.push({
+        name,
+        active: document.querySelector(pageSelector)?.classList.contains("active"),
+        visible: !!document.querySelector(visibleSelector),
+        navActive: document.querySelector(`[data-nav="${name}"]`)?.classList.contains("active"),
+      });
+    }
+    await settleRoute("#/topics/demo");
+    const topicRouteActive = document.querySelector("#page-topic-detail")?.classList.contains("active");
+    const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
+    const shell = document.querySelector(".tf-layout").getBoundingClientRect();
     const clientWidth = document.documentElement.clientWidth;
     const wideElements = Array.from(document.querySelectorAll("body *"))
       .map((node) => {
@@ -100,12 +121,14 @@ async function runBrowserSmoke(browser, url) {
     return {
       title: document.querySelector("h1")?.textContent,
       status: document.querySelector("#system-status")?.textContent,
+      sidebar: !!document.querySelector(".tf-sider"),
+      dashboardActive,
       topicItems: document.querySelectorAll(".topic-item").length,
       searchItems: document.querySelectorAll(".result-item").length,
-      reviewActive,
-      synthesisActive,
+      routeStates,
+      topicRouteActive,
+      topicsNavActive,
       shellWidth: shell.width,
-      captureWidth: capture.width,
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth,
       wideElements,
@@ -114,12 +137,20 @@ async function runBrowserSmoke(browser, url) {
 
   assert.equal(state.title, "ThoughtFlow");
   assert.match(state.status, /browser \/ ready/);
+  assert.equal(state.sidebar, true);
+  assert.equal(state.dashboardActive, true);
   assert.equal(state.topicItems, 1);
   assert.equal(state.searchItems, 1);
-  assert.equal(state.reviewActive, true);
-  assert.equal(state.synthesisActive, true);
+  assert.deepEqual(state.routeStates, [
+    { name: "capture", active: true, visible: true, navActive: true },
+    { name: "search", active: true, visible: true, navActive: true },
+    { name: "topics", active: true, visible: true, navActive: true },
+    { name: "synthesis", active: true, visible: true, navActive: true },
+    { name: "settings", active: true, visible: true, navActive: true },
+  ]);
+  assert.equal(state.topicRouteActive, true);
+  assert.equal(state.topicsNavActive, true);
   assert.ok(state.shellWidth > 0);
-  assert.ok(state.captureWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
 }
@@ -198,7 +229,15 @@ function startFixtureServer() {
         res.writeHead(204);
         return res.end();
       case "/api/system/status":
-        return json(res, api({ status: "ready", workspace: { id: "browser" } }));
+        return json(res, api({
+          status: "ready",
+          workspace: { id: "browser", status: "ready", root_path: "/tmp/browser" },
+          ai: { status: "ready", chat_model: "browser-chat" },
+          git: { status: "disabled" },
+          duckdb: { status: "ready", path: "/tmp/browser/.thoughtflow/thoughtflow.duckdb" },
+          background: { status: "ready" },
+          events: { status: "ready" },
+        }));
       case "/api/topics":
         if (req.method === "GET") {
           return json(res, api([{ id: "demo", name: "Demo Topic", member_count: 1, word_count: 12, description: "Browser smoke" }]));
