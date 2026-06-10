@@ -1,4 +1,4 @@
-# ThoughtFlow workspace-local configuration template.
+# ThoughtFlow magicCommon application configuration template.
 # Effective path: <workspace>/.thoughtflow/application.toml
 #
 # ThoughtFlow reuses magicCommon framework/configuration directly:
@@ -7,10 +7,29 @@
 # 3. Environment variables.
 # 4. CLI flags mapped to environment variables.
 
+# magicCommon framework/application service identity.
+endpointName = "thoughtflow"
+app_name = "ThoughtFlow"
+version = "0.1.0"
+
+[applicationInfo]
+uuid = "thoughtflow-local"
+name = "ThoughtFlow"
+shortName = "thoughtflow"
+icon = "thoughtflow.png"
+version = "0.1.0"
+domain = "local"
+email = "thoughtflow@example.local"
+author = "ThoughtFlow"
+description = "Local-first thought capture and synthesis service"
+
+[debug]
+enabled = false
+
 [server]
 # HTTP listen address.
 host = "127.0.0.1"
-port = "8080"
+port = 8080
 
 [workspace]
 # Workspace root. Relative paths are resolved from the process working directory.
@@ -59,3 +78,14 @@ api_key = ""
 chat_model = "gpt-4o-mini"
 embedding_model = "text-embedding-3-small"
 timeout_seconds = 30
+
+# magicCommon framework/service dependency checks.
+# Keep these commented unless a deployment must fail fast on external services.
+#
+# [serviceDependencies.magicCas]
+# kind = "required"
+# target = "http://magiccas:8080"
+#
+# [serviceDependencies.magicFile]
+# kind = "optional"
+# target = "http://magicfile:8080"

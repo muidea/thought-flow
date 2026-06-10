@@ -803,9 +803,20 @@ ai:
 关键配置：
 
 ```toml
+endpointName = "thoughtflow"
+app_name = "ThoughtFlow"
+version = "0.1.0"
+
+[applicationInfo]
+uuid = "thoughtflow-local"
+name = "ThoughtFlow"
+shortName = "thoughtflow"
+version = "0.1.0"
+description = "Local-first thought capture and synthesis service"
+
 [server]
 host = "127.0.0.1"
-port = "8080"
+port = 8080
 
 [workspace]
 root = "./thoughtflow-workspace"
