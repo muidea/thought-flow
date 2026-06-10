@@ -1025,7 +1025,125 @@ Browser smoke 需要继续覆盖：
 5. Synthesis 页面可打开。
 6. Settings 状态卡片可见。
 
-### 13.3 手工验收清单
+### 13.3 现有测试文件调整清单
+
+进入 Web 改造代码阶段时，必须同步调整现有测试，否则 CI 会继续按旧的一屏三栏 DOM 结构断言。
+
+#### 13.3.1 `app.browser.test.js`
+
+当前 browser smoke 断言旧结构：
+
+1. `.topic-item`
+2. `.result-item`
+3. `#tab-review`
+4. `#tab-synthesis`
+5. `#capture-form`
+6. `.app-shell` 三栏布局宽度
+
+Phase 1 后应改为断言新信息架构：
+
+1. Sidebar 导航存在。
+2. 默认 `#/dashboard` 页面可加载。
+3. 左侧导航 active 状态和 hash route 一致。
+4. 可切换到 `#/capture`，并看到采集表单。
+5. 可切换到 `#/search`，mock API 返回结果后能看到结果列表。
+6. 可切换到 `#/topics`，并能进入 topic detail。
+7. 可切换到 `#/synthesis`，并看到草稿列表/空态。
+8. 可切换到 `#/settings`，并看到系统状态卡片。
+9. Chrome desktop/mobile 均无水平溢出。
+10. Firefox/Safari 仍保留目标声明和环境 skip。
+
+Phase 2 后新增 browser smoke 覆盖：
+
+1. Capture 提交成功后出现 Thought/Job 结果入口。
+2. Search 结果可勾选并加入 synthesis basket。
+3. Thought preview Drawer 可打开和关闭。
+
+Phase 3 后新增 browser smoke 覆盖：
+
+1. Topic create Drawer 可打开。
+2. Topic detail tabs 可切换。
+3. Rules Drawer 可打开，保存按钮状态合理。
+
+Phase 4 后新增 browser smoke 覆盖：
+
+1. Weave Review proposal queue 可打开。
+2. Diff 和 proposed document 区域可见。
+3. Synthesis draft editor 可打开。
+
+#### 13.3.2 `app.test.js`
+
+现有可继续保留：
+
+1. `renderMarkdown` HTML escape 和 Markdown 渲染。
+2. 扩展 Markdown 结构渲染。
+3. CommonMark/GFM 解析。
+4. `renderDiff`。
+5. `renderSynthesisDraft` source link 去重。
+6. outline helper。
+
+改造时应新增纯函数或轻 DOM 测试：
+
+1. `parseRoute(hash)`：
+   - 空 hash -> dashboard。
+   - `#/topics/demo` -> topic detail。
+   - `#/topics/demo/review` -> weave review。
+   - `#/thoughts?id=abc` -> thoughts + active id。
+   - `#/jobs?id=job-1` -> jobs + active job id。
+2. `navItemClass(route, item)`：
+   - 当前页面 active。
+   - topic detail/review 均归属 Topics 导航 active。
+3. `statusBadge(status)`：
+   - ready -> success。
+   - degraded -> warning。
+   - failed/error -> error。
+   - disabled/not_configured -> default。
+4. `renderSearchResultItem(result, options)`：
+   - score/explain 字段展示。
+   - path 可复制。
+   - selected 状态正确。
+5. `synthesisBasket` helper：
+   - add/remove/toggle/clear。
+   - 去重。
+   - 与 search selected thought IDs 同步。
+
+#### 13.3.3 `service_test.go`
+
+仅修改静态 HTML/CSS/JS 时，服务端测试通常不需要大规模改动。
+
+需要关注：
+
+1. `TestHandleWebServesEmbeddedIndex`：
+   - 旧断言如 `id="topic-edit-form"`、`id="tab-review"` 需要替换为新 AppShell 导航、PageContainer 或 root mount 节点断言。
+2. `TestHandleWebServesEmbeddedScript`：
+   - 继续验证 `app.js` 可被嵌入服务返回。
+3. `TestHandleWebServesMarkdownParserVendorScript`：
+   - 继续保留。
+4. 如果新增静态资源路径，例如 icons、额外 CSS、额外 JS 文件，需要补资源服务测试。
+5. 如果新增 API 才需要补 handler/service 测试；单纯 UI 重构不应修改后端行为。
+
+#### 13.3.4 `Makefile` 与 GitHub Actions
+
+当前入口可以保持：
+
+1. `make node-check`
+2. `make node-test`
+3. `make browser-test`
+4. `make check`
+
+仅在新增测试文件或静态资源检查命令时调整 Makefile。CI 应继续调用 `make check`，避免本地和远端验证入口分叉。
+
+#### 13.3.5 测试迁移顺序
+
+每个 Phase 的代码提交应遵循：
+
+1. 先调整或新增对应测试，明确新 DOM/route 行为。
+2. 再实现 UI 代码。
+3. 跑 `make node-check && make node-test && make browser-test`。
+4. 若改动影响后端静态资源服务，追加 `go test ./internal/modules/application/thoughtflow/service`。
+5. 提交时说明完成的 Phase 和对应测试覆盖。
+
+### 13.4 手工验收清单
 
 每个阶段完成后至少验证：
 
