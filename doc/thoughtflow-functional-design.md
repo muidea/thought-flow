@@ -211,7 +211,7 @@ thoughtflow-workspace/
       memberships/
         20260609-143010-8f3a.yaml
   attachments/
-thoughtflow-data/
+thoughtflow-runtime/
   thoughtflow.duckdb
   jobs/
   logs/
@@ -220,8 +220,8 @@ thoughtflow-data/
 说明：
 
 1. `thoughts/` 和 `topics/` 是用户知识资产，默认进入 Git。
-2. `thoughtflow-data/` 是运行时数据目录，默认不进入 Git。
-3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，运行态数据目录由 `workspace.data_dir` 明确定义。
+2. `thoughtflow-runtime/` 是运行状态目录，默认不进入 Git。
+3. 配置目录与运行状态目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，运行态状态目录由 `runtime.state_dir` 明确定义。
 4. `attachments/` 存放未来上传文件、网页快照或图片资源。
 5. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
 
@@ -801,9 +801,9 @@ timeout_seconds = 60
 
 目录约束：
 
-1. 数据目录由 `workspace.data_dir` 定义。
-2. `config-dir` 与 `workspace.data_dir` 不能相等。
-3. `config-dir` 与 `workspace.data_dir` 不能互相嵌套。
+1. 运行状态目录由 `runtime.state_dir` 定义。
+2. `config-dir` 与 `runtime.state_dir` 不能相等。
+3. `config-dir` 与 `runtime.state_dir` 不能互相嵌套。
 
 关键配置：
 
@@ -813,9 +813,11 @@ host = "127.0.0.1"
 port = 8080
 
 [workspace]
-root = "./thoughtflow-workspace"
-data_dir = "./thoughtflow-data"
+content_dir = "./thoughtflow-workspace"
 auto_init_git = true
+
+[runtime]
+state_dir = "./thoughtflow-runtime"
 
 [capture]
 duplicate_policy = "warn"

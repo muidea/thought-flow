@@ -390,7 +390,20 @@
                 <div id="settings-git-detail" class="tf-description-list">Git status not loaded.</div>
               </div>
               <div id="tab-settings-config" class="tab-panel">
-                <p class="tf-text-secondary">Use <code>&lt;config-dir&gt;/application.toml</code>. Define runtime data with <code>workspace.data_dir</code> and keep it separate from the config directory. Template: <code>doc/application.example.toml</code>. Configuration is documented in <code>doc/thoughtflow-usage-config.md</code>.</p>
+                <div class="tf-description-list">
+                  <dl>
+                    <dt>Config file</dt>
+                    <dd>Use <code>&lt;config-dir&gt;/application.toml</code>.</dd>
+                    <dt>Content directory</dt>
+                    <dd><code>workspace.content_dir</code> stores user-owned knowledge assets: thoughts, topics, and attachments.</dd>
+                    <dt>Runtime state</dt>
+                    <dd><code>runtime.state_dir</code> stores rebuildable service state: jobs, logs, and local indexes. Keep it separate from the config directory.</dd>
+                    <dt>Template</dt>
+                    <dd><code>doc/application.example.toml</code></dd>
+                    <dt>Documentation</dt>
+                    <dd><code>doc/thoughtflow-usage-config.md</code></dd>
+                  </dl>
+                </div>
               </div>
             </section>
           </section>

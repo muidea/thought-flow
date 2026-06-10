@@ -17,7 +17,7 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	if cfg.Server.Host != "127.0.0.1" || cfg.Server.Port != "8080" {
 		t.Fatalf("server config = %#v", cfg.Server)
 	}
-	if cfg.Workspace.Root != "./thoughtflow-workspace" || cfg.Workspace.DataDir != "./thoughtflow-data" || !cfg.Workspace.AutoInitGit {
+	if cfg.Workspace.ContentDir != "./thoughtflow-workspace" || cfg.Runtime.StateDir != "./thoughtflow-runtime" || !cfg.Workspace.AutoInitGit {
 		t.Fatalf("workspace config = %#v", cfg.Workspace)
 	}
 	if cfg.GitSync.DebounceDuration != 5*time.Second {
@@ -46,8 +46,8 @@ func TestValidateDirectorySeparationAcceptsDifferentHierarchies(t *testing.T) {
 	base := t.TempDir()
 	configDir := filepath.Join(base, "workspace", "config")
 	cfg := defaultConfig()
-	cfg.Workspace.Root = filepath.Join(base, "workspace")
-	cfg.Workspace.DataDir = filepath.Join(base, "workspace-data")
+	cfg.Workspace.ContentDir = filepath.Join(base, "workspace")
+	cfg.Runtime.StateDir = filepath.Join(base, "runtime")
 
 	if err := ValidateDirectorySeparation(configDir, cfg); err != nil {
 		t.Fatalf("ValidateDirectorySeparation() error = %v", err)
@@ -81,7 +81,7 @@ func TestValidateDirectorySeparationRejectsDataDirectoryHierarchy(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := defaultConfig()
-			cfg.Workspace.DataDir = tt.dataDir
+			cfg.Runtime.StateDir = tt.dataDir
 			if err := ValidateDirectorySeparation(tt.configDir, cfg); err == nil {
 				t.Fatal("expected directory separation error")
 			}
@@ -100,9 +100,11 @@ host = "0.0.0.0"
 port = "9090"
 
 [workspace]
-root = "`+filepath.ToSlash(root)+`"
-data_dir = "`+filepath.ToSlash(dataDir)+`"
+content_dir = "`+filepath.ToSlash(root)+`"
 auto_init_git = false
+
+[runtime]
+state_dir = "`+filepath.ToSlash(dataDir)+`"
 
 [capture]
 duplicate_policy = "skip"
@@ -139,7 +141,7 @@ timeout_seconds = 17
 	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != "9090" {
 		t.Fatalf("server config = %#v", cfg.Server)
 	}
-	if cfg.Workspace.Root != filepath.ToSlash(root) || cfg.Workspace.DataDir != filepath.ToSlash(dataDir) || cfg.Workspace.AutoInitGit {
+	if cfg.Workspace.ContentDir != filepath.ToSlash(root) || cfg.Runtime.StateDir != filepath.ToSlash(dataDir) || cfg.Workspace.AutoInitGit {
 		t.Fatalf("workspace config = %#v", cfg.Workspace)
 	}
 	if cfg.Capture.DuplicatePolicy != "skip" {
@@ -184,7 +186,7 @@ func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 	if cfg.Server.Host != "127.0.0.1" || cfg.Server.Port != "8080" {
 		t.Fatalf("server config = %#v", cfg.Server)
 	}
-	if cfg.Workspace.Root != "./thoughtflow-workspace" || cfg.Workspace.DataDir != "./thoughtflow-data" || !cfg.Workspace.AutoInitGit {
+	if cfg.Workspace.ContentDir != "./thoughtflow-workspace" || cfg.Runtime.StateDir != "./thoughtflow-runtime" || !cfg.Workspace.AutoInitGit {
 		t.Fatalf("workspace config = %#v", cfg.Workspace)
 	}
 	if cfg.Capture.DuplicatePolicy != "warn" {

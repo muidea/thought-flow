@@ -13,13 +13,18 @@ host = "127.0.0.1"
 port = 8080
 
 [workspace]
-# Workspace root. Relative paths are resolved from the process working directory.
-root = "./thoughtflow-workspace"
-# Runtime data directory for jobs, logs, and local indexes.
-data_dir = "./thoughtflow-data"
+# Content directory stores user-owned knowledge assets: thoughts, topics, and attachments.
+# These files are readable outside ThoughtFlow and are the content Git should track.
+# Relative paths are resolved from the process working directory.
+content_dir = "./thoughtflow-workspace"
 # Git initialization policy field. Commit behavior is controlled by git_sync.enabled
 # and the actual local Git repository state.
 auto_init_git = true
+
+[runtime]
+# State directory stores rebuildable service state: jobs, logs, and local indexes.
+# Keep it separate from the config directory and outside the knowledge asset model.
+state_dir = "./thoughtflow-runtime"
 
 [capture]
 # Supported values: "warn" and "allow".
@@ -39,7 +44,7 @@ enabled = true
 debounce_seconds = 5
 
 [search]
-# Relative paths are resolved against workspace.data_dir.
+# Relative paths are resolved against runtime.state_dir.
 duckdb_path = "thoughtflow.duckdb"
 # Supported values: keyword, semantic, hybrid.
 default_mode = "hybrid"

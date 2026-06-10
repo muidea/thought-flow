@@ -27,8 +27,8 @@
    - `thoughts/`
    - `topics/`
    - `attachments/`
-   - `<workspace.data_dir>/jobs`
-   - `<workspace.data_dir>/logs`
+   - `<runtime.state_dir>/jobs`
+   - `<runtime.state_dir>/logs`
 6. 原子笔记 Markdown 原子写入和读取：
    - 写入已有 thought 文件时保留未知 front matter 字段块，保证未来字段和外部工具字段向后兼容。
    - `errors` front matter 字段支持 `ErrorRef` 写入和读取，用于持久化采集、抓取和加工告警/失败原因。
@@ -67,7 +67,7 @@
 15. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
     - 启动时将 magicCommon framework `ConfigDir` 指向独立配置目录，并读取 `<config-dir>/application.toml`；默认配置目录来自 OS 用户配置目录。
-    - 运行态数据目录由 `workspace.data_dir` 定义，启动前校验配置目录和数据目录不相等、不嵌套。
+    - 运行状态目录由 `runtime.state_dir` 定义，启动前校验配置目录和运行状态目录不相等、不嵌套。
     - ThoughtFlow 读取 magicCommon 导出的原始 application 配置，不使用环境变量覆盖业务配置。
     - 启动参数仅保留 `--config-dir`，用于定位配置目录。
 
@@ -292,4 +292,4 @@ UI 验证环境：
 当前限制：
 
 1. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
-2. `workspace.data_dir` 运行时数据只作为本地任务快照，不是长期事实源。
+2. `runtime.state_dir` 运行时数据只作为本地任务快照，不是长期事实源。

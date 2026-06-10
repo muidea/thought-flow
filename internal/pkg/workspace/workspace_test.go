@@ -14,7 +14,8 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 	root := filepath.Join(base, "workspace")
 	dataDir := filepath.Join(base, "data")
 	ws, err := Open(context.Background(), appconfig.Config{
-		Workspace: appconfig.WorkspaceConfig{Root: root, DataDir: dataDir},
+		Workspace: appconfig.WorkspaceConfig{ContentDir: root},
+		Runtime:   appconfig.RuntimeConfig{StateDir: dataDir},
 		GitSync:   appconfig.GitSyncConfig{Enabled: true},
 	})
 	if err != nil {
@@ -43,7 +44,8 @@ func TestRuntimeStatusCreatesWritableRuntimeDirectory(t *testing.T) {
 	root := filepath.Join(base, "workspace")
 	dataDir := filepath.Join(base, "data")
 	ws, err := Open(context.Background(), appconfig.Config{
-		Workspace: appconfig.WorkspaceConfig{Root: root, DataDir: dataDir},
+		Workspace: appconfig.WorkspaceConfig{ContentDir: root},
+		Runtime:   appconfig.RuntimeConfig{StateDir: dataDir},
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)

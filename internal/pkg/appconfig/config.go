@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Server    ServerConfig
 	Workspace WorkspaceConfig
+	Runtime   RuntimeConfig
 	Capture   CaptureConfig
 	Refiner   RefinerConfig
 	GitSync   GitSyncConfig
@@ -31,9 +32,12 @@ type ServerConfig struct {
 }
 
 type WorkspaceConfig struct {
-	Root        string
-	DataDir     string
+	ContentDir  string
 	AutoInitGit bool
+}
+
+type RuntimeConfig struct {
+	StateDir string
 }
 
 type CaptureConfig struct {
@@ -108,7 +112,7 @@ func ValidateDirectorySeparation(configDir string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("resolve config directory: %w", err)
 	}
-	absDataDir, err := DataDir(cfg)
+	absDataDir, err := RuntimeStateDir(cfg)
 	if err != nil {
 		return err
 	}
@@ -121,10 +125,10 @@ func ValidateDirectorySeparation(configDir string, cfg Config) error {
 	return nil
 }
 
-func DataDir(cfg Config) (string, error) {
-	dataDir := strings.TrimSpace(cfg.Workspace.DataDir)
+func RuntimeStateDir(cfg Config) (string, error) {
+	dataDir := strings.TrimSpace(cfg.Runtime.StateDir)
 	if dataDir == "" {
-		dataDir = filepath.Join(cfg.Workspace.Root, ".thoughtflow")
+		dataDir = filepath.Join(cfg.Workspace.ContentDir, ".thoughtflow")
 	}
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -147,9 +151,11 @@ func defaultConfig() Config {
 			Port: "8080",
 		},
 		Workspace: WorkspaceConfig{
-			Root:        "./thoughtflow-workspace",
-			DataDir:     "./thoughtflow-data",
+			ContentDir:  "./thoughtflow-workspace",
 			AutoInitGit: true,
+		},
+		Runtime: RuntimeConfig{
+			StateDir: "./thoughtflow-runtime",
 		},
 		Capture: CaptureConfig{
 			DuplicatePolicy: "warn",
@@ -199,9 +205,9 @@ func applyFrameworkOverrides(cfg *Config) {
 	appConfig := applicationConfig()
 	cfg.Server.Host = configString(appConfig, "server.host", cfg.Server.Host)
 	cfg.Server.Port = configString(appConfig, "server.port", cfg.Server.Port)
-	cfg.Workspace.Root = configString(appConfig, "workspace.root", cfg.Workspace.Root)
-	cfg.Workspace.DataDir = configString(appConfig, "workspace.data_dir", cfg.Workspace.DataDir)
+	cfg.Workspace.ContentDir = configString(appConfig, "workspace.content_dir", cfg.Workspace.ContentDir)
 	cfg.Workspace.AutoInitGit = configBool(appConfig, "workspace.auto_init_git", cfg.Workspace.AutoInitGit)
+	cfg.Runtime.StateDir = configString(appConfig, "runtime.state_dir", cfg.Runtime.StateDir)
 	cfg.Capture.DuplicatePolicy = configString(appConfig, "capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
 	cfg.Refiner.Concurrency = configInt(appConfig, "refiner.concurrency", cfg.Refiner.Concurrency)
 	cfg.Refiner.URLFetchTimeoutRaw = configInt(appConfig, "refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)

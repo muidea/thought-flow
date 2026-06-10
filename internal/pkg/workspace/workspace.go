@@ -12,11 +12,11 @@ import (
 
 func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) {
 	_ = ctx
-	rootPath, err := filepath.Abs(cfg.Workspace.Root)
+	rootPath, err := filepath.Abs(cfg.Workspace.ContentDir)
 	if err != nil {
 		return nil, err
 	}
-	dataPath, err := appconfig.DataDir(cfg)
+	dataPath, err := appconfig.RuntimeStateDir(cfg)
 	if err != nil {
 		return nil, err
 	}

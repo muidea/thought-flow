@@ -12,8 +12,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | --- | --- | --- |
 | 知识资产模型 | 用户真正拥有和长期保留的内容 | `thoughts/`、`topics/` Markdown/YAML |
 | 派生分析模型 | AI、索引、匹配、合稿等可再生成结果 | Markdown 派生区 + DuckDB |
-| 运行任务模型 | 后台任务、进度、错误和重试 | `workspace.data_dir/jobs` + DuckDB 可选缓存 |
-| 系统运维模型 | Git、配置、健康检查、事件游标 | `workspace.data_dir` + Git 仓库状态 |
+| 运行任务模型 | 后台任务、进度、错误和重试 | `runtime.state_dir/jobs` + DuckDB 可选缓存 |
+| 系统运维模型 | Git、配置、健康检查、事件游标 | `runtime.state_dir` + Git 仓库状态 |
 
 实现约束：
 
@@ -40,7 +40,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `SearchIndex` | 关键词和语义索引 | search | DuckDB |
 | `SearchResult` | 检索结果视图 | search | 运行态响应 |
 | `SynthesisDraft` | 即席合稿草稿和保存历史 | refiner/application | `synthesis/drafts/{draft_id}.yaml`，保存后转 Thought |
-| `Job` | 后台任务及状态 | 所属任务运行单元 | `workspace.data_dir/jobs` + DuckDB |
+| `Job` | 后台任务及状态 | 所属任务运行单元 | `runtime.state_dir/jobs` + DuckDB |
 | `DomainEvent` | 运行单元协同事件 | application/EventHub | EventHub + 可选 offset |
 | `GitChangeSet` | 待提交文件集合 | git-sync | 运行态队列 |
 | `GitCommitRecord` | 自动提交结果 | git-sync | Git history + event/job |
@@ -66,14 +66,14 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `root_path` | string | 工作区根目录 | application |
 | `thoughts_path` | string | 原子笔记目录 | application |
 | `topics_path` | string | 专题目录 | application |
-| `runtime_path` | string | `workspace.data_dir` 运行态目录 | application |
+| `runtime_path` | string | `runtime.state_dir` 运行态目录 | application |
 | `git_enabled` | bool | 是否启用 Git 自动提交 | git-sync |
 | `created_at` | time | 初始化时间 | application |
 
 功能定义：
 
 1. 初始化工作区目录。
-2. 校验 `thoughts/`、`topics/`、`workspace.data_dir` 可读写。
+2. 校验 `thoughts/`、`topics/`、`runtime.state_dir` 可读写。
 3. 按配置初始化 Git 仓库。
 4. 提供系统状态查询基础信息。
 
