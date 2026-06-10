@@ -38,7 +38,9 @@ function loadAppFunctions() {
       navItemClass,
       statusBadge,
       renderSearchResultItem,
-      createSynthesisBasket
+      createSynthesisBasket,
+      displayWorkspace,
+      displayRuntimePath
     });`,
     context,
     { filename: appPath },
@@ -83,6 +85,16 @@ test("navigation and status helpers map to AntD-style classes", () => {
   assert.equal(app.statusBadge("degraded"), "tf-badge tf-badge-warning");
   assert.equal(app.statusBadge("failed"), "tf-badge tf-badge-error");
   assert.equal(app.statusBadge("disabled"), "tf-badge tf-badge-default");
+});
+
+test("runtime path display avoids leaking absolute workspace paths", () => {
+  const app = loadAppFunctions();
+  const root = "/home/fedquery/codespace/skillSuite/thought-flow/thoughtflow-workspace";
+
+  assert.equal(app.displayWorkspace({ id: "local", root_path: root }), "local");
+  assert.equal(app.displayRuntimePath(`${root}/.thoughtflow/thoughtflow.duckdb`, root), ".thoughtflow/thoughtflow.duckdb");
+  assert.equal(app.displayRuntimePath("/var/lib/thoughtflow/external.duckdb", root), "external.duckdb");
+  assert.equal(app.displayRuntimePath(".thoughtflow/thoughtflow.duckdb", root), ".thoughtflow/thoughtflow.duckdb");
 });
 
 test("renderSearchResultItem exposes scores and action targets", () => {

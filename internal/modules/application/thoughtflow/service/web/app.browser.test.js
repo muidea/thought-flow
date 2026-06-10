@@ -160,6 +160,7 @@ async function runBrowserSmoke(browser, url) {
     await settleRoute("#/settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
     const metricsText = document.querySelector("#settings-metrics-json")?.textContent || "";
+    const settingsText = document.querySelector("#page-settings")?.textContent || "";
     const shell = document.querySelector(".tf-layout").getBoundingClientRect();
     const clientWidth = document.documentElement.clientWidth;
     const wideElements = Array.from(document.querySelectorAll("body *"))
@@ -199,6 +200,7 @@ async function runBrowserSmoke(browser, url) {
       rulesDrawerOpen,
       jobText,
       metricsText,
+      settingsText,
       shellWidth: shell.width,
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth,
@@ -237,6 +239,8 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.rulesDrawerOpen, true);
   assert.match(state.jobText, /job-capture/);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
+  assert.doesNotMatch(state.settingsText, /\/tmp\/browser/);
+  assert.match(state.settingsText, /\.thoughtflow\/thoughtflow\.duckdb/);
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);

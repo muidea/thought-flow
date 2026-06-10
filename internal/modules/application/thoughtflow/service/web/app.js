@@ -177,6 +177,37 @@ function renderDescription(rows) {
     .join("")}</dl>`;
 }
 
+function normalizeDisplayPath(value) {
+  return String(value || "").trim().replaceAll("\\", "/");
+}
+
+function baseName(value) {
+  const normalized = normalizeDisplayPath(value).replace(/\/+$/, "");
+  if (!normalized) return "";
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || normalized;
+}
+
+function isAbsoluteDisplayPath(value) {
+  return /^\/|^[A-Za-z]:\//.test(normalizeDisplayPath(value));
+}
+
+function displayWorkspace(workspace = {}) {
+  if (workspace.id) return workspace.id;
+  if (workspace.root_path) return `workspace:${baseName(workspace.root_path)}`;
+  return workspace.status || "workspace";
+}
+
+function displayRuntimePath(value, workspaceRoot = "") {
+  const path = normalizeDisplayPath(value);
+  if (!path) return "";
+  const root = normalizeDisplayPath(workspaceRoot).replace(/\/+$/, "");
+  if (root && path === root) return ".";
+  if (root && path.startsWith(`${root}/`)) return path.slice(root.length + 1);
+  if (isAbsoluteDisplayPath(path)) return baseName(path);
+  return path;
+}
+
 function createSynthesisBasket(initial = []) {
   const values = new Set(initial.filter(Boolean));
   return {
@@ -612,13 +643,13 @@ async function loadStatus() {
     const status = await api("/api/system/status");
     state.status = status;
     $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
-    $("#workspace-summary").textContent = status.workspace.root_path || status.workspace.id || "local";
+    $("#workspace-summary").textContent = displayWorkspace(status.workspace);
     $("#dashboard-workspace").textContent = status.workspace?.status || status.status;
     $("#dashboard-ai").textContent = status.ai?.status || "unknown";
     $("#dashboard-git").textContent = status.git?.status || "unknown";
     $("#dashboard-search").textContent = status.duckdb?.status || "unknown";
-    $("#settings-workspace").textContent = status.workspace?.root_path || status.workspace?.status || "unknown";
-    $("#settings-duckdb").textContent = status.duckdb?.path || status.duckdb?.status || "unknown";
+    $("#settings-workspace").textContent = displayWorkspace(status.workspace);
+    $("#settings-duckdb").textContent = displayRuntimePath(status.duckdb?.path, status.workspace?.root_path) || status.duckdb?.status || "unknown";
     $("#settings-ai").textContent = `${status.ai?.status || "unknown"} · ${status.ai?.chat_model || "local"}`;
     $("#settings-git").textContent = status.git?.error || status.git?.status || "unknown";
     renderTopbarStatus(status);
@@ -679,7 +710,7 @@ function renderSettingsStatus(status) {
   if (index) {
     index.innerHTML = renderDescription([
       ["DuckDB status", status.duckdb?.status || "unknown"],
-      ["DuckDB path", status.duckdb?.path || "unknown"],
+      ["DuckDB path", displayRuntimePath(status.duckdb?.path, status.workspace?.root_path) || "unknown"],
       ["Background", status.background?.status || "unknown"],
       ["Events", status.events?.status || "unknown"],
     ]);
@@ -688,7 +719,7 @@ function renderSettingsStatus(status) {
   if (git) {
     git.innerHTML = renderDescription([
       ["Status", status.git?.status || "unknown"],
-      ["Repository", status.git?.repository || status.workspace?.root_path || "unknown"],
+      ["Repository", displayRuntimePath(status.git?.repository || status.workspace?.root_path, status.workspace?.root_path) || displayWorkspace(status.workspace)],
       ["Dirty", status.git?.dirty === undefined ? "unknown" : String(status.git.dirty)],
       ["Error", status.git?.error || "none"],
     ]);
