@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/muidea/magicCommon/framework/application"
 	"github.com/muidea/magicCommon/framework/service"
@@ -20,33 +21,105 @@ import (
 	_ "thoughtflow/internal/modules/topic"
 )
 
+const gracefulShutdownTimeout = 10 * time.Second
+
+type lifecycleController interface {
+	Startup(ctx context.Context) error
+	Run(ctx context.Context) error
+	Shutdown(ctx context.Context)
+}
+
+type applicationLifecycle struct{}
+
 func main() {
-	if err := applyStartupFlagEnv(os.Args[1:]); err != nil {
+	os.Exit(execute(os.Args[1:], interruptSignalContext, applicationLifecycle{}))
+}
+
+func execute(args []string, newSignalContext func(context.Context) (context.Context, context.CancelFunc), lifecycle lifecycleController) int {
+	if err := applyStartupFlagEnv(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
+			return 0
 		}
 		slog.Error("parse startup flags failed", "error", err)
-		os.Exit(2)
+		return 2
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if newSignalContext == nil {
+		newSignalContext = interruptSignalContext
+	}
+	if lifecycle == nil {
+		lifecycle = applicationLifecycle{}
+	}
+
+	ctx, stop := newSignalContext(context.Background())
 	defer stop()
 
+	if err := lifecycle.Startup(ctx); err != nil {
+		slog.Error("startup failed", "error", err)
+		return 1
+	}
+	if ctx.Err() != nil {
+		stop()
+		slog.Info("shutdown requested", "reason", ctx.Err())
+		shutdownLifecycle(lifecycle)
+		return 0
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- lifecycle.Run(ctx)
+	}()
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			slog.Error("run failed", "error", err)
+			shutdownLifecycle(lifecycle)
+			return 1
+		}
+	case <-ctx.Done():
+		stop()
+		slog.Info("shutdown requested", "reason", ctx.Err())
+		shutdownLifecycle(lifecycle)
+		return 0
+	}
+
+	<-ctx.Done()
+	stop()
+	slog.Info("shutdown requested", "reason", ctx.Err())
+	shutdownLifecycle(lifecycle)
+	return 0
+}
+
+func (applicationLifecycle) Startup(ctx context.Context) error {
 	opts := application.Options{
 		ServiceName: "thoughtflow",
 	}
 	if err := application.StartupWithOptions(ctx, service.DefaultService(), opts); err != nil {
-		slog.Error("startup failed", "error", err)
-		os.Exit(1)
+		return err
 	}
-	if err := application.Run(ctx); err != nil {
-		slog.Error("run failed", "error", err)
-		application.Shutdown(context.Background())
-		os.Exit(1)
-	}
+	return nil
+}
 
-	<-ctx.Done()
-	application.Shutdown(context.Background())
+func (applicationLifecycle) Run(ctx context.Context) error {
+	if err := application.Run(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (applicationLifecycle) Shutdown(ctx context.Context) {
+	application.Shutdown(ctx)
+}
+
+func interruptSignalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+}
+
+func shutdownLifecycle(lifecycle lifecycleController) {
+	ctx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
+	defer cancel()
+	lifecycle.Shutdown(ctx)
 }
 
 func applyStartupFlagEnv(args []string) error {
