@@ -125,7 +125,15 @@ async function runBrowserSmoke(browser, url) {
 }
 
 function findChrome() {
-  for (const candidate of ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
+  for (const candidate of [
+    findExecutable("google-chrome"),
+    findExecutable("google-chrome-stable"),
+    findExecutable("chromium"),
+    findExecutable("chromium-browser"),
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ]) {
     if (fs.existsSync(candidate)) return candidate;
   }
   return "";
@@ -258,21 +266,43 @@ async function launchChrome(viewport) {
     `--user-data-dir=${userDataDir}`,
     `--window-size=${viewport.width},${viewport.height}`,
     "about:blank",
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  ], { stdio: ["ignore", "pipe", "pipe"] });
   const wsURL = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timed out waiting for Chrome DevTools endpoint")), 10000);
-    chrome.stderr.setEncoding("utf8");
-    chrome.stderr.on("data", (chunk) => {
+    let settled = false;
+    let output = "";
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.kill("SIGTERM");
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+      reject(error);
+    };
+    const pass = (url) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(url);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`timed out waiting for Chrome DevTools endpoint from ${chromePath}: ${output.trim()}`));
+    }, 20000);
+    const onData = (chunk) => {
+      output += chunk;
+      if (output.length > 4000) output = output.slice(-4000);
       const match = chunk.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
-        clearTimeout(timer);
-        resolve(match[1]);
+        pass(match[1]);
       }
-    });
+    };
+    chrome.stdout.setEncoding("utf8");
+    chrome.stderr.setEncoding("utf8");
+    chrome.stdout.on("data", onData);
+    chrome.stderr.on("data", onData);
     chrome.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`Chrome exited before DevTools endpoint was ready: ${code}`));
+      fail(new Error(`Chrome exited before DevTools endpoint was ready: ${code}; output: ${output.trim()}`));
     });
+    chrome.once("error", fail);
   });
   return {
     wsURL,
