@@ -59,10 +59,16 @@ min_semantic_score = 0.78
 # SSE heartbeat interval in seconds.
 sse_heartbeat_seconds = 20
 
-[ai]
-# OpenAI-compatible provider. Empty api_key uses the local-rule fallback.
+[llm]
+# OpenAI-compatible chat provider. Empty api_key uses the local-rule fallback.
 base_url = "https://api.openai.com"
 api_key = ""
 chat_model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"
+timeout_seconds = 30
+
+[embedding]
+# OpenAI-compatible embedding provider. Empty api_key uses deterministic local embeddings.
+base_url = "https://api.openai.com"
+api_key = ""
+model = "text-embedding-3-small"
 timeout_seconds = 30

@@ -38,9 +38,10 @@ func New() *Module {
 }
 
 type Module struct {
-	server     gracefulHTTPServer
-	serverDone chan error
-	stream     *eventstream.Stream
+	server      gracefulHTTPServer
+	serverDone  chan error
+	stream      *eventstream.Stream
+	httpService *service.Service
 }
 
 type gracefulHTTPServer interface {
@@ -125,8 +126,8 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 
 	jobs := jobstore.New(ws.JobsPath)
 	registry := engine.NewRouteRegistry()
-	httpService := service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
-	httpService.RegisterRoutes()
+	m.httpService = service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
+	m.httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
 	if err != nil {
 		return cd.WrapError(cd.Unexpected, err, "create http server")
@@ -171,6 +172,9 @@ func (m *Module) Run(ctx context.Context) *cd.Error {
 }
 
 func (m *Module) Teardown(ctx context.Context) {
+	if m.httpService != nil {
+		m.httpService.Close()
+	}
 	if m.server != nil {
 		shutdownCtx := ctx
 		cancel := func() {}
@@ -182,5 +186,6 @@ func (m *Module) Teardown(ctx context.Context) {
 		}
 		cancel()
 	}
+	m.httpService = nil
 	setCurrentStream(nil)
 }

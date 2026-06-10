@@ -46,6 +46,8 @@ type Service struct {
 	stream         *eventstream.Stream
 	workspace      *models.Workspace
 	config         appconfig.Config
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 type gitQueryReader interface {
@@ -69,6 +71,7 @@ type backgroundTaskAcceptor interface {
 }
 
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	return &Service{
 		registry:       registry,
 		captureService: captureService,
@@ -82,6 +85,14 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refi
 		stream:         stream,
 		workspace:      workspace,
 		config:         cfg,
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+	}
+}
+
+func (s *Service) Close() {
+	if s.shutdownCancel != nil {
+		s.shutdownCancel()
 	}
 }
 
@@ -683,7 +694,18 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.system.sse_unavailable", "streaming is not supported")
 		return
 	}
-	events := s.stream.SubscribeWithOptions(req.Context(), eventstream.SubscribeOptions{
+	streamCtx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	if s.shutdownCtx != nil {
+		go func() {
+			select {
+			case <-s.shutdownCtx.Done():
+				cancel()
+			case <-streamCtx.Done():
+			}
+		}()
+	}
+	events := s.stream.SubscribeWithOptions(streamCtx, eventstream.SubscribeOptions{
 		LastEventID: req.Header.Get("Last-Event-ID"),
 		Types:       splitCSV(req.URL.Query().Get("types")),
 	})
@@ -692,7 +714,7 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 
 	for {
 		select {
-		case <-req.Context().Done():
+		case <-streamCtx.Done():
 			return
 		case ev, ok := <-events:
 			if !ok {
@@ -850,7 +872,7 @@ func renderPrometheusMetrics(metrics models.SystemMetrics) string {
 	var builder strings.Builder
 	writePrometheusSample(&builder, "thoughtflow_capture_total", "counter", "Total captured thoughts.", metrics.Values["thoughtflow_capture_total"])
 	writePrometheusSample(&builder, "thoughtflow_refine_duration_seconds", "gauge", "Average thought refinement duration in seconds.", metrics.Values["thoughtflow_refine_duration_seconds"])
-	writePrometheusSample(&builder, "thoughtflow_ai_request_total", "counter", "Total AI provider requests.", metrics.Values["thoughtflow_ai_request_total"])
+	writePrometheusSample(&builder, "thoughtflow_ai_request_total", "counter", "Total LLM and embedding provider requests.", metrics.Values["thoughtflow_ai_request_total"])
 	writePrometheusSample(&builder, "thoughtflow_search_query_total", "counter", "Total search queries.", metrics.Values["thoughtflow_search_query_total"])
 	writePrometheusSample(&builder, "thoughtflow_index_lag_seconds", "gauge", "Maximum lag for non-indexed thoughts in seconds.", metrics.Values["thoughtflow_index_lag_seconds"])
 	writePrometheusSample(&builder, "thoughtflow_topic_weave_total", "counter", "Total topic weave operations.", metrics.Values["thoughtflow_topic_weave_total"])
@@ -893,7 +915,8 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	if s.searchService != nil {
 		duckdbStatus = s.searchService.RuntimeStatus(ctx)
 	}
-	aiStatus := aiRuntimeStatus(cfg)
+	llmStatus := llmRuntimeStatus(cfg)
+	embeddingStatus := embeddingRuntimeStatus(cfg)
 	gitStatus := models.GitRuntimeStatus{Status: "disabled"}
 	if s.gitQueries != nil {
 		gitStatus = s.gitQueries.RuntimeStatus(ctx)
@@ -910,7 +933,7 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 		backgroundStatus.Status == "ready" &&
 		eventsStatus.Status == "ready"
 	status := "ready"
-	if !ready || aiStatus.Status != "ready" || gitStatus.Status == "degraded" {
+	if !ready || llmStatus.Status != "ready" || embeddingStatus.Status != "ready" || gitStatus.Status == "degraded" {
 		status = "degraded"
 	}
 	return models.SystemStatus{
@@ -918,25 +941,39 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 		Ready:      ready,
 		Workspace:  workspaceStatus,
 		DuckDB:     duckdbStatus,
-		AI:         aiStatus,
+		LLM:        llmStatus,
+		Embedding:  embeddingStatus,
 		Git:        gitStatus,
 		Background: backgroundStatus,
 		Events:     eventsStatus,
 	}
 }
 
-func aiRuntimeStatus(cfg appconfig.Config) models.AIRuntimeStatus {
+func llmRuntimeStatus(cfg appconfig.Config) models.LLMRuntimeStatus {
 	status := "not_configured"
-	configured := strings.TrimSpace(cfg.AI.APIKey) != ""
+	configured := strings.TrimSpace(cfg.LLM.APIKey) != ""
 	if configured {
 		status = "ready"
 	}
-	return models.AIRuntimeStatus{
-		Status:         status,
-		Configured:     configured,
-		BaseURL:        cfg.AI.BaseURL,
-		ChatModel:      cfg.AI.ChatModel,
-		EmbeddingModel: cfg.AI.EmbeddingModel,
+	return models.LLMRuntimeStatus{
+		Status:     status,
+		Configured: configured,
+		BaseURL:    cfg.LLM.BaseURL,
+		ChatModel:  cfg.LLM.ChatModel,
+	}
+}
+
+func embeddingRuntimeStatus(cfg appconfig.Config) models.EmbeddingRuntimeStatus {
+	status := "not_configured"
+	configured := strings.TrimSpace(cfg.Embedding.APIKey) != ""
+	if configured {
+		status = "ready"
+	}
+	return models.EmbeddingRuntimeStatus{
+		Status:     status,
+		Configured: configured,
+		BaseURL:    cfg.Embedding.BaseURL,
+		Model:      cfg.Embedding.Model,
 	}
 }
 

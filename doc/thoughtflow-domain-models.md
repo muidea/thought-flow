@@ -398,7 +398,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 功能定义：
 
 1. 从选中 Thought 生成摘要或大纲。
-2. 配置 AI API key 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
+2. 配置 `llm.api_key` 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
 3. 默认写入 `synthesis/drafts/{draft_id}.yaml`，作为独立草稿仓库。
 4. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
 5. 保存后将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
@@ -726,7 +726,7 @@ DomainEvent N -> 1 resource
 1. Go module 名称。
 2. Markdown front matter 解析库。
 3. DuckDB Go driver 和向量存储格式。
-4. AI Provider mock 接口与默认模型配置。
+4. LLM/Embedding Provider mock 接口与默认模型配置。
 5. Job 快照落盘格式。
 6. Commit message 模板。
 

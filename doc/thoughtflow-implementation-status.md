@@ -46,7 +46,7 @@
     - top-level `status` / `ready`。
     - workspace 包提供工作区配置路径和运行态目录写入状态。
     - search 运行单元提供 DuckDB 配置路径和文件存在状态。
-    - AI provider 配置状态。
+    - LLM/Embedding provider 配置状态。
     - git-sync 提供 Git 仓库、用户身份和未提交变更只读探测。
     - jobstore 提供 background jobs 目录写入状态和资源维度 Job 查询，application 运行态探针验证 `BackgroundRoutine` 可接受任务。
     - SSE history/subscriber 统计，application 运行态探针验证 EventHub 可发布事件。
@@ -54,7 +54,7 @@
 13. `GET /api/system/metrics` 和 `GET /metrics` 暴露功能设计第 14 节定义的运行指标：
     - `thoughtflow_capture_total` 通过 capture 运行单元从工作区 Markdown thought 事实源计算。
     - `thoughtflow_refine_duration_seconds` 从 refine job 开始/完成时间计算。
-    - `thoughtflow_ai_request_total` 统计 AI Provider 调用次数。
+    - `thoughtflow_ai_request_total` 统计 LLM/Embedding Provider 调用次数。
     - `thoughtflow_search_query_total` 统计搜索请求次数。
     - `thoughtflow_index_lag_seconds` 基于 capture 运行单元返回的 Thought 列表统计待索引/失败索引 thought 的最大滞后。
     - `thoughtflow_topic_weave_total` 统计专题文档缝合次数。
@@ -85,8 +85,8 @@ go build ./cmd/thoughtflow
 1. `refiner` 运行单元。
 2. `thought.captured` 触发后台 refine Job。
 3. 文本笔记本地摘要、核心观点和标签生成。
-4. OpenAI-compatible chat provider，可通过 `application.toml` 的 `[ai]` 配置；AI HTTP 请求使用 DNS cache client、超时配置、最多 3 次 transient retry，并通过 `ProviderError` 区分 transient status、HTTP status、网络失败和 JSON 解析失败。
-5. 未配置 AI Key 时使用本地规则 provider，并生成 deterministic local embedding，保证开发环境可运行。
+4. OpenAI-compatible LLM provider，可通过 `application.toml` 的 `[llm]` 配置；OpenAI-compatible embedding provider 可通过 `[embedding]` 独立配置；provider HTTP 请求使用 DNS cache client、超时配置、最多 3 次 transient retry，并通过 `ProviderError` 区分 transient status、HTTP status、网络失败和 JSON 解析失败。
+5. 未配置 `llm.api_key` 时使用本地规则 provider；未配置 `embedding.api_key` 时生成 deterministic local embedding，保证开发环境可运行。
 6. URL 笔记正文抓取链路：
    - 优先使用本地 fetcher 抓取并清洗 HTML。
    - 本地抓取失败、非 2xx 或正文为空时回退 Jina Reader。
@@ -170,7 +170,7 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - `manual_exclude`、`keywords.exclude`、`keywords.all` 仍作为语义匹配前的硬约束。
    - 自动匹配和 `POST /api/topics/{id}/rebuild` 使用同一套 semantic-aware matcher。
 7. 命中专题后通过 topic weave provider 更新专题文档：
-   - 配置 AI Key 时使用 OpenAI-compatible chat provider 生成完整 Markdown merge 结果。
+   - 配置 `llm.api_key` 时使用 OpenAI-compatible chat provider 生成完整 Markdown merge 结果。
    - 未配置或 provider 失败时使用本地 outline-aware fallback，将内容插入匹配的大纲章节。
    - 写入前校验结果必须包含 source link。
 8. 命中专题后同步回写原子笔记 `topic_ids`、`topic_status` 与 `Links` 分区。
@@ -201,9 +201,9 @@ CGO_LDFLAGS=-L/tmp go test -tags duckdb ./...
    - 专题 rebuild 会写入当前成员事实并删除不再命中的陈旧 membership 文件。
    - topic 变更触发 Git 提交时会包含 `memberships/` 目录。
 17. synthesis 草稿支持保存为新的 Thought：
-   - synthesis 生成由 refiner 运行单元通过窄方法调用 AI provider，草稿读写由 synthesisstore 持久化，application handler 不直接构造 AI provider 或读写草稿文件。
-   - 配置 AI API key 时，`POST /api/synthesis` 使用 OpenAI-compatible chat provider 生成 Markdown 草稿。
-   - 未配置 AI API key 时，`POST /api/synthesis` 使用本地规则合稿。
+   - synthesis 生成由 refiner 运行单元通过窄方法调用 LLM provider，草稿读写由 synthesisstore 持久化，application handler 不直接构造 LLM provider 或读写草稿文件。
+   - 配置 `llm.api_key` 时，`POST /api/synthesis` 使用 OpenAI-compatible chat provider 生成 Markdown 草稿。
+   - 未配置 `llm.api_key` 时，`POST /api/synthesis` 使用本地规则合稿。
    - `POST /api/synthesis` 会生成本地草稿并持久化到 `synthesis/drafts/{draft_id}.yaml`。
    - 新增 `GET /api/synthesis` 和 `GET /api/synthesis/{draft_id}`，用于查看草稿仓库和单个草稿详情。
    - 新增 `POST /api/synthesis/save`。
@@ -244,7 +244,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - 保持原生 HTML/CSS/JS 和嵌入式资源服务，不引入 React、AntD npm 包或前端构建链。
    - 使用手工 CSS token 统一 primary/success/warning/error、layout/container/border/text、radius、control height 和 shadow。
    - Sidebar 提供 Dashboard、Capture、Thoughts、Search、Topics、Synthesis、Jobs & Activity、Settings 独立入口。
-   - Topbar 展示 workspace、AI、Git、Search 运行态 badge。
+   - Topbar 展示 workspace、LLM、Embedding、Git、Search 运行态 badge。
    - Hash route 支持 `#/dashboard`、`#/capture`、`#/thoughts?id=...`、`#/search`、`#/topics`、`#/topics/:id`、`#/topics/:id/review`、`#/synthesis`、`#/jobs?id=...`、`#/settings`。
 4. 页面化工作台：
    - Dashboard 展示系统状态卡片、最近活动和快捷入口，不承载采集正文、专题规则或合稿编辑。

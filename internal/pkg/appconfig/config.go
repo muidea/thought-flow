@@ -23,7 +23,8 @@ type Config struct {
 	Search    SearchConfig
 	Topic     TopicConfig
 	Events    EventsConfig
-	AI        AIConfig
+	LLM       LLMConfig
+	Embedding EmbeddingConfig
 }
 
 type ServerConfig struct {
@@ -71,12 +72,18 @@ type EventsConfig struct {
 	SSEHeartbeatSeconds int
 }
 
-type AIConfig struct {
-	BaseURL        string
-	APIKey         string
-	ChatModel      string
-	EmbeddingModel string
-	Timeout        time.Duration
+type LLMConfig struct {
+	BaseURL   string
+	APIKey    string
+	ChatModel string
+	Timeout   time.Duration
+}
+
+type EmbeddingConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+	Timeout time.Duration
 }
 
 var (
@@ -182,12 +189,17 @@ func defaultConfig() Config {
 			SSEHeartbeat:        20 * time.Second,
 			SSEHeartbeatSeconds: 20,
 		},
-		AI: AIConfig{
-			BaseURL:        "https://api.openai.com",
-			APIKey:         "",
-			ChatModel:      "gpt-4o-mini",
-			EmbeddingModel: "text-embedding-3-small",
-			Timeout:        30 * time.Second,
+		LLM: LLMConfig{
+			BaseURL:   "https://api.openai.com",
+			APIKey:    "",
+			ChatModel: "gpt-4o-mini",
+			Timeout:   30 * time.Second,
+		},
+		Embedding: EmbeddingConfig{
+			BaseURL: "https://api.openai.com",
+			APIKey:  "",
+			Model:   "text-embedding-3-small",
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -221,11 +233,14 @@ func applyFrameworkOverrides(cfg *Config) {
 	cfg.Topic.MinSemanticScore = configFloat64(appConfig, "topic.min_semantic_score", cfg.Topic.MinSemanticScore)
 	cfg.Events.SSEHeartbeatSeconds = configInt(appConfig, "events.sse_heartbeat_seconds", cfg.Events.SSEHeartbeatSeconds)
 	cfg.Events.SSEHeartbeat = time.Duration(cfg.Events.SSEHeartbeatSeconds) * time.Second
-	cfg.AI.BaseURL = configString(appConfig, "ai.base_url", cfg.AI.BaseURL)
-	cfg.AI.APIKey = configString(appConfig, "ai.api_key", cfg.AI.APIKey)
-	cfg.AI.ChatModel = configString(appConfig, "ai.chat_model", cfg.AI.ChatModel)
-	cfg.AI.EmbeddingModel = configString(appConfig, "ai.embedding_model", cfg.AI.EmbeddingModel)
-	cfg.AI.Timeout = time.Duration(configInt(appConfig, "ai.timeout_seconds", int(cfg.AI.Timeout/time.Second))) * time.Second
+	cfg.LLM.BaseURL = configString(appConfig, "llm.base_url", cfg.LLM.BaseURL)
+	cfg.LLM.APIKey = configString(appConfig, "llm.api_key", cfg.LLM.APIKey)
+	cfg.LLM.ChatModel = configString(appConfig, "llm.chat_model", cfg.LLM.ChatModel)
+	cfg.LLM.Timeout = time.Duration(configInt(appConfig, "llm.timeout_seconds", int(cfg.LLM.Timeout/time.Second))) * time.Second
+	cfg.Embedding.BaseURL = configString(appConfig, "embedding.base_url", cfg.Embedding.BaseURL)
+	cfg.Embedding.APIKey = configString(appConfig, "embedding.api_key", cfg.Embedding.APIKey)
+	cfg.Embedding.Model = configString(appConfig, "embedding.model", cfg.Embedding.Model)
+	cfg.Embedding.Timeout = time.Duration(configInt(appConfig, "embedding.timeout_seconds", int(cfg.Embedding.Timeout/time.Second))) * time.Second
 }
 
 func applicationConfig() map[string]any {

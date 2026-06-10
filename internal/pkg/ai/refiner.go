@@ -86,32 +86,32 @@ func NewLocalRefineProvider() *LocalRefineProvider {
 	return &LocalRefineProvider{}
 }
 
-func NewRefineProvider(cfg appconfig.AIConfig) RefineProvider {
+func NewRefineProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig.EmbeddingConfig) RefineProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return observedRefineProvider{next: NewLocalRefineProvider()}
 	}
-	return observedRefineProvider{next: NewOpenAICompatibleProvider(cfg)}
+	return observedRefineProvider{next: NewOpenAICompatibleProvider(cfg, embeddingCfg)}
 }
 
-func NewEmbeddingProvider(cfg appconfig.AIConfig) EmbeddingProvider {
+func NewEmbeddingProvider(cfg appconfig.EmbeddingConfig) EmbeddingProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return observedEmbeddingProvider{next: NewLocalRefineProvider()}
 	}
-	return observedEmbeddingProvider{next: NewOpenAICompatibleProvider(cfg)}
+	return observedEmbeddingProvider{next: NewOpenAICompatibleEmbeddingProvider(cfg)}
 }
 
-func NewWeaveProvider(cfg appconfig.AIConfig) WeaveProvider {
+func NewWeaveProvider(cfg appconfig.LLMConfig) WeaveProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return observedWeaveProvider{next: NewLocalRefineProvider()}
 	}
-	return observedWeaveProvider{next: NewOpenAICompatibleProvider(cfg)}
+	return observedWeaveProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
 }
 
-func NewSynthesisProvider(cfg appconfig.AIConfig) SynthesisProvider {
+func NewSynthesisProvider(cfg appconfig.LLMConfig) SynthesisProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return observedSynthesisProvider{next: NewLocalRefineProvider()}
 	}
-	return observedSynthesisProvider{next: NewOpenAICompatibleProvider(cfg)}
+	return observedSynthesisProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
 }
 
 type observedRefineProvider struct {
@@ -227,24 +227,48 @@ func (p *LocalRefineProvider) Synthesize(ctx context.Context, req SynthesisReque
 }
 
 type OpenAICompatibleProvider struct {
-	baseURL        string
-	apiKey         string
-	chatModel      string
-	embeddingModel string
-	client         *http.Client
+	baseURL           string
+	apiKey            string
+	chatModel         string
+	client            *http.Client
+	embeddingProvider EmbeddingProvider
 }
 
-func NewOpenAICompatibleProvider(cfg appconfig.AIConfig) *OpenAICompatibleProvider {
+type OpenAICompatibleEmbeddingProvider struct {
+	baseURL string
+	apiKey  string
+	model   string
+	client  *http.Client
+}
+
+func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig.EmbeddingConfig) *OpenAICompatibleProvider {
 	client := mnet.NewDNSCacheHttpClient()
 	if cfg.Timeout > 0 {
 		client.Timeout = cfg.Timeout
 	}
+	var embeddingProvider EmbeddingProvider
+	if strings.TrimSpace(embeddingCfg.APIKey) != "" {
+		embeddingProvider = NewOpenAICompatibleEmbeddingProvider(embeddingCfg)
+	}
 	return &OpenAICompatibleProvider{
-		baseURL:        strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
-		apiKey:         strings.TrimSpace(cfg.APIKey),
-		chatModel:      firstNonEmpty(cfg.ChatModel, "gpt-4o-mini"),
-		embeddingModel: firstNonEmpty(cfg.EmbeddingModel, "text-embedding-3-small"),
-		client:         client,
+		baseURL:           strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
+		apiKey:            strings.TrimSpace(cfg.APIKey),
+		chatModel:         firstNonEmpty(cfg.ChatModel, "gpt-4o-mini"),
+		client:            client,
+		embeddingProvider: embeddingProvider,
+	}
+}
+
+func NewOpenAICompatibleEmbeddingProvider(cfg appconfig.EmbeddingConfig) *OpenAICompatibleEmbeddingProvider {
+	client := mnet.NewDNSCacheHttpClient()
+	if cfg.Timeout > 0 {
+		client.Timeout = cfg.Timeout
+	}
+	return &OpenAICompatibleEmbeddingProvider{
+		baseURL: strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
+		apiKey:  strings.TrimSpace(cfg.APIKey),
+		model:   firstNonEmpty(cfg.Model, "text-embedding-3-small"),
+		client:  client,
 	}
 }
 
@@ -306,12 +330,19 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 }
 
 func (p *OpenAICompatibleProvider) Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error) {
+	if p.embeddingProvider == nil {
+		return models.EmbeddingRecord{}, errors.New("embedding provider is not configured")
+	}
+	return p.embeddingProvider.Embed(ctx, req)
+}
+
+func (p *OpenAICompatibleEmbeddingProvider) Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error) {
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return models.EmbeddingRecord{}, errors.New("embedding text is empty")
 	}
 	payload := map[string]any{
-		"model": p.embeddingModel,
+		"model": p.model,
 		"input": text,
 	}
 	var response embeddingResponse
@@ -324,12 +355,16 @@ func (p *OpenAICompatibleProvider) Embed(ctx context.Context, req EmbedRequest) 
 	vector := response.Data[0].Embedding
 	return models.EmbeddingRecord{
 		ThoughtID:   req.ThoughtID,
-		Model:       p.embeddingModel,
+		Model:       p.model,
 		Dimension:   len(vector),
 		Vector:      vector,
 		ContentHash: models.ContentHash(text),
 		CreatedAt:   time.Now().UTC(),
 	}, nil
+}
+
+func (p *OpenAICompatibleEmbeddingProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
+	return postOpenAICompatibleJSON(ctx, p.client, p.baseURL, p.apiKey, path, payload, target)
 }
 
 func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
@@ -431,8 +466,15 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 }
 
 func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
-	if strings.TrimSpace(p.apiKey) == "" {
+	return postOpenAICompatibleJSON(ctx, p.client, p.baseURL, p.apiKey, path, payload, target)
+}
+
+func postOpenAICompatibleJSON(ctx context.Context, client *http.Client, baseURL string, apiKey string, path string, payload any, target any) error {
+	if strings.TrimSpace(apiKey) == "" {
 		return errors.New("ai api key is required")
+	}
+	if client == nil {
+		client = http.DefaultClient
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -440,13 +482,13 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, pa
 	}
 	var lastErr error
 	for attempt := 1; attempt <= openAIMaxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.apiURL(path), bytes.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICompatibleAPIURL(baseURL, path), bytes.NewReader(raw))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+p.apiKey)
-		resp, err := p.client.Do(req)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -512,8 +554,8 @@ func waitRetryBackoff(ctx context.Context, attempt int) error {
 	}
 }
 
-func (p *OpenAICompatibleProvider) apiURL(path string) string {
-	base := strings.TrimRight(p.baseURL, "/")
+func openAICompatibleAPIURL(baseURL string, path string) string {
+	base := strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(base, "/v1") {
 		return base + path
 	}

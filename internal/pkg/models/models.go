@@ -221,7 +221,8 @@ type SystemStatus struct {
 	Ready      bool                    `json:"ready"`
 	Workspace  WorkspaceRuntimeStatus  `json:"workspace"`
 	DuckDB     DuckDBRuntimeStatus     `json:"duckdb"`
-	AI         AIRuntimeStatus         `json:"ai"`
+	LLM        LLMRuntimeStatus        `json:"llm"`
+	Embedding  EmbeddingRuntimeStatus  `json:"embedding"`
 	Git        GitRuntimeStatus        `json:"git"`
 	Background BackgroundRuntimeStatus `json:"background"`
 	Events     EventsRuntimeStatus     `json:"events"`
@@ -275,12 +276,18 @@ type DuckDBRuntimeStatus struct {
 	Error  string `json:"error,omitempty"`
 }
 
-type AIRuntimeStatus struct {
-	Status         string `json:"status"`
-	Configured     bool   `json:"configured"`
-	BaseURL        string `json:"base_url"`
-	ChatModel      string `json:"chat_model"`
-	EmbeddingModel string `json:"embedding_model"`
+type LLMRuntimeStatus struct {
+	Status     string `json:"status"`
+	Configured bool   `json:"configured"`
+	BaseURL    string `json:"base_url"`
+	ChatModel  string `json:"chat_model"`
+}
+
+type EmbeddingRuntimeStatus struct {
+	Status     string `json:"status"`
+	Configured bool   `json:"configured"`
+	BaseURL    string `json:"base_url"`
+	Model      string `json:"model"`
 }
 
 type GitRuntimeStatus struct {

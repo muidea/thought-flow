@@ -128,12 +128,17 @@ debounce_seconds = 9
 [events]
 sse_heartbeat_seconds = 33
 
-[ai]
-base_url = "https://ai.example.test"
-api_key = "local-key"
+[llm]
+base_url = "https://llm.example.test"
+api_key = "local-llm-key"
 chat_model = "local-chat"
-embedding_model = "local-embed"
 timeout_seconds = 17
+
+[embedding]
+base_url = "https://embedding.example.test"
+api_key = "local-embedding-key"
+model = "local-embed"
+timeout_seconds = 19
 `)
 
 	cfg := LoadWithConfigDir(configDir)
@@ -162,12 +167,17 @@ timeout_seconds = 17
 	if cfg.Events.SSEHeartbeat != 33*time.Second {
 		t.Fatalf("events config = %#v", cfg.Events)
 	}
-	if cfg.AI.BaseURL != "https://ai.example.test" ||
-		cfg.AI.APIKey != "local-key" ||
-		cfg.AI.ChatModel != "local-chat" ||
-		cfg.AI.EmbeddingModel != "local-embed" ||
-		cfg.AI.Timeout != 17*time.Second {
-		t.Fatalf("ai config = %#v", cfg.AI)
+	if cfg.LLM.BaseURL != "https://llm.example.test" ||
+		cfg.LLM.APIKey != "local-llm-key" ||
+		cfg.LLM.ChatModel != "local-chat" ||
+		cfg.LLM.Timeout != 17*time.Second {
+		t.Fatalf("llm config = %#v", cfg.LLM)
+	}
+	if cfg.Embedding.BaseURL != "https://embedding.example.test" ||
+		cfg.Embedding.APIKey != "local-embedding-key" ||
+		cfg.Embedding.Model != "local-embed" ||
+		cfg.Embedding.Timeout != 19*time.Second {
+		t.Fatalf("embedding config = %#v", cfg.Embedding)
 	}
 }
 
@@ -207,12 +217,17 @@ func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 	if cfg.Events.SSEHeartbeat != 20*time.Second {
 		t.Fatalf("events config = %#v", cfg.Events)
 	}
-	if cfg.AI.BaseURL != "https://api.openai.com" ||
-		cfg.AI.APIKey != "" ||
-		cfg.AI.ChatModel != "gpt-4o-mini" ||
-		cfg.AI.EmbeddingModel != "text-embedding-3-small" ||
-		cfg.AI.Timeout != 30*time.Second {
-		t.Fatalf("ai config = %#v", cfg.AI)
+	if cfg.LLM.BaseURL != "https://api.openai.com" ||
+		cfg.LLM.APIKey != "" ||
+		cfg.LLM.ChatModel != "gpt-4o-mini" ||
+		cfg.LLM.Timeout != 30*time.Second {
+		t.Fatalf("llm config = %#v", cfg.LLM)
+	}
+	if cfg.Embedding.BaseURL != "https://api.openai.com" ||
+		cfg.Embedding.APIKey != "" ||
+		cfg.Embedding.Model != "text-embedding-3-small" ||
+		cfg.Embedding.Timeout != 30*time.Second {
+		t.Fatalf("embedding config = %#v", cfg.Embedding)
 	}
 }
 
@@ -224,8 +239,9 @@ func TestLoadIgnoresEnvironmentConfigurationOverrides(t *testing.T) {
 	t.Setenv("GIT_SYNC_ENABLED", "true")
 	t.Setenv("GIT_SYNC_DEBOUNCE_SECONDS", "2")
 	t.Setenv("SEARCH_DUCKDB_PATH", "env.duckdb")
-	t.Setenv("AI_API_KEY", "env-key")
-	t.Setenv("AI_TIMEOUT_SECONDS", "3")
+	t.Setenv("LLM_API_KEY", "env-key")
+	t.Setenv("LLM_TIMEOUT_SECONDS", "3")
+	t.Setenv("EMBEDDING_API_KEY", "env-embedding-key")
 	writeApplicationConfig(t, configDir, `[server]
 port = "9090"
 
@@ -236,9 +252,13 @@ debounce_seconds = 9
 [search]
 duckdb_path = "local.duckdb"
 
-[ai]
+[llm]
 api_key = "local-key"
 timeout_seconds = 17
+
+[embedding]
+api_key = "local-embedding-key"
+timeout_seconds = 19
 `)
 
 	cfg := LoadWithConfigDir(configDir)
@@ -252,8 +272,11 @@ timeout_seconds = 17
 	if cfg.Search.DuckDBPath != "local.duckdb" {
 		t.Fatalf("duckdb path = %q", cfg.Search.DuckDBPath)
 	}
-	if cfg.AI.APIKey != "local-key" || cfg.AI.Timeout != 17*time.Second {
-		t.Fatalf("ai config = %#v", cfg.AI)
+	if cfg.LLM.APIKey != "local-key" || cfg.LLM.Timeout != 17*time.Second {
+		t.Fatalf("llm config = %#v", cfg.LLM)
+	}
+	if cfg.Embedding.APIKey != "local-embedding-key" || cfg.Embedding.Timeout != 19*time.Second {
+		t.Fatalf("embedding config = %#v", cfg.Embedding)
 	}
 }
 

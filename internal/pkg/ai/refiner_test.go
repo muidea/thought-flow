@@ -63,12 +63,16 @@ func TestOpenAICompatibleProviderRefineAndEmbed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
-		BaseURL:        server.URL,
-		APIKey:         "test-key",
-		ChatModel:      "chat-model",
-		EmbeddingModel: "embedding-model",
-		Timeout:        time.Second,
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	}, appconfig.EmbeddingConfig{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "embedding-model",
+		Timeout: time.Second,
 	})
 	refinement, err := provider.Refine(context.Background(), RefineRequest{
 		Thought: models.Thought{ID: "thought-1", UserTitle: "Original title"},
@@ -108,11 +112,11 @@ func TestOpenAICompatibleProviderRetriesTransientStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
-		BaseURL:        server.URL,
-		APIKey:         "test-key",
-		EmbeddingModel: "embedding-model",
-		Timeout:        time.Second,
+	provider := NewOpenAICompatibleEmbeddingProvider(appconfig.EmbeddingConfig{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "embedding-model",
+		Timeout: time.Second,
 	})
 	embedding, err := provider.Embed(context.Background(), EmbedRequest{ThoughtID: "thought-1", Text: "retry embedding"})
 	if err != nil {
@@ -134,11 +138,11 @@ func TestOpenAICompatibleProviderDoesNotRetryNonRetryableStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
-		BaseURL:        server.URL,
-		APIKey:         "test-key",
-		EmbeddingModel: "embedding-model",
-		Timeout:        time.Second,
+	provider := NewOpenAICompatibleEmbeddingProvider(appconfig.EmbeddingConfig{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "embedding-model",
+		Timeout: time.Second,
 	})
 	_, err := provider.Embed(context.Background(), EmbedRequest{ThoughtID: "thought-1", Text: "bad embedding"})
 	if err == nil {
@@ -205,12 +209,12 @@ func TestOpenAICompatibleProviderWeaveRequiresSourceLink(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
 		BaseURL:   server.URL,
 		APIKey:    "test-key",
 		ChatModel: "chat-model",
 		Timeout:   time.Second,
-	})
+	}, appconfig.EmbeddingConfig{})
 	_, err := provider.Weave(context.Background(), models.TopicWeaveRequest{
 		Topic:           models.Topic{ID: "duckdb-notes", Name: "DuckDB Notes"},
 		CurrentDocument: "# DuckDB Notes",
@@ -242,12 +246,12 @@ func TestOpenAICompatibleProviderSynthesizePreservesSourceLinks(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatibleProvider(appconfig.AIConfig{
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
 		BaseURL:   server.URL,
 		APIKey:    "test-key",
 		ChatModel: "chat-model",
 		Timeout:   time.Second,
-	})
+	}, appconfig.EmbeddingConfig{})
 	draft, err := provider.Synthesize(context.Background(), SynthesisRequest{
 		ThoughtIDs: []string{"thought-1"},
 		Goal:       "Cloud outline",

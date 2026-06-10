@@ -62,7 +62,7 @@ AppShell
 │   └── Settings
 ├── Topbar
 │   ├── workspace/status summary
-│   ├── AI/Git/Search readiness badges
+│   ├── LLM/Embedding/Git/Search readiness badges
 │   └── quick action buttons
 ├── PageContainer
 │   └── active page
@@ -172,9 +172,10 @@ Sidebar 底部显示：
 Topbar 只显示全局运行态摘要和快捷入口：
 
 1. Workspace ready/degraded。
-2. AI configured/not configured。
-3. Git ready/degraded/disabled。
-4. Search ready/degraded。
+2. LLM configured/not configured。
+3. Embedding configured/not configured。
+4. Git ready/degraded/disabled。
+5. Search ready/degraded。
 5. 快捷按钮：
    - `新建采集` 跳转 `#/capture`。
    - `新建专题` 打开 Topic 创建 Drawer 或跳转 `#/topics?action=create`。
@@ -217,7 +218,8 @@ PageBody
 
 1. 状态概览：
    - Workspace
-   - AI
+   - LLM
+   - Embedding
    - Git
    - Search/DuckDB
    - Background
@@ -704,10 +706,11 @@ Status：
 
 1. workspace。
 2. duckdb。
-3. AI。
-4. Git。
-5. background。
-6. events。
+3. LLM。
+4. Embedding。
+5. Git。
+6. background。
+7. events。
 
 Metrics：
 

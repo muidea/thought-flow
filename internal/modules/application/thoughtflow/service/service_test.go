@@ -623,6 +623,26 @@ func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
 	}
 }
 
+func TestHandleEventsStopsWhenServiceCloses(t *testing.T) {
+	stream := eventstream.New(10)
+	service := New(nil, nil, nil, nil, nil, nil, nil, nil, nil, stream, nil, appconfig.Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	res := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		service.handleEvents(context.Background(), res, req)
+		close(done)
+	}()
+	time.Sleep(25 * time.Millisecond)
+	service.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("handleEvents did not stop after service close")
+	}
+}
+
 func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
@@ -660,11 +680,15 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	service := &Service{workspace: ws, jobs: jobs, events: events, background: fakeBackgroundAcceptor{}, stream: stream, searchService: searchService}
 
 	status := service.systemStatus(context.Background(), appconfig.Config{
-		AI: appconfig.AIConfig{
-			APIKey:         "test-key",
-			BaseURL:        "https://api.example.test",
-			ChatModel:      "chat-test",
-			EmbeddingModel: "embed-test",
+		LLM: appconfig.LLMConfig{
+			APIKey:    "test-key",
+			BaseURL:   "https://llm.example.test",
+			ChatModel: "chat-test",
+		},
+		Embedding: appconfig.EmbeddingConfig{
+			APIKey:  "embedding-key",
+			BaseURL: "https://embedding.example.test",
+			Model:   "embed-test",
 		},
 	})
 
@@ -679,6 +703,12 @@ func TestSystemStatusReportsRuntimeComponents(t *testing.T) {
 	}
 	if status.Git.Status != "disabled" || status.Git.Enabled {
 		t.Fatalf("git status = %#v", status.Git)
+	}
+	if !status.LLM.Configured || status.LLM.ChatModel != "chat-test" || status.LLM.Status != "ready" {
+		t.Fatalf("llm status = %#v", status.LLM)
+	}
+	if !status.Embedding.Configured || status.Embedding.Model != "embed-test" || status.Embedding.Status != "ready" {
+		t.Fatalf("embedding status = %#v", status.Embedding)
 	}
 	if !status.Background.Writable || !status.Background.AcceptingTasks || status.Background.Status != "ready" {
 		t.Fatalf("background status = %#v", status.Background)

@@ -645,12 +645,14 @@ async function loadStatus() {
     $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
     $("#workspace-summary").textContent = displayWorkspace(status.workspace);
     $("#dashboard-workspace").textContent = status.workspace?.status || status.status;
-    $("#dashboard-ai").textContent = status.ai?.status || "unknown";
+    $("#dashboard-llm").textContent = status.llm?.status || "unknown";
+    $("#dashboard-embedding").textContent = status.embedding?.status || "unknown";
     $("#dashboard-git").textContent = status.git?.status || "unknown";
     $("#dashboard-search").textContent = status.duckdb?.status || "unknown";
     $("#settings-workspace").textContent = displayWorkspace(status.workspace);
     $("#settings-duckdb").textContent = displayRuntimePath(status.duckdb?.path, status.workspace?.root_path) || status.duckdb?.status || "unknown";
-    $("#settings-ai").textContent = `${status.ai?.status || "unknown"} · ${status.ai?.chat_model || "local"}`;
+    $("#settings-llm").textContent = `${status.llm?.status || "unknown"} · ${status.llm?.chat_model || "local"}`;
+    $("#settings-embedding").textContent = `${status.embedding?.status || "unknown"} · ${status.embedding?.model || "local"}`;
     $("#settings-git").textContent = status.git?.error || status.git?.status || "unknown";
     renderTopbarStatus(status);
     renderSettingsStatus(status);
@@ -690,7 +692,8 @@ function renderTopbarStatus(status) {
   if (!topbar || !status) return;
   const items = [
     ["Workspace", status.workspace?.status],
-    ["AI", status.ai?.status],
+    ["LLM", status.llm?.status],
+    ["Embedding", status.embedding?.status],
     ["Git", status.git?.status],
     ["Search", status.duckdb?.status],
   ];
@@ -704,7 +707,7 @@ function renderSettingsStatus(status) {
   if (alert) {
     const degraded = status.status && status.status !== "ready";
     alert.hidden = !degraded;
-    alert.textContent = degraded ? `System status is ${status.status}. Check workspace, AI, Git, index, background, and events details below.` : "";
+    alert.textContent = degraded ? `System status is ${status.status}. Check workspace, LLM, embedding, Git, index, background, and events details below.` : "";
   }
   const index = $("#settings-index-detail");
   if (index) {

@@ -146,11 +146,16 @@ min_semantic_score = 0.78
 [events]
 sse_heartbeat_seconds = 20
 
-[ai]
+[llm]
 base_url = "https://api.openai.com"
 api_key = ""
 chat_model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"
+timeout_seconds = 30
+
+[embedding]
+base_url = "https://api.openai.com"
+api_key = ""
+model = "text-embedding-3-small"
 timeout_seconds = 30
 
 ```
@@ -159,9 +164,10 @@ timeout_seconds = 30
 
 1. `search.duckdb_path` 为相对路径时，会解析到 `runtime.state_dir` 下。
 2. 当前进程启动时显式设置服务名为 `thoughtflow`，因此模板不需要配置 `endpointName`。
-3. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
-4. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
-5. 配置目录和运行状态目录应保持物理分离。配置目录存放 `application.toml`，运行状态目录存放 jobs、logs、DuckDB 等运行态文件。
+3. `llm.api_key` 为空时，摘要、专题缝合和合稿使用本地规则 provider。
+4. `embedding.api_key` 为空时，服务使用 deterministic local embedding，仍可完成本地采集、搜索和专题匹配。
+5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
+6. 配置目录和运行状态目录应保持物理分离。配置目录存放 `application.toml`，运行状态目录存放 jobs、logs、DuckDB 等运行态文件。
 
 ## 6. CLI 参数
 
@@ -191,22 +197,31 @@ git -C thoughtflow-workspace config user.email "thoughtflow@example.local"
 
 git-sync 会过滤运行态数据文件和 DuckDB 文件，只提交用户可读的工作区内容。若 Git 仓库或用户身份不可用，系统状态、Job 和 `git.commit_failed` 事件会暴露可理解错误。
 
-## 8. AI Provider 配置
+## 8. LLM 与 Embedding Provider 配置
 
 不配置 API Key 时：
 
-1. 使用本地规则 provider。
-2. 生成 deterministic local embedding。
+1. `llm.api_key` 为空时，摘要、专题缝合和合稿使用本地规则 provider。
+2. `embedding.api_key` 为空时，生成 deterministic local embedding。
 3. 本地采集、加工、搜索、专题匹配和合稿仍可运行。
 
-配置 OpenAI-compatible provider：
+配置 OpenAI-compatible chat provider：
 
 ```toml
-[ai]
+[llm]
 base_url = "https://api.openai.com"
 api_key = "..."
 chat_model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"
+timeout_seconds = 30
+```
+
+配置 OpenAI-compatible embedding provider：
+
+```toml
+[embedding]
+base_url = "https://api.openai.com"
+api_key = "..."
+model = "text-embedding-3-small"
 timeout_seconds = 30
 ```
 
