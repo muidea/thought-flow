@@ -804,8 +804,6 @@ ai:
 
 ```toml
 endpointName = "thoughtflow"
-app_name = "ThoughtFlow"
-version = "0.1.0"
 
 [server]
 host = "127.0.0.1"

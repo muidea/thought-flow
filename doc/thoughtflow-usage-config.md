@@ -94,8 +94,6 @@ thoughtflow-workspace/.thoughtflow/application.toml
 
 ```toml
 endpointName = "thoughtflow"
-app_name = "ThoughtFlow"
-version = "0.1.0"
 
 [debug]
 enabled = false
