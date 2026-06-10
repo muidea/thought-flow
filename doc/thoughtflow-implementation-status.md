@@ -66,7 +66,7 @@
     - `http.ErrServerClosed` 视为正常退出，异常监听错误会写入日志。
 15. 配置分层加载：
     - 内置默认配置覆盖 server/workspace/capture/refiner/search/topic/git_sync/events/ai。
-    - 启动时将 magicCommon framework `ConfigDir` 指向 `<workspace>/.thoughtflow`，并读取 `.thoughtflow/application.toml`。
+    - 启动时将 magicCommon framework `ConfigDir` 指向独立配置目录，并读取 `<config-dir>/application.toml`；默认配置目录来自 OS 用户配置目录。
     - magicCommon 通用环境变量会先合入全局配置树，随后 `THOUGHTFLOW_*` 专用环境变量覆盖端口、workspace root、Git 策略、DuckDB 路径和 AI provider 配置。
     - 启动参数 `--host`、`--port`、`--workspace-root`、`--git-enabled`、`--duckdb-path`、`--ai-*` 等会先映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 

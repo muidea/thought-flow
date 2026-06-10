@@ -89,9 +89,16 @@ func Load() Config {
 }
 
 func ConfigDir() string {
-	cfg := defaultConfig()
-	root := envString("THOUGHTFLOW_WORKSPACE_ROOT", cfg.Workspace.Root)
-	return filepath.Join(root, ".thoughtflow")
+	if value := envString("THOUGHTFLOW_CONFIG_DIR", ""); value != "" {
+		return value
+	}
+	if value := envString("CONFIG_PATH", ""); value != "" {
+		return value
+	}
+	if value, err := os.UserConfigDir(); err == nil && value != "" {
+		return filepath.Join(value, "thoughtflow")
+	}
+	return filepath.Join(".", "thoughtflow-config")
 }
 
 func ResetForTesting() {

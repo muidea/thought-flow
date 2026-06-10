@@ -130,6 +130,7 @@ func applyStartupFlagEnv(args []string) error {
 	flagToEnv := map[string]string{
 		"host":                 "THOUGHTFLOW_HOST",
 		"port":                 "THOUGHTFLOW_PORT",
+		"config-dir":           "THOUGHTFLOW_CONFIG_DIR",
 		"workspace-root":       "THOUGHTFLOW_WORKSPACE_ROOT",
 		"auto-init-git":        "THOUGHTFLOW_AUTO_INIT_GIT",
 		"git-enabled":          "THOUGHTFLOW_GIT_ENABLED",

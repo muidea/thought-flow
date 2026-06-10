@@ -41,6 +41,7 @@ go run ./cmd/thoughtflow
 ./thoughtflow \
   --host 0.0.0.0 \
   --port 9090 \
+  --config-dir /etc/thoughtflow \
   --workspace-root /data/thoughtflow
 ```
 
@@ -70,12 +71,12 @@ attachments/           附件目录
 有效配置加载顺序为：
 
 1. 内置默认值。
-2. magicCommon 应用配置：`<workspace>/.thoughtflow/application.toml`。
+2. magicCommon 应用配置：`<config-dir>/application.toml`。
 3. magicCommon 通用环境变量注入。
 4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`。
 5. CLI 参数。CLI 参数会先映射为对应 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 
-ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向 `<workspace>/.thoughtflow`。用于定位该目录的 workspace root 来自 `THOUGHTFLOW_WORKSPACE_ROOT`；未设置时使用默认 `./thoughtflow-workspace`。
+ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向独立配置目录。默认配置目录来自操作系统用户配置目录，例如 Linux 下通常是 `~/.config/thoughtflow`；也可以通过 `THOUGHTFLOW_CONFIG_DIR` 或 `--config-dir` 覆盖。未设置 `THOUGHTFLOW_CONFIG_DIR` 时，会兼容 magicCommon 的 `CONFIG_PATH`。数据目录仍位于 workspace 内的 `.thoughtflow/`，不要与配置目录混用。
 
 ## 5. 本地配置样例
 
@@ -88,7 +89,7 @@ doc/application.example.toml
 示例路径：
 
 ```text
-thoughtflow-workspace/.thoughtflow/application.toml
+~/.config/thoughtflow/application.toml
 ```
 
 基础示例内容：
@@ -143,9 +144,10 @@ timeout_seconds = 30
 1. `search.duckdb_path` 为相对路径时，会解析到 workspace root 下。
 2. `serviceDependencies` 是 magicCommon framework/service 的可选字段；只有取消注释后才会参与启动依赖检查。
 3. 当前进程启动时显式设置服务名为 `thoughtflow`，因此模板不需要配置 `endpointName`。
-4. `workspace.root` 可以写入 `application.toml`，但 `THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 同时负责定位 `<workspace>/.thoughtflow`，并且优先级更高。
+4. `workspace.root` 可以写入 `application.toml`；`THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 只覆盖数据工作区，不再用于定位配置目录。
 5. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
 6. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
+7. 配置目录和数据目录应保持物理分离。配置目录存放 `application.toml`，数据目录存放 jobs、logs、DuckDB 等运行态文件。
 
 ## 6. 环境变量
 
@@ -153,6 +155,7 @@ timeout_seconds = 30
 | --- | --- | --- |
 | `THOUGHTFLOW_HOST` | `127.0.0.1` | HTTP 监听 host |
 | `THOUGHTFLOW_PORT` | `8080` | HTTP 监听端口 |
+| `THOUGHTFLOW_CONFIG_DIR` | OS 用户配置目录下的 `thoughtflow` | magicCommon 配置目录，读取其中的 `application.toml` |
 | `THOUGHTFLOW_WORKSPACE_ROOT` | `./thoughtflow-workspace` | 工作区根目录 |
 | `THOUGHTFLOW_AUTO_INIT_GIT` | `true` | 工作区 Git 初始化策略配置字段 |
 | `THOUGHTFLOW_GIT_ENABLED` | `true` | 是否启用 git-sync 运行单元 |
@@ -174,6 +177,7 @@ CLI 参数与环境变量一一对应：
 | --- | --- |
 | `--host` | `THOUGHTFLOW_HOST` |
 | `--port` | `THOUGHTFLOW_PORT` |
+| `--config-dir` | `THOUGHTFLOW_CONFIG_DIR` |
 | `--workspace-root` | `THOUGHTFLOW_WORKSPACE_ROOT` |
 | `--auto-init-git` | `THOUGHTFLOW_AUTO_INIT_GIT` |
 | `--git-enabled` | `THOUGHTFLOW_GIT_ENABLED` |
@@ -191,6 +195,7 @@ CLI 参数与环境变量一一对应：
 ./thoughtflow \
   --host 0.0.0.0 \
   --port 9090 \
+  --config-dir /etc/thoughtflow \
   --workspace-root /data/thoughtflow \
   --git-enabled true \
   --git-debounce-seconds 5 \

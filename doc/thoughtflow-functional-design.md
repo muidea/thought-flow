@@ -215,15 +215,15 @@ thoughtflow-workspace/
     thoughtflow.duckdb
     jobs/
     logs/
-    application.toml
 ```
 
 说明：
 
 1. `thoughts/` 和 `topics/` 是用户知识资产，默认进入 Git。
 2. `.thoughtflow/` 是运行时目录，默认不进入 Git。
-3. `attachments/` 存放未来上传文件、网页快照或图片资源。
-4. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
+3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，不放入 workspace `.thoughtflow/`。
+4. `attachments/` 存放未来上传文件、网页快照或图片资源。
+5. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
 
 ### 4.2 原子笔记 Markdown
 
@@ -794,7 +794,7 @@ timeout_seconds = 60
 配置分层：
 
 1. 默认配置：内置在二进制中。
-2. 工作区配置：`.thoughtflow/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
+2. 独立配置目录：`<config-dir>/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
 3. magicCommon 通用环境变量注入。
 4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`，适合 API key、端口、路径和本地调试。
 5. 启动参数覆盖：启动参数会映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。

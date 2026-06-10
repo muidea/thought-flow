@@ -18,6 +18,7 @@ func TestApplyStartupFlagEnvOverridesSelectedValues(t *testing.T) {
 	err := applyStartupFlagEnv([]string{
 		"--host", "0.0.0.0",
 		"--port", "9090",
+		"--config-dir", "/tmp/thoughtflow-config",
 		"--workspace-root", "/tmp/thoughtflow",
 		"--git-enabled", "false",
 		"--ai-api-key", "cli-key",
@@ -28,6 +29,7 @@ func TestApplyStartupFlagEnvOverridesSelectedValues(t *testing.T) {
 
 	assertEnv(t, "THOUGHTFLOW_HOST", "0.0.0.0")
 	assertEnv(t, "THOUGHTFLOW_PORT", "9090")
+	assertEnv(t, "THOUGHTFLOW_CONFIG_DIR", "/tmp/thoughtflow-config")
 	assertEnv(t, "THOUGHTFLOW_WORKSPACE_ROOT", "/tmp/thoughtflow")
 	assertEnv(t, "THOUGHTFLOW_GIT_ENABLED", "false")
 	assertEnv(t, "THOUGHTFLOW_AI_API_KEY", "cli-key")

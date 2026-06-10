@@ -1,9 +1,10 @@
 # ThoughtFlow magicCommon application configuration template.
-# Effective path: <workspace>/.thoughtflow/application.toml
+# Effective path: <config-dir>/application.toml
+# Default config dir: OS user config directory, for example ~/.config/thoughtflow on Linux.
 #
 # ThoughtFlow reuses magicCommon framework/configuration directly:
 # 1. Built-in ThoughtFlow defaults.
-# 2. magicCommon application config: <workspace>/.thoughtflow/application.toml
+# 2. magicCommon application config: <config-dir>/application.toml
 # 3. Environment variables.
 # 4. CLI flags mapped to environment variables.
 

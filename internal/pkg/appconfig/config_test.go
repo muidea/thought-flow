@@ -10,7 +10,9 @@ import (
 func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
 
 	cfg := Load()
@@ -29,21 +31,32 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	}
 }
 
-func TestConfigDirUsesWorkspaceRuntimeDirectory(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
+func TestConfigDirUsesConfiguredDirectory(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 
-	if got := ConfigDir(); got != filepath.Join(root, ".thoughtflow") {
-		t.Fatalf("ConfigDir() = %q, want %q", got, filepath.Join(root, ".thoughtflow"))
+	if got := ConfigDir(); got != configDir {
+		t.Fatalf("ConfigDir() = %q, want %q", got, configDir)
+	}
+}
+
+func TestConfigDirFallsBackToMagicCommonConfigPath(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CONFIG_PATH", configDir)
+
+	if got := ConfigDir(); got != configDir {
+		t.Fatalf("ConfigDir() = %q, want %q", got, configDir)
 	}
 }
 
 func TestLoadAppliesFrameworkWorkspaceConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
-	writeApplicationConfig(t, root, `[server]
+	writeApplicationConfig(t, configDir, `[server]
 host = "0.0.0.0"
 port = "9090"
 
@@ -118,13 +131,15 @@ timeout_seconds = 17
 func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
 	raw, err := os.ReadFile(filepath.Clean("../../../doc/application.example.toml"))
 	if err != nil {
 		t.Fatalf("ReadFile(template) error = %v", err)
 	}
-	writeApplicationConfig(t, root, string(raw))
+	writeApplicationConfig(t, configDir, string(raw))
 
 	cfg := Load()
 
@@ -164,7 +179,9 @@ func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 func TestLoadEnvironmentOverridesLocalConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
 	t.Setenv("THOUGHTFLOW_PORT", "7070")
 	t.Setenv("THOUGHTFLOW_GIT_ENABLED", "true")
@@ -172,7 +189,7 @@ func TestLoadEnvironmentOverridesLocalConfig(t *testing.T) {
 	t.Setenv("THOUGHTFLOW_DUCKDB_PATH", ".thoughtflow/env.duckdb")
 	t.Setenv("THOUGHTFLOW_AI_API_KEY", "env-key")
 	t.Setenv("THOUGHTFLOW_AI_TIMEOUT_SECONDS", "3")
-	writeApplicationConfig(t, root, `[server]
+	writeApplicationConfig(t, configDir, `[server]
 port = "9090"
 
 [git_sync]
@@ -206,7 +223,9 @@ timeout_seconds = 17
 func TestLoadAppliesThoughtflowEnvironmentAfterFrameworkEnvironment(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_CONFIG_DIR", configDir)
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
 	t.Setenv("SERVER_HOST", "0.0.0.0")
 	t.Setenv("SERVER_PORT", "6060")
@@ -222,9 +241,8 @@ func TestLoadAppliesThoughtflowEnvironmentAfterFrameworkEnvironment(t *testing.T
 	}
 }
 
-func writeApplicationConfig(t *testing.T, root string, content string) {
+func writeApplicationConfig(t *testing.T, configDir string, content string) {
 	t.Helper()
-	configDir := filepath.Join(root, ".thoughtflow")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
