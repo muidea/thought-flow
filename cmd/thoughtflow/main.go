@@ -94,9 +94,14 @@ func execute(args []string, newSignalContext func(context.Context) (context.Cont
 }
 
 func (applicationLifecycle) Startup(ctx context.Context) error {
+	configDir := appconfig.ConfigDir()
+	cfg := appconfig.Load()
+	if err := appconfig.ValidateDirectorySeparation(configDir, cfg); err != nil {
+		return err
+	}
 	opts := application.Options{
 		ServiceName: "thoughtflow",
-		ConfigDir:   appconfig.ConfigDir(),
+		ConfigDir:   configDir,
 	}
 	if err := application.StartupWithOptions(ctx, service.DefaultService(), opts); err != nil {
 		return err

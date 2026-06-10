@@ -98,7 +98,36 @@ func ConfigDir() string {
 	if value, err := os.UserConfigDir(); err == nil && value != "" {
 		return filepath.Join(value, "thoughtflow")
 	}
-	return filepath.Join(".", "thoughtflow-config")
+	if value, err := os.UserHomeDir(); err == nil && value != "" {
+		return filepath.Join(value, ".config", "thoughtflow")
+	}
+	return filepath.Join(os.TempDir(), "thoughtflow", "config")
+}
+
+func ValidateDirectorySeparation(configDir string, cfg Config) error {
+	absConfigDir, err := filepath.Abs(configDir)
+	if err != nil {
+		return fmt.Errorf("resolve config directory: %w", err)
+	}
+	absWorkspaceRoot, err := filepath.Abs(cfg.Workspace.Root)
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
+	runtimeDir := filepath.Join(absWorkspaceRoot, ".thoughtflow")
+
+	if samePath(absConfigDir, absWorkspaceRoot) {
+		return fmt.Errorf("config directory must be separate from workspace root: %s", absConfigDir)
+	}
+	if samePath(absConfigDir, runtimeDir) {
+		return fmt.Errorf("config directory must be separate from workspace runtime data directory: %s", absConfigDir)
+	}
+	if nestedPath(absConfigDir, absWorkspaceRoot) || nestedPath(absWorkspaceRoot, absConfigDir) {
+		return fmt.Errorf("config directory and workspace root must not be nested: config=%s workspace=%s", absConfigDir, absWorkspaceRoot)
+	}
+	if filepath.Dir(absConfigDir) == filepath.Dir(absWorkspaceRoot) {
+		return fmt.Errorf("config directory and workspace root must not be sibling directories under the same parent: config=%s workspace=%s", absConfigDir, absWorkspaceRoot)
+	}
+	return nil
 }
 
 func ResetForTesting() {
@@ -244,4 +273,22 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func samePath(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func nestedPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	if rel == "." || rel == ".." {
+		return false
+	}
+	if len(rel) >= 3 && rel[:3] == "../" {
+		return false
+	}
+	return true
 }

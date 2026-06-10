@@ -1,6 +1,8 @@
 # ThoughtFlow magicCommon application configuration template.
 # Effective path: <config-dir>/application.toml
 # Default config dir: OS user config directory, for example ~/.config/thoughtflow on Linux.
+# Keep <config-dir> outside the workspace hierarchy and outside the workspace parent directory.
+# Recommended deployment split: config under /etc/thoughtflow, data workspace under /var/lib/thoughtflow.
 #
 # ThoughtFlow reuses magicCommon framework/configuration directly:
 # 1. Built-in ThoughtFlow defaults.
@@ -15,6 +17,7 @@ port = 8080
 
 [workspace]
 # Workspace root. Relative paths are resolved from the process working directory.
+# Do not place this workspace beside or inside the config directory.
 root = "./thoughtflow-workspace"
 # Git initialization policy field. Commit behavior is controlled by git_sync.enabled
 # and the actual local Git repository state.

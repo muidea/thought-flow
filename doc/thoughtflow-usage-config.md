@@ -76,7 +76,28 @@ attachments/           附件目录
 4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`。
 5. CLI 参数。CLI 参数会先映射为对应 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
 
-ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向独立配置目录。默认配置目录来自操作系统用户配置目录，例如 Linux 下通常是 `~/.config/thoughtflow`；也可以通过 `THOUGHTFLOW_CONFIG_DIR` 或 `--config-dir` 覆盖。未设置 `THOUGHTFLOW_CONFIG_DIR` 时，会兼容 magicCommon 的 `CONFIG_PATH`。数据目录仍位于 workspace 内的 `.thoughtflow/`，不要与配置目录混用。
+ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向独立配置目录。默认配置目录来自操作系统用户配置目录，例如 Linux 下通常是 `~/.config/thoughtflow`；也可以通过 `THOUGHTFLOW_CONFIG_DIR` 或 `--config-dir` 覆盖。未设置 `THOUGHTFLOW_CONFIG_DIR` 时，会兼容 magicCommon 的 `CONFIG_PATH`。
+
+配置目录和数据目录必须分离到不同目录层级。启动时会校验：
+
+1. `config-dir` 不能等于 `workspace.root`。
+2. `config-dir` 不能放在 `workspace.root` 或 `<workspace>/.thoughtflow` 下。
+3. `workspace.root` 不能放在 `config-dir` 下。
+4. `config-dir` 与 `workspace.root` 不能作为同一父目录下的同级目录。
+
+推荐部署形态：
+
+```text
+/etc/thoughtflow/application.toml   配置文件
+/var/lib/thoughtflow/.thoughtflow/  运行态数据目录
+```
+
+不推荐且启动会拒绝的形态：
+
+```text
+/srv/thoughtflow/config/            配置目录
+/srv/thoughtflow/workspace/         工作区目录
+```
 
 ## 5. 本地配置样例
 
@@ -147,7 +168,7 @@ timeout_seconds = 30
 4. `workspace.root` 可以写入 `application.toml`；`THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 只覆盖数据工作区，不再用于定位配置目录。
 5. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
 6. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
-7. 配置目录和数据目录应保持物理分离。配置目录存放 `application.toml`，数据目录存放 jobs、logs、DuckDB 等运行态文件。
+7. 配置目录和数据目录应保持物理分离，并避免作为同一父目录下的同级目录。配置目录存放 `application.toml`，数据目录存放 jobs、logs、DuckDB 等运行态文件。
 
 ## 6. 环境变量
 

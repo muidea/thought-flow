@@ -49,6 +49,62 @@ func TestConfigDirFallsBackToMagicCommonConfigPath(t *testing.T) {
 	}
 }
 
+func TestValidateDirectorySeparationAcceptsDifferentHierarchies(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "etc", "thoughtflow")
+	cfg := defaultConfig()
+	cfg.Workspace.Root = filepath.Join(base, "var", "lib", "thoughtflow")
+
+	if err := ValidateDirectorySeparation(configDir, cfg); err != nil {
+		t.Fatalf("ValidateDirectorySeparation() error = %v", err)
+	}
+}
+
+func TestValidateDirectorySeparationRejectsWorkspaceHierarchy(t *testing.T) {
+	base := t.TempDir()
+	tests := []struct {
+		name      string
+		configDir string
+		workspace string
+	}{
+		{
+			name:      "same path",
+			configDir: filepath.Join(base, "workspace"),
+			workspace: filepath.Join(base, "workspace"),
+		},
+		{
+			name:      "config under workspace",
+			configDir: filepath.Join(base, "workspace", "config"),
+			workspace: filepath.Join(base, "workspace"),
+		},
+		{
+			name:      "workspace under config",
+			configDir: filepath.Join(base, "config"),
+			workspace: filepath.Join(base, "config", "workspace"),
+		},
+		{
+			name:      "sibling directories",
+			configDir: filepath.Join(base, "config"),
+			workspace: filepath.Join(base, "workspace"),
+		},
+		{
+			name:      "runtime data directory",
+			configDir: filepath.Join(base, "workspace", ".thoughtflow"),
+			workspace: filepath.Join(base, "workspace"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.Workspace.Root = tt.workspace
+			if err := ValidateDirectorySeparation(tt.configDir, cfg); err == nil {
+				t.Fatal("expected directory separation error")
+			}
+		})
+	}
+}
+
 func TestLoadAppliesFrameworkWorkspaceConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)

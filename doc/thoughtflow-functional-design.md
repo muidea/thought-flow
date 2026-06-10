@@ -221,7 +221,7 @@ thoughtflow-workspace/
 
 1. `thoughts/` 和 `topics/` 是用户知识资产，默认进入 Git。
 2. `.thoughtflow/` 是运行时目录，默认不进入 Git。
-3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，不放入 workspace `.thoughtflow/`。
+3. 配置目录与数据目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，不放入 workspace `.thoughtflow/`，也不与 workspace 作为同一父目录下的同级目录。
 4. `attachments/` 存放未来上传文件、网页快照或图片资源。
 5. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
 
@@ -798,6 +798,13 @@ timeout_seconds = 60
 3. magicCommon 通用环境变量注入。
 4. ThoughtFlow 专用环境变量：`THOUGHTFLOW_*`，适合 API key、端口、路径和本地调试。
 5. 启动参数覆盖：启动参数会映射为 `THOUGHTFLOW_*` 环境变量，因此优先级最高。
+
+目录约束：
+
+1. `config-dir` 与 `workspace.root` 必须使用不同目录层级。
+2. `config-dir` 不能等于、包含或位于 `workspace.root` 内。
+3. `config-dir` 不能指向 `<workspace>/.thoughtflow` 运行态目录。
+4. `config-dir` 与 `workspace.root` 不能作为同一父目录下的同级目录；推荐 `/etc/thoughtflow` 放配置，`/var/lib/thoughtflow` 放 workspace 数据。
 
 关键配置：
 
