@@ -56,7 +56,7 @@ make check CGO_LDFLAGS=-L/tmp
 - [业务模型定义](doc/thoughtflow-domain-models.md)
 - [实现状态](doc/thoughtflow-implementation-status.md)
 - [使用及配置说明](doc/thoughtflow-usage-config.md)
-- [配置文件模板](doc/config.local.example.yaml)
+- [配置文件模板](doc/application.example.toml)
 - [Web 交互与展示风格改造设计](doc/thoughtflow-web-ux-redesign.md)
 
 ## CI

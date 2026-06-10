@@ -1,14 +1,15 @@
 package appconfig
 
 import (
-	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/muidea/magicCommon/framework/configuration"
 )
 
 type Config struct {
@@ -80,16 +81,24 @@ var (
 func Load() Config {
 	loadOnce.Do(func() {
 		loaded = defaultConfig()
-		rootForLocalConfig := envString("THOUGHTFLOW_WORKSPACE_ROOT", loaded.Workspace.Root)
-		loaded = applyLocalConfig(loaded, filepath.Join(rootForLocalConfig, ".thoughtflow", "config.local.yaml"))
+		ensureFrameworkConfigManager()
+		applyFrameworkOverrides(&loaded)
 		applyEnvOverrides(&loaded)
 	})
 	return loaded
 }
 
+func ConfigDir() string {
+	cfg := defaultConfig()
+	root := envString("THOUGHTFLOW_WORKSPACE_ROOT", cfg.Workspace.Root)
+	return filepath.Join(root, ".thoughtflow")
+}
+
 func ResetForTesting() {
 	loadOnce = sync.Once{}
 	loaded = Config{}
+	_ = configuration.CloseConfigManager()
+	configuration.DefaultConfigManager = nil
 }
 
 func defaultConfig() Config {
@@ -137,155 +146,50 @@ func defaultConfig() Config {
 	}
 }
 
-func applyLocalConfig(cfg Config, path string) Config {
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return cfg
+func ensureFrameworkConfigManager() {
+	if configuration.GetDefaultConfigManager() != nil {
+		return
 	}
-	if err != nil {
-		return cfg
+	if err := configuration.InitDefaultConfigManager(ConfigDir()); err != nil {
+		slog.Warn("initialize framework config manager failed", "error", err)
 	}
-	var local localConfig
-	if err := yaml.Unmarshal(raw, &local); err != nil {
-		return cfg
-	}
-	applyLocalOverrides(&cfg, local)
-	return cfg
 }
 
-type localConfig struct {
-	Server    *localServerConfig    `yaml:"server"`
-	Workspace *localWorkspaceConfig `yaml:"workspace"`
-	Capture   *localCaptureConfig   `yaml:"capture"`
-	Refiner   *localRefinerConfig   `yaml:"refiner"`
-	GitSync   *localGitSyncConfig   `yaml:"git_sync"`
-	Search    *localSearchConfig    `yaml:"search"`
-	Topic     *localTopicConfig     `yaml:"topic"`
-	Events    *localEventsConfig    `yaml:"events"`
-	AI        *localAIConfig        `yaml:"ai"`
+func applyFrameworkOverrides(cfg *Config) {
+	cfg.Server.Host = frameworkString("server.host", cfg.Server.Host)
+	cfg.Server.Port = frameworkString("server.port", cfg.Server.Port)
+	cfg.Workspace.Root = frameworkString("workspace.root", cfg.Workspace.Root)
+	cfg.Workspace.AutoInitGit = configuration.GetBoolWithDefault("workspace.auto_init_git", cfg.Workspace.AutoInitGit)
+	cfg.Capture.DuplicatePolicy = frameworkString("capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
+	cfg.Refiner.Concurrency = configuration.GetIntWithDefault("refiner.concurrency", cfg.Refiner.Concurrency)
+	cfg.Refiner.URLFetchTimeoutRaw = configuration.GetIntWithDefault("refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)
+	cfg.Refiner.URLFetchTimeout = time.Duration(cfg.Refiner.URLFetchTimeoutRaw) * time.Second
+	cfg.GitSync.Enabled = configuration.GetBoolWithDefault("git_sync.enabled", cfg.GitSync.Enabled)
+	cfg.GitSync.DebounceSeconds = configuration.GetIntWithDefault("git_sync.debounce_seconds", cfg.GitSync.DebounceSeconds)
+	cfg.GitSync.DebounceDuration = time.Duration(cfg.GitSync.DebounceSeconds) * time.Second
+	cfg.Search.DuckDBPath = frameworkString("search.duckdb_path", cfg.Search.DuckDBPath)
+	cfg.Search.DefaultMode = frameworkString("search.default_mode", cfg.Search.DefaultMode)
+	cfg.Topic.AutoWeave = configuration.GetBoolWithDefault("topic.auto_weave", cfg.Topic.AutoWeave)
+	cfg.Topic.MinSemanticScore = configuration.GetFloat64WithDefault("topic.min_semantic_score", cfg.Topic.MinSemanticScore)
+	cfg.Events.SSEHeartbeatSeconds = configuration.GetIntWithDefault("events.sse_heartbeat_seconds", cfg.Events.SSEHeartbeatSeconds)
+	cfg.Events.SSEHeartbeat = time.Duration(cfg.Events.SSEHeartbeatSeconds) * time.Second
+	cfg.AI.BaseURL = frameworkString("ai.base_url", cfg.AI.BaseURL)
+	cfg.AI.APIKey = frameworkString("ai.api_key", cfg.AI.APIKey)
+	cfg.AI.ChatModel = frameworkString("ai.chat_model", cfg.AI.ChatModel)
+	cfg.AI.EmbeddingModel = frameworkString("ai.embedding_model", cfg.AI.EmbeddingModel)
+	cfg.AI.Timeout = time.Duration(configuration.GetIntWithDefault("ai.timeout_seconds", int(cfg.AI.Timeout/time.Second))) * time.Second
 }
 
-type localServerConfig struct {
-	Host *string `yaml:"host"`
-	Port *string `yaml:"port"`
-}
-
-type localWorkspaceConfig struct {
-	Root        *string `yaml:"root"`
-	AutoInitGit *bool   `yaml:"auto_init_git"`
-}
-
-type localCaptureConfig struct {
-	DuplicatePolicy *string `yaml:"duplicate_policy"`
-}
-
-type localRefinerConfig struct {
-	Concurrency            *int `yaml:"concurrency"`
-	URLFetchTimeoutSeconds *int `yaml:"url_fetch_timeout_seconds"`
-}
-
-type localGitSyncConfig struct {
-	Enabled         *bool `yaml:"enabled"`
-	DebounceSeconds *int  `yaml:"debounce_seconds"`
-}
-
-type localSearchConfig struct {
-	DuckDBPath  *string `yaml:"duckdb_path"`
-	DefaultMode *string `yaml:"default_mode"`
-}
-
-type localTopicConfig struct {
-	AutoWeave        *bool    `yaml:"auto_weave"`
-	MinSemanticScore *float64 `yaml:"min_semantic_score"`
-}
-
-type localEventsConfig struct {
-	SSEHeartbeatSeconds *int `yaml:"sse_heartbeat_seconds"`
-}
-
-type localAIConfig struct {
-	BaseURL        *string `yaml:"base_url"`
-	APIKey         *string `yaml:"api_key"`
-	ChatModel      *string `yaml:"chat_model"`
-	EmbeddingModel *string `yaml:"embedding_model"`
-	TimeoutSeconds *int    `yaml:"timeout_seconds"`
-}
-
-func applyLocalOverrides(cfg *Config, local localConfig) {
-	if local.Server != nil {
-		if local.Server.Host != nil {
-			cfg.Server.Host = *local.Server.Host
-		}
-		if local.Server.Port != nil {
-			cfg.Server.Port = *local.Server.Port
-		}
+func frameworkString(key, fallback string) string {
+	manager := configuration.GetDefaultConfigManager()
+	if manager == nil {
+		return fallback
 	}
-	if local.Workspace != nil {
-		if local.Workspace.Root != nil {
-			cfg.Workspace.Root = *local.Workspace.Root
-		}
-		if local.Workspace.AutoInitGit != nil {
-			cfg.Workspace.AutoInitGit = *local.Workspace.AutoInitGit
-		}
+	value, err := manager.Get(key)
+	if err != nil || value == nil {
+		return fallback
 	}
-	if local.Capture != nil && local.Capture.DuplicatePolicy != nil {
-		cfg.Capture.DuplicatePolicy = *local.Capture.DuplicatePolicy
-	}
-	if local.Refiner != nil {
-		if local.Refiner.Concurrency != nil {
-			cfg.Refiner.Concurrency = *local.Refiner.Concurrency
-		}
-		if local.Refiner.URLFetchTimeoutSeconds != nil {
-			cfg.Refiner.URLFetchTimeoutRaw = *local.Refiner.URLFetchTimeoutSeconds
-			cfg.Refiner.URLFetchTimeout = time.Duration(*local.Refiner.URLFetchTimeoutSeconds) * time.Second
-		}
-	}
-	if local.GitSync != nil {
-		if local.GitSync.Enabled != nil {
-			cfg.GitSync.Enabled = *local.GitSync.Enabled
-		}
-		if local.GitSync.DebounceSeconds != nil {
-			cfg.GitSync.DebounceSeconds = *local.GitSync.DebounceSeconds
-			cfg.GitSync.DebounceDuration = time.Duration(*local.GitSync.DebounceSeconds) * time.Second
-		}
-	}
-	if local.Search != nil {
-		if local.Search.DuckDBPath != nil {
-			cfg.Search.DuckDBPath = *local.Search.DuckDBPath
-		}
-		if local.Search.DefaultMode != nil {
-			cfg.Search.DefaultMode = *local.Search.DefaultMode
-		}
-	}
-	if local.Topic != nil {
-		if local.Topic.AutoWeave != nil {
-			cfg.Topic.AutoWeave = *local.Topic.AutoWeave
-		}
-		if local.Topic.MinSemanticScore != nil {
-			cfg.Topic.MinSemanticScore = *local.Topic.MinSemanticScore
-		}
-	}
-	if local.Events != nil && local.Events.SSEHeartbeatSeconds != nil {
-		cfg.Events.SSEHeartbeatSeconds = *local.Events.SSEHeartbeatSeconds
-		cfg.Events.SSEHeartbeat = time.Duration(*local.Events.SSEHeartbeatSeconds) * time.Second
-	}
-	if local.AI != nil {
-		if local.AI.BaseURL != nil {
-			cfg.AI.BaseURL = *local.AI.BaseURL
-		}
-		if local.AI.APIKey != nil {
-			cfg.AI.APIKey = *local.AI.APIKey
-		}
-		if local.AI.ChatModel != nil {
-			cfg.AI.ChatModel = *local.AI.ChatModel
-		}
-		if local.AI.EmbeddingModel != nil {
-			cfg.AI.EmbeddingModel = *local.AI.EmbeddingModel
-		}
-		if local.AI.TimeoutSeconds != nil {
-			cfg.AI.Timeout = time.Duration(*local.AI.TimeoutSeconds) * time.Second
-		}
-	}
+	return fmt.Sprint(value)
 }
 
 func applyEnvOverrides(cfg *Config) {

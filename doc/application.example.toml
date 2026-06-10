@@ -1,0 +1,61 @@
+# ThoughtFlow workspace-local configuration template.
+# Effective path: <workspace>/.thoughtflow/application.toml
+#
+# ThoughtFlow reuses magicCommon framework/configuration directly:
+# 1. Built-in ThoughtFlow defaults.
+# 2. magicCommon application config: <workspace>/.thoughtflow/application.toml
+# 3. Environment variables.
+# 4. CLI flags mapped to environment variables.
+
+[server]
+# HTTP listen address.
+host = "127.0.0.1"
+port = "8080"
+
+[workspace]
+# Workspace root. Relative paths are resolved from the process working directory.
+root = "./thoughtflow-workspace"
+# Git initialization policy field. Commit behavior is controlled by git_sync.enabled
+# and the actual local Git repository state.
+auto_init_git = true
+
+[capture]
+# Supported values: "warn" and "allow".
+# "warn" preserves duplicate captures and marks duplicate_warned.
+duplicate_policy = "warn"
+
+[refiner]
+# Refine runtime concurrency.
+concurrency = 2
+# URL fetch timeout in seconds.
+url_fetch_timeout_seconds = 30
+
+[git_sync]
+# Whether to enable local Git auto-commit requests for Markdown/YAML workspace changes.
+enabled = true
+# Debounce window before pending changes are written to Git, in seconds.
+debounce_seconds = 5
+
+[search]
+# Relative paths are resolved against workspace.root.
+duckdb_path = ".thoughtflow/thoughtflow.duckdb"
+# Supported values: keyword, semantic, hybrid.
+default_mode = "hybrid"
+
+[topic]
+# Whether to enable automatic topic document weaving after topic matches.
+auto_weave = true
+# Default semantic matching threshold for topics.
+min_semantic_score = 0.78
+
+[events]
+# SSE heartbeat interval in seconds.
+sse_heartbeat_seconds = 20
+
+[ai]
+# OpenAI-compatible provider. Empty api_key uses the local-rule fallback.
+base_url = "https://api.openai.com"
+api_key = ""
+chat_model = "gpt-4o-mini"
+embedding_model = "text-embedding-3-small"
+timeout_seconds = 30

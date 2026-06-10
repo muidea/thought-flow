@@ -29,38 +29,55 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesLocalWorkspaceConfig(t *testing.T) {
+func TestConfigDirUsesWorkspaceRuntimeDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
+
+	if got := ConfigDir(); got != filepath.Join(root, ".thoughtflow") {
+		t.Fatalf("ConfigDir() = %q, want %q", got, filepath.Join(root, ".thoughtflow"))
+	}
+}
+
+func TestLoadAppliesFrameworkWorkspaceConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
 	root := t.TempDir()
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
-	writeLocalConfig(t, root, `server:
-  host: 0.0.0.0
-  port: "9090"
-workspace:
-  auto_init_git: false
-capture:
-  duplicate_policy: skip
-refiner:
-  concurrency: 4
-  url_fetch_timeout_seconds: 12
-search:
-  duckdb_path: .thoughtflow/custom.duckdb
-  default_mode: semantic
-topic:
-  auto_weave: false
-  min_semantic_score: 0.91
-git_sync:
-  enabled: false
-  debounce_seconds: 9
-events:
-  sse_heartbeat_seconds: 33
-ai:
-  base_url: https://ai.example.test
-  api_key: local-key
-  chat_model: local-chat
-  embedding_model: local-embed
-  timeout_seconds: 17
+	writeApplicationConfig(t, root, `[server]
+host = "0.0.0.0"
+port = "9090"
+
+[workspace]
+auto_init_git = false
+
+[capture]
+duplicate_policy = "skip"
+
+[refiner]
+concurrency = 4
+url_fetch_timeout_seconds = 12
+
+[search]
+duckdb_path = ".thoughtflow/custom.duckdb"
+default_mode = "semantic"
+
+[topic]
+auto_weave = false
+min_semantic_score = 0.91
+
+[git_sync]
+enabled = false
+debounce_seconds = 9
+
+[events]
+sse_heartbeat_seconds = 33
+
+[ai]
+base_url = "https://ai.example.test"
+api_key = "local-key"
+chat_model = "local-chat"
+embedding_model = "local-embed"
+timeout_seconds = 17
 `)
 
 	cfg := Load()
@@ -98,16 +115,16 @@ ai:
 	}
 }
 
-func TestConfigTemplateLoadsAsWorkspaceLocalConfig(t *testing.T) {
+func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 	ResetForTesting()
 	t.Cleanup(ResetForTesting)
 	root := t.TempDir()
 	t.Setenv("THOUGHTFLOW_WORKSPACE_ROOT", root)
-	raw, err := os.ReadFile(filepath.Clean("../../../doc/config.local.example.yaml"))
+	raw, err := os.ReadFile(filepath.Clean("../../../doc/application.example.toml"))
 	if err != nil {
 		t.Fatalf("ReadFile(template) error = %v", err)
 	}
-	writeLocalConfig(t, root, string(raw))
+	writeApplicationConfig(t, root, string(raw))
 
 	cfg := Load()
 
@@ -155,16 +172,19 @@ func TestLoadEnvironmentOverridesLocalConfig(t *testing.T) {
 	t.Setenv("THOUGHTFLOW_DUCKDB_PATH", ".thoughtflow/env.duckdb")
 	t.Setenv("THOUGHTFLOW_AI_API_KEY", "env-key")
 	t.Setenv("THOUGHTFLOW_AI_TIMEOUT_SECONDS", "3")
-	writeLocalConfig(t, root, `server:
-  port: "9090"
-git_sync:
-  enabled: false
-  debounce_seconds: 9
-search:
-  duckdb_path: .thoughtflow/local.duckdb
-ai:
-  api_key: local-key
-  timeout_seconds: 17
+	writeApplicationConfig(t, root, `[server]
+port = "9090"
+
+[git_sync]
+enabled = false
+debounce_seconds = 9
+
+[search]
+duckdb_path = ".thoughtflow/local.duckdb"
+
+[ai]
+api_key = "local-key"
+timeout_seconds = 17
 `)
 
 	cfg := Load()
@@ -183,13 +203,13 @@ ai:
 	}
 }
 
-func writeLocalConfig(t *testing.T, root string, content string) {
+func writeApplicationConfig(t *testing.T, root string, content string) {
 	t.Helper()
 	configDir := filepath.Join(root, ".thoughtflow")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.local.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "application.toml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 }

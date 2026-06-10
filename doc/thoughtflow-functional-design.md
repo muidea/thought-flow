@@ -215,7 +215,7 @@ thoughtflow-workspace/
     thoughtflow.duckdb
     jobs/
     logs/
-    config.local.yaml
+    application.toml
 ```
 
 说明：
@@ -796,36 +796,42 @@ ai:
 配置分层：
 
 1. 默认配置：内置在二进制中。
-2. 工作区配置：`.thoughtflow/config.local.yaml`。
+2. 工作区配置：`.thoughtflow/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
 3. 环境变量覆盖：适合 API key、端口、路径。
 4. 启动参数覆盖：适合临时调试。
 
 关键配置：
 
-```yaml
-server:
-  host: 127.0.0.1
-  port: 8080
-workspace:
-  root: ./thoughtflow-workspace
-  auto_init_git: true
-capture:
-  duplicate_policy: warn
-refiner:
-  concurrency: 2
-  url_fetch_timeout_seconds: 30
-search:
-  duckdb_path: .thoughtflow/thoughtflow.duckdb
-  default_mode: hybrid
-topic:
-  auto_weave: true
-  min_semantic_score: 0.78
-git_sync:
-  enabled: true
-  debounce_seconds: 5
-  include_duckdb: false
-events:
-  sse_heartbeat_seconds: 20
+```toml
+[server]
+host = "127.0.0.1"
+port = "8080"
+
+[workspace]
+root = "./thoughtflow-workspace"
+auto_init_git = true
+
+[capture]
+duplicate_policy = "warn"
+
+[refiner]
+concurrency = 2
+url_fetch_timeout_seconds = 30
+
+[search]
+duckdb_path = ".thoughtflow/thoughtflow.duckdb"
+default_mode = "hybrid"
+
+[topic]
+auto_weave = true
+min_semantic_score = 0.78
+
+[git_sync]
+enabled = true
+debounce_seconds = 5
+
+[events]
+sse_heartbeat_seconds = 20
 ```
 
 ## 12. 错误与状态设计

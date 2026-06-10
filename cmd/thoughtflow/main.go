@@ -13,6 +13,8 @@ import (
 	"github.com/muidea/magicCommon/framework/application"
 	"github.com/muidea/magicCommon/framework/service"
 
+	"thoughtflow/internal/pkg/appconfig"
+
 	_ "thoughtflow/internal/modules/application/thoughtflow"
 	_ "thoughtflow/internal/modules/capture"
 	_ "thoughtflow/internal/modules/git_sync"
@@ -94,6 +96,7 @@ func execute(args []string, newSignalContext func(context.Context) (context.Cont
 func (applicationLifecycle) Startup(ctx context.Context) error {
 	opts := application.Options{
 		ServiceName: "thoughtflow",
+		ConfigDir:   appconfig.ConfigDir(),
 	}
 	if err := application.StartupWithOptions(ctx, service.DefaultService(), opts); err != nil {
 		return err

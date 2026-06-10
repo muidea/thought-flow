@@ -70,72 +70,73 @@ attachments/           附件目录
 配置加载顺序为：
 
 1. 内置默认值。
-2. 工作区本地配置：`<workspace>/.thoughtflow/config.local.yaml`。
+2. magicCommon 应用配置：`<workspace>/.thoughtflow/application.toml`。
 3. 环境变量。
 4. CLI 参数。CLI 参数会先映射为对应环境变量，再进入统一配置加载。
 
-用于定位本地配置文件的 workspace root 来自 `THOUGHTFLOW_WORKSPACE_ROOT`；未设置时使用默认 `./thoughtflow-workspace`。
+ThoughtFlow 直接复用 `magicCommon/framework/configuration`，启动时将 framework `ConfigDir` 指向 `<workspace>/.thoughtflow`。用于定位该目录的 workspace root 来自 `THOUGHTFLOW_WORKSPACE_ROOT`；未设置时使用默认 `./thoughtflow-workspace`。
 
 ## 5. 本地配置样例
 
 完整模板见：
 
 ```text
-doc/config.local.example.yaml
+doc/application.example.toml
 ```
 
 示例路径：
 
 ```text
-thoughtflow-workspace/.thoughtflow/config.local.yaml
+thoughtflow-workspace/.thoughtflow/application.toml
 ```
 
 基础示例内容：
 
-```yaml
-server:
-  host: "127.0.0.1"
-  port: "8080"
+```toml
+[server]
+host = "127.0.0.1"
+port = "8080"
 
-workspace:
-  root: "./thoughtflow-workspace"
-  auto_init_git: true
+[workspace]
+root = "./thoughtflow-workspace"
+auto_init_git = true
 
-capture:
-  duplicate_policy: "warn"
+[capture]
+duplicate_policy = "warn"
 
-refiner:
-  concurrency: 2
-  url_fetch_timeout_seconds: 30
+[refiner]
+concurrency = 2
+url_fetch_timeout_seconds = 30
 
-git_sync:
-  enabled: true
-  debounce_seconds: 5
+[git_sync]
+enabled = true
+debounce_seconds = 5
 
-search:
-  duckdb_path: ".thoughtflow/thoughtflow.duckdb"
-  default_mode: "hybrid"
+[search]
+duckdb_path = ".thoughtflow/thoughtflow.duckdb"
+default_mode = "hybrid"
 
-topic:
-  auto_weave: true
-  min_semantic_score: 0.78
+[topic]
+auto_weave = true
+min_semantic_score = 0.78
 
-events:
-  sse_heartbeat_seconds: 20
+[events]
+sse_heartbeat_seconds = 20
 
-ai:
-  base_url: "https://api.openai.com"
-  api_key: ""
-  chat_model: "gpt-4o-mini"
-  embedding_model: "text-embedding-3-small"
-  timeout_seconds: 30
+[ai]
+base_url = "https://api.openai.com"
+api_key = ""
+chat_model = "gpt-4o-mini"
+embedding_model = "text-embedding-3-small"
+timeout_seconds = 30
 ```
 
 说明：
 
 1. `search.duckdb_path` 为相对路径时，会解析到 workspace root 下。
-2. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
-3. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
+2. `workspace.root` 可以写入 `application.toml`，但 `THOUGHTFLOW_WORKSPACE_ROOT` 或 `--workspace-root` 同时负责定位 `<workspace>/.thoughtflow`，并且优先级更高。
+3. `ai.api_key` 为空时，服务使用本地规则 provider，仍可完成本地采集、摘要、embedding、搜索、专题匹配和合稿。
+4. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
 
 ## 6. 环境变量
 

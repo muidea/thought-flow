@@ -731,7 +731,7 @@ Git：
 Configuration：
 
 1. 当前配置文件路径说明。
-2. 链接 `doc/config.local.example.yaml`。
+2. 链接 `doc/application.example.toml`。
 3. 环境变量说明入口。
 
 验收标准：
