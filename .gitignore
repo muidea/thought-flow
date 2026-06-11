@@ -42,3 +42,7 @@ thoughtflow-runtime/
 
 # Local binary from `go build ./cmd/thoughtflow`
 /thoughtflow
+
+# Staged libstdc++.so symlink used by `make build` so that
+# `cgo` can resolve `-lstdc++` on minimal images. Recreated on demand.
+/build/libstdcxx/

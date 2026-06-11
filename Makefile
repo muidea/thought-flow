@@ -6,19 +6,36 @@ BINARY ?= ./thoughtflow
 GO_PACKAGES := ./...
 WEB_DIR := internal/modules/application/thoughtflow/service/web
 GO_FILES := $(shell find cmd internal -name '*.go' -type f)
-# libstdc++ is not always installed as a bare symlink (only libstdc++.so.6).
-# The DuckDB static library references `-lstdc++` and Go's CGO pipeline
-# does not rewrite that flag, so on minimal images we have to provide a
-# bare-name symlink in a search path of our own. We stage it under
-# $(LIBSTDCPP_STAGE) and add the directory to the linker search path.
-LIBSTDCPP_STAGE := /tmp/thoughtflow-libstdcxx
+# DuckDB ships as a static archive (libduckdb_static.a) under
+# vendor/github.com/duckdb/duckdb-go-bindings/lib/<goos>-<goarch>/ and is
+# linked directly into the thoughtflow binary on every supported
+# platform. The cgo directives reference `-lstdc++` (no version suffix),
+# which the system ld cannot resolve against the bare libstdc++.so.6
+# shipped on minimal images. CI installs `libstdc++-dev` so the bare
+# `libstdc++.so` symlink is on disk; local builds without the dev
+# package fall back to a project-local `build/libstdcxx/libstdc++.so`
+# symlink that the Makefile stages on demand.
+LIBSTDCPP_STAGE := build/libstdcxx
 LIBSTDCPP_SYMLINK := $(LIBSTDCPP_STAGE)/libstdc++.so
-CGO_LDFLAGS ?= -L$(LIBSTDCPP_STAGE)
-# Bootstrap the symlink if it's missing. `touch` is a no-op once the link
-# exists, so this is safe to leave in the target.
-$(LIBSTDCPP_SYMLINK):
-	@mkdir -p $(LIBSTDCPP_STAGE)
-	@ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 $(LIBSTDCPP_SYMLINK)
+LIBSTDCPP_SOURCES := \
+	/usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+	/usr/lib/aarch64-linux-gnu/libstdc++.so.6
+CGO_LDFLAGS ?=
+
+# If the system already exposes a bare `libstdc++.so`, nothing to do.
+# Otherwise stage a project-local symlink and add it to LDFLAGS.
+LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
+	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu; do \
+		if [ -e $$d/libstdc++.so ]; then exit 0; fi; \
+	done; \
+	mkdir -p $(LIBSTDCPP_STAGE) && \
+	for s in $(LIBSTDCPP_SOURCES); do \
+		if [ -e $$s ]; then \
+			ln -sf $$s $(LIBSTDCPP_SYMLINK); \
+			echo "-L$(CURDIR)/$(LIBSTDCPP_STAGE)"; \
+			break; \
+		fi; \
+	done)
 
 .PHONY: help fmt fmt-check test build node-check node-test node-test-i18n i18n-check browser-test check clean
 
@@ -28,7 +45,7 @@ help:
 		'  fmt              Format Go files under cmd/ and internal/' \
 		'  fmt-check        Verify Go formatting without changing files' \
 		'  test             Run Go tests (DuckDB is the only backing store)' \
-		'  build            Build the thoughtflow binary' \
+		'  build            Build the thoughtflow binary (statically links DuckDB)' \
 		'  node-check       Run JavaScript syntax checks' \
 		'  node-test        Run Node component tests' \
 		'  node-test-i18n   Run i18n registry tests' \
@@ -43,11 +60,11 @@ fmt:
 fmt-check:
 	@test -z "$$($(GO)fmt -l $(GO_FILES))"
 
-test: $(LIBSTDCPP_SYMLINK)
-	CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GO_PACKAGES)
+test:
+	CGO_LDFLAGS="$(CGO_LDFLAGS) $(LIBSTDCPP_FALLBACK_LDFLAGS)" $(GO) test $(GO_PACKAGES)
 
-build: $(LIBSTDCPP_SYMLINK)
-	CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) build -o $(BINARY) ./cmd/thoughtflow
+build:
+	CGO_LDFLAGS="$(CGO_LDFLAGS) $(LIBSTDCPP_FALLBACK_LDFLAGS)" $(GO) build -o $(BINARY) ./cmd/thoughtflow
 
 node-check:
 	$(NODE) --check $(WEB_DIR)/vendor/markdown-it.min.js

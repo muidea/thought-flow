@@ -13,9 +13,16 @@ permissions:
 
 jobs:
   check:
-    name: Check
-    runs-on: ubuntu-latest
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
 
     steps:
       - name: Checkout
@@ -32,12 +39,14 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: Install system dependencies
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential libstdc++-dev
 
       - name: Verify Chrome is available
+        if: runner.os != 'Windows'
         run: |
           command -v google-chrome || command -v chromium || command -v chromium-browser
 

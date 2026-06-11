@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: thoughtflow
+          - goos: linux
+            goarch: arm64
+            os: ubuntu-latest
+            archive: tar.gz
+            binary: thoughtflow
+          - goos: darwin
+            goarch: arm64
+            os: macos-latest
+            archive: tar.gz
+            binary: thoughtflow
+          - goos: windows
+            goarch: amd64
+            os: ubuntu-latest
+            archive: zip
+            binary: thoughtflow.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libstdc++-dev p7zip-full
+          if [ "${{ matrix.goarch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu libstdc++-12-dev-arm64-cross
+          fi
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+          fi
+
+      - name: Build thoughtflow (static DuckDB)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          case "${{ matrix.goos }}-${{ matrix.goarch }}" in
+            linux-arm64)
+              export CC=aarch64-linux-gnu-gcc
+              ;;
+            windows-amd64)
+              export CC=x86_64-w64-mingw32-gcc
+              ;;
+          esac
+          go build -trimpath -ldflags "-s -w" -o dist/${{ matrix.binary }} ./cmd/thoughtflow
+
+      - name: Package release archive
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp dist/${{ matrix.binary }} release/${{ matrix.binary }}
+          cd release
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a ../thoughtflow-${{ matrix.goos }}-${{ matrix.goarch }}.zip ${{ matrix.binary }}
+          else
+            tar -czf ../thoughtflow-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz ${{ matrix.binary }}
+          fi
+          cd ..
+          ls -lh thoughtflow-${{ matrix.goos }}-${{ matrix.goarch }}.*
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            thoughtflow-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
