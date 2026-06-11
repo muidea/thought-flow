@@ -1088,9 +1088,41 @@ async function loadMetrics() {
     const metrics = await api("/api/system/metrics");
     state.metrics = metrics;
     renderMetrics(metrics);
+    renderSidebarBadges();
   } catch (error) {
     const node = $("#settings-drawer-metrics-json");
     if (node) node.innerHTML = `<div class="tf-alert tf-alert-warning">${escapeHTML(error.message)}</div>`;
+  }
+}
+
+function formatBadgeCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n > 99) return "99+";
+  return String(n);
+}
+
+function computeSidebarBadgeCounts(snapshot) {
+  const state = snapshot || {};
+  return {
+    notes: formatBadgeCount(state.metrics?.values?.thoughtflow_capture_total),
+    topics: formatBadgeCount(state.topics?.length),
+    compose: formatBadgeCount(state.synthesisDrafts?.length),
+  };
+}
+
+function renderSidebarBadges() {
+  const counts = computeSidebarBadgeCounts(state);
+  for (const [key, value] of Object.entries(counts)) {
+    const node = document.querySelector(`.tf-menu-badge[data-badge="${key}"]`);
+    if (!node) continue;
+    if (value) {
+      node.textContent = value;
+      node.dataset.count = String(value);
+    } else {
+      node.textContent = "";
+      delete node.dataset.count;
+    }
   }
 }
 
@@ -1210,6 +1242,7 @@ async function loadTopics() {
   const topics = await api("/api/topics");
   state.topics = topics || [];
   renderTopics();
+  renderSidebarBadges();
 }
 
 function renderTopics() {
@@ -2274,6 +2307,7 @@ async function createSynthesis(event) {
 async function loadSynthesisDrafts() {
   state.synthesisDrafts = await api("/api/synthesis");
   renderSynthesisDrafts();
+  renderSidebarBadges();
 }
 
 async function loadSynthesisDraft(draftId) {
@@ -2436,6 +2470,7 @@ function connectEvents() {
     source.addEventListener(type, (event) => {
       appendEvent(type, event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
+      if (type === "thought.captured") loadMetrics().catch(() => {});
       if ((type === "thought.refined" || type === "thought.patched" || type === "thought.refine_failed")
           && state.capture.activeThoughtId) {
         try {
@@ -2756,6 +2791,7 @@ async function boot() {
   await loadStatus();
   await loadTopics();
   await loadSynthesisDrafts();
+  await loadMetrics();
   await runSearch();
   await applyRoute();
   connectEvents();

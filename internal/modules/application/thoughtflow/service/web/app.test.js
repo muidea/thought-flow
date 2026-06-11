@@ -120,6 +120,8 @@ function loadAppFunctionsWith(opts = {}) {
       classifyCaptureInput,
       parseCaptureCommand,
       appendCaptureMessage,
+      formatBadgeCount,
+      computeSidebarBadgeCounts,
       appState: state,
     });`,
     context,
@@ -598,4 +600,46 @@ test("appendCaptureMessage records the message into state.capture", () => {
   assert.equal(entry.text, "hi");
   assert.equal(app._state.capture.messages.length, before + 1);
   assert.equal(app._state.capture.messages[before].text, "hi");
+});
+
+test("formatBadgeCount returns empty for zero/negative/non-finite, caps at 99+", () => {
+  const app = loadAppFunctions();
+  assert.equal(app.formatBadgeCount(0), "");
+  assert.equal(app.formatBadgeCount(-1), "");
+  assert.equal(app.formatBadgeCount(null), "");
+  assert.equal(app.formatBadgeCount(undefined), "");
+  assert.equal(app.formatBadgeCount(NaN), "");
+  assert.equal(app.formatBadgeCount("abc"), "");
+  assert.equal(app.formatBadgeCount(1), "1");
+  assert.equal(app.formatBadgeCount(42), "42");
+  assert.equal(app.formatBadgeCount(99), "99");
+  assert.equal(app.formatBadgeCount(100), "99+");
+  assert.equal(app.formatBadgeCount(1234), "99+");
+  // Strings that look numeric still pass through Number() coercion.
+  assert.equal(app.formatBadgeCount("7"), "7");
+  assert.equal(app.formatBadgeCount("0"), "");
+});
+
+test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
+  const app = loadAppFunctions();
+  const counts = app.computeSidebarBadgeCounts({
+    metrics: { values: { thoughtflow_capture_total: 42 } },
+    topics: [{ id: "a" }, { id: "b" }, { id: "c" }],
+    synthesisDrafts: [{ id: "d1" }],
+  });
+  // The returned object comes from a different vm context, so we compare
+  // via JSON to avoid prototype/reference-equality false negatives.
+  assert.equal(JSON.stringify(counts), JSON.stringify({ notes: "42", topics: "3", compose: "1" }));
+
+  // Missing slices should render as empty so the badges stay hidden.
+  const empty = app.computeSidebarBadgeCounts({});
+  assert.equal(JSON.stringify(empty), JSON.stringify({ notes: "", topics: "", compose: "" }));
+
+  // Zero and non-finite inputs are treated as no data.
+  const zeros = app.computeSidebarBadgeCounts({
+    metrics: { values: { thoughtflow_capture_total: 0 } },
+    topics: [],
+    synthesisDrafts: [],
+  });
+  assert.equal(JSON.stringify(zeros), JSON.stringify({ notes: "", topics: "", compose: "" }));
 });

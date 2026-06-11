@@ -76,6 +76,15 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
   await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
+  // PR5: sidebar count badges surface notes / topics / compose totals.
+  // Topics and synthesis loaders populate the badges on boot; the
+  // capture (notes) counter comes from the metrics endpoint.
+  await page.waitForExpression(() => {
+    const notes = document.querySelector('.tf-menu-badge[data-badge="notes"]');
+    const topics = document.querySelector('.tf-menu-badge[data-badge="topics"]');
+    const compose = document.querySelector('.tf-menu-badge[data-badge="compose"]');
+    return notes && topics && compose && notes.dataset.count && topics.dataset.count && compose.dataset.count;
+  });
 
   const state = await page.evaluate(async () => {
     const dashboardActive = document.querySelector("#page-dashboard")?.classList.contains("active");
@@ -248,6 +257,13 @@ async function runBrowserSmoke(browser, url) {
       settingsDrawerOpen,
       eventsTabActive,
       eventsListPresent,
+      // PR5: sidebar count badges surface notes / topics / compose totals.
+      sidebarWidth: document.querySelector(".tf-sider")?.getBoundingClientRect().width,
+      sidebarBadges: {
+        notes: document.querySelector('.tf-menu-badge[data-badge="notes"]')?.textContent || "",
+        topics: document.querySelector('.tf-menu-badge[data-badge="topics"]')?.textContent || "",
+        compose: document.querySelector('.tf-menu-badge[data-badge="compose"]')?.textContent || "",
+      },
       shellWidth: shell.width,
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth,
@@ -290,6 +306,19 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.settingsDrawerOpen, true);
   assert.equal(state.eventsTabActive, true);
   assert.equal(state.eventsListPresent, true);
+  // PR5: sidebar count badges surface notes / topics / compose totals.
+  // Width check skipped on mobile because @media (max-width: 760px)
+  // collapses the sidebar to a single column; we only assert width on
+  // viewports that use the grid layout.
+  const width = state.sidebarWidth || 0;
+  const usesGrid = width > 0 && width < 400;
+  if (usesGrid) {
+    assert.ok(width <= 200, `sidebar too wide (${width}px) — was narrowed from 248px to 184px`);
+    assert.ok(width >= 150, `sidebar too narrow (${width}px) — labels may clip`);
+  }
+  assert.ok(state.sidebarBadges.notes && state.sidebarBadges.notes.length > 0, `notes badge empty: ${JSON.stringify(state.sidebarBadges)}`);
+  assert.ok(state.sidebarBadges.topics && state.sidebarBadges.topics.length > 0, `topics badge empty: ${JSON.stringify(state.sidebarBadges)}`);
+  assert.ok(state.sidebarBadges.compose && state.sidebarBadges.compose.length > 0, `compose badge empty: ${JSON.stringify(state.sidebarBadges)}`);
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
@@ -590,8 +619,8 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     const zhSnapshot = await page.evaluate(() => ({
       lang: document.documentElement.lang,
       overviewTitle: document.querySelector("#page-dashboard h2")?.textContent,
-      navOverview: document.querySelector('[data-nav="overview"]')?.textContent,
-      captureNav: document.querySelector('[data-nav="capture"]')?.textContent,
+      navOverview: document.querySelector('[data-nav="overview"] .tf-menu-label')?.textContent,
+      captureNav: document.querySelector('[data-nav="capture"] .tf-menu-label')?.textContent,
     }));
     assert.equal(zhSnapshot.lang, "zh-CN");
     assert.equal(zhSnapshot.overviewTitle, "总览");
@@ -609,8 +638,8 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     const enSnapshot = await page.evaluate(() => ({
       lang: document.documentElement.lang,
       overviewTitle: document.querySelector("#page-dashboard h2")?.textContent,
-      navOverview: document.querySelector('[data-nav="overview"]')?.textContent,
-      captureNav: document.querySelector('[data-nav="capture"]')?.textContent,
+      navOverview: document.querySelector('[data-nav="overview"] .tf-menu-label')?.textContent,
+      captureNav: document.querySelector('[data-nav="capture"] .tf-menu-label')?.textContent,
     }));
     assert.equal(enSnapshot.lang, "en-US");
     assert.equal(enSnapshot.overviewTitle, "Overview");
@@ -756,6 +785,7 @@ function startFixtureServer() {
           values: {
             thoughtflow_background_jobs: 1,
             thoughtflow_git_commit_total: 0,
+            thoughtflow_capture_total: 3,
           },
         }));
       case "/api/topics":
@@ -777,7 +807,9 @@ function startFixtureServer() {
         }));
       case "/api/topics/demo/weave-proposals":
       case "/api/synthesis":
-        return json(res, api([]));
+        return json(res, api([
+          { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
+        ]));
       case "/api/thoughts":
         if (req.method === "POST") {
           return json(res, api({
