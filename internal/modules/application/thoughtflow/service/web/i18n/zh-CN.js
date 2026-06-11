@@ -41,7 +41,8 @@ export const messages = {
   "topbar.action.new_topic": "新建专题",
   "topbar.action.system": "系统",
   "topbar.language": "语言",
-  "topbar.gear": "系统设置",
+  "topbar.gear": "设置",
+  "topbar.gear_full": "打开系统设置",
   "topbar.skip_to_main": "跳到主内容",
 
   "overview.title": "总览",

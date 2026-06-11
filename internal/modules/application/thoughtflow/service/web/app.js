@@ -1053,7 +1053,6 @@ async function loadStatus() {
     const status = await api("/api/system/status");
     state.status = status;
     $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
-    $("#workspace-summary").textContent = displayWorkspace(status.workspace);
     $("#dashboard-workspace").textContent = status.workspace?.status || status.status;
     $("#dashboard-llm").textContent = status.llm?.status || t("toast.unknown");
     $("#dashboard-embedding").textContent = status.embedding?.status || t("toast.unknown");

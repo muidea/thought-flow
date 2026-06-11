@@ -231,8 +231,7 @@ p {
   text-overflow: ellipsis;
 }
 
-.tf-brand p,
-.tf-sider-footer {
+.tf-brand p {
   color: var(--tf-color-text-secondary);
 }
 
@@ -322,12 +321,35 @@ p {
   border-radius: var(--tf-border-radius);
 }
 
-.tf-sider-footer {
-  display: grid;
-  gap: 4px;
-  margin-top: 24px;
-  border-top: 1px solid var(--tf-color-border-secondary);
-  padding-top: 16px;
+.tf-btn-icon-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  background: #fff;
+  border: 1px solid var(--tf-color-primary);
+  border-radius: var(--tf-border-radius);
+  color: var(--tf-color-primary);
+  font-weight: 500;
+  box-shadow: 0 1px 0 rgba(22, 119, 255, 0.08);
+}
+
+.tf-btn-icon-label svg {
+  color: var(--tf-color-primary);
+}
+
+.tf-btn-icon-label:hover {
+  background: #f0f5ff;
+  border-color: var(--tf-color-primary-hover);
+}
+
+.tf-btn-icon-label:hover svg {
+  color: var(--tf-color-primary-hover);
+}
+
+.tf-btn-icon-label:active {
+  background: #e6f4ff;
 }
 
 .tf-card {
