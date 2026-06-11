@@ -75,3 +75,66 @@ func TestEnsureInsideRejectsOutsidePath(t *testing.T) {
 		t.Fatalf("expected outside path to be rejected")
 	}
 }
+
+func TestSweepOrphanTempFilesRemovesDotTmp(t *testing.T) {
+	thoughts := t.TempDir()
+	target := filepath.Join(thoughts, "2026", "06")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	real := filepath.Join(target, "abc12345.md")
+	if err := os.WriteFile(real, []byte("---\nid: abc12345\n---\n\n# note\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile real: %v", err)
+	}
+	leftovers := []string{
+		filepath.Join(target, "abc12345.md.1700000000000000000.tmp"),
+		filepath.Join(target, "abc12345.md.1700000000000000001.tmp"),
+	}
+	for _, p := range leftovers {
+		if err := os.WriteFile(p, []byte("stale"), 0o644); err != nil {
+			t.Fatalf("WriteFile leftover: %v", err)
+		}
+	}
+
+	if err := sweepOrphanTempFiles(thoughts); err != nil {
+		t.Fatalf("sweepOrphanTempFiles: %v", err)
+	}
+	for _, p := range leftovers {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, stat err = %v", p, err)
+		}
+	}
+	if _, err := os.Stat(real); err != nil {
+		t.Fatalf("real thought file should survive, stat err = %v", err)
+	}
+}
+
+func TestSweepOrphanTempFilesNoopWhenDirMissing(t *testing.T) {
+	if err := sweepOrphanTempFiles(filepath.Join(t.TempDir(), "does", "not", "exist")); err != nil {
+		t.Fatalf("sweepOrphanTempFiles on missing dir should be a no-op, got %v", err)
+	}
+}
+
+func TestOpenSweepsOrphanTempFilesAtStartup(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	dataDir := filepath.Join(base, "data")
+	thoughts := filepath.Join(root, "thoughts", "2026", "06")
+	if err := os.MkdirAll(thoughts, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	leftover := filepath.Join(thoughts, "abc12345.md.1700000000000000000.tmp")
+	if err := os.WriteFile(leftover, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("WriteFile leftover: %v", err)
+	}
+
+	if _, err := Open(context.Background(), appconfig.Config{
+		Workspace: appconfig.WorkspaceConfig{ContentDir: root},
+		Runtime:   appconfig.RuntimeConfig{StateDir: dataDir},
+	}); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover %s to be swept, stat err = %v", leftover, err)
+	}
+}

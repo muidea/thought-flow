@@ -32,6 +32,13 @@ var ErrInvalidPatchField = errors.New("capture: invalid patch field")
 // session. The HTTP layer surfaces this as 409.
 var ErrLocked = thoughtlock.ErrLocked
 
+// ErrRefining is returned when the thought is held by the refiner
+// (LLM call in flight). It is a sub-condition of ErrLocked, but signals
+// a different remediation to the caller: a brief retry is appropriate
+// because the lock is typically released within seconds. The HTTP
+// layer surfaces this as 409 with a distinct error code.
+var ErrRefining = errors.New("capture: thought is being refined")
+
 type Service struct {
 	workspace       *models.Workspace
 	jobs            *jobstore.Store
@@ -198,6 +205,11 @@ func (s *Service) PatchThought(ctx context.Context, thoughtID, sessionID string,
 	}
 	if s.locker != nil {
 		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
+			if errors.Is(err, ErrLocked) {
+				if holder, ok := s.locker.Holder(thoughtID); ok && holder == thoughtlock.RefinerSessionID {
+					return models.ThoughtSnapshot{}, ErrRefining
+				}
+			}
 			return models.ThoughtSnapshot{}, err
 		}
 		defer s.locker.Release(thoughtID, sessionID)

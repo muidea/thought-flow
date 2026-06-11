@@ -370,6 +370,8 @@ func (s *Service) handlePatchThought(ctx context.Context, res http.ResponseWrite
 			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_patch", err.Error())
 		case errors.Is(err, capturebiz.ErrLocked):
 			writeError(res, req, http.StatusConflict, "thoughtflow.capture.locked", err.Error())
+		case errors.Is(err, capturebiz.ErrRefining):
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.refining", err.Error())
 		case errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file"):
 			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.not_found", err.Error())
 		default:

@@ -88,6 +88,7 @@ export const messages = {
   "capture.session.active": "会话 {id}",
   "capture.session.finish": "完成",
   "capture.session.locked": "该笔记正在被另一会话编辑。",
+  "capture.session.refining": "AI 正在处理这条笔记，请稍后重试。",
   "capture.session.takeover": "接管",
   "capture.session.takeover_confirm": "接管会强制结束对方会话，是否继续？",
   "capture.session.saved": "已写入 {path}",

@@ -4,10 +4,33 @@
 // while a refiner is mid-flight can race the writer and corrupt the
 // front-matter or duplicate the AI Notes section.
 //
-// The locker is intentionally in-memory only: this is a single-process
-// service and the lock exists to serialize writers, not to defend against
-// external processes. Holders must call Release (or fail to heartbeat past
-// the TTL) before the lock is reusable.
+// # Why the lock is in-memory only
+//
+// The lock is intentionally in-memory only. Persisting it to disk would
+// create a worse problem than the one it solves: the on-disk state of
+// the lock could drift from the actual process state. A crashed holder
+// would leave a "you are still editing" marker in a file that no live
+// process is using, and the next start of the service would either
+// trust the stale marker (blocking legitimate writes) or ignore it
+// (defeating the purpose of persisting). Neither is acceptable.
+//
+// Instead we lean on three invariants that together keep file state
+// and process state consistent across all failure modes:
+//
+//  1. The lock is a single in-memory map. A process restart resets it
+//     cleanly — there is no stale state to recover from.
+//  2. markdown.WriteThought uses the tmp+rename pattern: data is written
+//     to a sibling *.tmp file and renamed onto the target in a single
+//     inode swap. A crash mid-write leaves the target at its prior
+//     valid state; the only leftover is the *.tmp file, which
+//     workspace.Open() sweeps at startup.
+//  3. Every Acquire site pairs with a defer Release, so panics, errors,
+//     and even SIGTERM-triggered shutdowns drop the lock. A holder that
+//     somehow still leaks (e.g. SIGKILL during the LLM call) is reaped
+//     by the TTL on the next Acquire for the same thoughtID.
+//
+// Holders must call Release (or fail to heartbeat past the TTL) before
+// the lock is reusable.
 package thoughtlock
 
 import (
@@ -18,6 +41,14 @@ import (
 
 // ErrLocked is returned when the lock is held by another session.
 var ErrLocked = errors.New("thoughtlock: thought is locked by another session")
+
+// RefinerSessionID is the sessionID the refiner module uses when it
+// acquires a thought lock. Callers that fail to acquire and see this
+// sessionID in the holder slot can map the failure to "AI is currently
+// processing this thought" rather than "another browser tab is editing".
+// Centralizing the constant here keeps the capture module's lock-reason
+// detection and the refiner's Acquire calls in sync.
+const RefinerSessionID = "refiner"
 
 // DefaultTTL is the staleness window. A holder that fails to call
 // Heartbeat within this window is considered abandoned and its lock may

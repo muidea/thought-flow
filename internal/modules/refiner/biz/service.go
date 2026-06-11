@@ -33,7 +33,13 @@ type Service struct {
 
 const refineMaxAttempts = 3
 const skippedUnchangedModel = "cached-unchanged"
-const refinerSessionID = "refiner"
+
+// refinerSessionID is re-exported under the local name for clarity at
+// call sites. The canonical constant lives in pkg/thoughtlock so that
+// the capture module can recognize the refiner as a special lock holder
+// and surface a more helpful "AI is processing" message instead of the
+// generic "another session is editing" message.
+var refinerSessionID = thoughtlock.RefinerSessionID
 
 type retryableRefineError struct {
 	err error

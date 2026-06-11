@@ -1763,18 +1763,39 @@ async function patchActiveThought(patch) {
   if (!thoughtId) return;
   const sessionId = state.capture.sessionId;
   if (!sessionId) return;
+  // The refiner holds the thought lock during its LLM call (typically
+  // 1-5s). If we land a PATCH in that window, retry once after a short
+  // delay before surfacing a "AI 正在处理" message. We deliberately do
+  // not retry on the generic "another session" code: that means a real
+  // conflict (different browser tab) and silently winning the race
+  // would clobber the other session's edits.
   let snapshot;
-  try {
-    snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Session-Id": sessionId },
-      body: JSON.stringify(patch),
-    });
-  } catch (error) {
-    if (error && error.code === "thoughtflow.capture.locked") {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Session-Id": sessionId },
+        body: JSON.stringify(patch),
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (error && error.code === "thoughtflow.capture.refining" && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      break;
+    }
+  }
+  if (lastError) {
+    if (lastError.code === "thoughtflow.capture.refining") {
+      appendCaptureMessage({ role: "system", text: t("capture.session.refining") });
+    } else if (lastError.code === "thoughtflow.capture.locked") {
       appendCaptureMessage({ role: "system", text: t("capture.session.locked") });
     } else {
-      appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
+      appendCaptureMessage({ role: "system", text: lastError.message || t("toast.request_failed") });
     }
     return;
   }

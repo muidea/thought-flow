@@ -88,6 +88,7 @@ export const messages = {
   "capture.session.active": "Session {id}",
   "capture.session.finish": "Finish",
   "capture.session.locked": "This thought is being edited in another session.",
+  "capture.session.refining": "The AI is still processing this thought. Please try again in a moment.",
   "capture.session.takeover": "Take over",
   "capture.session.takeover_confirm": "Taking over will end the other session. Continue?",
   "capture.session.saved": "Saved to {path}",

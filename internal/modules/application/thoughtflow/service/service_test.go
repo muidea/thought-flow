@@ -1081,6 +1081,66 @@ func TestHandlePatchThoughtRejectsUnknownField(t *testing.T) {
 	}
 }
 
+// TestHandlePatchThoughtSurfacesRefiningAsDistinctCode ensures that when
+// the refiner module holds the thought lock (e.g. an LLM call is in
+// flight), the PATCH endpoint reports a different error code than the
+// generic "another session" case. The frontend keys its user-visible
+// message off this code, so the distinction is part of the contract.
+func TestHandlePatchThoughtSurfacesRefiningAsDistinctCode(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	now := time.Date(2026, 6, 9, 16, 2, 0, 0, time.UTC)
+	thoughtID := "20260609-160200-refining"
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash("r body"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRunning,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "r body"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	locker := thoughtlock.New(time.Second)
+	if err := locker.Acquire(thoughtID, thoughtlock.RefinerSessionID); err != nil {
+		t.Fatalf("locker.Acquire(refiner) error = %v", err)
+	}
+	t.Cleanup(func() { locker.Release(thoughtID, thoughtlock.RefinerSessionID) })
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil, capturebiz.WithLocker(locker))
+	service := &Service{captureService: captureService, workspace: ws}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/thoughts/"+thoughtID, strings.NewReader(`{"title":"Renamed during refine"}`))
+	req.Header.Set("X-Session-Id", "session-Y")
+	res := httptest.NewRecorder()
+	service.handlePatchThought(context.Background(), res, req)
+
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "thoughtflow.capture.refining") {
+		t.Fatalf("body missing thoughtflow.capture.refining code: %s", res.Body.String())
+	}
+	if strings.Contains(res.Body.String(), "thoughtflow.capture.locked") {
+		t.Fatalf("body should not use the generic capture.locked code: %s", res.Body.String())
+	}
+}
+
 func TestHandleThoughtSuggestUsesExtractedTitle(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

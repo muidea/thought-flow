@@ -227,3 +227,40 @@ func TestAppendAINotes_AppendsBelowExisting(t *testing.T) {
 		t.Fatalf("separator should come after new note: note=%d sep=%d body=%q", noteIdx, sepIdx, got)
 	}
 }
+
+func TestCleanupOrphanThoughtTempFilesRemovesDotTmp(t *testing.T) {
+	thoughts := t.TempDir()
+	target := filepath.Join(thoughts, "2026", "06")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	real := filepath.Join(target, "abc12345.md")
+	if err := os.WriteFile(real, []byte("---\nid: abc12345\n---\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile real: %v", err)
+	}
+	leftover := filepath.Join(target, "abc12345.md.1700000000000000000.tmp")
+	if err := os.WriteFile(leftover, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("WriteFile leftover: %v", err)
+	}
+	if err := CleanupOrphanThoughtTempFiles(thoughts); err != nil {
+		t.Fatalf("CleanupOrphanThoughtTempFiles: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(real); err != nil {
+		t.Fatalf("real thought file should survive, stat err = %v", err)
+	}
+}
+
+func TestCleanupOrphanThoughtTempFilesEmptyPathIsNoop(t *testing.T) {
+	if err := CleanupOrphanThoughtTempFiles(""); err != nil {
+		t.Fatalf("empty path should be a no-op, got %v", err)
+	}
+}
+
+func TestCleanupOrphanThoughtTempFilesMissingDirIsNoop(t *testing.T) {
+	if err := CleanupOrphanThoughtTempFiles(filepath.Join(t.TempDir(), "no", "such", "dir")); err != nil {
+		t.Fatalf("missing dir should be a no-op, got %v", err)
+	}
+}

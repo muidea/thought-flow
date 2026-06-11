@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,6 +48,46 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 		_ = os.Remove(tmpPath)
 	}()
 	return os.Rename(tmpPath, targetPath)
+}
+
+// CleanupOrphanThoughtTempFiles removes any *.tmp leftovers from a
+// previous crash of WriteThought. The happy path of WriteThought deletes
+// its temp file via defer, but if the process dies between os.WriteFile
+// and os.Rename, the temp file remains on disk. The lock is in-memory
+// only, so the file state and the process state stay consistent across
+// restarts — the only "stale" thing left behind is a temp file that no
+// reader will ever pick up. Cleaning it up at startup keeps the
+// thoughts directory tidy and prevents disk pressure on long-running
+// services.
+//
+// Safe to call when the directory does not exist (returns nil).
+func CleanupOrphanThoughtTempFiles(thoughtsPath string) error {
+	if strings.TrimSpace(thoughtsPath) == "" {
+		return nil
+	}
+	if _, err := os.Stat(thoughtsPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var firstErr error
+	err := filepath.WalkDir(thoughtsPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		if !strings.HasSuffix(d.Name(), ".tmp") {
+			return nil
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+		return nil
+	})
+	if err != nil && firstErr == nil {
+		return err
+	}
+	return firstErr
 }
 
 func ReadThought(rootPath string, thoughtID string) (models.Thought, models.ThoughtContent, error) {
