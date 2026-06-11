@@ -116,6 +116,14 @@ const DEPRECATED_HASH_REDIRECTS = {
   dashboard: { next: "#/overview", newSegment: "overview" },
   thoughts: { next: "#/notes", newSegment: "notes" },
   synthesis: { next: "#/compose", newSegment: "compose" },
+  // PR3: /settings is gone — the gear button now opens the settings drawer.
+  // A direct hash to /settings lands on the overview page; the toast nudges
+  // the user to open the drawer for system status, models, sync, etc.
+  settings: { next: "#/overview", newSegment: "overview", dropQuery: true },
+  // PR3: /jobs is gone — jobs are surfaced via the notes runtime card and
+  // the settings drawer event tab. The id query (old job id) has no meaning
+  // on /notes, so drop it on redirect to avoid loading a non-existent thought.
+  jobs: { next: "#/notes", newSegment: "notes", dropQuery: true },
 };
 const deprecatedHashToastShown = new Set();
 
@@ -140,7 +148,7 @@ function parseRoute(hash) {
   if (parts.length === 0) return { page: "dashboard", nav: "overview", params: {}, query };
   const deprecated = DEPRECATED_HASH_REDIRECTS[parts[0]];
   if (deprecated) {
-    const queryString = queryPart ? `?${queryPart}` : "";
+    const queryString = queryPart && !deprecated.dropQuery ? `?${queryPart}` : "";
     const nextHash = `${deprecated.next}${queryString}`;
     reportDeprecatedHash(parts[0], deprecated.newSegment);
     if (typeof window !== "undefined" && window.location.hash !== nextHash) {
@@ -178,13 +186,14 @@ function parseRoute(hash) {
   if (parts[0] === "compose" || parts[0] === "synthesis") {
     return { page: "compose", nav: "compose", params: {}, query };
   }
-  if (parts[0] === "jobs") {
-    return { page: "jobs", nav: "settings", params: { jobId: query.id || "" }, query };
-  }
   if (parts[0] === "overview" || parts[0] === "dashboard") {
     return { page: "dashboard", nav: "overview", params: {}, query };
   }
-  const known = new Set(["capture", "search", "topics", "settings"]);
+  // PR3: settings and jobs are deprecated top-level routes. The redirect
+  // table at the top of this function turns them into a 1-shot toast and
+  // rewrites the hash to a live page; if we're past that, fall through to
+  // the dashboard so the parseRoute tests stay deterministic.
+  const known = new Set(["capture", "search", "topics"]);
   if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
   return { page: "dashboard", nav: "overview", params: {}, query };
 }
@@ -222,10 +231,12 @@ const PAGE_SERIALIZERS = {
     }
     return q;
   },
-  settings: () => {
+  thoughts: () => {
     const q = {};
-    const active = document.querySelector("#page-settings .tab.active");
-    if (active && active.dataset.tab && active.dataset.tab !== "settings-status") q.tab = active.dataset.tab;
+    const id = $("#thought-id")?.value.trim();
+    if (id) q.id = id;
+    const active = document.querySelector(`#page-thoughts .tab.active`);
+    if (active && active.dataset.tab && active.dataset.tab !== "notes-all") q.tab = active.dataset.tab;
     return q;
   },
 };
@@ -254,8 +265,9 @@ function restoreRoutePage(page, query) {
       const tab = typeof query.tab === "string" ? query.tab : "topics-detail";
       activateTab(tab, $("#page-topics"));
     }
-  } else if (page === "settings") {
-    if (typeof query.tab === "string") activateTab(query.tab, $("#page-settings"));
+  } else if (page === "thoughts") {
+    if (typeof query.id === "string") $("#thought-id").value = query.id;
+    if (typeof query.tab === "string") activateTab(query.tab, $("#page-thoughts"));
   }
   // topic-review, synthesis handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
@@ -1047,11 +1059,8 @@ async function loadStatus() {
     $("#dashboard-embedding").textContent = status.embedding?.status || t("toast.unknown");
     $("#dashboard-git").textContent = status.git?.status || t("toast.unknown");
     $("#dashboard-search").textContent = status.duckdb?.status || t("toast.unknown");
-    $("#settings-workspace").textContent = displayWorkspace(status.workspace);
-    $("#settings-duckdb").textContent = displayRuntimePath(status.duckdb?.path, status.workspace?.root_path) || status.duckdb?.status || t("toast.unknown");
-    $("#settings-llm").textContent = `${status.llm?.status || t("toast.unknown")} · ${status.llm?.chat_model || "local"}`;
-    $("#settings-embedding").textContent = `${status.embedding?.status || t("toast.unknown")} · ${status.embedding?.model || "local"}`;
-    $("#settings-git").textContent = status.git?.error || status.git?.status || t("toast.unknown");
+    // PR3: status tiles now live in the settings drawer; renderSettingsStatus
+    // applies them. The dashboard cards above keep the lightweight summary.
     renderTopbarStatus(status);
     renderSettingsStatus(status);
     const dashboardAlert = $("#dashboard-alert");
@@ -1066,7 +1075,7 @@ async function loadStatus() {
       dashboardAlert.hidden = false;
       dashboardAlert.textContent = error.message;
     }
-    const alert = $("#settings-degraded");
+    const alert = $("#settings-drawer-degraded");
     if (alert) {
       alert.hidden = false;
       alert.textContent = error.message;
@@ -1080,8 +1089,53 @@ async function loadMetrics() {
     state.metrics = metrics;
     renderMetrics(metrics);
   } catch (error) {
-    const node = $("#settings-metrics-json");
+    const node = $("#settings-drawer-metrics-json");
     if (node) node.innerHTML = `<div class="tf-alert tf-alert-warning">${escapeHTML(error.message)}</div>`;
+  }
+}
+
+// PR3: the notes runtime card is a lightweight summary — most recent jobs
+// and a clone of the live event stream. We hit the existing endpoints
+// (jobs + status) instead of inventing a new "runtime summary" one. The
+// card is refreshed on demand via the Refresh button; opening the
+// collapsible details element also refreshes once.
+async function refreshNotesRuntime() {
+  const jobsNode = $("#notes-runtime-jobs");
+  const eventsNode = $("#notes-runtime-events");
+  if (jobsNode) jobsNode.innerHTML = `<div class="tf-text-secondary">${escapeHTML(t("common.loading"))}</div>`;
+  if (eventsNode) eventsNode.innerHTML = "";
+  let jobs = [];
+  try {
+    const list = await api("/api/jobs?limit=8");
+    jobs = Array.isArray(list) ? list : (list?.jobs || []);
+  } catch (_error) {
+    // The /api/jobs endpoint may not exist on older builds. Show a hint
+    // rather than failing the whole card.
+    if (jobsNode) {
+      jobsNode.innerHTML = `<div class="tf-empty" data-i18n="notes.runtime.empty">${escapeHTML(t("notes.runtime.empty"))}</div>`;
+    }
+  }
+  if (jobsNode) {
+    if (jobs.length === 0) {
+      jobsNode.innerHTML = `<div class="tf-empty" data-i18n="notes.runtime.empty">${escapeHTML(t("notes.runtime.empty"))}</div>`;
+    } else {
+      jobsNode.innerHTML = renderDescription(jobs.map((job) => [
+        `${escapeHTML(job.id || "")} · ${escapeHTML(job.type || "job")}`,
+        `${escapeHTML(job.status || t("toast.unknown"))} · ${escapeHTML(job.resource_type || "")}:${escapeHTML(job.resource_id || "")}`,
+      ]));
+    }
+  }
+  // Copy the last few events from the dashboard summary so opening the
+  // notes runtime card feels live. The dashboard already receives every
+  // event; the clone is cheap and avoids a second SSE connection.
+  if (eventsNode) {
+    const source = $("#dashboard-events");
+    const items = source ? Array.from(source.children).slice(0, 6) : [];
+    if (items.length === 0) {
+      eventsNode.innerHTML = `<div class="tf-empty" data-i18n="settings.events.empty">${escapeHTML(t("settings.events.empty"))}</div>`;
+    } else {
+      eventsNode.append(...items.map((item) => item.cloneNode(true)));
+    }
   }
 }
 
@@ -1100,14 +1154,29 @@ function renderTopbarStatus(status) {
     .join("");
 }
 
+// PR3: status tiles live in the settings drawer. Tiles are grouped by tab —
+// workspace + duckdb go to the index tab, llm + embedding to the models tab,
+// git to the sync tab. The degraded alert lives at the bottom of the index
+// tab so it shows in the most likely "something is wrong" landing spot.
 function renderSettingsStatus(status) {
-  const alert = $("#settings-degraded");
+  if (!status) return;
+  const map = {
+    "settings-drawer-workspace": displayWorkspace(status.workspace),
+    "settings-drawer-duckdb": displayRuntimePath(status.duckdb?.path, status.workspace?.root_path) || status.duckdb?.status || t("toast.unknown"),
+    "settings-drawer-llm": `${status.llm?.status || t("toast.unknown")} · ${status.llm?.chat_model || "local"}`,
+    "settings-drawer-embedding": `${status.embedding?.status || t("toast.unknown")} · ${status.embedding?.model || "local"}`,
+  };
+  for (const [id, value] of Object.entries(map)) {
+    const node = $(`#${id}`);
+    if (node) node.textContent = value;
+  }
+  const alert = $("#settings-drawer-degraded");
   if (alert) {
     const degraded = status.status && status.status !== "ready";
     alert.hidden = !degraded;
     alert.textContent = degraded ? t("settings.degraded_alert", { status: status.status }) : "";
   }
-  const index = $("#settings-index-detail");
+  const index = $("#settings-drawer-index-detail");
   if (index) {
     index.innerHTML = renderDescription([
       [t("settings.duckdb_status"), status.duckdb?.status || t("toast.unknown")],
@@ -1116,7 +1185,7 @@ function renderSettingsStatus(status) {
       [t("settings.events"), status.events?.status || t("toast.unknown")],
     ]);
   }
-  const git = $("#settings-git-detail");
+  const git = $("#settings-drawer-git-detail");
   if (git) {
     git.innerHTML = renderDescription([
       [t("settings.git_status"), status.git?.status || t("toast.unknown")],
@@ -1128,7 +1197,7 @@ function renderSettingsStatus(status) {
 }
 
 function renderMetrics(metrics) {
-  const node = $("#settings-metrics-json");
+  const node = $("#settings-drawer-metrics-json");
   if (!node) return;
   const values = metrics.values || {};
   const rows = Object.keys(values)
@@ -2171,9 +2240,12 @@ async function retryRefine() {
     return;
   }
   const job = await api(`/api/thoughts/${encodeURIComponent(state.activeThoughtId)}/retry-refine`, { method: "POST", body: "{}" });
-  renderJobDetail(job, $("#thought-drawer-content"));
   toast(t("toast.retry_refine_queued", { id: job.id }));
-  window.location.hash = `#/jobs?id=${encodeURIComponent(job.id)}`;
+  // PR3: the old /jobs page is gone. The job is findable via the
+  // /api/jobs/:id endpoint for anyone with the id; the toast is the
+  // only acknowledgement surfaced in the UI. A future iteration could
+  // surface the running job in the notes runtime card.
+  state.activeJobId = job.id;
 }
 
 async function createSynthesis(event) {
@@ -2326,7 +2398,8 @@ async function rebuildTopic() {
   if (!confirmed) return;
   const job = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/rebuild`, { method: "POST", body: "{}" });
   toast(t("toast.rebuild_queued", { id: job.id }));
-  window.location.hash = `#/jobs?id=${encodeURIComponent(job.id)}`;
+  // PR3: jobs page is gone; the toast is the only acknowledgement.
+  state.activeJobId = job.id;
 }
 
 async function reindex() {
@@ -2334,46 +2407,18 @@ async function reindex() {
   if (!confirmed) return;
   const job = await api("/api/system/reindex", { method: "POST", body: "{}" });
   toast(t("toast.reindex_queued", { id: job.id }));
-  window.location.hash = `#/jobs?id=${encodeURIComponent(job.id)}`;
-}
-
-async function loadJob(event) {
-  if (event) event.preventDefault();
-  const jobID = $("#job-id").value.trim();
-  if (!jobID) {
-    toast(t("toast.job_id_required"));
-    return;
-  }
-  const job = await api(`/api/jobs/${encodeURIComponent(jobID)}`);
-  state.activeJobId = jobID;
-  renderJobDetail(job, $("#job-detail"));
-  if (state.route?.page === "jobs") syncHash();
-}
-
-function renderJobDetail(job, node = $("#job-detail")) {
-  if (!node || !job) return;
-  node.innerHTML = `
-    <div class="tf-result">
-      <strong>${escapeHTML(job.id)}</strong>
-      <div class="topic-meta">${escapeHTML(job.type || "job")} · ${escapeHTML(job.resource_type || "")}:${escapeHTML(job.resource_id || "")}</div>
-      <div class="${statusBadge(job.status)}">${escapeHTML(job.status || t("toast.unknown"))}</div>
-      ${renderDescription([
-        [t("jobs.label.message"), job.message || ""],
-        [t("jobs.label.attempt"), `${job.attempt || 0}/${job.max_attempts || 1}`],
-        [t("jobs.label.progress"), `${Math.round((job.progress || 0) * 100)}%`],
-        [t("jobs.label.created"), fmtDate(job.created_at)],
-        [t("jobs.label.started"), fmtDate(job.started_at)],
-        [t("jobs.label.finished"), fmtDate(job.finished_at)],
-        [t("jobs.label.error_code"), job.error?.code || ""],
-        [t("jobs.label.error_message"), job.error?.message || ""],
-        [t("jobs.label.retryable"), job.error?.retryable === undefined ? "" : String(job.error.retryable)],
-      ])}
-    </div>
-  `;
+  // PR3: jobs page is gone. The job is still findable via its ID by anyone
+  // who has the link; for now the toast is the only acknowledgement. A
+  // follow-up could push the job onto the notes runtime card via SSE.
+  state.activeJobId = job.id;
 }
 
 function connectEvents() {
-  const list = $("#event-list");
+  // PR3: events flow into the settings drawer (full stream with filters)
+  // and the dashboard summary. The notes runtime card reuses the same
+  // DOM as the dashboard summary by reading #dashboard-events via cloning.
+  const drawerList = $("#settings-drawer-event-list");
+  const dashboardList = $("#dashboard-events");
   const source = new EventSource("/api/events");
   source.onmessage = (event) => appendEvent("message", event.data);
   [
@@ -2408,13 +2453,17 @@ function connectEvents() {
     });
   });
   source.onerror = () => {
-    if (list.children.length === 0) appendEvent("events", t("toast.sse_reconnecting"));
+    if (drawerList && drawerList.children.length === 0 && dashboardList && dashboardList.children.length === 0) {
+      appendEvent("events", t("toast.sse_reconnecting"));
+    }
   };
 }
 
 function appendEvent(type, data) {
-  const list = $("#event-list");
-  const jobsList = $("#jobs-event-list");
+  // PR3: events are appended to the dashboard summary and to the settings
+  // drawer event tab. The notes runtime card is populated on demand by
+  // refreshNotesRuntime() so it doesn't churn on every SSE tick.
+  const drawerList = $("#settings-drawer-event-list");
   const dashboardList = $("#dashboard-events");
   const item = document.createElement("article");
   item.className = "event-item";
@@ -2430,8 +2479,7 @@ function appendEvent(type, data) {
   item.dataset.eventType = type;
   item.dataset.resourceId = resourceID;
   item.innerHTML = `<strong>${escapeHTML(type)}</strong><div class="event-meta">${escapeHTML(parsed)}</div>`;
-  prependEventItem(list, item);
-  prependEventItem(jobsList, item.cloneNode(true));
+  prependEventItem(drawerList, item);
   prependEventItem(dashboardList, item.cloneNode(true), 8);
   applyEventFilter();
 }
@@ -2443,9 +2491,9 @@ function prependEventItem(list, item, limit = 60) {
 }
 
 function applyEventFilter() {
-  const type = ($("#event-type-filter")?.value || "").trim().toLowerCase();
-  const resource = ($("#event-resource-filter")?.value || "").trim().toLowerCase();
-  document.querySelectorAll("#jobs-event-list .event-item").forEach((item) => {
+  const type = ($("#settings-drawer-event-type")?.value || "").trim().toLowerCase();
+  const resource = ($("#settings-drawer-event-resource")?.value || "").trim().toLowerCase();
+  document.querySelectorAll("#settings-drawer-event-list .event-item").forEach((item) => {
     const matchesType = !type || String(item.dataset.eventType || "").toLowerCase().includes(type);
     const matchesResource = !resource || String(item.dataset.resourceId || item.textContent || "").toLowerCase().includes(resource);
     item.hidden = !(matchesType && matchesResource);
@@ -2453,8 +2501,8 @@ function applyEventFilter() {
 }
 
 function resetEventFilter() {
-  $("#event-type-filter").value = "";
-  $("#event-resource-filter").value = "";
+  $("#settings-drawer-event-type").value = "";
+  $("#settings-drawer-event-resource").value = "";
   applyEventFilter();
 }
 
@@ -2493,15 +2541,10 @@ async function applyRoute(hash = window.location.hash) {
     $("#thought-id").value = route.params.thoughtId;
     await previewThought(route.params.thoughtId);
   }
-  if (route.page === "settings") {
-    await loadMetrics();
-  }
-  // PR3 placeholder: jobs page is being folded into a settings drawer;
-  // track the active job so PR3 can surface it without re-resolving the
-  // hash. Until then, the page section is gone but the URL still parses.
-  if (route.page === "jobs" && route.params.jobId) {
-    state.activeJobId = route.params.jobId;
-  }
+  // PR3: settings page and jobs page are gone. DEPRECATED_HASH_REDIRECTS
+  // already rewrites those URLs to live pages, so the only routes that
+  // reach here are capture, search, topics (incl. detail), notes, and
+  // compose. Nothing else to load for the route itself.
 }
 
 function bind() {
@@ -2531,11 +2574,15 @@ function bind() {
   $("#search-explain").addEventListener("change", persistRouteDebounced);
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
+  $("#thought-id").addEventListener("input", persistRouteDebounced);
   $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
-  $("#job-form")?.addEventListener("submit", (event) => loadJob(event).catch((error) => toast(error.message)));
-  $("#event-type-filter")?.addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
-  $("#event-resource-filter")?.addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
-  $("#reset-event-filter")?.addEventListener("click", () => { resetEventFilter(); persistRouteDebounced(); });
+  $("#settings-drawer-event-type")?.addEventListener("input", () => applyEventFilter());
+  $("#settings-drawer-event-resource")?.addEventListener("input", () => applyEventFilter());
+  $("#settings-drawer-reset-event-filter")?.addEventListener("click", () => resetEventFilter());
+  $("#notes-runtime-refresh")?.addEventListener("click", () => refreshNotesRuntime().catch((error) => toast(error.message)));
+  $("#open-events-from-dashboard")?.addEventListener("click", () => {
+    openSettingsDrawer("settings-drawer-events");
+  });
   $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
   $("#accept-weave").addEventListener("click", () => acceptWeave().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
@@ -2543,14 +2590,14 @@ function bind() {
   $("#topic-auto-filter").addEventListener("change", () => { renderTopics(); persistRouteDebounced(); });
   $("#reset-topic-filter").addEventListener("click", () => { resetTopicFilters(); persistRouteDebounced(); });
   $("#rebuild-topic").addEventListener("click", () => rebuildTopic().catch((error) => toast(error.message)));
-  $("#reindex-button").addEventListener("click", () => reindex().catch((error) => toast(error.message)));
+  $("#settings-drawer-reindex")?.addEventListener("click", () => reindex().catch((error) => toast(error.message)));
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
   $("#open-synthesis-create").addEventListener("click", () => openDrawer("synthesis-create-drawer"));
   $("#refresh-synthesis").addEventListener("click", () => loadSynthesisDrafts().catch((error) => toast(error.message)));
   $("#add-selected-synthesis").addEventListener("click", () => {
     addToSynthesisBasket(Array.from(state.selectedThoughts));
-    window.location.hash = "#/synthesis";
+    window.location.hash = "#/compose";
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
   $("#clear-synthesis-basket").addEventListener("click", clearSynthesisBasket);
@@ -2558,9 +2605,13 @@ function bind() {
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));
   $("#confirm-ok").addEventListener("click", () => closeConfirm(true));
-  document.querySelectorAll("[data-dashboard-link]").forEach((card) => {
+  // PR3: dashboard summary cards open the settings drawer at the relevant
+  // tab instead of navigating to a dedicated /settings page.
+  document.querySelectorAll("[data-open-drawer]").forEach((card) => {
     card.addEventListener("click", () => {
-      window.location.hash = card.dataset.dashboardLink;
+      const drawer = card.dataset.openDrawer;
+      const tab = card.dataset.drawerTab || "";
+      openSettingsDrawer(drawer, tab);
     });
   });
   document.querySelectorAll("[data-close-drawer]").forEach((button) => {
@@ -2569,18 +2620,24 @@ function bind() {
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     activateTab(tab.dataset.tab, tab.closest(".tf-card"));
     persistRouteDebounced();
+    // PR3: the notes runtime card lives behind a collapsible details
+    // element on the Runtime tab. Refresh its data the first time the
+    // tab opens, then again on the explicit Refresh button.
+    if (tab.dataset.tab === "notes-runtime") {
+      refreshNotesRuntime().catch(() => {});
+    }
   }));
-  document.querySelectorAll("#topbar-language [data-locale]").forEach((button) => {
+  document.querySelectorAll("#settings-language [data-locale]").forEach((button) => {
     button.addEventListener("click", () => {
       tSetLocale(button.dataset.locale);
       rerenderForLocale();
     });
   });
   $("#open-settings")?.addEventListener("click", () => {
-    // PR1: the gear button is a simple navigation to the settings page.
-    // PR3 will swap this for a settings drawer without changing the
-    // button's location or visual style.
-    window.location.hash = "#/settings";
+    // PR3: the gear button opens the settings drawer at the general tab.
+    // The drawer hosts language switching, models, sync, index, and the
+    // event stream — the same content used to live on a top-level page.
+    openSettingsDrawer("settings-drawer", "settings-drawer-general");
   });
   tOnLocaleChange(() => {
     syncLanguageSwitcher();
@@ -2607,9 +2664,23 @@ function bind() {
   });
 }
 
+// PR3: open the settings drawer and optionally jump to a specific tab. The
+// drawer is reused as the single home for system status, language, models,
+// sync, index, metrics, and the live event stream. Metrics load lazily on
+// first open since the request is the heaviest of the bunch and most users
+// never look at them.
+function openSettingsDrawer(drawerID = "settings-drawer", tabID = "") {
+  if (tabID) activateTab(tabID, $(`#${drawerID}`));
+  openDrawer(drawerID);
+  if (!state.metricsLoadedOnce) {
+    state.metricsLoadedOnce = true;
+    loadMetrics().catch(() => {});
+  }
+}
+
 function syncLanguageSwitcher() {
   const locale = tGetLocale();
-  document.querySelectorAll("#topbar-language [data-locale]").forEach((button) => {
+  document.querySelectorAll("#settings-language [data-locale]").forEach((button) => {
     const active = button.dataset.locale === locale;
     button.setAttribute("aria-pressed", String(active));
     button.classList.toggle("active", active);

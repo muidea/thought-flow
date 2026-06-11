@@ -114,16 +114,16 @@ async function runBrowserSmoke(browser, url) {
         navActive: navEl ? navEl.classList.contains("active") : false,
       });
     }
-    // Settings is no longer in the sidebar (gear button instead), so visit
-    // it directly and confirm the page still mounts; the nav highlighting
-    // assertion is dropped here.
+    // Settings is no longer in the sidebar (gear button instead). The
+    // drawer mounts on demand; visiting /settings via the hash is a
+    // deprecated redirect to /overview.
     await settleRoute("#/settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
     routeStates.push({
       name: "settings",
-      active: !!document.querySelector("#page-settings")?.classList.contains("active"),
-      visible: !!document.querySelector("#settings-workspace"),
-      navActive: false,
+      active: !!document.querySelector("#page-dashboard")?.classList.contains("active"),
+      visible: false,
+      navActive: document.querySelector('[data-nav="overview"]')?.classList.contains("active") || false,
     });
     await settleRoute("#/capture");
     const composer = document.querySelector("#capture-composer-input");
@@ -162,6 +162,7 @@ async function runBrowserSmoke(browser, url) {
     // #/topics/{id} as tabs. The legacy "members" pane is now folded
     // into the detail tab (members render below the document).
     await settleRoute("#/topics/demo?tab=detail");
+    await waitUntil(() => document.querySelector("#topics-tab-proposals")?.disabled === false);
     const topicRouteActive = document.querySelector("#page-topics")?.classList.contains("active");
     const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
     document.querySelector("[data-tab='topics-proposals']").click();
@@ -173,15 +174,28 @@ async function runBrowserSmoke(browser, url) {
     const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-rules-drawer']")?.click();
 
-    // PR3 placeholder: /jobs now lives in the settings drawer, so the
-    // direct deep-link route still parses but no dedicated page section
-    // mounts. Visiting it must not throw.
+    // PR3: /jobs is gone — the redirect side-effect routes the deep link
+    // to /notes. /settings is also a deprecated redirect to /overview.
+    // Opening the gear button should mount the settings drawer at the
+    // general tab; that's the new entry to language / models / sync /
+    // index / events.
     await settleRoute("#/jobs?id=job-capture");
     await new Promise((resolve) => setTimeout(resolve, 20));
+    const notesAfterJobsRedirect = !!document.querySelector("#page-thoughts")?.classList.contains("active");
     await settleRoute("#/settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const metricsText = document.querySelector("#settings-metrics-json")?.textContent || "";
-    const settingsText = document.querySelector("#page-settings")?.textContent || "";
+    const overviewAfterSettingsRedirect = !!document.querySelector("#page-dashboard")?.classList.contains("active");
+    const openSettingsBtn = document.querySelector("#open-settings");
+    openSettingsBtn?.click();
+    await waitUntil(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
+    const settingsDrawerOpen = !!document.querySelector("#settings-drawer")?.classList.contains("open");
+    // Switch to the events tab and confirm the event list exists.
+    document.querySelector("[data-tab='settings-drawer-events']")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const eventsTabActive = !!document.querySelector("#tab-settings-drawer-events")?.classList.contains("active");
+    const eventsListPresent = !!document.querySelector("#settings-drawer-event-list");
+    document.querySelector("[data-close-drawer='settings-drawer']")?.click();
+    const metricsText = document.querySelector("#settings-drawer-metrics-json")?.textContent || "";
     const shell = document.querySelector(".tf-layout").getBoundingClientRect();
     const clientWidth = document.documentElement.clientWidth;
     const wideElements = Array.from(document.querySelectorAll("body *"))
@@ -220,7 +234,11 @@ async function runBrowserSmoke(browser, url) {
       rulesText,
       rulesDrawerOpen,
       metricsText,
-      settingsText,
+      notesAfterJobsRedirect,
+      overviewAfterSettingsRedirect,
+      settingsDrawerOpen,
+      eventsTabActive,
+      eventsListPresent,
       shellWidth: shell.width,
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth,
@@ -240,7 +258,7 @@ async function runBrowserSmoke(browser, url) {
     { name: "search", active: true, visible: true, navActive: true },
     { name: "topics", active: true, visible: true, navActive: true },
     { name: "compose", active: true, visible: true, navActive: true },
-    { name: "settings", active: true, visible: true, navActive: false },
+    { name: "settings", active: true, visible: false, navActive: true },
   ]);
   assert.match(state.captureResult, /thought-capture|Browser capture|Captured from browser smoke/);
   assert.equal(state.thoughtDrawerOpen, true);
@@ -257,8 +275,12 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.rulesText, /Semantic/);
   assert.equal(state.rulesDrawerOpen, true);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
-  assert.doesNotMatch(state.settingsText, /\/tmp\/browser/);
-  assert.match(state.settingsText, /thoughtflow\.duckdb/);
+  // PR3: /jobs and /settings are deprecated redirects.
+  assert.equal(state.notesAfterJobsRedirect, true);
+  assert.equal(state.overviewAfterSettingsRedirect, true);
+  assert.equal(state.settingsDrawerOpen, true);
+  assert.equal(state.eventsTabActive, true);
+  assert.equal(state.eventsListPresent, true);
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
@@ -556,9 +578,12 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     assert.equal(zhSnapshot.overviewTitle, "总览");
     assert.equal(zhSnapshot.navOverview, "总览");
     assert.equal(zhSnapshot.captureNav, "采集");
-    // switch to en-US via the topbar segmented control
+    // switch to en-US via the settings drawer (PR3 moved the language
+    // segmented control out of the topbar and into the settings drawer).
+    await page.evaluate(() => { document.querySelector("#open-settings")?.click(); });
+    await page.waitForExpression(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
     await page.evaluate(() => {
-      const button = document.querySelector('#topbar-language [data-locale="en-US"]');
+      const button = document.querySelector('#settings-language [data-locale="en-US"]');
       if (button) button.click();
     });
     await page.waitForExpression(() => document.documentElement.lang === "en-US");
@@ -634,23 +659,20 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
     assert.equal(structural.confirmModal, "true");
     assert.equal(structural.confirmLabelledby, "confirm-title");
 
-    // Open a drawer (settings has a known one) and verify Tab cycles inside it.
-    await page.evaluate(() => { window.location.hash = "#/settings"; });
-    await page.waitForExpression(() => document.querySelector("#page-settings")?.classList.contains("active"));
-    await page.evaluate(() => {
-      const btn = document.querySelector("#open-reindex-drawer") || document.querySelector('[data-drawer-target="reindex-drawer"]');
-      if (btn) btn.click();
-    });
-    // Not every settings page exposes a drawer — only assert trap behavior if a drawer opened.
+    // Open the settings drawer via the gear button and verify Tab cycles
+    // inside it. PR3 moves the settings UI from a top-level page into a
+    // drawer; the focus-trap contract is unchanged.
+    await page.evaluate(() => { document.querySelector("#open-settings")?.click(); });
+    await page.waitForExpression(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
     const drawerOpen = await page.evaluate(() => {
-      const el = document.querySelector("#reindex-drawer");
+      const el = document.querySelector("#settings-drawer");
       if (!el) return false;
       const style = window.getComputedStyle(el);
       return style.display !== "none" && !el.classList.contains("hidden");
     });
     if (drawerOpen) {
       const trap = await page.evaluate(() => {
-        const drawer = document.querySelector("#reindex-drawer");
+        const drawer = document.querySelector("#settings-drawer");
         const focusables = Array.from(drawer.querySelectorAll("button, input, select, textarea, a[href]"))
           .filter((el) => !el.disabled && el.offsetParent !== null);
         if (focusables.length < 2) return { focusableCount: focusables.length };
@@ -810,6 +832,8 @@ function startFixtureServer() {
           },
           jobs: [{ id: "job-capture", type: "refine", status: "queued" }],
         }));
+      case "/api/jobs":
+        return json(res, api([]));
       case "/api/jobs/job-capture":
         return json(res, api({
           id: "job-capture",

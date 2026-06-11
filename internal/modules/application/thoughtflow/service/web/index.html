@@ -62,10 +62,6 @@
             <span class="tf-badge tf-badge-default" data-i18n="topbar.badge.search">Search</span>
           </div>
           <div class="tf-header-actions">
-            <div class="tf-segmented" role="group" id="topbar-language" aria-label="Language">
-              <button class="tf-segmented-item" type="button" data-locale="zh-CN" aria-pressed="true">中文</button>
-              <button class="tf-segmented-item" type="button" data-locale="en-US" aria-pressed="false">EN</button>
-            </div>
             <a class="tf-btn tf-btn-primary" href="#/capture" data-i18n="topbar.action.new_capture">New capture</a>
             <a class="tf-btn" href="#/topics" data-i18n="topbar.action.new_topic">New topic</a>
             <button class="tf-btn tf-btn-icon" id="open-settings" type="button" data-i18n-attr="topbar.gear" data-i18n-attr-target="aria-label" aria-label="Settings">
@@ -87,23 +83,23 @@
               </div>
             </div>
             <div class="tf-stat-grid">
-              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
+              <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-general">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.workspace">Workspace</span>
                 <strong id="dashboard-workspace" data-i18n="dashboard.card.loading">Loading</strong>
               </article>
-              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
+              <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-models">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.llm">LLM</span>
                 <strong id="dashboard-llm" data-i18n="dashboard.card.loading">Loading</strong>
               </article>
-              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
+              <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-models">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.embedding">Embedding</span>
                 <strong id="dashboard-embedding" data-i18n="dashboard.card.loading">Loading</strong>
               </article>
-              <article class="tf-card tf-clickable-card" data-dashboard-link="#/jobs">
+              <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-sync">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.git">Git</span>
                 <strong id="dashboard-git" data-i18n="dashboard.card.loading">Loading</strong>
               </article>
-              <article class="tf-card tf-clickable-card" data-dashboard-link="#/settings">
+              <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-index">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.search">Search</span>
                 <strong id="dashboard-search" data-i18n="dashboard.card.loading">Loading</strong>
               </article>
@@ -112,7 +108,7 @@
             <section class="tf-card">
               <div class="tf-card-header">
                 <h3 data-i18n="dashboard.recent_activity">Recent Activity</h3>
-                <a class="tf-btn tf-btn-link" href="#/jobs" data-i18n="dashboard.view_all">View all</a>
+                <button class="tf-btn tf-btn-link" id="open-events-from-dashboard" type="button" data-i18n="dashboard.view_all">View all</button>
               </div>
               <div id="dashboard-events" class="event-list"></div>
             </section>
@@ -171,12 +167,47 @@
                 <p data-i18n="thoughts.description">Open a thought from search results or recent activity. A list API can be added later.</p>
               </div>
             </div>
+            <div class="tf-tabs" role="tablist" id="notes-tablist">
+              <button class="tab active" data-tab="notes-all" data-i18n="notes.tab.all">All</button>
+              <button class="tab" data-tab="notes-detail" data-i18n="notes.tab.detail">Detail</button>
+              <button class="tab" data-tab="notes-status" data-i18n="notes.tab.status">Status</button>
+              <button class="tab" data-tab="notes-runtime" data-i18n="notes.tab.runtime">Runtime</button>
+            </div>
             <section class="tf-card">
-              <form id="thought-form" class="search-form">
-                <input id="thought-id" type="search" data-i18n-attr="thoughts.id_placeholder" data-i18n-attr-target="placeholder" placeholder="Thought ID">
-                <button class="tf-btn tf-btn-primary" type="submit" data-i18n="thoughts.load_button">Load thought</button>
-              </form>
-              <div id="thought-preview" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
+              <div id="tab-notes-all" class="tab-panel active">
+                <form id="thought-form" class="search-form">
+                  <input id="thought-id" type="search" data-i18n-attr="thoughts.id_placeholder" data-i18n-attr-target="placeholder" placeholder="Thought ID">
+                  <button class="tf-btn tf-btn-primary" type="submit" data-i18n="thoughts.load_button">Load thought</button>
+                </form>
+                <div id="thought-preview" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
+              </div>
+              <div id="tab-notes-detail" class="tab-panel">
+                <div class="tf-empty" data-i18n="empty.no_thought">No thought selected.</div>
+              </div>
+              <div id="tab-notes-status" class="tab-panel">
+                <div id="thought-status-detail" class="tf-description-list" data-i18n="empty.no_thought">No thought selected.</div>
+              </div>
+              <div id="tab-notes-runtime" class="tab-panel">
+                <details class="tf-card tf-runtime-card" id="notes-runtime-card">
+                  <summary>
+                    <strong data-i18n="notes.runtime.title">Runtime</strong>
+                    <span class="tf-text-secondary" data-i18n="notes.runtime.help">Background jobs and the live event stream.</span>
+                  </summary>
+                  <div class="tf-runtime-grid">
+                    <div>
+                      <h4 data-i18n="notes.runtime.jobs_label">Jobs</h4>
+                      <div id="notes-runtime-jobs" class="tf-description-list" data-i18n="notes.runtime.empty">No background jobs.</div>
+                    </div>
+                    <div>
+                      <h4 data-i18n="notes.runtime.events_label">Events</h4>
+                      <div id="notes-runtime-events" class="event-list"></div>
+                    </div>
+                  </div>
+                  <div class="tf-page-actions" style="margin-top: 8px;">
+                    <button class="tf-btn" id="notes-runtime-refresh" type="button" data-i18n="notes.runtime.refresh">Refresh</button>
+                  </div>
+                </details>
+              </div>
             </section>
           </section>
 
@@ -326,81 +357,82 @@
               </div>
             </section>
           </section>
-
-          <section class="tf-page" id="page-settings" data-page="settings">
-            <div class="tf-page-header">
-              <div>
-                <h2 data-i18n="settings.title">Settings</h2>
-                <p data-i18n="settings.description">Runtime status, metrics, index operations, and configuration references.</p>
-              </div>
-              <div class="tf-page-actions">
-                <button class="tf-btn" id="reindex-button" data-i18n="settings.reindex">Reindex</button>
-              </div>
-            </div>
-            <section class="tf-card">
-              <div class="tf-tabs" role="tablist">
-                <button class="tab active" data-tab="settings-status" data-i18n="settings.tab.status">Status</button>
-                <button class="tab" data-tab="settings-metrics" data-i18n="settings.tab.metrics">Metrics</button>
-                <button class="tab" data-tab="settings-index" data-i18n="settings.tab.index">Index</button>
-                <button class="tab" data-tab="settings-git" data-i18n="settings.tab.git">Git</button>
-                <button class="tab" data-tab="settings-config" data-i18n="settings.tab.config">Configuration</button>
-              </div>
-              <div id="tab-settings-status" class="tab-panel active">
-                <div class="tf-stat-grid">
-                  <article class="tf-stat-tile">
-                    <span class="tf-text-secondary" data-i18n="settings.card.workspace">Workspace</span>
-                    <strong id="settings-workspace" data-i18n="settings.card.loading">Loading</strong>
-                  </article>
-                  <article class="tf-stat-tile">
-                    <span class="tf-text-secondary" data-i18n="settings.card.duckdb">DuckDB</span>
-                    <strong id="settings-duckdb" data-i18n="settings.card.loading">Loading</strong>
-                  </article>
-                  <article class="tf-stat-tile">
-                    <span class="tf-text-secondary" data-i18n="settings.card.llm">LLM</span>
-                    <strong id="settings-llm" data-i18n="settings.card.loading">Loading</strong>
-                  </article>
-                  <article class="tf-stat-tile">
-                    <span class="tf-text-secondary" data-i18n="settings.card.embedding">Embedding</span>
-                    <strong id="settings-embedding" data-i18n="settings.card.loading">Loading</strong>
-                  </article>
-                  <article class="tf-stat-tile">
-                    <span class="tf-text-secondary" data-i18n="settings.card.git">Git</span>
-                    <strong id="settings-git" data-i18n="settings.card.loading">Loading</strong>
-                  </article>
-                </div>
-                <div id="settings-degraded" class="tf-alert tf-alert-warning" hidden></div>
-              </div>
-              <div id="tab-settings-metrics" class="tab-panel">
-                <div id="settings-metrics-json" class="tf-description-list" data-i18n="settings.metrics_not_loaded">Metrics not loaded.</div>
-                <p class="tf-text-secondary"><a href="/metrics" target="_blank" rel="noreferrer" data-i18n="settings.prometheus_link">Open Prometheus metrics</a></p>
-              </div>
-              <div id="tab-settings-index" class="tab-panel">
-                <div id="settings-index-detail" class="tf-description-list" data-i18n="settings.index_not_loaded">Index status not loaded.</div>
-              </div>
-              <div id="tab-settings-git" class="tab-panel">
-                <div id="settings-git-detail" class="tf-description-list" data-i18n="settings.git_not_loaded">Git status not loaded.</div>
-              </div>
-              <div id="tab-settings-config" class="tab-panel">
-                <div class="tf-description-list">
-                  <dl>
-                    <dt data-i18n="settings.config_file">Config file</dt>
-                    <dd data-i18n="settings.config_file_desc">Use <code>&lt;config-dir&gt;/application.toml</code>.</dd>
-                    <dt data-i18n="settings.config_content">Content directory</dt>
-                    <dd data-i18n="settings.config_content_desc"><code>workspace.content_dir</code> stores user-owned knowledge assets: thoughts, topics, and attachments.</dd>
-                    <dt data-i18n="settings.config_runtime">Runtime state</dt>
-                    <dd data-i18n="settings.config_runtime_desc"><code>runtime.state_dir</code> stores rebuildable service state: jobs, logs, and local indexes. Keep it separate from the config directory.</dd>
-                    <dt data-i18n="settings.config_template">Template</dt>
-                    <dd data-i18n="settings.config_template_desc"><code>doc/application.example.toml</code></dd>
-                    <dt data-i18n="settings.config_docs">Documentation</dt>
-                    <dd data-i18n="settings.config_docs_desc"><code>doc/thoughtflow-usage-config.md</code></dd>
-                  </dl>
-                </div>
-              </div>
-            </section>
-          </section>
         </main>
       </div>
     </div>
+
+    <aside class="tf-drawer" id="settings-drawer" aria-hidden="true">
+      <div class="tf-drawer-panel">
+        <div class="tf-drawer-header">
+          <h2 data-i18n="settings.drawer.title">Settings</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="settings-drawer" type="button" data-i18n="common.close">Close</button>
+        </div>
+        <div class="tf-tabs" role="tablist">
+          <button class="tab active" data-tab="settings-drawer-general" data-i18n="settings.tab.general">General</button>
+          <button class="tab" data-tab="settings-drawer-models" data-i18n="settings.tab.models">Models</button>
+          <button class="tab" data-tab="settings-drawer-sync" data-i18n="settings.tab.sync">Sync</button>
+          <button class="tab" data-tab="settings-drawer-index" data-i18n="settings.tab.index">Index</button>
+          <button class="tab" data-tab="settings-drawer-events" data-i18n="settings.tab.events">Events</button>
+        </div>
+        <div id="tab-settings-drawer-general" class="tab-panel active">
+          <div class="tf-form-item">
+            <span class="tf-label" data-i18n="settings.general.language">Language</span>
+            <p class="tf-text-secondary" data-i18n="settings.general.language_help">Switches immediately and persists across reloads.</p>
+            <div class="tf-segmented" id="settings-language">
+              <button data-locale="zh-CN" type="button" aria-pressed="false">zh-CN</button>
+              <button data-locale="en-US" type="button" aria-pressed="false">en-US</button>
+            </div>
+          </div>
+          <div class="tf-form-item">
+            <span class="tf-label" data-i18n="settings.reindex">Reindex</span>
+            <p class="tf-text-secondary" data-i18n="settings.reindex_confirm_message">This queues a workspace reindex job for the search database.</p>
+            <div class="tf-page-actions" style="margin-top: 8px;">
+              <button class="tf-btn" id="settings-drawer-reindex" type="button" data-i18n="settings.reindex">Reindex</button>
+            </div>
+          </div>
+        </div>
+        <div id="tab-settings-drawer-models" class="tab-panel">
+          <div class="tf-stat-grid">
+            <article class="tf-stat-tile">
+              <span class="tf-text-secondary" data-i18n="settings.card.llm">LLM</span>
+              <strong id="settings-drawer-llm" data-i18n="settings.card.loading">Loading</strong>
+            </article>
+            <article class="tf-stat-tile">
+              <span class="tf-text-secondary" data-i18n="settings.card.embedding">Embedding</span>
+              <strong id="settings-drawer-embedding" data-i18n="settings.card.loading">Loading</strong>
+            </article>
+          </div>
+        </div>
+        <div id="tab-settings-drawer-sync" class="tab-panel">
+          <div id="settings-drawer-git-detail" class="tf-description-list" data-i18n="settings.git_not_loaded">Git status not loaded.</div>
+        </div>
+        <div id="tab-settings-drawer-index" class="tab-panel">
+          <div class="tf-stat-grid">
+            <article class="tf-stat-tile">
+              <span class="tf-text-secondary" data-i18n="settings.card.workspace">Workspace</span>
+              <strong id="settings-drawer-workspace" data-i18n="settings.card.loading">Loading</strong>
+            </article>
+            <article class="tf-stat-tile">
+              <span class="tf-text-secondary" data-i18n="settings.card.duckdb">DuckDB</span>
+              <strong id="settings-drawer-duckdb" data-i18n="settings.card.loading">Loading</strong>
+            </article>
+          </div>
+          <div id="settings-drawer-index-detail" class="tf-description-list" style="margin-top: 12px;" data-i18n="settings.index_not_loaded">Index status not loaded.</div>
+          <div id="settings-drawer-metrics-json" class="tf-description-list" style="margin-top: 12px;" data-i18n="settings.metrics_not_loaded">Metrics not loaded.</div>
+          <p class="tf-text-secondary" style="margin-top: 12px;"><a href="/metrics" target="_blank" rel="noreferrer" data-i18n="settings.prometheus_link">Open Prometheus metrics</a></p>
+          <div id="settings-drawer-degraded" class="tf-alert tf-alert-warning" hidden style="margin-top: 12px;"></div>
+        </div>
+        <div id="tab-settings-drawer-events" class="tab-panel">
+          <p class="tf-text-secondary" data-i18n="settings.events.help">Live EventStream. Shared with the Runtime card on the Notes page.</p>
+          <div class="tf-filter-grid">
+            <input id="settings-drawer-event-type" type="text" data-i18n-attr="settings.events.filter_type" data-i18n-attr-target="placeholder" placeholder="event type">
+            <input id="settings-drawer-event-resource" type="text" data-i18n-attr="settings.events.filter_resource" data-i18n-attr-target="placeholder" placeholder="resource id">
+            <button class="tf-btn" id="settings-drawer-reset-event-filter" type="button" data-i18n="settings.events.reset_filters">Reset filters</button>
+          </div>
+          <div id="settings-drawer-event-list" class="event-list" data-i18n-template="settings.events.empty" data-empty="true">No events yet.</div>
+        </div>
+      </div>
+    </aside>
 
     <aside class="tf-drawer" id="thought-drawer" aria-hidden="true">
       <div class="tf-drawer-panel">

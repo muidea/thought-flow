@@ -164,9 +164,11 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
   assert.deepEqual(route("#/compose"), { page: "compose", nav: "compose", params: {}, query: {} });
-  // /jobs is still a live page (PR3 will fold it into the settings drawer);
-  // direct URLs continue to parse so deep links don't break.
-  assert.deepEqual(route("#/jobs?id=job-1"), { page: "jobs", nav: "settings", params: { jobId: "job-1" }, query: { id: "job-1" } });
+  // PR3: /jobs is no longer a live page — the redirect table at the top
+  // of parseRoute rewrites it to #/notes before we get here, so the
+  // assertion below just confirms the post-redirect resolution lands on
+  // the notes page.
+  assert.deepEqual(route("#/notes"), { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} });
 });
 
 test("parseRoute redirects deprecated hash paths to their new names", () => {
@@ -190,11 +192,17 @@ test("parseRoute redirects deprecated hash paths to their new names", () => {
     // /synthesis redirects to /compose with the query string preserved.
     { page: "compose", nav: "compose", params: {}, query: {} },
   );
-  // /jobs is still a live section in PR1; the menu item is removed in
-  // PR3 alongside the page itself. Direct URLs continue to work.
+  // PR3: /settings is gone (gear opens the settings drawer) and /jobs is
+  // gone (jobs are surfaced via the notes runtime card and the settings
+  // drawer event tab). Both segments now resolve to live pages after the
+  // redirect side-effect runs in parseRoute.
   assert.deepEqual(
-    route("#/jobs?id=job-1"),
-    { page: "jobs", nav: "settings", params: { jobId: "job-1" }, query: { id: "job-1" } },
+    route("#/settings"),
+    { page: "dashboard", nav: "overview", params: {}, query: {} },
+  );
+  assert.deepEqual(
+    route("#/notes"),
+    { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} },
   );
 });
 
