@@ -2603,6 +2603,15 @@ async function boot() {
   }
   restoreBasket();
   state.capture.sessions = loadCaptureSessions();
+  // Sweep any stale cross-tab session locks before we render. Per-key
+  // getHolder() only fires for thoughts the user actually opens, but
+  // a tab that crashed (or was force-killed) can leave lock entries
+  // behind for up to 90s. Cleaning them up here keeps the lock
+  // indicator from flashing "another session is editing" on the next
+  // visit just because the previous holder is long gone.
+  if (window.tflowSessionLock && typeof window.tflowSessionLock.sweepStaleLocks === "function") {
+    try { window.tflowSessionLock.sweepStaleLocks(); } catch (_error) { /* ignore */ }
+  }
   bind();
   // Render the basket counter once the page is reachable. Done here so the
   // rehydrated count shows even before the user opens the synthesis page.

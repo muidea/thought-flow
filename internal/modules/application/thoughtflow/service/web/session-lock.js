@@ -151,6 +151,39 @@
     }
   }
 
+  // sweepStaleLocks drops every localStorage entry whose holder has
+  // outlived the TTL. The per-key read() / getHolder() check only fires
+  // for thoughts the user actually opens; locks for thoughts the user
+  // is not currently editing would otherwise sit in localStorage for
+  // up to 90s after the previous tab crashed. That can briefly show the
+  // "another session is editing" indicator on the next visit if the
+  // user happens to open the same thought — even though the previous
+  // holder is long gone. Sweeping at boot keeps the indicator honest.
+  function sweepStaleLocks() {
+    if (typeof localStorage === "undefined") return 0;
+    const ms = now();
+    let removed = 0;
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
+        const value = read(key.slice(STORAGE_PREFIX.length));
+        if (!value) {
+          // Corrupt entry — best-effort remove.
+          localStorage.removeItem(key);
+          continue;
+        }
+        if (isExpired(value, ms)) {
+          localStorage.removeItem(key);
+          removed++;
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return removed;
+  }
+
   function on(handler) {
     listeners.add(handler);
     return () => listeners.delete(handler);
@@ -189,6 +222,7 @@
     heartbeat,
     release,
     releaseAll,
+    sweepStaleLocks,
     getHolder,
     on,
     DEFAULT_TTL_MS,

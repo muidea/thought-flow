@@ -115,3 +115,32 @@ test("stale lock above TTL is dropped and can be re-acquired", () => {
   assert.equal(env.lock.getHolder("thought-1"), null);
   assert.equal(env.lock.acquire("thought-1", "session-B"), true);
 });
+
+test("sweepStaleLocks drops expired entries and keeps live ones", () => {
+  let now = 1000;
+  const env = loadLockModule({ now: () => now });
+  env.lock.acquire("thought-1", "session-A");
+  env.lock.acquire("thought-2", "session-A");
+  // Advance well past TTL for thought-1/2, then keep a live entry that
+  // sits just inside the TTL window when the sweep runs.
+  now = 1000 + 200_000;
+  env.lock.acquire("thought-3", "session-B");
+  now = now + 10_000; // thought-3 is 10s old, well inside the 90s TTL
+  const removed = env.lock.sweepStaleLocks();
+  assert.equal(removed, 2);
+  assert.equal(env.storage.getItem("tflow.lock.thought-1"), null);
+  assert.equal(env.storage.getItem("tflow.lock.thought-2"), null);
+  assert.ok(env.storage.getItem("tflow.lock.thought-3"));
+});
+
+test("sweepStaleLocks removes corrupt entries", () => {
+  const env = loadLockModule();
+  env.storage.setItem("tflow.lock.thought-bad", "not-json{");
+  env.lock.sweepStaleLocks();
+  assert.equal(env.storage.getItem("tflow.lock.thought-bad"), null);
+});
+
+test("sweepStaleLocks is a no-op on an empty store", () => {
+  const env = loadLockModule();
+  assert.equal(env.lock.sweepStaleLocks(), 0);
+});
