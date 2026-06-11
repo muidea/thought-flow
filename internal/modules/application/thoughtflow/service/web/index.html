@@ -237,76 +237,48 @@
                 <button class="tf-btn" id="refresh-topics" data-i18n-attr="common.refresh" data-i18n-attr-target="title" title="Refresh" aria-label="Refresh" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
-            <section class="tf-card">
-              <div class="tf-card-header">
-                <h3 data-i18n="topics.list_title">Topic List</h3>
-              </div>
-              <div class="tf-filter-grid">
-                <input id="topic-filter" type="search" data-i18n-attr="topics.filter_placeholder" data-i18n-attr-target="placeholder" placeholder="filter topics">
-                <label class="toggle-row"><input id="topic-auto-filter" type="checkbox"> <span data-i18n="topics.auto_filter">Auto weave only</span></label>
-                <button class="tf-btn" id="reset-topic-filter" type="button" data-i18n="topics.reset_filters">Reset filters</button>
-              </div>
-              <div id="topic-list" class="topic-list" data-i18n-template="empty.no_topic" data-empty="true"></div>
-            </section>
-          </section>
-
-          <section class="tf-page" id="page-topic-detail" data-page="topic-detail">
-            <div class="tf-page-header">
-              <div>
-                <h2 id="topic-title" data-i18n="topics.detail_title">Topic Workspace</h2>
-                <p data-i18n="topics.detail_description">Document, rules, and activity for the selected topic.</p>
-              </div>
-              <div class="tf-page-actions">
-                <button class="tf-btn" id="rebuild-topic" disabled data-i18n="topics.rebuild">Rebuild</button>
-                <button class="tf-btn" id="open-topic-rules" type="button" disabled data-i18n="topics.edit_rules">Edit rules</button>
-                <a class="tf-btn" id="open-topic-review" href="#/topics" data-i18n="topics.review_proposals">Review proposals</a>
-              </div>
+            <div class="tf-tabs" role="tablist" id="topics-tablist">
+              <button class="tab active" data-tab="topics-list" data-i18n="topics.tab.list">List</button>
+              <button class="tab" data-tab="topics-detail" data-i18n="topics.tab.detail" id="topics-tab-detail" disabled>Detail</button>
+              <button class="tab" data-tab="topics-proposals" data-i18n="topics.tab.proposals" id="topics-tab-proposals" disabled>Proposals</button>
+              <button class="tab" data-tab="topics-rules" data-i18n="topics.tab.rules" id="topics-tab-rules" disabled>Rules</button>
             </div>
             <section class="tf-card">
-              <div class="tf-tabs" role="tablist">
-                <button class="tab active" data-tab="topic" data-i18n="topics.tab.document">Document</button>
-                <button class="tab" data-tab="members" data-i18n="topics.tab.members">Members</button>
-                <button class="tab" data-tab="rules" data-i18n="topics.tab.rules">Rules</button>
-                <button class="tab" data-tab="activity" data-i18n="topics.tab.activity">Activity</button>
+              <div id="tab-topics-list" class="tab-panel active">
+                <div class="tf-filter-grid">
+                  <input id="topic-filter" type="search" data-i18n-attr="topics.filter_placeholder" data-i18n-attr-target="placeholder" placeholder="filter topics">
+                  <label class="toggle-row"><input id="topic-auto-filter" type="checkbox"> <span data-i18n="topics.auto_filter">Auto weave only</span></label>
+                  <button class="tf-btn" id="reset-topic-filter" type="button" data-i18n="topics.reset_filters">Reset filters</button>
+                </div>
+                <div id="topic-list" class="topic-list" data-i18n-template="empty.no_topic" data-empty="true"></div>
               </div>
-              <div id="tab-topic" class="tab-panel active">
-                <div id="topic-document" class="markdown-preview markdown-rendered" data-i18n-template="topics.document_empty" data-empty="true">Select a topic from Topics.</div>
+              <div id="tab-topics-detail" class="tab-panel">
+                <div class="tf-page-actions" style="margin-bottom: 12px;">
+                  <button class="tf-btn" id="rebuild-topic" disabled data-i18n="topics.rebuild">Rebuild</button>
+                  <button class="tf-btn" id="open-topic-rules" type="button" disabled data-i18n="topics.edit_rules">Edit rules</button>
+                </div>
+                <div id="topic-document" class="markdown-preview markdown-rendered" data-i18n-template="topics.document_empty" data-empty="true">Select a topic from the list.</div>
+                <div id="topic-members" class="tf-empty" style="margin-top: 12px;" data-i18n="topics.members_empty">No topic members loaded.</div>
               </div>
-              <div id="tab-members" class="tab-panel">
-                <div id="topic-members" class="tf-empty" data-i18n="topics.members_empty">No topic members loaded.</div>
+              <div id="tab-topics-proposals" class="tab-panel">
+                <div class="tf-two-column">
+                  <div id="weave-proposals" class="approval-list" data-i18n-template="topics.weave_proposals_none" data-empty="true">No weave proposals.</div>
+                  <div>
+                    <div id="weave-diff" class="diff-view" data-i18n-template="topics.weave_diff_empty" data-empty="true">Select a proposal to review.</div>
+                    <textarea id="weave-document" class="markdown-preview" spellcheck="false" data-i18n-attr="topics.weave_proposed_placeholder" data-i18n-attr-target="placeholder" placeholder="Proposed topic document" style="margin-top: 12px;"></textarea>
+                    <div style="margin-top: 12px; text-align: right;">
+                      <button class="tf-btn tf-btn-primary" id="accept-weave" disabled data-i18n="topics.weave_accept">Accept</button>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div id="tab-rules" class="tab-panel">
+              <div id="tab-topics-rules" class="tab-panel">
                 <div id="topic-rules-summary" class="tf-description-list" data-i18n="topics.rules_empty">No topic selected.</div>
               </div>
-              <div id="tab-activity" class="tab-panel">
-                <div id="event-list" class="event-list"></div>
-              </div>
             </section>
           </section>
 
-          <section class="tf-page" id="page-topic-review" data-page="topic-review">
-            <div class="tf-page-header">
-              <div>
-                <h2 id="weave-review-title" data-i18n-template="topics.weave_title" data-weave-id="">Weave Review</h2>
-                <p data-i18n="topics.weave_proposals_empty">Review pending topic document proposals before writing index.md.</p>
-              </div>
-              <div class="tf-page-actions">
-                <a class="tf-btn" id="back-topic-detail" href="#/topics" data-i18n="topics.back_to_topic">Back to topic</a>
-                <button class="tf-btn tf-btn-primary" id="accept-weave" disabled data-i18n="topics.weave_accept">Accept</button>
-              </div>
-            </div>
-            <div class="tf-two-column">
-              <section class="tf-card">
-                <div id="weave-proposals" class="approval-list" data-i18n-template="topics.weave_proposals_none" data-empty="true">No weave proposals.</div>
-              </section>
-              <section class="tf-card">
-                <div id="weave-diff" class="diff-view" data-i18n-template="topics.weave_diff_empty" data-empty="true">Select a search result to review topic weaving.</div>
-                <textarea id="weave-document" class="markdown-preview" spellcheck="false" data-i18n-attr="topics.weave_proposed_placeholder" data-i18n-attr-target="placeholder" placeholder="Proposed topic document"></textarea>
-              </section>
-            </div>
-          </section>
-
-          <section class="tf-page" id="page-synthesis" data-page="synthesis">
+          <section class="tf-page" id="page-compose" data-page="compose">
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="compose.title">Compose Drafts</h2>
@@ -317,50 +289,41 @@
                 <button class="tf-btn" id="refresh-synthesis" type="button" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
-            <div class="tf-two-column">
-              <section class="tf-card">
+            <div class="tf-tabs" role="tablist" id="compose-tablist">
+              <button class="tab active" data-tab="compose-drafts" data-i18n="compose.tab.drafts">Drafts</button>
+              <button class="tab" data-tab="compose-basket" data-i18n="compose.tab.basket">Basket</button>
+              <button class="tab" data-tab="compose-templates" data-i18n="compose.tab.templates">Templates</button>
+            </div>
+            <section class="tf-card">
+              <div id="tab-compose-drafts" class="tab-panel active">
+                <div class="tf-two-column">
+                  <div>
+                    <div class="tf-selection-bar">
+                      <span id="synthesis-source-count" data-i18n-template="synthesis.source_count" data-n="0">0 selected sources</span>
+                      <button class="tf-btn" id="clear-synthesis-basket" type="button" disabled data-i18n="synthesis.clear_basket">Clear basket</button>
+                    </div>
+                    <div id="synthesis-drafts" class="approval-list" data-i18n-template="synthesis.drafts_empty" data-empty="true">No synthesis drafts.</div>
+                  </div>
+                  <div>
+                    <div class="tf-card-header">
+                      <h3 data-i18n="synthesis.editor_title">Draft Editor</h3>
+                      <button class="tf-btn" type="button" id="save-synthesis" disabled data-i18n="synthesis.save">Save as thought</button>
+                    </div>
+                    <textarea id="synthesis-output" class="markdown-preview" spellcheck="false" data-i18n-template="synthesis.empty" data-empty="true">Select search results, then create a draft.</textarea>
+                    <div id="synthesis-save-result" class="tf-empty" data-i18n="synthesis.empty">No saved thought yet.</div>
+                  </div>
+                </div>
+              </div>
+              <div id="tab-compose-basket" class="tab-panel">
                 <div class="tf-selection-bar">
-                  <span id="synthesis-source-count" data-i18n-template="synthesis.source_count" data-n="0">0 selected sources</span>
-                  <button class="tf-btn" id="clear-synthesis-basket" type="button" disabled data-i18n="synthesis.clear_basket">Clear basket</button>
+                  <span id="synthesis-source-count-basket" data-i18n-template="synthesis.source_count" data-n="0">0 selected sources</span>
+                  <button class="tf-btn" id="clear-synthesis-basket-tab" type="button" disabled data-i18n="synthesis.clear_basket">Clear basket</button>
                 </div>
-                <div id="synthesis-drafts" class="approval-list" data-i18n-template="synthesis.drafts_empty" data-empty="true">No synthesis drafts.</div>
-              </section>
-              <section class="tf-card">
-                <div class="tf-card-header">
-                  <h3 data-i18n="synthesis.editor_title">Draft Editor</h3>
-                  <button class="tf-btn" type="button" id="save-synthesis" disabled data-i18n="synthesis.save">Save as thought</button>
-                </div>
-                <textarea id="synthesis-output" class="markdown-preview" spellcheck="false" data-i18n-template="synthesis.empty" data-empty="true">Select search results, then create a draft.</textarea>
-                <div id="synthesis-save-result" class="tf-empty" data-i18n="synthesis.empty">No saved thought yet.</div>
-              </section>
-            </div>
-          </section>
-
-          <section class="tf-page" id="page-jobs" data-page="jobs">
-            <div class="tf-page-header">
-              <div>
-                <h2 data-i18n="jobs.title">Jobs & Activity</h2>
-                <p data-i18n="jobs.description">Track background work and live domain events.</p>
+                <div id="synthesis-basket-list" class="approval-list" data-i18n-template="synthesis.empty_sources" data-empty="true">No sources selected.</div>
               </div>
-            </div>
-            <section class="tf-card">
-              <form id="job-form" class="search-form">
-                <input id="job-id" type="search" data-i18n-attr="jobs.id_placeholder" data-i18n-attr-target="placeholder" placeholder="Job ID">
-                <button class="tf-btn tf-btn-primary" type="submit" data-i18n="jobs.load_button">Load job</button>
-              </form>
-              <div id="job-detail" class="tf-empty" data-i18n="jobs.empty">Enter a Job ID or follow a job link from another page.</div>
-            </section>
-            <section class="tf-card">
-              <div class="tf-card-header">
-                <h3 data-i18n="jobs.activity_title">Activity</h3>
-                <span class="tf-text-secondary" data-i18n="jobs.activity_hint">Live SSE stream.</span>
+              <div id="tab-compose-templates" class="tab-panel">
+                <div id="compose-templates" class="tf-description-list" data-i18n-template="synthesis.empty_sources" data-empty="true">Templates appear here once you save a draft.</div>
               </div>
-              <div class="tf-filter-grid">
-                <input id="event-type-filter" type="text" data-i18n-attr="jobs.event_type_placeholder" data-i18n-attr-target="placeholder" placeholder="event type">
-                <input id="event-resource-filter" type="text" data-i18n-attr="jobs.event_resource_placeholder" data-i18n-attr-target="placeholder" placeholder="resource id">
-                <button class="tf-btn" id="reset-event-filter" type="button" data-i18n="jobs.reset_filters">Reset filters</button>
-              </div>
-              <div id="jobs-event-list" class="event-list"></div>
             </section>
           </section>
 

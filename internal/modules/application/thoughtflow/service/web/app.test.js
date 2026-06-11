@@ -156,10 +156,16 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
 
   assert.deepEqual(route(""), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
-  assert.deepEqual(route("#/topics/demo"), { page: "topic-detail", nav: "topics", params: { topicId: "demo" }, query: {} });
-  assert.deepEqual(route("#/topics/demo/review"), { page: "topic-review", nav: "topics", params: { topicId: "demo" }, query: {} });
+  // PR2: topic detail and review are tabs under #/topics. The URL
+  // /topics/{id} opens the detail tab by default; the /review segment
+  // is rewritten to ?tab=proposals so the same page section hosts both
+  // views.
+  assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
+  assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
-  assert.deepEqual(route("#/compose"), { page: "synthesis", nav: "compose", params: {}, query: {} });
+  assert.deepEqual(route("#/compose"), { page: "compose", nav: "compose", params: {}, query: {} });
+  // /jobs is still a live page (PR3 will fold it into the settings drawer);
+  // direct URLs continue to parse so deep links don't break.
   assert.deepEqual(route("#/jobs?id=job-1"), { page: "jobs", nav: "settings", params: { jobId: "job-1" }, query: { id: "job-1" } });
 });
 
@@ -181,7 +187,8 @@ test("parseRoute redirects deprecated hash paths to their new names", () => {
   );
   assert.deepEqual(
     route("#/synthesis"),
-    { page: "synthesis", nav: "compose", params: {}, query: {} },
+    // /synthesis redirects to /compose with the query string preserved.
+    { page: "compose", nav: "compose", params: {}, query: {} },
   );
   // /jobs is still a live section in PR1; the menu item is removed in
   // PR3 alongside the page itself. Direct URLs continue to work.
@@ -386,9 +393,11 @@ test("buildRouteHash omits empty query fields and keeps the path clean", () => {
   // Empty values are dropped, null/undefined are dropped, so common default state
   // does not pollute the URL.
   assert.equal(app.buildRouteHash("search", {}, { q: "", mode: null, sort: undefined }), "#/search");
-  // topic-detail takes its id from params, not from the query string.
-  assert.equal(app.buildRouteHash("topic-detail", { topicId: "ai-notes" }, { tab: "rules" }), "#/topics/ai-notes?tab=rules");
-  assert.equal(app.buildRouteHash("topic-review", { topicId: "ai-notes" }, {}), "#/topics/ai-notes/review");
+  // PR2: topic detail / proposals / rules share the topics page. The
+  // topic id is read from params and the active tab is encoded as
+  // ?tab=... so deep-links land on the right pane.
+  assert.equal(app.buildRouteHash("topics", { topicId: "ai-notes" }, { tab: "rules" }), "#/topics/ai-notes?tab=rules");
+  assert.equal(app.buildRouteHash("topics", { topicId: "ai-notes" }, {}), "#/topics/ai-notes");
   // Special characters are URL-encoded.
   assert.equal(app.buildRouteHash("search", {}, { q: "a b&c" }), "#/search?q=a%20b%26c");
 });
@@ -416,7 +425,6 @@ test("PAGE_SERIALIZERS omits fields that are at their default value", () => {
   // All inputs at their default state — nothing in the URL.
   assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.search()), "{}");
   assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), "{}");
-  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.jobs()), "{}");
 });
 
 test("restoreRoutePage populates search inputs from the query object", () => {
@@ -465,17 +473,13 @@ test("restoreRoutePage ignores unknown / malformed keys without throwing", () =>
   assert.equal(dom.store["search-query"] ?? "", "");
 });
 
-test("restoreRoutePage hydrates topic and jobs state from query", () => {
+test("restoreRoutePage hydrates topic state from query", () => {
   const dom = makeDomStub();
   const app = loadAppFunctionsWith({ dom, exposeState: true });
 
   app.restoreRoutePage("topics", { keyword: "ai", auto_weave: "true" });
   assert.equal(dom.store["topic-filter"], "ai");
   assert.equal(dom.store["topic-auto-filter_checked"], true);
-
-  app.restoreRoutePage("jobs", { active: "job-42", event_type: "thought.refined" });
-  assert.equal(app._state.activeJobId, "job-42");
-  assert.equal(dom.store["event-type-filter"], "thought.refined");
 });
 
 test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => {

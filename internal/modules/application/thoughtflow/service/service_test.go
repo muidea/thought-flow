@@ -56,8 +56,8 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 		!strings.Contains(res.Body.String(), `id="page-container"`) {
 		t.Fatalf("expected redesigned app shell in embedded index")
 	}
-	if !strings.Contains(res.Body.String(), `id="page-topic-review"`) {
-		t.Fatalf("expected dedicated weave review page in embedded index")
+	if !strings.Contains(res.Body.String(), `data-tab="topics-proposals"`) {
+		t.Fatalf("expected weave review tab under topics page in embedded index")
 	}
 }
 

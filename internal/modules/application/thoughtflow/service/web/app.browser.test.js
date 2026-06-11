@@ -95,9 +95,11 @@ async function runBrowserSmoke(browser, url) {
       ["notes", "#/notes", "#page-thoughts", "#thought-form"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
-      ["compose", "#/compose", "#page-synthesis", "#synthesis-drafts"],
-      ["jobs", "#/jobs", "#page-jobs", "#job-form"],
+      ["compose", "#/compose", "#page-compose", "#synthesis-drafts"],
     ];
+    // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
+    // entry and no dedicated page section, so it isn't in the routes
+    // matrix. The deep-link still resolves in parseRoute.
     const routeStates = [];
     for (const [name, hash, pageSelector, visibleSelector] of routes) {
       await settleRoute(hash);
@@ -146,7 +148,7 @@ async function runBrowserSmoke(browser, url) {
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector("#add-selected-synthesis").click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const synthesisActive = document.querySelector("#page-synthesis")?.classList.contains("active");
+    const synthesisActive = document.querySelector("#page-compose")?.classList.contains("active");
     const basketText = document.querySelector("#synthesis-source-count")?.textContent || "";
     document.querySelector("#open-synthesis-create").click();
     const synthesisDrawerOpen = document.querySelector("#synthesis-create-drawer")?.classList.contains("open");
@@ -156,21 +158,26 @@ async function runBrowserSmoke(browser, url) {
     document.querySelector("#open-create-topic").click();
     const createTopicDrawerOpen = document.querySelector("#topic-create-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-create-drawer']")?.click();
-    await settleRoute("#/topics/demo");
-    const topicRouteActive = document.querySelector("#page-topic-detail")?.classList.contains("active");
+    // PR2: topic detail / members / rules / proposals all live under
+    // #/topics/{id} as tabs. The legacy "members" pane is now folded
+    // into the detail tab (members render below the document).
+    await settleRoute("#/topics/demo?tab=detail");
+    const topicRouteActive = document.querySelector("#page-topics")?.classList.contains("active");
     const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
-    document.querySelector("[data-tab='members']").click();
-    const membersActive = document.querySelector("#tab-members")?.classList.contains("active");
-    document.querySelector("[data-tab='rules']").click();
+    document.querySelector("[data-tab='topics-proposals']").click();
+    const proposalsActive = document.querySelector("#tab-topics-proposals")?.classList.contains("active");
+    document.querySelector("[data-tab='topics-rules']").click();
     await waitUntil(() => (document.querySelector("#topic-rules-summary")?.textContent || "").includes("Semantic"));
     const rulesText = document.querySelector("#topic-rules-summary")?.textContent || "";
     document.querySelector("#open-topic-rules").click();
     const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-rules-drawer']")?.click();
 
+    // PR3 placeholder: /jobs now lives in the settings drawer, so the
+    // direct deep-link route still parses but no dedicated page section
+    // mounts. Visiting it must not throw.
     await settleRoute("#/jobs?id=job-capture");
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const jobText = document.querySelector("#job-detail")?.textContent || "";
     await settleRoute("#/settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
     const metricsText = document.querySelector("#settings-metrics-json")?.textContent || "";
@@ -209,10 +216,9 @@ async function runBrowserSmoke(browser, url) {
       createTopicDrawerOpen,
       topicRouteActive,
       topicsNavActive,
-      membersActive,
+      proposalsActive,
       rulesText,
       rulesDrawerOpen,
-      jobText,
       metricsText,
       settingsText,
       shellWidth: shell.width,
@@ -234,9 +240,6 @@ async function runBrowserSmoke(browser, url) {
     { name: "search", active: true, visible: true, navActive: true },
     { name: "topics", active: true, visible: true, navActive: true },
     { name: "compose", active: true, visible: true, navActive: true },
-    // /jobs is no longer in the sidebar (PR1 strips the nav item); the
-    // route still resolves for direct URLs but no menu highlight applies.
-    { name: "jobs", active: true, visible: true, navActive: false },
     { name: "settings", active: true, visible: true, navActive: false },
   ]);
   assert.match(state.captureResult, /thought-capture|Browser capture|Captured from browser smoke/);
@@ -250,10 +253,9 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.createTopicDrawerOpen, true);
   assert.equal(state.topicRouteActive, true);
   assert.equal(state.topicsNavActive, true);
-  assert.equal(state.membersActive, true);
+  assert.equal(state.proposalsActive, true);
   assert.match(state.rulesText, /Semantic/);
   assert.equal(state.rulesDrawerOpen, true);
-  assert.match(state.jobText, /job-capture/);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
   assert.doesNotMatch(state.settingsText, /\/tmp\/browser/);
   assert.match(state.settingsText, /thoughtflow\.duckdb/);

@@ -161,17 +161,22 @@ function parseRoute(hash) {
     }
     return parseRoute(nextHash);
   }
+  // PR2: topic detail and review are now tabs under #/topics. The
+  // /review segment is rewritten to ?tab=proposals so a single section
+  // hosts both views; ?tab=detail (the default) covers the workspace.
   if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
-    return { page: "topic-review", nav: "topics", params: { topicId: parts[1] }, query };
+    const detailQuery = { ...query, tab: "proposals" };
+    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
   }
   if (parts[0] === "topics" && parts[1]) {
-    return { page: "topic-detail", nav: "topics", params: { topicId: parts[1] }, query };
+    const detailQuery = query.tab ? query : { ...query, tab: "detail" };
+    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
   }
   if (parts[0] === "notes" || parts[0] === "thoughts") {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
   }
   if (parts[0] === "compose" || parts[0] === "synthesis") {
-    return { page: "synthesis", nav: "compose", params: {}, query };
+    return { page: "compose", nav: "compose", params: {}, query };
   }
   if (parts[0] === "jobs") {
     return { page: "jobs", nav: "settings", params: { jobId: query.id || "" }, query };
@@ -211,29 +216,10 @@ const PAGE_SERIALIZERS = {
     const f = $("#topic-filter")?.value.trim();
     if (f) q.keyword = f;
     if ($("#topic-auto-filter")?.checked) q.auto_weave = "true";
-    return q;
-  },
-  "topic-detail": () => {
-    const q = {};
-    const active = document.querySelector("#page-topic-detail .tab.active");
-    if (active && active.dataset.tab && active.dataset.tab !== "topic") q.tab = active.dataset.tab;
-    return q;
-  },
-  "topic-review": () => {
-    const q = {};
-    if (state.weaveProposal?.id) q.proposal = state.weaveProposal.id;
-    return q;
-  },
-  synthesis: () => {
-    const q = {};
-    if (state.synthesisDraft?.id) q.draft = state.synthesisDraft.id;
-    return q;
-  },
-  jobs: () => {
-    const q = {};
-    if (state.activeJobId) q.active = state.activeJobId;
-    const ev = $("#event-type-filter")?.value.trim();
-    if (ev) q.event_type = ev;
+    if (state.route?.params?.topicId) {
+      const active = document.querySelector(`#page-topics .tab.active`);
+      if (active && active.dataset.tab && active.dataset.tab !== "topics-list") q.tab = active.dataset.tab;
+    }
     return q;
   },
   settings: () => {
@@ -264,11 +250,10 @@ function restoreRoutePage(page, query) {
   } else if (page === "topics") {
     if (typeof query.keyword === "string") $("#topic-filter").value = query.keyword;
     if (query.auto_weave === "true") $("#topic-auto-filter").checked = true;
-  } else if (page === "topic-detail") {
-    if (typeof query.tab === "string") activateTab(query.tab, $("#page-topic-detail"));
-  } else if (page === "jobs") {
-    if (typeof query.active === "string") state.activeJobId = query.active;
-    if (typeof query.event_type === "string") $("#event-type-filter").value = query.event_type;
+    if (state.route?.params?.topicId) {
+      const tab = typeof query.tab === "string" ? query.tab : "topics-detail";
+      activateTab(tab, $("#page-topics"));
+    }
   } else if (page === "settings") {
     if (typeof query.tab === "string") activateTab(query.tab, $("#page-settings"));
   }
@@ -284,12 +269,11 @@ function buildRouteHash(page, params = {}, query = {}) {
   const pageToSegment = {
     dashboard: "overview",
     thoughts: "notes",
-    synthesis: "compose",
+    compose: "compose",
   };
   let path = `#/${pageToSegment[page] || page}`;
-  if (page === "topic-detail" || page === "topic-review") {
-    if (params.topicId) path = `#/topics/${encodeURIComponent(params.topicId)}`;
-    if (page === "topic-review") path += "/review";
+  if (page === "topics" && params.topicId) {
+    path = `#/topics/${encodeURIComponent(params.topicId)}`;
   }
   const entries = Object.entries(query).filter(([, v]) => v !== undefined && v !== null && v !== "");
   if (entries.length === 0) return path;
@@ -1173,7 +1157,6 @@ function renderTopics() {
     state.activeTopicId = "";
     state.activeTopicDetail = null;
     populateTopicEditor(null);
-    $("#topic-title").textContent = t("topics.detail_title");
     $("#topic-document").innerHTML = renderMarkdown(t("topics.document_empty"));
     $("#rebuild-topic").disabled = true;
     $("#open-topic-rules").disabled = true;
@@ -1199,7 +1182,6 @@ function renderTopics() {
           <div class="topic-meta">${escapeHTML(topic.description || t("topics.no_description"))}</div>
           <div class="topic-actions">
             <button class="mini-button" data-topic-open="${escapeHTML(topic.id)}" type="button">${escapeHTML(t("topics.open"))}</button>
-            <button class="mini-button" data-topic-review="${escapeHTML(topic.id)}" type="button">${escapeHTML(t("topics.review"))}</button>
           </div>
         </article>
       `;
@@ -1214,9 +1196,6 @@ function renderTopics() {
   list.querySelectorAll("[data-topic-open]").forEach((button) => {
     button.addEventListener("click", () => navigateTopic(button.dataset.topicOpen));
   });
-  list.querySelectorAll("[data-topic-review]").forEach((button) => {
-    button.addEventListener("click", () => navigateTopic(button.dataset.topicReview, true));
-  });
 }
 
 function resetTopicFilters() {
@@ -1227,7 +1206,11 @@ function resetTopicFilters() {
 
 function navigateTopic(topicId, review = false) {
   if (!topicId) return;
-  window.location.hash = review ? `#/topics/${encodeURIComponent(topicId)}/review` : `#/topics/${encodeURIComponent(topicId)}`;
+  // PR2: topic detail and review are tabs under #/topics. The legacy
+  // /review segment is preserved in parseRoute for back-compat, but new
+  // navigation writes ?tab=proposals into the same /topics/{id} URL.
+  const tab = review ? "proposals" : "detail";
+  window.location.hash = `#/topics/${encodeURIComponent(topicId)}?tab=${tab}`;
 }
 
 async function openTopic(topicId) {
@@ -1235,12 +1218,17 @@ async function openTopic(topicId) {
   const detail = await api(`/api/topics/${encodeURIComponent(topicId)}`);
   state.activeTopicId = topicId;
   state.activeTopicDetail = detail;
-  $("#topic-title").textContent = detail.topic.name;
+  // PR2: topic detail / proposals / rules are tabs inside the topics
+  // page; enable them once a topic is loaded and populate the document
+  // panel. Tab activation follows the URL `?tab=` query so deep-links
+  // land on the right pane.
+  ["topics-tab-detail", "topics-tab-proposals", "topics-tab-rules"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
   $("#topic-document").innerHTML = renderMarkdown(detail.document || t("topics.document_empty"));
   $("#rebuild-topic").disabled = false;
   $("#open-topic-rules").disabled = false;
-  $("#open-topic-review").href = `#/topics/${encodeURIComponent(topicId)}/review`;
-  $("#back-topic-detail").href = `#/topics/${encodeURIComponent(topicId)}`;
   populateTopicEditor(detail.topic);
   renderTopicMembers(detail.members || []);
   renderTopicRules(detail.topic);
@@ -2495,22 +2483,24 @@ async function applyRoute(hash = window.location.hash) {
   // first render of the page reflects the URL — no flicker of defaults.
   restoreRoutePage(route.page, route.query);
   renderRoute(route);
-  if ((route.page === "topic-detail" || route.page === "topic-review") && route.params.topicId) {
+  if (route.page === "topics" && route.params.topicId) {
     if (state.activeTopicId !== route.params.topicId || !state.activeTopicDetail) {
       await openTopic(route.params.topicId);
     }
-    if (route.page === "topic-review") await loadWeaveProposals(route.params.topicId);
+    if (route.query.tab === "proposals") await loadWeaveProposals(route.params.topicId);
   }
   if (route.page === "thoughts" && route.params.thoughtId) {
     $("#thought-id").value = route.params.thoughtId;
     await previewThought(route.params.thoughtId);
   }
-  if (route.page === "jobs" && route.params.jobId) {
-    $("#job-id").value = route.params.jobId;
-    await loadJob();
-  }
   if (route.page === "settings") {
     await loadMetrics();
+  }
+  // PR3 placeholder: jobs page is being folded into a settings drawer;
+  // track the active job so PR3 can surface it without re-resolving the
+  // hash. Until then, the page section is gone but the URL still parses.
+  if (route.page === "jobs" && route.params.jobId) {
+    state.activeJobId = route.params.jobId;
   }
 }
 
@@ -2542,10 +2532,10 @@ function bind() {
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
   $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
-  $("#job-form").addEventListener("submit", (event) => loadJob(event).catch((error) => toast(error.message)));
-  $("#event-type-filter").addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
-  $("#event-resource-filter").addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
-  $("#reset-event-filter").addEventListener("click", () => { resetEventFilter(); persistRouteDebounced(); });
+  $("#job-form")?.addEventListener("submit", (event) => loadJob(event).catch((error) => toast(error.message)));
+  $("#event-type-filter")?.addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
+  $("#event-resource-filter")?.addEventListener("input", () => { applyEventFilter(); persistRouteDebounced(); });
+  $("#reset-event-filter")?.addEventListener("click", () => { resetEventFilter(); persistRouteDebounced(); });
   $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
   $("#accept-weave").addEventListener("click", () => acceptWeave().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
