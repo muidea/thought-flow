@@ -24,32 +24,40 @@ LIBSTDCPP_SOURCES := \
 # /usr/lib/gcc/<triple>/N/libstdc++.so, not under the default library
 # search path. Add it to CGO_LDFLAGS directly so the system linker
 # finds `-lstdc++` without us having to copy the symlink around.
-LIBSTDCPP_GCC_LIBDIRS := \
+LIBSTDCPP_HOST_GCC_LIBDIRS := \
 	/usr/lib/gcc/x86_64-linux-gnu/14 \
 	/usr/lib/gcc/x86_64-linux-gnu/13 \
 	/usr/lib/gcc/x86_64-linux-gnu/12 \
-	/usr/lib/gcc/x86_64-linux-gnu/11 \
+	/usr/lib/gcc/x86_64-linux-gnu/11
+# Cross gcc places its libstdc++ under /usr/lib/gcc-cross/<triple>/N/
+# (Debian/Ubuntu cross convention) or under the target sysroot gcc dir.
+LIBSTDCPP_CROSS_GCC_LIBDIRS := \
+	/usr/lib/gcc-cross/aarch64-linux-gnu/14 \
+	/usr/lib/gcc-cross/aarch64-linux-gnu/13 \
+	/usr/lib/gcc-cross/aarch64-linux-gnu/12 \
 	/usr/lib/gcc/aarch64-linux-gnu/14 \
 	/usr/lib/gcc/aarch64-linux-gnu/13
-# When cross-compiling to a non-host triple, the `libstdc++-N-dev-<arch>-cross`
-# package installs the bare libstdc++.so symlink under the target's sysroot
-# (e.g. /usr/aarch64-linux-gnu/lib), not under the gcc-specific dir the
-# cross toolchain searches by default. Probe both the sysroot lib and the
-# gcc libdir for the target triple so cgo can resolve `-lstdc++`.
-LIBSTDCPP_CROSS_LIBDIRS := \
+# `libstdc++-N-dev-<arch>-cross` also installs the bare libstdc++.so
+# symlink under the target sysroot (e.g. /usr/aarch64-linux-gnu/lib).
+# Probe it so cross-builds pick the right artifact.
+LIBSTDCPP_CROSS_SYSROOT_LIBDIRS := \
 	/usr/aarch64-linux-gnu/lib \
 	/usr/x86_64-linux-gnu/lib
 CGO_LDFLAGS ?=
 
-# If the system already exposes a bare `libstdc++.so` on any directory
-# the linker searches, skip staging the project-local symlink.
-# Otherwise stage one. Either way, append -L for any per-version gcc
-# libdirs that host the bare symlink so cgo's `-lstdc++` resolves
-# without us having to copy the symlink around. When GOOS/GOARCH are
-# set (cross-compile), also probe the target sysroot libdirs.
+# Pick the right set of libdirs to probe based on whether we are
+# building natively or cross-compiling. Mixing host-arch libstdc++.so
+# into the cross ld path makes it skip them as "incompatible" while
+# still cluttering the search, so cross-builds only probe cross-target
+# directories.
 LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 	staged=0; \
-	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu $(LIBSTDCPP_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_LIBDIRS); do \
+	if [ -n "$(GOOS)$(GOARCH)" ]; then \
+		probe_dirs="$(LIBSTDCPP_CROSS_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_SYSROOT_LIBDIRS)"; \
+	else \
+		probe_dirs="/usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu $(LIBSTDCPP_HOST_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_SYSROOT_LIBDIRS)"; \
+	fi; \
+	for d in $$probe_dirs; do \
 		if [ -e $$d/libstdc++.so ]; then staged=1; break; fi; \
 	done; \
 	if [ $$staged -eq 0 ]; then \
@@ -62,7 +70,7 @@ LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 			fi; \
 		done; \
 	fi; \
-	for d in $(LIBSTDCPP_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_LIBDIRS); do \
+	for d in $$probe_dirs; do \
 		[ -e $$d/libstdc++.so ] && echo "-L$$d"; \
 	done)
 
