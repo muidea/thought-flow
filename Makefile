@@ -31,16 +31,25 @@ LIBSTDCPP_GCC_LIBDIRS := \
 	/usr/lib/gcc/x86_64-linux-gnu/11 \
 	/usr/lib/gcc/aarch64-linux-gnu/14 \
 	/usr/lib/gcc/aarch64-linux-gnu/13
+# When cross-compiling to a non-host triple, the `libstdc++-N-dev-<arch>-cross`
+# package installs the bare libstdc++.so symlink under the target's sysroot
+# (e.g. /usr/aarch64-linux-gnu/lib), not under the gcc-specific dir the
+# cross toolchain searches by default. Probe both the sysroot lib and the
+# gcc libdir for the target triple so cgo can resolve `-lstdc++`.
+LIBSTDCPP_CROSS_LIBDIRS := \
+	/usr/aarch64-linux-gnu/lib \
+	/usr/x86_64-linux-gnu/lib
 CGO_LDFLAGS ?=
 
 # If the system already exposes a bare `libstdc++.so` on any directory
 # the linker searches, skip staging the project-local symlink.
 # Otherwise stage one. Either way, append -L for any per-version gcc
 # libdirs that host the bare symlink so cgo's `-lstdc++` resolves
-# without us having to copy the symlink around.
+# without us having to copy the symlink around. When GOOS/GOARCH are
+# set (cross-compile), also probe the target sysroot libdirs.
 LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 	staged=0; \
-	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu $(LIBSTDCPP_GCC_LIBDIRS); do \
+	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu $(LIBSTDCPP_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_LIBDIRS); do \
 		if [ -e $$d/libstdc++.so ]; then staged=1; break; fi; \
 	done; \
 	if [ $$staged -eq 0 ]; then \
@@ -53,7 +62,7 @@ LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 			fi; \
 		done; \
 	fi; \
-	for d in $(LIBSTDCPP_GCC_LIBDIRS); do \
+	for d in $(LIBSTDCPP_GCC_LIBDIRS) $(LIBSTDCPP_CROSS_LIBDIRS); do \
 		[ -e $$d/libstdc++.so ] && echo "-L$$d"; \
 	done)
 
@@ -84,8 +93,11 @@ fmt-check:
 test:
 	CGO_LDFLAGS="$(CGO_LDFLAGS) $(LIBSTDCPP_FALLBACK_LDFLAGS)" $(GO) test $(GO_PACKAGES)
 
+GO_LDFLAGS ?= -s -w
+GO_GCFLAGS ?=
+
 build:
-	CGO_LDFLAGS="$(CGO_LDFLAGS) $(LIBSTDCPP_FALLBACK_LDFLAGS)" $(GO) build -o $(BINARY) ./cmd/thoughtflow
+	CGO_LDFLAGS="$(CGO_LDFLAGS) $(LIBSTDCPP_FALLBACK_LDFLAGS)" $(GO) build -trimpath -gcflags "$(GO_GCFLAGS)" -ldflags "$(GO_LDFLAGS)" -o $(BINARY) ./cmd/thoughtflow
 
 node-check:
 	$(NODE) --check $(WEB_DIR)/vendor/markdown-it.min.js

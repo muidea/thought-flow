@@ -64,7 +64,7 @@ jobs:
           if [ "${{ matrix.goos }}-${{ matrix.goarch }}" = "linux-arm64" ]; then
             export CC=aarch64-linux-gnu-gcc
           fi
-          go build -trimpath -ldflags "-s -w" -o dist/${{ matrix.binary }} ./cmd/thoughtflow
+          make build BINARY=dist/${{ matrix.binary }}
 
       - name: Package release archive
         run: |
