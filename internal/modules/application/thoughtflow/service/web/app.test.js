@@ -4,27 +4,94 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadAppFunctions() {
+// Minimal stub for window.tflow_i18n so app.js can run inside `vm`. Tests
+// pass `t(key) → key` (identity) so assertions on the rendered HTML can use
+// either the literal English string or the dotted key. `tn` defers to `t`.
+const stubTflow = {
+  t: (key) => key,
+  tn: (key) => key,
+  setLocale: () => {},
+  getLocale: () => "en-US",
+  init: () => "en-US",
+  applyTranslations: () => {},
+  onLocaleChange: () => () => {},
+  listLocales: () => ["en-US", "zh-CN"],
+  resetMissingReport: () => {},
+};
+
+// Build a minimal DOM stub with input values that the page serializers read
+// and that restoreRoutePage writes. Backed by a plain object so tests can
+// inspect and mutate inputs between operations. Other selectors return null.
+function makeDomStub(initial = {}) {
+  const store = { ...initial };
+  const controls = ["search-query", "search-mode", "search-topic-id", "search-tags",
+    "search-from", "search-to", "search-sort", "search-explain", "topic-filter",
+    "topic-auto-filter", "event-type-filter"];
+  // Each control is a live proxy over the store: reads go to store, writes
+  // (and `checked` toggles) flow back into the store so assertions can see them.
+  const nodes = Object.fromEntries(controls.map((id) => {
+    const node = {
+      get value() { return store[id] ?? ""; },
+      set value(v) { store[id] = v; },
+      get checked() { return Boolean(store[id + "_checked"]); },
+      set checked(v) { store[id + "_checked"] = Boolean(v); },
+    };
+    return [id, node];
+  }));
+  function find(selector) {
+    const m = selector.match(/^#([\w-]+)$/);
+    if (!m) return null;
+    return nodes[m[1]] || null;
+  }
+  return {
+    store,
+    find,
+    all: (_selector) => [],
+  };
+}
+
+// Build a localStorage stub. Records every key set so tests can inspect.
+function makeStorageStub(initial = {}) {
+  const data = { ...initial };
+  return {
+    data,
+    getItem: (k) => (k in data ? data[k] : null),
+    setItem: (k, v) => { data[k] = String(v); },
+    removeItem: (k) => { delete data[k]; },
+  };
+}
+
+function loadAppFunctionsWith(opts = {}) {
   const appPath = path.join(__dirname, "app.js");
   const parserPath = path.join(__dirname, "vendor", "markdown-it.min.js");
   const parserCode = fs.readFileSync(parserPath, "utf8");
-  const code = fs.readFileSync(appPath, "utf8").replace(/\nboot\(\)\.catch\(\(error\) => toast\(error\.message\)\);\s*$/, "");
+  const code = fs.readFileSync(appPath, "utf8")
+    .replace(/\nboot\(\)\.catch\(\(error\) => toast\(error\.message\)\);\s*$/, "");
+  const dom = opts.dom || makeDomStub();
+  const storage = opts.storage || makeStorageStub();
+  // Note: do NOT override `globalThis` in the context object — the markdown-it
+  // UMD wrapper uses it to attach `markdownit`, and shadowing it with `{}`
+  // would hide the parser.
   const context = {
     document: {
-      querySelector: () => null,
-      querySelectorAll: () => [],
+      querySelector: (selector) => dom.find(selector),
+      querySelectorAll: (selector) => dom.all(selector),
       addEventListener: () => {},
     },
     window: {
       clearTimeout: () => {},
       setTimeout: () => 0,
+      tflow_i18n: stubTflow,
+      location: { hash: opts.hash || "" },
+      history: { replaceState: () => {} },
+      localStorage: storage,
     },
     URLSearchParams,
     fetch: async () => ({ ok: true, json: async () => ({ data: null }) }),
     EventSource: function EventSource() {},
     console,
   };
-  return vm.runInNewContext(
+  const result = vm.runInNewContext(
     `${parserCode}
     ${code}
     ({
@@ -36,15 +103,34 @@ function loadAppFunctions() {
       outlineText,
       parseRoute,
       navItemClass,
+      navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
       createSynthesisBasket,
       displayWorkspace,
-      displayRuntimePath
+      displayRuntimePath,
+      buildRouteHash,
+      restoreRoutePage,
+      PAGE_SERIALIZERS,
+      persistBasket,
+      restoreBasket,
+      saveToStorage,
+      loadFromStorage,
+      trapFocus,
+      classifyCaptureInput,
+      parseCaptureCommand,
+      appendCaptureMessage,
+      appState: state,
     });`,
     context,
     { filename: appPath },
   );
+  if (opts.exposeState) result._state = result.appState;
+  return result;
+}
+
+function loadAppFunctions() {
+  return loadAppFunctionsWith();
 }
 
 test("renderMarkdown escapes HTML and renders supported Markdown", () => {
@@ -121,14 +207,15 @@ test("renderSearchResultItem exposes scores and action targets", () => {
   }, { selected: true, activeTopicId: "topic-1" });
 
   assert.match(html, /data-select-id="thought-1" checked/);
-  assert.match(html, /score 0\.91/);
-  assert.match(html, /kw 0\.80/);
-  assert.match(html, /sem 0\.70/);
-  assert.match(html, /rec 0\.60/);
+  assert.match(html, /search\.score_label/);
+  assert.match(html, /0\.91/);
+  assert.match(html, /0\.80/);
+  assert.match(html, /0\.70/);
+  assert.match(html, /0\.60/);
   assert.match(html, /data-basket-id="thought-1"/);
   assert.match(html, /data-weave-id="thought-1"/);
   assert.match(html, /thoughts\/demo\.md/);
-  assert.match(html, /Score details/);
+  assert.match(html, /search\.explain\.summary/);
   assert.match(html, /kw \+ sem \+ rec/);
   assert.match(html, /embedding/);
 });
@@ -245,4 +332,228 @@ test("outline helpers preserve one title per line", () => {
 
   assert.equal(JSON.stringify(outline), JSON.stringify([{ title: "Background" }, { title: "Open Questions" }]));
   assert.equal(app.outlineText(outline), "Background\nOpen Questions");
+});
+
+test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", () => {
+  // The stub above returns the key itself, so the rendered HTML exposes
+  // dotted keys instead of literal English — assert that the keys are
+  // referenced for both the new (i18n) and the structural pieces.
+  const app = loadAppFunctions();
+  const html = app.renderSearchResultItem({ thought_id: "x", title: "t", score: 0.1 }, { selected: false, activeTopicId: "" });
+  assert.match(html, /search\.score_label/);
+  assert.match(html, /search\.keyword_label/);
+  assert.match(html, /search\.semantic_label/);
+  assert.match(html, /search\.recency_label/);
+  assert.match(html, /search\.result\.add_basket/);
+});
+
+test("buildRouteHash omits empty query fields and keeps the path clean", () => {
+  const app = loadAppFunctions();
+
+  assert.equal(app.buildRouteHash("search", {}, {}), "#/search");
+  assert.equal(app.buildRouteHash("search", {}, { q: "rag" }), "#/search?q=rag");
+  assert.equal(app.buildRouteHash("search", {}, { q: "rag", mode: "keyword" }), "#/search?q=rag&mode=keyword");
+  // Empty values are dropped, null/undefined are dropped, so common default state
+  // does not pollute the URL.
+  assert.equal(app.buildRouteHash("search", {}, { q: "", mode: null, sort: undefined }), "#/search");
+  // topic-detail takes its id from params, not from the query string.
+  assert.equal(app.buildRouteHash("topic-detail", { topicId: "ai-notes" }, { tab: "rules" }), "#/topics/ai-notes?tab=rules");
+  assert.equal(app.buildRouteHash("topic-review", { topicId: "ai-notes" }, {}), "#/topics/ai-notes/review");
+  // Special characters are URL-encoded.
+  assert.equal(app.buildRouteHash("search", {}, { q: "a b&c" }), "#/search?q=a%20b%26c");
+});
+
+test("PAGE_SERIALIZERS.search captures only the non-default state of inputs", () => {
+  const dom = makeDomStub({ "search-query": "rag", "search-mode": "semantic", "search-topic-id": "topic-1" });
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+
+  // Seed the global Set used by the serializer.
+  app._state.selectedThoughts = new Set(["t-1", "t-2"]);
+  const result = app.PAGE_SERIALIZERS.search();
+
+  assert.equal(result.q, "rag");
+  assert.equal(result.mode, "semantic");
+  assert.equal(result.topic_id, "topic-1");
+  assert.equal(result.selected, "t-1,t-2");
+  assert.equal(result.explain, undefined);
+});
+
+test("PAGE_SERIALIZERS omits fields that are at their default value", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.selectedThoughts = new Set();
+
+  // All inputs at their default state — nothing in the URL.
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.search()), "{}");
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), "{}");
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.jobs()), "{}");
+});
+
+test("restoreRoutePage populates search inputs from the query object", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.selectedThoughts = new Set();
+
+  app.restoreRoutePage("search", {
+    q: "vector store",
+    mode: "keyword",
+    topic_id: "t-1",
+    tags: "rag,llm",
+    from: "2026-01-01",
+    to: "2026-12-31",
+    sort: "recency",
+    explain: "true",
+    selected: "thought-7,thought-8",
+    unknown_field: "ignored",
+  });
+
+  assert.equal(dom.store["search-query"], "vector store");
+  assert.equal(dom.store["search-mode"], "keyword");
+  assert.equal(dom.store["search-topic-id"], "t-1");
+  assert.equal(dom.store["search-tags"], "rag,llm");
+  assert.equal(dom.store["search-from"], "2026-01-01");
+  assert.equal(dom.store["search-to"], "2026-12-31");
+  assert.equal(dom.store["search-sort"], "recency");
+  assert.equal(dom.store["search-explain_checked"], true);
+  assert.deepEqual(Array.from(app._state.selectedThoughts), ["thought-7", "thought-8"]);
+});
+
+test("restoreRoutePage ignores unknown / malformed keys without throwing", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+
+  // Non-string where a string is expected, plus unknown keys — must not throw
+  // and must not corrupt existing state.
+  app._state.selectedThoughts = new Set(["keep"]);
+  app.restoreRoutePage("search", { q: 7, mode: null, random: "thing" });
+  assert.equal(dom.store["search-query"] ?? "", "");
+  assert.equal(dom.store["search-mode"] ?? "", "");
+  assert.deepEqual(Array.from(app._state.selectedThoughts), ["keep"]);
+
+  // Unknown page identifier is a no-op.
+  app.restoreRoutePage("nope", { q: "rag" });
+  assert.equal(dom.store["search-query"] ?? "", "");
+});
+
+test("restoreRoutePage hydrates topic and jobs state from query", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+
+  app.restoreRoutePage("topics", { keyword: "ai", auto_weave: "true" });
+  assert.equal(dom.store["topic-filter"], "ai");
+  assert.equal(dom.store["topic-auto-filter_checked"], true);
+
+  app.restoreRoutePage("jobs", { active: "job-42", event_type: "thought.refined" });
+  assert.equal(app._state.activeJobId, "job-42");
+  assert.equal(dom.store["event-type-filter"], "thought.refined");
+});
+
+test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => {
+  const storage = makeStorageStub();
+  const app = loadAppFunctionsWith({ storage, exposeState: true });
+
+  app._state.synthesisBasket = new Set(["t-1", "t-2", "t-3"]);
+  app.persistBasket();
+  const raw = storage.data["tflow.basket"];
+  assert.ok(raw, "basket should be persisted to localStorage");
+  const envelope = JSON.parse(raw);
+  assert.deepEqual(envelope.ids, ["t-1", "t-2", "t-3"]);
+  assert.ok(envelope.updated_at, "envelope should carry a timestamp");
+
+  // Simulate a reload: the new module instance has an empty Set, then we
+  // hydrate from storage.
+  app._state.synthesisBasket = new Set();
+  app.restoreBasket();
+  assert.deepEqual(Array.from(app._state.synthesisBasket), ["t-1", "t-2", "t-3"]);
+});
+
+test("restoreBasket is tolerant of missing or corrupt payloads", () => {
+  const storage = makeStorageStub();
+  const app = loadAppFunctionsWith({ storage, exposeState: true });
+
+  app._state.synthesisBasket = new Set(["keep"]);
+  // No payload at all.
+  app.restoreBasket();
+  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+
+  // Garbage payload — set stays at its current value.
+  storage.data["tflow.basket"] = "not-json";
+  app.restoreBasket();
+  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+
+  // Payload missing the ids array.
+  storage.data["tflow.basket"] = JSON.stringify({ updated_at: "now" });
+  app.restoreBasket();
+  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+});
+
+test("navItemAriaCurrent marks the active page and clears others", () => {
+  // Re-import without the dom stub so navItemAriaCurrent is exposed.
+  const app = loadAppFunctions();
+  const route = { page: "search", nav: "search", params: {}, query: {} };
+  assert.equal(app.navItemAriaCurrent(route, "search"), "page");
+  assert.equal(app.navItemAriaCurrent(route, "dashboard"), null);
+  assert.equal(app.navItemAriaCurrent(route, "thoughts"), null);
+});
+
+test("renderDiff emits translated empty-state key", () => {
+  const app = loadAppFunctions();
+  const html = app.renderDiff([]);
+  assert.match(html, /diff\.no_changes/);
+});
+
+test("classifyCaptureInput recognizes URLs and plain text", () => {
+  const app = loadAppFunctions();
+  const classify = (text) => JSON.parse(JSON.stringify(app.classifyCaptureInput(text)));
+  assert.deepEqual(classify("https://example.com/article"), {
+    type: "url",
+    url: "https://example.com/article",
+    content: "",
+  });
+  assert.deepEqual(classify("see https://example.com for context"), {
+    type: "url",
+    url: "https://example.com",
+    content: "see  for context",
+  });
+  assert.equal(app.classifyCaptureInput("just a thought").type, "text");
+});
+
+test("parseCaptureCommand matches known intents and ignores noise", () => {
+  const app = loadAppFunctions();
+  const parse = (text) => JSON.parse(JSON.stringify(app.parseCaptureCommand(text)));
+  assert.deepEqual(parse("rename to RAG notes"), { kind: "rename", title: "RAG notes" });
+  assert.deepEqual(parse("set title RAG notes"), { kind: "rename", title: "RAG notes" });
+  assert.deepEqual(parse("把标题改为 RAG 笔记"), { kind: "rename", title: "RAG 笔记" });
+  assert.deepEqual(parse("add tag engineering, search"), {
+    kind: "add_tag",
+    tags: ["engineering", "search"],
+  });
+  assert.deepEqual(parse("add tags engineering, search"), {
+    kind: "add_tag",
+    tags: ["engineering", "search"],
+  });
+  assert.deepEqual(parse("AI 笔记加 Important followup"), {
+    kind: "append_note",
+    paragraph: "Important followup",
+  });
+  assert.deepEqual(parse("move to topic research"), {
+    kind: "move_topic",
+    topicRef: "research",
+  });
+  assert.deepEqual(parse("归到 research 专题"), {
+    kind: "move_topic",
+    topicRef: "research",
+  });
+  assert.deepEqual(parse("refine again"), { kind: "refine_again" });
+  assert.equal(app.parseCaptureCommand("just chatting"), null);
+});
+
+test("appendCaptureMessage records the message into state.capture", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  const before = (app._state?.capture?.messages?.length) || 0;
+  const entry = app.appendCaptureMessage({ role: "user", text: "hi" });
+  assert.equal(entry.role, "user");
+  assert.equal(entry.text, "hi");
+  assert.equal(app._state.capture.messages.length, before + 1);
+  assert.equal(app._state.capture.messages[before].text, "hi");
 });
