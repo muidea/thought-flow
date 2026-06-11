@@ -1152,12 +1152,54 @@ textarea.markdown-preview {
 
 .tf-drawer-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto 1fr;
   width: min(680px, 100vw);
   height: 100%;
   background: var(--tf-color-bg-elevated);
   box-shadow: var(--tf-box-shadow);
   padding: 0;
+}
+
+.tf-drawer-panel > .tf-drawer-body {
+  grid-row: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+}
+
+.tf-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.tf-drawer-body > .tf-tabs {
+  flex: 0 0 auto;
+  padding: 0 16px;
+  margin: 0;
+  border-bottom: 1px solid var(--tf-color-border-secondary);
+}
+
+.tf-drawer-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tf-drawer-scroll > .tab-panel {
+  display: none;
+}
+
+.tf-drawer-scroll > .tab-panel.active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .tf-drawer-header,
