@@ -44,9 +44,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libstdc++-14-dev
 
-      - name: Verify Chrome is available
-        run: |
-          command -v google-chrome || command -v chromium || command -v chromium-browser
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
 
       - name: Download Go modules
         run: go mod download
