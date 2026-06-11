@@ -20,15 +20,14 @@ $(LIBSTDCPP_SYMLINK):
 	@mkdir -p $(LIBSTDCPP_STAGE)
 	@ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 $(LIBSTDCPP_SYMLINK)
 
-.PHONY: help fmt fmt-check test test-duckdb build node-check node-test node-test-i18n i18n-check browser-test check clean
+.PHONY: help fmt fmt-check test build node-check node-test node-test-i18n i18n-check browser-test check clean
 
 help:
 	@printf '%s\n' \
 		'Targets:' \
 		'  fmt              Format Go files under cmd/ and internal/' \
 		'  fmt-check        Verify Go formatting without changing files' \
-		'  test             Run default Go tests' \
-		'  test-duckdb      Run Go tests with the duckdb build tag' \
+		'  test             Run Go tests (DuckDB is the only backing store)' \
 		'  build            Build the thoughtflow binary' \
 		'  node-check       Run JavaScript syntax checks' \
 		'  node-test        Run Node component tests' \
@@ -44,11 +43,8 @@ fmt:
 fmt-check:
 	@test -z "$$($(GO)fmt -l $(GO_FILES))"
 
-test:
-	$(GO) test $(GO_PACKAGES)
-
-test-duckdb: $(LIBSTDCPP_SYMLINK)
-	CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test -tags duckdb $(GO_PACKAGES)
+test: $(LIBSTDCPP_SYMLINK)
+	CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) test $(GO_PACKAGES)
 
 build: $(LIBSTDCPP_SYMLINK)
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" $(GO) build -o $(BINARY) ./cmd/thoughtflow
@@ -73,7 +69,7 @@ i18n-check: node-test-i18n
 browser-test:
 	$(NODE) --test $(WEB_DIR)/app.browser.test.js
 
-check: fmt-check test build test-duckdb node-check node-test node-test-i18n i18n-check browser-test
+check: fmt-check test build node-check node-test node-test-i18n i18n-check browser-test
 
 clean:
 	rm -f $(BINARY)
