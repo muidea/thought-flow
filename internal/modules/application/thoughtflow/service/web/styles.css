@@ -50,6 +50,16 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The HTML5 `hidden` attribute should hide elements, but author rules
+ * like `.tf-capture-lock { display: flex }` win on equal specificity and
+ * would render the lock indicator (and any other element toggled via
+ * the `hidden` attribute) even when JS sets `el.hidden = true`. The
+ * !important restores the intended semantics: any element with the
+ * `hidden` attribute is removed from the layout. */
+[hidden] {
+  display: none !important;
+}
+
 button,
 input,
 textarea,

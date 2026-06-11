@@ -441,6 +441,54 @@ test("capture composer starts a new session, persists a thought, and shows the c
   }
 });
 
+// Regression: the capture lock indicator has author CSS
+// `.tf-capture-lock { display: flex }` which on its own has the same
+// specificity as the UA `[hidden] { display: none }` and would win,
+// making the indicator visible even when `el.hidden = true`. The
+// global `[hidden] { display: none !important }` rule added in
+// styles.css restores the intended semantics. This test asserts the
+// indicator is laid out (zero offsetHeight) on a fresh page load,
+// catching any future regression that drops the !important rule.
+test("capture lock indicator stays hidden when no session is active", async (t) => {
+  const server = await startFixtureServer();
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || target.skip) {
+    t.skip(target ? target.skip : "Chrome not available");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    await page.send("Page.enable");
+    await page.send("Runtime.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    await page.navigate(`${baseURL}/`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    const layout = await page.evaluate(() => {
+      const el = document.querySelector("#capture-lock-indicator");
+      if (!el) return { found: false };
+      const cs = getComputedStyle(el);
+      return {
+        found: true,
+        hiddenAttr: el.hasAttribute("hidden"),
+        display: cs.display,
+        offsetHeight: el.offsetHeight,
+      };
+    });
+    assert.ok(layout.found, "lock indicator must be in the DOM");
+    assert.equal(layout.display, "none", `display should be "none" when indicator is hidden (got ${layout.display})`);
+    assert.equal(layout.offsetHeight, 0, "lock indicator must have zero height when hidden");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("embedded UI renders zh-CN by default and switches to en-US", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
