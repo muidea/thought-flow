@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -93,6 +94,39 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "topics.patch_hunks") &&
 		!strings.Contains(res.Body.String(), "patch hunks") {
 		t.Fatalf("expected structured patch hunk indicator in embedded app script")
+	}
+}
+
+// TestHandleWebRoutesCoverEveryEmbeddedAsset is a regression guard: every
+// file under web/ in the embed FS must be reachable through handleWeb.
+// When a new JS/CSS/HTML file is added under web/i18n/, web/vendor/,
+// etc., this test will fail until the matching route is registered in
+// RegisterRoutes().
+//
+// The bug this guards against: the route table only lists files
+// explicitly, so a new asset added without a corresponding
+// AddHandler returns 404 in production even though it's in the binary.
+func TestHandleWebRoutesCoverEveryEmbeddedAsset(t *testing.T) {
+	service := &Service{}
+	var missing []string
+	err := fs.WalkDir(webAssets, "web", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		urlPath := "/" + strings.TrimPrefix(path, "web")
+		res := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, urlPath, nil)
+		service.handleWeb(context.Background(), res, req)
+		if res.Code == http.StatusNotFound {
+			missing = append(missing, urlPath)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir() error = %v", err)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the following embedded assets are not reachable through handleWeb (add them to RegisterRoutes): %v", missing)
 	}
 }
 
