@@ -509,12 +509,21 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     await page.send("Runtime.enable");
     await page.send("Log.enable");
     await page.send("Page.enable");
-    // Clear any persisted locale preference so the boot path falls through
-    // to the default (zh-CN). Headless Chrome ships with en-US as
-    // navigator.language, so without this the test would race the i18n
-    // detect logic in environments that prefer the browser locale.
+    // Force the i18n boot path onto the default locale by clearing any
+    // persisted preference AND overriding navigator.language. Headless
+    // Chrome reports en-US as navigator.language by default, which the
+    // detect logic would otherwise treat as a positive match and skip
+    // the fallback to DEFAULT_LOCALE (zh-CN). fr-FR is not a supported
+    // locale and starts with neither "en" nor "zh", so detection falls
+    // through to the default.
     await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: "try { window.localStorage.removeItem('tflow.lang'); } catch (_) {}",
+      source: [
+        "try { window.localStorage.removeItem('tflow.lang'); } catch (_) {}",
+        "try {",
+        "  Object.defineProperty(navigator, 'language', { value: 'fr-FR', configurable: true });",
+        "  Object.defineProperty(navigator, 'languages', { value: ['fr-FR'], configurable: true });",
+        "} catch (_) {}",
+      ].join(" "),
     });
     // default locale is zh-CN
     await page.navigate(`${baseURL}/`);
