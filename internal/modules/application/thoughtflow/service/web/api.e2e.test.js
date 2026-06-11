@@ -20,7 +20,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const test = require("node:test");
 
-const REPO_ROOT = path.resolve(__dirname, "..", "..", "..", "..", "..");
+const REPO_ROOT = path.resolve(__dirname, "..", "..", "..", "..", "..", "..");
 const BINARY_CANDIDATES = [
   path.join(REPO_ROOT, "thoughtflow"),
   path.join(os.tmpdir(), "thoughtflow"),
