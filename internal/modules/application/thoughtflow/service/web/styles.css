@@ -43,8 +43,11 @@ body {
   margin: 0;
   background: var(--tf-color-bg-layout);
   color: var(--tf-color-text);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
   font-size: 14px;
+  font-feature-settings: "tnum" 1, "calt" 1;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 button,
@@ -1242,4 +1245,234 @@ textarea.markdown-preview {
   .tf-drawer-panel {
     width: 100vw;
   }
+}
+
+/* i18n + a11y additions */
+
+.tf-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1000;
+  padding: 8px 16px;
+  background: var(--tf-color-primary);
+  color: #fff;
+  border-radius: 0 0 6px 6px;
+  text-decoration: none;
+  font-weight: 600;
+}
+.tf-skip-link:focus {
+  left: 16px;
+}
+
+#topbar-language .tf-segmented-item.active,
+#topbar-language .tf-segmented-item[aria-pressed="true"] {
+  color: var(--tf-color-primary);
+  background: rgba(22, 119, 255, 0.08);
+}
+
+#toast[role="status"] {
+  pointer-events: none;
+}
+
+[aria-current="page"] {
+  font-weight: 600;
+}
+
+/* Stronger focus ring on interactive elements for keyboard users. */
+.tf-menu-item:focus-visible,
+.tf-btn:focus-visible,
+button.mini-button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--tf-color-primary);
+  outline-offset: 2px;
+}
+
+/* Capture conversation (Phase 9) */
+.tf-page-header-actions {
+  display: flex;
+  gap: var(--tf-space-2, 0.5rem);
+  align-items: center;
+}
+
+.tf-capture-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-3, 0.75rem);
+  min-height: 60vh;
+}
+
+.tf-capture-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--tf-space-3, 0.75rem);
+}
+
+.tf-capture-header-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-1, 0.25rem);
+}
+
+.tf-capture-lock {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--tf-space-2, 0.5rem);
+  background: var(--tf-color-warning-bg, #fff8e1);
+  color: var(--tf-color-warning-text, #7a5300);
+  border: 1px solid var(--tf-color-warning-border, #f0c674);
+  border-radius: var(--tf-radius-md, 6px);
+  padding: var(--tf-space-2, 0.5rem) var(--tf-space-3, 0.75rem);
+}
+
+.tf-capture-conversation {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-2, 0.5rem);
+  flex: 1 1 auto;
+  min-height: 18rem;
+  max-height: 28rem;
+  overflow-y: auto;
+  background: var(--tf-color-bg-subtle, #fafafa);
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  border-radius: var(--tf-radius-md, 6px);
+  padding: var(--tf-space-3, 0.75rem);
+}
+
+.tf-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-1, 0.25rem);
+  max-width: 80%;
+  padding: var(--tf-space-2, 0.5rem) var(--tf-space-3, 0.75rem);
+  border-radius: var(--tf-radius-md, 6px);
+  background: var(--tf-color-surface, #fff);
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  word-break: break-word;
+}
+
+.tf-msg-user {
+  align-self: flex-end;
+  background: var(--tf-color-primary-bg, #e6f4ff);
+  border-color: var(--tf-color-primary-border, #91caff);
+}
+
+.tf-msg-ai {
+  align-self: flex-start;
+  background: var(--tf-color-surface, #fff);
+  border-color: var(--tf-color-border, #e5e5e5);
+}
+
+.tf-msg-system {
+  align-self: center;
+  background: var(--tf-color-bg-subtle, #f5f5f5);
+  border-style: dashed;
+  color: var(--tf-color-text-secondary, #555);
+  font-size: 0.875rem;
+  max-width: 100%;
+  text-align: center;
+}
+
+.tf-msg-suggestion {
+  align-self: flex-start;
+  background: var(--tf-color-info-bg, #f0f5ff);
+  border-color: var(--tf-color-info-border, #adc6ff);
+}
+
+.tf-msg-empty {
+  align-self: center;
+  color: var(--tf-color-text-tertiary, #888);
+}
+
+.tf-msg-body {
+  white-space: pre-wrap;
+}
+
+.tf-msg-meta {
+  font-size: 0.75rem;
+  color: var(--tf-color-text-tertiary, #888);
+}
+
+.tf-capture-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-2, 0.5rem);
+  background: var(--tf-color-surface, #fff);
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  border-radius: var(--tf-radius-md, 6px);
+  padding: var(--tf-space-3, 0.75rem);
+}
+
+.tf-capture-composer-label {
+  font-size: 0.875rem;
+  color: var(--tf-color-text-secondary, #555);
+}
+
+#capture-composer-input {
+  width: 100%;
+  min-height: 3rem;
+  resize: vertical;
+  font: inherit;
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  border-radius: var(--tf-radius-sm, 4px);
+  padding: var(--tf-space-2, 0.5rem);
+  background: var(--tf-color-bg, #fff);
+}
+
+.tf-capture-composer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--tf-space-2, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.tf-suggestion-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-2, 0.5rem);
+}
+
+.tf-suggestion-card .tf-action-row {
+  display: flex;
+  gap: var(--tf-space-2, 0.5rem);
+  flex-wrap: wrap;
+}
+
+.tf-sessions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tf-space-2, 0.5rem);
+}
+
+.tf-sessions-item {
+  margin: 0;
+}
+
+.tf-sessions-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: var(--tf-color-surface, #fff);
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  border-radius: var(--tf-radius-md, 6px);
+  padding: var(--tf-space-2, 0.5rem) var(--tf-space-3, 0.75rem);
+  cursor: pointer;
+}
+
+.tf-sessions-open:hover,
+.tf-sessions-open:focus-visible {
+  border-color: var(--tf-color-primary, #1677ff);
 }
