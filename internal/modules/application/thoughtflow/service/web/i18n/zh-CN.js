@@ -3,14 +3,13 @@
 // phrases are tuned to fit AntD-style components without truncation.
 
 export const messages = {
-  "nav.dashboard": "仪表盘",
+  "nav.overview": "总览",
   "nav.capture": "采集",
-  "nav.thoughts": "笔记",
+  "nav.notes": "笔记",
   "nav.search": "搜索",
   "nav.topics": "专题",
-  "nav.synthesis": "合稿",
-  "nav.jobs": "任务与活动",
-  "nav.settings": "系统设置",
+  "nav.compose": "整理",
+  "nav.settings": "设置",
 
   "common.cancel": "取消",
   "common.confirm": "确认",
@@ -42,8 +41,9 @@ export const messages = {
   "topbar.action.new_topic": "新建专题",
   "topbar.action.system": "系统",
   "topbar.language": "语言",
+  "topbar.gear": "系统设置",
 
-  "dashboard.title": "仪表盘",
+  "overview.title": "总览",
   "dashboard.description": "查看系统运行态、最近活动与主要工作流入口。",
   "dashboard.card.workspace": "工作区",
   "dashboard.card.llm": "大模型",
@@ -109,7 +109,7 @@ export const messages = {
   "capture.command.unknown": "未识别的命令：{text}",
   "capture.command.noted": "已记录自由消息。",
 
-  "thoughts.title": "笔记",
+  "notes.title": "笔记",
   "thoughts.description": "从搜索结果或最近活动打开笔记。后续可补充列表 API。",
   "thoughts.id_placeholder": "笔记 ID",
   "thoughts.load_button": "加载笔记",
@@ -256,7 +256,7 @@ export const messages = {
   "topics.rule.auto_weave_enabled": "已启用",
   "topics.rule.auto_weave_disabled": "未启用",
 
-  "synthesis.title": "合稿",
+  "compose.title": "整理草稿",
   "synthesis.description": "创建、编辑、保存合稿草稿。",
   "synthesis.create": "创建草稿",
   "synthesis.refresh": "刷新",
@@ -366,6 +366,7 @@ export const messages = {
   "toast.reindex_queued": "已排队重建索引：{id}",
   "toast.job_id_required": "请输入任务 ID",
   "toast.request_failed": "请求失败",
+  "toast.deprecated_route": "路径 {old} 已迁移到 {new}，请使用新链接。",
   "toast.basket_add": "合稿篮中已有 {n} 个来源",
   "toast.sse_reconnecting": "SSE 重新连接中",
   "toast.unknown": "未知",

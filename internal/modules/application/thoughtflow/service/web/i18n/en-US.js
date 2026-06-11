@@ -3,13 +3,12 @@
 // switch is a no-op for English speakers.
 
 export const messages = {
-  "nav.dashboard": "Dashboard",
+  "nav.overview": "Overview",
   "nav.capture": "Capture",
-  "nav.thoughts": "Thoughts",
+  "nav.notes": "Notes",
   "nav.search": "Search",
   "nav.topics": "Topics",
-  "nav.synthesis": "Synthesis",
-  "nav.jobs": "Jobs & Activity",
+  "nav.compose": "Compose",
   "nav.settings": "Settings",
 
   "common.cancel": "Cancel",
@@ -42,8 +41,9 @@ export const messages = {
   "topbar.action.new_topic": "New topic",
   "topbar.action.system": "System",
   "topbar.language": "Language",
+  "topbar.gear": "Settings",
 
-  "dashboard.title": "Dashboard",
+  "overview.title": "Overview",
   "dashboard.description": "System readiness, recent activity, and primary workflows.",
   "dashboard.card.workspace": "Workspace",
   "dashboard.card.llm": "LLM",
@@ -109,7 +109,7 @@ export const messages = {
   "capture.command.unknown": "Unrecognized command: {text}",
   "capture.command.noted": "Free-form message noted.",
 
-  "thoughts.title": "Thoughts",
+  "notes.title": "Notes",
   "thoughts.description": "Open a thought from search results or recent activity. A list API can be added later.",
   "thoughts.id_placeholder": "Thought ID",
   "thoughts.load_button": "Load thought",
@@ -256,7 +256,7 @@ export const messages = {
   "topics.rule.auto_weave_enabled": "enabled",
   "topics.rule.auto_weave_disabled": "disabled",
 
-  "synthesis.title": "Synthesis",
+  "compose.title": "Compose Drafts",
   "synthesis.description": "Create, edit, and save synthesis drafts.",
   "synthesis.create": "Create draft",
   "synthesis.refresh": "Refresh",
@@ -366,6 +366,7 @@ export const messages = {
   "toast.reindex_queued": "Reindex queued: {id}",
   "toast.job_id_required": "Job ID is required",
   "toast.request_failed": "Request failed",
+  "toast.deprecated_route": "Route {old} moved to {new}. Please update your links.",
   "toast.basket_add": "{n} sources in synthesis basket",
   "toast.sse_reconnecting": "SSE reconnecting",
   "toast.unknown": "unknown",

@@ -52,7 +52,7 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 		t.Fatalf("expected markdown parser script in embedded index")
 	}
 	if !strings.Contains(res.Body.String(), `class="tf-sider"`) ||
-		!strings.Contains(res.Body.String(), `data-nav="dashboard"`) ||
+		!strings.Contains(res.Body.String(), `data-nav="overview"`) ||
 		!strings.Contains(res.Body.String(), `id="page-container"`) {
 		t.Fatalf("expected redesigned app shell in embedded index")
 	}

@@ -20,7 +20,7 @@ test("i18n registry resolves a key in zh-CN", async () => {
   init({ locale: "zh-CN" });
   setLocale("zh-CN");
   assert.equal(getLocale(), "zh-CN");
-  assert.equal(t("nav.dashboard"), "仪表盘");
+  assert.equal(t("nav.overview"), "总览");
   assert.equal(t("common.cancel"), "取消");
   assert.equal(t("common.save"), "保存");
 });
@@ -29,7 +29,7 @@ test("i18n registry falls back to en-US when a key is missing in zh-CN", async (
   const { init, t, setLocale } = await import(i18nPath);
   init({ locale: "en-US" });
   setLocale("en-US");
-  assert.equal(t("nav.dashboard"), "Dashboard");
+  assert.equal(t("nav.overview"), "Overview");
 });
 
 test("i18n registry interpolates {name} placeholders", async () => {

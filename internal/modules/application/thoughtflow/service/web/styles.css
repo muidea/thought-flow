@@ -238,11 +238,30 @@ p {
 }
 
 .tf-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border-radius: var(--tf-border-radius);
   color: var(--tf-color-text);
   padding: 9px 12px;
   text-decoration: none;
+}
+
+.tf-menu-icon {
+  flex: 0 0 16px;
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-menu-item:hover .tf-menu-icon {
+  color: var(--tf-color-primary);
+}
+
+.tf-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tf-menu-item:hover {
@@ -253,6 +272,20 @@ p {
   background: #e6f4ff;
   color: var(--tf-color-primary);
   font-weight: 600;
+}
+
+.tf-menu-item.active .tf-menu-icon {
+  color: var(--tf-color-primary);
+}
+
+.tf-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--tf-border-radius);
 }
 
 .tf-sider-footer {

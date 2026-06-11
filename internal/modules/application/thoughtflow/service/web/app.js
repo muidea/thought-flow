@@ -108,27 +108,80 @@ let markdownParser = null;
 
 const $ = (selector) => document.querySelector(selector);
 
+// Hash aliases for renamed pages. Each entry maps a deprecated top-level
+// segment to the new path the user should land on. The redirect is fired
+// once per (old, new) pair per session, so the toast is informational
+// without becoming noise on every page load.
+const DEPRECATED_HASH_REDIRECTS = {
+  dashboard: { next: "#/overview", newSegment: "overview" },
+  thoughts: { next: "#/notes", newSegment: "notes" },
+  synthesis: { next: "#/compose", newSegment: "compose" },
+};
+const deprecatedHashToastShown = new Set();
+
+function reportDeprecatedHash(oldSegment, newSegment) {
+  const key = `${oldSegment}->${newSegment}`;
+  if (deprecatedHashToastShown.has(key)) return;
+  deprecatedHashToastShown.add(key);
+  if (typeof t !== "function") return;
+  try {
+    const message = t("toast.deprecated_route", { old: `#/${oldSegment}`, new: `#/${newSegment}` });
+    if (typeof toast === "function") toast(message);
+  } catch (_error) {
+    // toast helper may not be loaded yet during early boot
+  }
+}
+
 function parseRoute(hash) {
   const raw = String(hash || "").replace(/^#\/?/, "");
   const [pathPart, queryPart = ""] = raw.split("?");
   const parts = pathPart.split("/").filter(Boolean);
   const query = Object.fromEntries(new URLSearchParams(queryPart).entries());
-  if (parts.length === 0) return { page: "dashboard", nav: "dashboard", params: {}, query };
+  if (parts.length === 0) return { page: "dashboard", nav: "overview", params: {}, query };
+  const deprecated = DEPRECATED_HASH_REDIRECTS[parts[0]];
+  if (deprecated) {
+    const queryString = queryPart ? `?${queryPart}` : "";
+    const nextHash = `${deprecated.next}${queryString}`;
+    reportDeprecatedHash(parts[0], deprecated.newSegment);
+    if (typeof window !== "undefined" && window.location.hash !== nextHash) {
+      // Use replaceState so the deprecated URL doesn't pollute history,
+      // then assign window.location.hash so test stubs (where replaceState
+      // is a no-op) observe the rewrite and a hashchange listener can pick
+      // it up.
+      try {
+        const url = new URL(window.location.href);
+        url.hash = nextHash;
+        if (window.history && typeof window.history.replaceState === "function") {
+          window.history.replaceState(null, "", url.toString());
+        }
+      } catch (_error) {
+        // ignore — href is unparseable
+      }
+      window.location.hash = nextHash;
+    }
+    return parseRoute(nextHash);
+  }
   if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
     return { page: "topic-review", nav: "topics", params: { topicId: parts[1] }, query };
   }
   if (parts[0] === "topics" && parts[1]) {
     return { page: "topic-detail", nav: "topics", params: { topicId: parts[1] }, query };
   }
-  if (parts[0] === "thoughts") {
-    return { page: "thoughts", nav: "thoughts", params: { thoughtId: query.id || "" }, query };
+  if (parts[0] === "notes" || parts[0] === "thoughts") {
+    return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
+  }
+  if (parts[0] === "compose" || parts[0] === "synthesis") {
+    return { page: "synthesis", nav: "compose", params: {}, query };
   }
   if (parts[0] === "jobs") {
-    return { page: "jobs", nav: "jobs", params: { jobId: query.id || "" }, query };
+    return { page: "jobs", nav: "settings", params: { jobId: query.id || "" }, query };
   }
-  const known = new Set(["dashboard", "capture", "search", "topics", "synthesis", "settings"]);
+  if (parts[0] === "overview" || parts[0] === "dashboard") {
+    return { page: "dashboard", nav: "overview", params: {}, query };
+  }
+  const known = new Set(["capture", "search", "topics", "settings"]);
   if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
-  return { page: "dashboard", nav: "dashboard", params: {}, query };
+  return { page: "dashboard", nav: "overview", params: {}, query };
 }
 
 // Each page declares how its inputs/UI map into the hash query. Only fields
@@ -224,7 +277,16 @@ function restoreRoutePage(page, query) {
 }
 
 function buildRouteHash(page, params = {}, query = {}) {
-  let path = `#/${page}`;
+  // Map internal page names back to user-facing segment names. The page
+  // identifiers (used in `data-page` and route.page) preserve the historical
+  // names so existing renderers and CSS hooks keep working; only the
+  // top-level hash segment is rewritten to the new wording.
+  const pageToSegment = {
+    dashboard: "overview",
+    thoughts: "notes",
+    synthesis: "compose",
+  };
+  let path = `#/${pageToSegment[page] || page}`;
   if (page === "topic-detail" || page === "topic-review") {
     if (params.topicId) path = `#/topics/${encodeURIComponent(params.topicId)}`;
     if (page === "topic-review") path += "/review";
@@ -2524,6 +2586,12 @@ function bind() {
       rerenderForLocale();
     });
   });
+  $("#open-settings")?.addEventListener("click", () => {
+    // PR1: the gear button is a simple navigation to the settings page.
+    // PR3 will swap this for a settings drawer without changing the
+    // button's location or visual style.
+    window.location.hash = "#/settings";
+  });
   tOnLocaleChange(() => {
     syncLanguageSwitcher();
     rerenderForLocale();
@@ -2621,7 +2689,7 @@ async function boot() {
   if (typeof renderCaptureConversation === "function") {
     try { renderCaptureConversation(); } catch (_error) { /* noop before render */ }
   }
-  if (!window.location.hash) window.location.hash = "#/dashboard";
+  if (!window.location.hash) window.location.hash = "#/overview";
   state.route = parseRoute(window.location.hash);
   renderRoute();
   await loadStatus();

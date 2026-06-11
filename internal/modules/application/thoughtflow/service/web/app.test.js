@@ -154,11 +154,41 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   const app = loadAppFunctions();
   const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
 
-  assert.deepEqual(route(""), { page: "dashboard", nav: "dashboard", params: {}, query: {} });
+  assert.deepEqual(route(""), { page: "dashboard", nav: "overview", params: {}, query: {} });
+  assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/topics/demo"), { page: "topic-detail", nav: "topics", params: { topicId: "demo" }, query: {} });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topic-review", nav: "topics", params: { topicId: "demo" }, query: {} });
-  assert.deepEqual(route("#/thoughts?id=abc"), { page: "thoughts", nav: "thoughts", params: { thoughtId: "abc" }, query: { id: "abc" } });
-  assert.deepEqual(route("#/jobs?id=job-1"), { page: "jobs", nav: "jobs", params: { jobId: "job-1" }, query: { id: "job-1" } });
+  assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
+  assert.deepEqual(route("#/compose"), { page: "synthesis", nav: "compose", params: {}, query: {} });
+  assert.deepEqual(route("#/jobs?id=job-1"), { page: "jobs", nav: "settings", params: { jobId: "job-1" }, query: { id: "job-1" } });
+});
+
+test("parseRoute redirects deprecated hash paths to their new names", () => {
+  const app = loadAppFunctions();
+  // The redirect side-effect on window.location.hash is exercised by the
+  // browser smoke tests; here we just verify the route resolution matches
+  // the new segment so callers see the canonical page/nav pair. We
+  // JSON-clone the result to bridge the vm context's Object prototype
+  // into the test realm (see route() helper above).
+  const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
+  assert.deepEqual(
+    route("#/dashboard"),
+    { page: "dashboard", nav: "overview", params: {}, query: {} },
+  );
+  assert.deepEqual(
+    route("#/thoughts?id=abc"),
+    { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } },
+  );
+  assert.deepEqual(
+    route("#/synthesis"),
+    { page: "synthesis", nav: "compose", params: {}, query: {} },
+  );
+  // /jobs is still a live section in PR1; the menu item is removed in
+  // PR3 alongside the page itself. Direct URLs continue to work.
+  assert.deepEqual(
+    route("#/jobs?id=job-1"),
+    { page: "jobs", nav: "settings", params: { jobId: "job-1" }, query: { id: "job-1" } },
+  );
 });
 
 test("navigation and status helpers map to AntD-style classes", () => {

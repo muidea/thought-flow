@@ -92,23 +92,37 @@ async function runBrowserSmoke(browser, url) {
     };
     const routes = [
       ["capture", "#/capture", "#page-capture", "#capture-composer"],
-      ["thoughts", "#/thoughts", "#page-thoughts", "#thought-form"],
+      ["notes", "#/notes", "#page-thoughts", "#thought-form"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
-      ["synthesis", "#/synthesis", "#page-synthesis", "#synthesis-drafts"],
+      ["compose", "#/compose", "#page-synthesis", "#synthesis-drafts"],
       ["jobs", "#/jobs", "#page-jobs", "#job-form"],
-      ["settings", "#/settings", "#page-settings", "#settings-workspace"],
     ];
     const routeStates = [];
     for (const [name, hash, pageSelector, visibleSelector] of routes) {
       await settleRoute(hash);
+      // Normalize navActive to a boolean so deepStrictEqual can compare
+      // against missing sidebar entries (those would otherwise surface as
+      // `undefined` and trip the strict comparator).
+      const navEl = document.querySelector(`[data-nav="${name}"]`);
       routeStates.push({
         name,
-        active: document.querySelector(pageSelector)?.classList.contains("active"),
+        active: !!document.querySelector(pageSelector)?.classList.contains("active"),
         visible: !!document.querySelector(visibleSelector),
-        navActive: document.querySelector(`[data-nav="${name}"]`)?.classList.contains("active"),
+        navActive: navEl ? navEl.classList.contains("active") : false,
       });
     }
+    // Settings is no longer in the sidebar (gear button instead), so visit
+    // it directly and confirm the page still mounts; the nav highlighting
+    // assertion is dropped here.
+    await settleRoute("#/settings");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    routeStates.push({
+      name: "settings",
+      active: !!document.querySelector("#page-settings")?.classList.contains("active"),
+      visible: !!document.querySelector("#settings-workspace"),
+      navActive: false,
+    });
     await settleRoute("#/capture");
     const composer = document.querySelector("#capture-composer-input");
     composer.value = "Captured from browser smoke";
@@ -216,12 +230,14 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.searchItems, 1);
   assert.deepEqual(state.routeStates, [
     { name: "capture", active: true, visible: true, navActive: true },
-    { name: "thoughts", active: true, visible: true, navActive: true },
+    { name: "notes", active: true, visible: true, navActive: true },
     { name: "search", active: true, visible: true, navActive: true },
     { name: "topics", active: true, visible: true, navActive: true },
-    { name: "synthesis", active: true, visible: true, navActive: true },
-    { name: "jobs", active: true, visible: true, navActive: true },
-    { name: "settings", active: true, visible: true, navActive: true },
+    { name: "compose", active: true, visible: true, navActive: true },
+    // /jobs is no longer in the sidebar (PR1 strips the nav item); the
+    // route still resolves for direct URLs but no menu highlight applies.
+    { name: "jobs", active: true, visible: true, navActive: false },
+    { name: "settings", active: true, visible: true, navActive: false },
   ]);
   assert.match(state.captureResult, /thought-capture|Browser capture|Captured from browser smoke/);
   assert.equal(state.thoughtDrawerOpen, true);
@@ -530,13 +546,13 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     const zhSnapshot = await page.evaluate(() => ({
       lang: document.documentElement.lang,
-      dashboardTitle: document.querySelector("#page-dashboard h2")?.textContent,
-      navDashboard: document.querySelector('[data-nav="dashboard"]')?.textContent,
+      overviewTitle: document.querySelector("#page-dashboard h2")?.textContent,
+      navOverview: document.querySelector('[data-nav="overview"]')?.textContent,
       captureNav: document.querySelector('[data-nav="capture"]')?.textContent,
     }));
     assert.equal(zhSnapshot.lang, "zh-CN");
-    assert.equal(zhSnapshot.dashboardTitle, "仪表盘");
-    assert.equal(zhSnapshot.navDashboard, "仪表盘");
+    assert.equal(zhSnapshot.overviewTitle, "总览");
+    assert.equal(zhSnapshot.navOverview, "总览");
     assert.equal(zhSnapshot.captureNav, "采集");
     // switch to en-US via the topbar segmented control
     await page.evaluate(() => {
@@ -546,13 +562,13 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     await page.waitForExpression(() => document.documentElement.lang === "en-US");
     const enSnapshot = await page.evaluate(() => ({
       lang: document.documentElement.lang,
-      dashboardTitle: document.querySelector("#page-dashboard h2")?.textContent,
-      navDashboard: document.querySelector('[data-nav="dashboard"]')?.textContent,
+      overviewTitle: document.querySelector("#page-dashboard h2")?.textContent,
+      navOverview: document.querySelector('[data-nav="overview"]')?.textContent,
       captureNav: document.querySelector('[data-nav="capture"]')?.textContent,
     }));
     assert.equal(enSnapshot.lang, "en-US");
-    assert.equal(enSnapshot.dashboardTitle, "Dashboard");
-    assert.equal(enSnapshot.navDashboard, "Dashboard");
+    assert.equal(enSnapshot.overviewTitle, "Overview");
+    assert.equal(enSnapshot.navOverview, "Overview");
     assert.equal(enSnapshot.captureNav, "Capture");
     assert.deepEqual(errors, []);
   } finally {
