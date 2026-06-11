@@ -75,7 +75,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="overview.title">Overview</h2>
-                <p data-i18n="dashboard.description">System readiness, recent activity, and primary workflows.</p>
+                <p data-i18n="dashboard.description">Workspace overview</p>
               </div>
               <div class="tf-page-actions">
                 <a class="tf-btn tf-btn-primary" href="#/capture" data-i18n="dashboard.card.action.capture">Capture thought</a>
@@ -118,7 +118,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="capture.title">Capture</h2>
-                <p data-i18n="capture.description">Create a text or URL thought and let background jobs refine, index, weave, and sync it.</p>
+                <p data-i18n="capture.description">Turn ideas into thoughts</p>
               </div>
               <div class="tf-page-header-actions">
                 <button class="tf-btn tf-btn-primary" id="capture-new-session" type="button" data-i18n="capture.session.new">New session</button>
@@ -164,7 +164,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="notes.title">Notes</h2>
-                <p data-i18n="thoughts.description">Open a thought from search results or recent activity. A list API can be added later.</p>
+                <p data-i18n="thoughts.description">View, edit, share thoughts</p>
               </div>
             </div>
             <div class="tf-tabs" role="tablist" id="notes-tablist">
@@ -215,7 +215,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="search.title">Search</h2>
-                <p data-i18n="search.description">Keyword, semantic, and hybrid search with filters, scores, and actions.</p>
+                <p data-i18n="search.description">Find thoughts by keyword or meaning</p>
               </div>
             </div>
             <section class="tf-card">
@@ -261,7 +261,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="topics.title">Topics</h2>
-                <p data-i18n="topics.description">Browse and create topic workspaces.</p>
+                <p data-i18n="topics.description">Group related thoughts</p>
               </div>
               <div class="tf-page-actions">
                 <button class="tf-btn tf-btn-primary" id="open-create-topic" type="button" data-i18n="topics.create">Create topic</button>
@@ -313,7 +313,7 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="compose.title">Compose Drafts</h2>
-                <p data-i18n="synthesis.description">Create, edit, and save synthesis drafts.</p>
+                <p data-i18n="synthesis.description">Compose a document from many thoughts</p>
               </div>
               <div class="tf-page-actions">
                 <button class="tf-btn tf-btn-primary" id="open-synthesis-create" type="button" data-i18n="synthesis.create">Create draft</button>
@@ -418,8 +418,14 @@
             </article>
           </div>
           <div id="settings-drawer-index-detail" class="tf-description-list" style="margin-top: 12px;" data-i18n="settings.index_not_loaded">Index status not loaded.</div>
-          <div id="settings-drawer-metrics-json" class="tf-description-list" style="margin-top: 12px;" data-i18n="settings.metrics_not_loaded">Metrics not loaded.</div>
-          <p class="tf-text-secondary" style="margin-top: 12px;"><a href="/metrics" target="_blank" rel="noreferrer" data-i18n="settings.prometheus_link">Open Prometheus metrics</a></p>
+          <details class="tf-runtime-card" style="margin-top: 12px;">
+            <summary>
+              <strong data-i18n="settings.metrics_title">Advanced metrics</strong>
+              <span class="tf-text-secondary" data-i18n="settings.metrics_help">Raw Prometheus values for operators.</span>
+            </summary>
+            <div id="settings-drawer-metrics-json" class="tf-description-list" style="margin-top: 8px;" data-i18n="settings.metrics_not_loaded">Metrics not loaded.</div>
+            <p class="tf-text-secondary" style="margin-top: 8px;"><a href="/metrics" target="_blank" rel="noreferrer" data-i18n="settings.prometheus_link">Open Prometheus metrics</a></p>
+          </details>
           <div id="settings-drawer-degraded" class="tf-alert tf-alert-warning" hidden style="margin-top: 12px;"></div>
         </div>
         <div id="tab-settings-drawer-events" class="tab-panel">

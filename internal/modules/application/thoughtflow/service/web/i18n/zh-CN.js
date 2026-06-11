@@ -45,7 +45,8 @@ export const messages = {
   "topbar.skip_to_main": "跳到主内容",
 
   "overview.title": "总览",
-  "dashboard.description": "查看系统运行态、最近活动与主要工作流入口。",
+  "dashboard.description": "工作区速览",
+  "capture.description": "把想法变成笔记",
   "dashboard.card.workspace": "工作区",
   "dashboard.card.llm": "大模型",
   "dashboard.card.embedding": "向量模型",
@@ -59,7 +60,6 @@ export const messages = {
   "dashboard.status_alert": "系统状态为 {status}，请到“系统设置”查看详情。",
 
   "capture.title": "采集",
-  "capture.description": "创建文本或 URL 笔记，后台会自动 refine、索引、专题匹配与提交。",
   "capture.type.text": "文本",
   "capture.type.url": "URL",
   "capture.form.title": "标题",
@@ -111,7 +111,7 @@ export const messages = {
   "capture.command.noted": "已记录自由消息。",
 
   "notes.title": "笔记",
-  "thoughts.description": "从搜索结果或最近活动打开笔记。后续可补充列表 API。",
+  "thoughts.description": "查看、编辑、分享笔记",
   "thoughts.id_placeholder": "笔记 ID",
   "thoughts.load_button": "加载笔记",
   "thoughts.preview_empty": "未选择笔记。",
@@ -127,7 +127,7 @@ export const messages = {
   "thoughts.preview_summary": "摘要",
 
   "search.title": "搜索",
-  "search.description": "关键词、语义与混合搜索，支持过滤、分数展示与操作。",
+  "search.description": "按关键词或语义找笔记",
   "search.query_placeholder": "搜索笔记",
   "search.mode.hybrid": "混合",
   "search.mode.keyword": "关键词",
@@ -170,7 +170,7 @@ export const messages = {
   "search.explain.recency_weight": "时间权重",
 
   "topics.title": "专题",
-  "topics.description": "浏览并创建专题工作区。",
+  "topics.description": "把相关笔记归到同一专题",
   "topics.create": "创建专题",
   "topics.refresh": "刷新",
   "topics.list_title": "专题列表",
@@ -261,7 +261,7 @@ export const messages = {
   "topics.rule.auto_weave_disabled": "未启用",
 
   "compose.title": "整理草稿",
-  "synthesis.description": "创建、编辑、保存合稿草稿。",
+  "synthesis.description": "把多条笔记拼成新文档",
   "synthesis.create": "创建草稿",
   "synthesis.refresh": "刷新",
   "synthesis.source_count": "已选 {n} 个来源",
@@ -349,6 +349,8 @@ export const messages = {
   "settings.card.loading": "加载中",
   "settings.metrics_empty": "暂未暴露指标。",
   "settings.metrics_not_loaded": "指标未加载。",
+  "settings.metrics_title": "高级指标",
+  "settings.metrics_help": "面向运维的原始 Prometheus 数值。",
   "settings.index_not_loaded": "索引状态未加载。",
   "settings.git_not_loaded": "Git 状态未加载。",
   "settings.degraded_alert": "系统状态为 {status}，请检查下方工作区、大模型、向量模型、Git、索引、后台与事件状态。",

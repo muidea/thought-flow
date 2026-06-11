@@ -218,6 +218,15 @@ async function runBrowserSmoke(browser, url) {
       dashboardActive,
       topicItems: document.querySelectorAll(".topic-item").length,
       searchItems: document.querySelectorAll("#search-results .result-item").length,
+      // PR4: each page description in zh-CN must be ≤ 12 chars and in
+      // en-US must be ≤ 60 chars. Sample every visible page section and
+      // assert against the locale currently active on <html>.
+      descriptions: Array.from(document.querySelectorAll(".tf-page-header p[data-i18n]")).map((node) => ({
+        page: node.closest(".tf-page")?.dataset.page || "?",
+        key: node.dataset.i18n,
+        text: (node.textContent || "").trim(),
+        lang: document.documentElement.lang,
+      })),
       routeStates,
       captureResult,
       thoughtDrawerOpen,
@@ -284,6 +293,16 @@ async function runBrowserSmoke(browser, url) {
   assert.ok(state.shellWidth > 0);
   assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
   assert.deepEqual(errors, []);
+  // PR4: per `doc/thoughtflow-web-ux-polish-v2.md` §4.3, page descriptions
+  // are bounded so the page header doesn't dominate the layout. The
+  // settings drawer is exempt (it has no header description on a page).
+  for (const item of state.descriptions) {
+    if (item.lang === "zh-CN") {
+      assert.ok(item.text.length <= 12, `zh description too long (${item.text.length}) on ${item.page}: ${item.text}`);
+    } else {
+      assert.ok(item.text.length <= 60, `en description too long (${item.text.length}) on ${item.page}: ${item.text}`);
+    }
+  }
 }
 
 function findChrome() {

@@ -45,7 +45,7 @@ export const messages = {
   "topbar.skip_to_main": "Skip to main content",
 
   "overview.title": "Overview",
-  "dashboard.description": "System readiness, recent activity, and primary workflows.",
+  "dashboard.description": "Workspace overview",
   "dashboard.card.workspace": "Workspace",
   "dashboard.card.llm": "LLM",
   "dashboard.card.embedding": "Embedding",
@@ -59,7 +59,7 @@ export const messages = {
   "dashboard.status_alert": "System status is {status}. Open Settings for details.",
 
   "capture.title": "Capture",
-  "capture.description": "Create a text or URL thought and let background jobs refine, index, weave, and sync it.",
+  "capture.description": "Turn ideas into thoughts",
   "capture.type.text": "Text",
   "capture.type.url": "URL",
   "capture.form.title": "Title",
@@ -111,7 +111,7 @@ export const messages = {
   "capture.command.noted": "Free-form message noted.",
 
   "notes.title": "Notes",
-  "thoughts.description": "Open a thought from search results or recent activity. A list API can be added later.",
+  "thoughts.description": "View, edit, share thoughts",
   "thoughts.id_placeholder": "Thought ID",
   "thoughts.load_button": "Load thought",
   "thoughts.preview_empty": "No thought selected.",
@@ -127,7 +127,7 @@ export const messages = {
   "thoughts.preview_summary": "Summary",
 
   "search.title": "Search",
-  "search.description": "Keyword, semantic, and hybrid search with filters, scores, and actions.",
+  "search.description": "Find thoughts by keyword or meaning",
   "search.query_placeholder": "Search thoughts",
   "search.mode.hybrid": "Hybrid",
   "search.mode.keyword": "Keyword",
@@ -170,7 +170,7 @@ export const messages = {
   "search.explain.recency_weight": "Recency weight",
 
   "topics.title": "Topics",
-  "topics.description": "Browse and create topic workspaces.",
+  "topics.description": "Group related thoughts",
   "topics.create": "Create topic",
   "topics.refresh": "Refresh",
   "topics.list_title": "Topic List",
@@ -261,7 +261,7 @@ export const messages = {
   "topics.rule.auto_weave_disabled": "disabled",
 
   "compose.title": "Compose Drafts",
-  "synthesis.description": "Create, edit, and save synthesis drafts.",
+  "synthesis.description": "Compose a document from many thoughts",
   "synthesis.create": "Create draft",
   "synthesis.refresh": "Refresh",
   "synthesis.source_count": "{n} selected sources",
@@ -349,6 +349,8 @@ export const messages = {
   "settings.card.loading": "Loading",
   "settings.metrics_empty": "No metrics exposed yet.",
   "settings.metrics_not_loaded": "Metrics not loaded.",
+  "settings.metrics_title": "Advanced metrics",
+  "settings.metrics_help": "Raw Prometheus values for operators.",
   "settings.index_not_loaded": "Index status not loaded.",
   "settings.git_not_loaded": "Git status not loaded.",
   "settings.degraded_alert": "System status is {status}. Check workspace, LLM, embedding, Git, index, background, and events details below.",

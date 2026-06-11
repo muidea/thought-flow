@@ -293,3 +293,15 @@ UI 验证环境：
 
 1. Git commit 依赖本机 Git 用户身份配置；缺失时会通过 `git.commit_failed` 和 Job 失败状态暴露。
 2. `runtime.state_dir` 运行时数据只作为本地任务快照，不是长期事实源。
+
+## 2026-06 Web UX 收口（v2 polish PR1–PR4）
+
+按 `doc/thoughtflow-web-ux-polish-v2.md` 收口 UI 的最终形态：
+
+1. **侧栏 6 + 1 结构（PR1，commit e18dfc1）**：菜单重命名为「总览 / 采集 / 笔记 / 搜索 / 专题 / 整理」6 项 + 齿轮入口；每项 2 字 zh-CN / 5–8 字符 en-US；inline 16×16 SVG 图标。
+2. **页面 tab 化（PR2，commit 9970f63）**：topic-detail / topic-review 合并为 topics 页的 4 个 tab（列表 / 详情 / 提案 / 规则）；synthesis 页重命名为 compose，3 tab（草稿 / 篮子 / 模板）；旧 hash 段（/topics/{id}/review、/synthesis）通过 query `?tab=` 改写兼容。
+3. **jobs/events 并入（PR3，commit 0f677da）**：`#page-jobs` 与 `#page-settings` 移除；/jobs、/settings 走 deprecated redirect 到 /notes、/overview 并触发 deprecation toast；侧栏齿轮打开 settings 抽屉，5 tab（通用 / 模型 / 同步 / 索引 / 事件）；运行卡进 notes 页 Runtime tab 的可折叠 details 元素；语言切换移到设置抽屉的通用 tab。
+4. **内容裁剪 + description 收紧（PR4）**：六页 description 全部改写为 ≤ 12 字 zh-CN / ≤ 60 字符 en-US；设置抽屉"高级指标"块改为默认收起的 `<details>` 元素；移除页面底部 request_id 透出（仅错误 toast 保留）；`make i18n-check` 已在 i18n 测试中以 `assert.ok` 强制失败而非 warn。
+
+各 PR 完成后 `make check` 全部绿：26/26 go + 35/35 node + 5/5 i18n + 11/13 browser smoke（Firefox / Safari 在 Linux host 不可用，按目标声明 skip）。
+
