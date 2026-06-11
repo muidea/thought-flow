@@ -20,21 +20,41 @@ LIBSTDCPP_SYMLINK := $(LIBSTDCPP_STAGE)/libstdc++.so
 LIBSTDCPP_SOURCES := \
 	/usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
 	/usr/lib/aarch64-linux-gnu/libstdc++.so.6
+# `libstdc++-N-dev` ships its bare-name symlink under
+# /usr/lib/gcc/<triple>/N/libstdc++.so, not under the default library
+# search path. Add it to CGO_LDFLAGS directly so the system linker
+# finds `-lstdc++` without us having to copy the symlink around.
+LIBSTDCPP_GCC_LIBDIRS := \
+	/usr/lib/gcc/x86_64-linux-gnu/14 \
+	/usr/lib/gcc/x86_64-linux-gnu/13 \
+	/usr/lib/gcc/x86_64-linux-gnu/12 \
+	/usr/lib/gcc/x86_64-linux-gnu/11 \
+	/usr/lib/gcc/aarch64-linux-gnu/14 \
+	/usr/lib/gcc/aarch64-linux-gnu/13
 CGO_LDFLAGS ?=
 
-# If the system already exposes a bare `libstdc++.so`, nothing to do.
-# Otherwise stage a project-local symlink and add it to LDFLAGS.
+# If the system already exposes a bare `libstdc++.so` on any directory
+# the linker searches, skip staging the project-local symlink.
+# Otherwise stage one. Either way, append -L for any per-version gcc
+# libdirs that host the bare symlink so cgo's `-lstdc++` resolves
+# without us having to copy the symlink around.
 LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
-	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu; do \
-		if [ -e $$d/libstdc++.so ]; then exit 0; fi; \
+	staged=0; \
+	for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu $(LIBSTDCPP_GCC_LIBDIRS); do \
+		if [ -e $$d/libstdc++.so ]; then staged=1; break; fi; \
 	done; \
-	mkdir -p $(LIBSTDCPP_STAGE) && \
-	for s in $(LIBSTDCPP_SOURCES); do \
-		if [ -e $$s ]; then \
-			ln -sf $$s $(LIBSTDCPP_SYMLINK); \
-			echo "-L$(CURDIR)/$(LIBSTDCPP_STAGE)"; \
-			break; \
-		fi; \
+	if [ $$staged -eq 0 ]; then \
+		mkdir -p $(LIBSTDCPP_STAGE); \
+		for s in $(LIBSTDCPP_SOURCES); do \
+			if [ -e $$s ]; then \
+				ln -sf $$s $(LIBSTDCPP_SYMLINK); \
+				echo "-L$(CURDIR)/$(LIBSTDCPP_STAGE)"; \
+				break; \
+			fi; \
+		done; \
+	fi; \
+	for d in $(LIBSTDCPP_GCC_LIBDIRS); do \
+		[ -e $$d/libstdc++.so ] && echo "-L$$d"; \
 	done)
 
 .PHONY: help fmt fmt-check test build node-check node-test node-test-i18n i18n-check browser-test check clean
@@ -90,3 +110,4 @@ check: fmt-check test build node-check node-test node-test-i18n i18n-check brows
 
 clean:
 	rm -f $(BINARY)
+	rm -rf build/

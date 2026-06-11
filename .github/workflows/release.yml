@@ -33,11 +33,6 @@ jobs:
             os: macos-latest
             archive: tar.gz
             binary: thoughtflow
-          - goos: windows
-            goarch: amd64
-            os: ubuntu-latest
-            archive: zip
-            binary: thoughtflow.exe
 
     steps:
       - name: Checkout
@@ -56,9 +51,6 @@ jobs:
           if [ "${{ matrix.goarch }}" = "arm64" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu libstdc++-12-dev-arm64-cross
           fi
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            sudo apt-get install -y gcc-mingw-w64-x86-64
-          fi
 
       - name: Build thoughtflow (static DuckDB)
         env:
@@ -68,14 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          case "${{ matrix.goos }}-${{ matrix.goarch }}" in
-            linux-arm64)
-              export CC=aarch64-linux-gnu-gcc
-              ;;
-            windows-amd64)
-              export CC=x86_64-w64-mingw32-gcc
-              ;;
-          esac
+          if [ "${{ matrix.goos }}-${{ matrix.goarch }}" = "linux-arm64" ]; then
+            export CC=aarch64-linux-gnu-gcc
+          fi
           go build -trimpath -ldflags "-s -w" -o dist/${{ matrix.binary }} ./cmd/thoughtflow
 
       - name: Package release archive
