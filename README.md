@@ -68,3 +68,27 @@ make check
 ```
 
 CI 环境使用 Go `1.24.x`、Node `22.x`，并安装 `build-essential` 用于 DuckDB tagged 测试。
+
+## 发布版本
+
+`v*` tag 推送后，`.github/workflows/release.yml` 会自动跨平台编译并上传到 GitHub Release：
+
+| 平台 | 产物 |
+|---|---|
+| linux/amd64 | `thoughtflow-linux-amd64.tar.gz` |
+| linux/arm64 | `thoughtflow-linux-arm64.tar.gz` |
+| darwin/arm64 | `thoughtflow-darwin-arm64.tar.gz` |
+
+下载安装示例：
+
+```bash
+# Linux x86_64
+curl -L https://github.com/muidea/thought-flow/releases/download/v0.0.1/thoughtflow-linux-amd64.tar.gz | tar -xz
+./thoughtflow -config-dir ./config
+
+# macOS Apple Silicon
+curl -L https://github.com/muidea/thought-flow/releases/download/v0.0.1/thoughtflow-darwin-arm64.tar.gz | tar -xz
+./thoughtflow -config-dir ./config
+```
+
+首次启动会在 `<config-dir>/thoughtflow-workspace` 与 `<config-dir>/thoughtflow-runtime` 下分别建立内容目录与 DuckDB 索引文件，可通过 `application.toml` 改写 `workspace.content_dir` 与 `runtime.state_dir`。
