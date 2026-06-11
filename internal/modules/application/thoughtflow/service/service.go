@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/models"
@@ -34,20 +37,21 @@ var webAssets embed.FS
 var errSynthesisThoughtIDsRequired = errors.New("thought_ids is required")
 
 type Service struct {
-	registry       engine.RouteRegistry
-	captureService *capturebiz.Service
-	refinerService *refinerbiz.Service
-	searchService  *searchbiz.Service
-	topicService   *topicbiz.Service
-	gitQueries     gitQueryReader
-	jobs           jobQueryReader
-	events         eventPublisher
-	background     backgroundTaskAcceptor
-	stream         *eventstream.Stream
-	workspace      *models.Workspace
-	config         appconfig.Config
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
+	registry         engine.RouteRegistry
+	captureService   *capturebiz.Service
+	refinerService   *refinerbiz.Service
+	searchService    *searchbiz.Service
+	topicService     *topicbiz.Service
+	classifyProvider ai.ClassifyProvider
+	gitQueries       gitQueryReader
+	jobs             jobQueryReader
+	events           eventPublisher
+	background       backgroundTaskAcceptor
+	stream           *eventstream.Stream
+	workspace        *models.Workspace
+	config           appconfig.Config
+	shutdownCtx      context.Context
+	shutdownCancel   context.CancelFunc
 }
 
 type gitQueryReader interface {
@@ -73,20 +77,21 @@ type backgroundTaskAcceptor interface {
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	return &Service{
-		registry:       registry,
-		captureService: captureService,
-		refinerService: refinerService,
-		searchService:  searchService,
-		topicService:   topicService,
-		gitQueries:     gitQueries,
-		jobs:           jobs,
-		events:         events,
-		background:     background,
-		stream:         stream,
-		workspace:      workspace,
-		config:         cfg,
-		shutdownCtx:    shutdownCtx,
-		shutdownCancel: shutdownCancel,
+		registry:         registry,
+		captureService:   captureService,
+		refinerService:   refinerService,
+		searchService:    searchService,
+		topicService:     topicService,
+		classifyProvider: ai.NewClassifyProvider(cfg.LLM),
+		gitQueries:       gitQueries,
+		jobs:             jobs,
+		events:           events,
+		background:       background,
+		stream:           stream,
+		workspace:        workspace,
+		config:           cfg,
+		shutdownCtx:      shutdownCtx,
+		shutdownCancel:   shutdownCancel,
 	}
 }
 
@@ -105,7 +110,10 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)
+	s.registry.AddHandler("/api/thoughts/:id/suggest", engine.GET, s.handleThoughtSuggest)
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
+	s.registry.AddHandler("/api/thoughts/:id", "PATCH", s.handlePatchThought)
+	s.registry.AddHandler("/api/capture/sessions/start", engine.POST, s.handleStartCaptureSession)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
 	s.registry.AddHandler("/api/synthesis/save", engine.POST, s.handleSaveSynthesis)
 	s.registry.AddHandler("/api/synthesis/:id", engine.GET, s.handleGetSynthesisDraft)
@@ -169,12 +177,141 @@ func (s *Service) handleCreateThought(ctx context.Context, res http.ResponseWrit
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
 		return
 	}
+	resolved, classified := s.classifyCaptureCommand(ctx, cmd)
+	if classified {
+		cmd = resolved
+	}
 	result, err := s.captureService.Capture(ctx, cmd)
 	if err != nil {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, result)
+}
+
+var classifyURLPattern = regexp.MustCompile(`(?i)\b((https?://|www\.)[^\s]+)`)
+
+// classifyCaptureCommand fills in the Type field on a CaptureCommand when
+// the caller left it empty. It runs the URL regex first (zero cost) and
+// falls back to the configured ClassifyProvider. The boolean return value
+// is true when the classifier actually ran — callers can use it to decide
+// whether the resolved command is safe to forward.
+//
+// On any provider error or low-confidence response the helper degrades
+// gracefully to text. We never let classification failures block a
+// capture — the cost of a misclassified text is much lower than the cost
+// of dropping the user's note.
+func (s *Service) classifyCaptureCommand(ctx context.Context, cmd models.CaptureCommand) (models.CaptureCommand, bool) {
+	if strings.TrimSpace(cmd.Type) != "" {
+		return cmd, false
+	}
+	if strings.TrimSpace(cmd.Content) == "" {
+		return cmd, false
+	}
+	if match := classifyURLPattern.FindStringIndex(cmd.Content); match != nil {
+		url := strings.TrimRight(cmd.Content[match[0]:match[1]], ".,;:!?\"'")
+		prefix := strings.TrimSpace(cmd.Content[:match[0]])
+		suffix := strings.TrimSpace(cmd.Content[match[1]:])
+		cmd.URL = url
+		if prefix == "" && suffix == "" {
+			cmd.Type = models.ThoughtTypeURL
+			cmd.Content = ""
+		} else {
+			cmd.Type = models.ThoughtTypeURL
+			cmd.Content = strings.TrimSpace(prefix + " " + suffix)
+		}
+		return cmd, true
+	}
+	if s.classifyProvider == nil {
+		cmd.Type = models.ThoughtTypeText
+		return cmd, true
+	}
+	result, err := s.classifyProvider.Classify(ctx, ai.ClassifyRequest{
+		System:    ai.DefaultClassifySystem,
+		User:      cmd.Content,
+		MaxTokens: 64,
+	})
+	if err != nil {
+		cmd.Type = models.ThoughtTypeText
+		return cmd, true
+	}
+	var parsed struct {
+		Type         string  `json:"type"`
+		ExtractedURL string  `json:"extracted_url"`
+		Confidence   float64 `json:"confidence"`
+	}
+	if err := json.Unmarshal([]byte(result.Raw), &parsed); err != nil {
+		cmd.Type = models.ThoughtTypeText
+		return cmd, true
+	}
+	if parsed.Confidence < 0.5 {
+		cmd.Type = models.ThoughtTypeText
+		return cmd, true
+	}
+	switch parsed.Type {
+	case "url", "mixed":
+		if strings.TrimSpace(parsed.ExtractedURL) == "" {
+			cmd.Type = models.ThoughtTypeText
+			return cmd, true
+		}
+		cmd.Type = models.ThoughtTypeURL
+		cmd.URL = parsed.ExtractedURL
+		if parsed.Type == "url" && strings.Contains(cmd.Content, parsed.ExtractedURL) {
+			cmd.Content = strings.TrimSpace(strings.ReplaceAll(cmd.Content, parsed.ExtractedURL, ""))
+		}
+	default:
+		cmd.Type = models.ThoughtTypeText
+	}
+	return cmd, true
+}
+
+func (s *Service) handleStartCaptureSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Content   string `json:"content"`
+		SessionID string `json:"session_id"`
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "content is required")
+		return
+	}
+	sessionID := strings.TrimSpace(body.SessionID)
+	if sessionID == "" {
+		sessionID = "anonymous"
+	}
+	cmd := models.CaptureCommand{Content: body.Content, Source: "capture-session"}
+	resolved, _ := s.classifyCaptureCommand(ctx, cmd)
+	result, err := s.captureService.Capture(ctx, resolved)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	suggestion, _ := s.buildCaptureSuggestion(ctx, result.Thought.ID)
+	writeJSON(res, req, http.StatusAccepted, models.CaptureSessionStart{
+		SessionID:  sessionID,
+		Thought:    result.Thought,
+		Jobs:       result.Jobs,
+		Suggestion: suggestion,
+	})
+}
+
+// buildCaptureSuggestion asks the refiner for a quick title/tag
+// suggestion. It is best-effort: any error degrades to a nil suggestion
+// rather than failing the session start, because the user can still see
+// the thought content even without an AI suggestion.
+func (s *Service) buildCaptureSuggestion(ctx context.Context, thoughtID string) (models.ThoughtSuggestion, error) {
+	if s.refinerService == nil {
+		return models.ThoughtSuggestion{}, nil
+	}
+	return s.refinerService.Suggest(ctx, thoughtID)
 }
 
 func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -199,6 +336,54 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 	writeJSON(res, req, http.StatusOK, snapshot)
 }
 
+func (s *Service) handlePatchThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	thoughtID := pathID(req.URL.Path, "/api/thoughts/")
+	if thoughtID == "" || strings.Contains(thoughtID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "thought id is required")
+		return
+	}
+	sessionID := strings.TrimSpace(req.Header.Get("X-Session-Id"))
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.session_required", "X-Session-Id header is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var patch models.ThoughtPatchRequest
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &patch); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_patch", err.Error())
+			return
+		}
+	}
+	snapshot, err := s.captureService.PatchThought(ctx, thoughtID, sessionID, patch, rawBody)
+	if err != nil {
+		switch {
+		case errors.Is(err, capturebiz.ErrInvalidPatchField):
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_patch", err.Error())
+		case errors.Is(err, capturebiz.ErrLocked):
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.locked", err.Error())
+		case errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file"):
+			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.not_found", err.Error())
+		default:
+			if strings.Contains(err.Error(), "must not be empty") {
+				writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_patch", err.Error())
+				return
+			}
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.patch_failed", err.Error())
+		}
+		return
+	}
+	snapshot.Jobs = recentJobsByResource(s.jobs, thoughtID, 20)
+	if s.gitQueries != nil {
+		snapshot.GitCommits = s.gitQueries.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
+	}
+	writeJSON(res, req, http.StatusOK, snapshot)
+}
+
 func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	_ = ctx
 	thoughtID := strings.TrimSuffix(pathID(req.URL.Path, "/api/thoughts/"), "/retry-refine")
@@ -212,6 +397,28 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, job)
+}
+
+func (s *Service) handleThoughtSuggest(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.refinerService == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.refiner.unavailable", "refiner service is not ready")
+		return
+	}
+	thoughtID := strings.TrimSuffix(pathID(req.URL.Path, "/api/thoughts/"), "/suggest")
+	if thoughtID == "" || strings.Contains(thoughtID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.refiner.invalid_request", "thought id is required")
+		return
+	}
+	suggestion, err := s.refinerService.Suggest(ctx, thoughtID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such file") {
+			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.not_found", err.Error())
+			return
+		}
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.refiner.suggest_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, suggestion)
 }
 
 func recentJobsByResource(store jobQueryReader, resourceID string, limit int) []models.Job {

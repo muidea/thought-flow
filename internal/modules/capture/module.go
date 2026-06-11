@@ -12,6 +12,7 @@ import (
 	"thoughtflow/internal/modules/capture/biz"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -61,7 +62,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
 	store := jobstore.New(ws.JobsPath)
-	m.service = biz.NewService(ws, store, eventHub, biz.WithDuplicatePolicy(cfg.Capture.DuplicatePolicy))
+	m.service = biz.NewService(ws, store, eventHub, biz.WithDuplicatePolicy(cfg.Capture.DuplicatePolicy), biz.WithLocker(thoughtlock.Default()))
 	setCurrent(m.service)
 	return nil
 }

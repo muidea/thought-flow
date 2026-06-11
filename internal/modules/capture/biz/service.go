@@ -2,12 +2,15 @@ package biz
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,12 +20,23 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/thoughtlock"
 )
+
+// ErrInvalidPatchField is returned when a PATCH request contains an
+// unknown key. The HTTP layer surfaces this as 400 with the offending
+// field names in the error details.
+var ErrInvalidPatchField = errors.New("capture: invalid patch field")
+
+// ErrLocked is returned when the thought is being held by another
+// session. The HTTP layer surfaces this as 409.
+var ErrLocked = thoughtlock.ErrLocked
 
 type Service struct {
 	workspace       *models.Workspace
 	jobs            *jobstore.Store
 	eventHub        event.Hub
+	locker          *thoughtlock.Locker
 	now             func() time.Time
 	duplicatePolicy string
 }
@@ -34,6 +48,15 @@ func WithDuplicatePolicy(policy string) Option {
 		if strings.TrimSpace(policy) != "" {
 			s.duplicatePolicy = strings.ToLower(strings.TrimSpace(policy))
 		}
+	}
+}
+
+// WithLocker attaches a thoughtlock.Locker. The same instance should be
+// shared with the refiner service so PATCH and refine serialize against
+// each other.
+func WithLocker(locker *thoughtlock.Locker) Option {
+	return func(s *Service) {
+		s.locker = locker
 	}
 }
 
@@ -147,6 +170,164 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 		return models.ThoughtSnapshot{}, err
 	}
 	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
+}
+
+// PatchThought applies a partial update to a thought in place. Pointer
+// fields in the request distinguish "field absent" from "field present
+// with empty value" — the absent case leaves the existing value alone,
+// while the present-empty case clears it (where the field semantics
+// allow). Unknown keys are rejected with ErrInvalidPatchField so the
+// front end catches typos at the API boundary.
+//
+// The thought is locked for the duration of the write so a concurrent
+// refine or PATCH cannot race the disk write. Callers MUST supply a
+// non-empty sessionID; the lock is released even on error.
+func (s *Service) PatchThought(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error) {
+	_ = ctx
+	if s == nil || s.workspace == nil {
+		return models.ThoughtSnapshot{}, errors.New("capture service is not ready")
+	}
+	if strings.TrimSpace(thoughtID) == "" {
+		return models.ThoughtSnapshot{}, errors.New("thought id is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return models.ThoughtSnapshot{}, errors.New("session id is required")
+	}
+	if unknown, err := unknownPatchFields(rawBody); err != nil {
+		return models.ThoughtSnapshot{}, fmt.Errorf("%w: %s", ErrInvalidPatchField, strings.Join(unknown, ","))
+	}
+	if s.locker != nil {
+		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
+			return models.ThoughtSnapshot{}, err
+		}
+		defer s.locker.Release(thoughtID, sessionID)
+	}
+	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		return models.ThoughtSnapshot{}, err
+	}
+	now := s.now()
+	if request.Title != nil {
+		title := strings.TrimSpace(*request.Title)
+		if title == "" {
+			return models.ThoughtSnapshot{}, errors.New("title must not be empty")
+		}
+		thought.UserTitle = title
+	}
+	if request.Tags != nil {
+		thought.UserTags = normalizeTags(*request.Tags)
+	}
+	if request.AINotesAppend != nil {
+		paragraph := strings.TrimSpace(*request.AINotesAppend)
+		if paragraph != "" {
+			content.AINotes = markdown.AppendAINotes(content.AINotes, paragraph, now)
+		}
+	}
+	if request.TopicIDs != nil {
+		thought.TopicIDs = append([]string(nil), (*request.TopicIDs)...)
+	}
+	thought.UpdatedAt = now
+	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
+		return models.ThoughtSnapshot{}, err
+	}
+	eventutil.Post(s.eventHub, models.DomainEvent{
+		EventType:      models.EventThoughtPatched,
+		SourceUnit:     "capture",
+		OccurredAt:     now,
+		WorkspaceID:    s.workspace.ID,
+		ResourceType:   models.ResourceTypeThought,
+		ResourceID:     thought.ID,
+		PayloadVersion: 1,
+		Payload: map[string]any{
+			"thought_id": thought.ID,
+			"patched_by": sessionID,
+			"patch_keys": patchKeys(request),
+		},
+	})
+	eventutil.Post(s.eventHub, models.DomainEvent{
+		EventType:      models.EventGitCommitRequested,
+		SourceUnit:     "capture",
+		OccurredAt:     now,
+		WorkspaceID:    s.workspace.ID,
+		ResourceType:   models.ResourceTypeThought,
+		ResourceID:     thought.ID,
+		PayloadVersion: 1,
+		Payload: map[string]any{
+			"reason": "patch",
+			"paths":  []string{thought.Path},
+		},
+	})
+	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
+}
+
+// unknownPatchFields returns the JSON keys in rawBody that are not
+// declared on models.ThoughtPatchRequest. An empty result means the body
+// only contained known fields (including none).
+func unknownPatchFields(rawBody []byte) ([]string, error) {
+	if len(rawBody) == 0 {
+		return nil, nil
+	}
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &generic); err != nil {
+		return nil, err
+	}
+	allowed := map[string]struct{}{}
+	rt := reflect.TypeOf(models.ThoughtPatchRequest{})
+	for idx := 0; idx < rt.NumField(); idx++ {
+		field := rt.Field(idx)
+		tag := field.Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		allowed[name] = struct{}{}
+	}
+	unknown := []string{}
+	for key := range generic {
+		if _, ok := allowed[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil, nil
+	}
+	sort.Strings(unknown)
+	return unknown, ErrInvalidPatchField
+}
+
+func patchKeys(request models.ThoughtPatchRequest) []string {
+	keys := []string{}
+	if request.Title != nil {
+		keys = append(keys, "title")
+	}
+	if request.Tags != nil {
+		keys = append(keys, "tags")
+	}
+	if request.AINotesAppend != nil {
+		keys = append(keys, "ai_notes_append")
+	}
+	if request.TopicIDs != nil {
+		keys = append(keys, "topic_ids")
+	}
+	return keys
+}
+
+func normalizeTags(tags []string) []string {
+	seen := make(map[string]struct{}, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		cleaned := strings.TrimSpace(tag)
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Service) ListThoughts(ctx context.Context) ([]models.Thought, error) {

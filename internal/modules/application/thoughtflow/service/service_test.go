@@ -27,6 +27,7 @@ import (
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/searchdb"
 	"thoughtflow/internal/pkg/synthesisstore"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/topicstore"
 )
 
@@ -89,7 +90,8 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "renderDiff") {
 		t.Fatalf("expected diff renderer in embedded app script")
 	}
-	if !strings.Contains(res.Body.String(), "patch hunks") {
+	if !strings.Contains(res.Body.String(), "topics.patch_hunks") &&
+		!strings.Contains(res.Body.String(), "patch hunks") {
 		t.Fatalf("expected structured patch hunk indicator in embedded app script")
 	}
 }
@@ -897,4 +899,454 @@ func containsString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func findSingleThoughtFile(t *testing.T, thoughtsPath string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(thoughtsPath, "*", "*", "*.md"))
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 thought file under %s, got %d (%v)", thoughtsPath, len(matches), matches)
+	}
+	return matches[0]
+}
+
+func TestHandlePatchThoughtAppliesTitleAndAINotesAppend(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	now := time.Date(2026, 6, 9, 16, 0, 0, 0, time.UTC)
+	thoughtID := "20260609-160000-patch"
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash("patch body"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "patch body", AINotes: "Summary: original"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	jobs := jobstore.New(ws.JobsPath)
+	locker := thoughtlock.New(time.Second)
+	captureService := capturebiz.NewService(ws, jobs, nil, capturebiz.WithLocker(locker))
+	service := &Service{captureService: captureService, jobs: jobs, workspace: ws, gitQueries: fakeGitQueryReader{}}
+
+	body := `{"title":"Renamed","ai_notes_append":"Followup after the rename."}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/thoughts/"+thoughtID, strings.NewReader(body))
+	req.Header.Set("X-Session-Id", "session-X")
+	res := httptest.NewRecorder()
+	service.handlePatchThought(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.ThoughtSnapshot `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Thought.UserTitle != "Renamed" {
+		t.Fatalf("user title = %q", payload.Data.Thought.UserTitle)
+	}
+	if payload.Data.Thought.ExtractedTitle != "" {
+		t.Fatalf("extracted title should not change: %q", payload.Data.Thought.ExtractedTitle)
+	}
+	if !strings.Contains(payload.Data.Content.AINotes, "Summary: original") ||
+		!strings.Contains(payload.Data.Content.AINotes, "Followup after the rename.") {
+		t.Fatalf("ai notes = %q", payload.Data.Content.AINotes)
+	}
+}
+
+func TestHandlePatchThoughtRequiresSessionID(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil, capturebiz.WithLocker(thoughtlock.New(time.Second)))
+	service := &Service{captureService: captureService, workspace: ws}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/thoughts/whatever", strings.NewReader(`{"title":"X"}`))
+	res := httptest.NewRecorder()
+	service.handlePatchThought(context.Background(), res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "session_required") {
+		t.Fatalf("body missing session_required: %s", res.Body.String())
+	}
+}
+
+func TestHandlePatchThoughtRejectsUnknownField(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	now := time.Date(2026, 6, 9, 16, 1, 0, 0, time.UTC)
+	thoughtID := "20260609-160100-unknown"
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash("u body"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "u body"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil, capturebiz.WithLocker(thoughtlock.New(time.Second)))
+	service := &Service{captureService: captureService, workspace: ws}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/thoughts/"+thoughtID, strings.NewReader(`{"untitled_field":"X"}`))
+	req.Header.Set("X-Session-Id", "session-X")
+	res := httptest.NewRecorder()
+	service.handlePatchThought(context.Background(), res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "invalid_patch") {
+		t.Fatalf("body missing invalid_patch: %s", res.Body.String())
+	}
+}
+
+func TestHandleThoughtSuggestUsesExtractedTitle(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	now := time.Date(2026, 6, 9, 16, 10, 0, 0, time.UTC)
+	thoughtID := "20260609-161000-suggest"
+	thought := models.Thought{
+		ID:             thoughtID,
+		Type:           models.ThoughtTypeURL,
+		Source:         models.ThoughtSourceManual,
+		ExtractedTitle: "Fetched title",
+		Path:           filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		ContentHash:    models.ContentHash("https://example.com"),
+		CaptureStatus:  models.CaptureStatusCaptured,
+		RefineStatus:   models.RefineStatusRefined,
+		IndexStatus:    models.IndexStatusIndexed,
+		TopicStatus:    models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "https://example.com", AINotes: "Summary: existing"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
+	service := &Service{refinerService: refinerService, workspace: ws}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/thoughts/"+thoughtID+"/suggest", nil)
+	service.handleThoughtSuggest(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.ThoughtSuggestion `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Title != "Fetched title" {
+		t.Fatalf("suggestion title = %q", payload.Data.Title)
+	}
+	if payload.Data.Model != "extracted" {
+		t.Fatalf("suggestion model = %q", payload.Data.Model)
+	}
+}
+
+// stubClassifyProvider returns a fixed response. It is used to verify
+// that handleCreateThought forwards the classified command to the
+// capture service.
+type stubClassifyProvider struct {
+	result ai.ClassifyResult
+	err    error
+	called int
+}
+
+func (s *stubClassifyProvider) Classify(_ context.Context, _ ai.ClassifyRequest) (ai.ClassifyResult, error) {
+	s.called++
+	if s.err != nil {
+		return ai.ClassifyResult{}, s.err
+	}
+	return s.result, nil
+}
+
+func TestHandleCreateThoughtUsesClassifyForAmbiguousContent(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	classify := &stubClassifyProvider{result: ai.ClassifyResult{
+		Raw:   `{"type":"url","extracted_url":"https://example.com/feed","confidence":0.9}`,
+		Model: "test-llm",
+	}}
+	service := &Service{captureService: captureService, workspace: ws, classifyProvider: classify}
+
+	// Content has no URL, so the regex fast path is skipped and the LLM
+	// classifier is the only one that decides the type.
+	body := `{"type":"","content":"a deep dive into vector databases"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/thoughts", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleCreateThought(context.Background(), res, req)
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if classify.called != 1 {
+		t.Fatalf("classify called %d times, want 1", classify.called)
+	}
+	thoughtFile := findSingleThoughtFile(t, ws.ThoughtsPath)
+	raw, err := os.ReadFile(thoughtFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	contents := string(raw)
+	if !strings.Contains(contents, "https://example.com/feed") {
+		t.Fatalf("front matter missing URL: %s", contents)
+	}
+	if !strings.Contains(contents, `type: "url"`) {
+		t.Fatalf("front matter type should be url: %s", contents)
+	}
+}
+
+func TestHandleCreateThoughtURLRegexShortCircuitsClassify(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	classify := &stubClassifyProvider{}
+	service := &Service{captureService: captureService, workspace: ws, classifyProvider: classify}
+
+	// Content is a bare URL — the regex fast path should resolve it
+	// without paying for an LLM call.
+	body := `{"type":"","content":"https://example.com/paper"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/thoughts", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleCreateThought(context.Background(), res, req)
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if classify.called != 0 {
+		t.Fatalf("classify called %d times, want 0 (regex fast path)", classify.called)
+	}
+	thoughtFile := findSingleThoughtFile(t, ws.ThoughtsPath)
+	raw, err := os.ReadFile(thoughtFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	contents := string(raw)
+	if !strings.Contains(contents, "https://example.com/paper") {
+		t.Fatalf("front matter missing URL: %s", contents)
+	}
+}
+
+func TestHandleCreateThoughtFallsBackToTextOnClassifyError(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	classify := &stubClassifyProvider{err: errors.New("simulated provider outage")}
+	service := &Service{captureService: captureService, workspace: ws, classifyProvider: classify}
+
+	body := `{"type":"","content":"just a plain note"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/thoughts", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleCreateThought(context.Background(), res, req)
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if classify.called != 1 {
+		t.Fatalf("classify called %d times, want 1", classify.called)
+	}
+	thoughtFile := findSingleThoughtFile(t, ws.ThoughtsPath)
+	raw, err := os.ReadFile(thoughtFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	contents := string(raw)
+	if !strings.Contains(contents, `type: "text"`) {
+		t.Fatalf("front matter type should fall back to text: %s", contents)
+	}
+	if !strings.Contains(contents, "just a plain note") {
+		t.Fatalf("front matter missing content: %s", contents)
+	}
+}
+
+func TestHandleStartCaptureSessionCreatesThoughtAndReturns(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
+	classify := &stubClassifyProvider{result: ai.ClassifyResult{
+		Raw:   `{"type":"text","confidence":0.95}`,
+		Model: "test-llm",
+	}}
+	service := &Service{
+		captureService:   captureService,
+		refinerService:   refinerService,
+		workspace:        ws,
+		classifyProvider: classify,
+	}
+
+	body := `{"content":"brainstorm ideas for the next refactor","session_id":"sess-42"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/start", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleStartCaptureSession(context.Background(), res, req)
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.CaptureSessionStart `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.SessionID != "sess-42" {
+		t.Fatalf("session_id = %q, want sess-42", payload.Data.SessionID)
+	}
+	if payload.Data.Thought.ID == "" {
+		t.Fatalf("thought id missing")
+	}
+	if payload.Data.Thought.Type != models.ThoughtTypeText {
+		t.Fatalf("thought type = %q, want text", payload.Data.Thought.Type)
+	}
+	if classify.called != 1 {
+		t.Fatalf("classify called %d times, want 1", classify.called)
+	}
+}
+
+func TestHandleStartCaptureSessionUsesClassifyForAmbiguousInput(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
+	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
+	classify := &stubClassifyProvider{result: ai.ClassifyResult{
+		Raw:   `{"type":"url","extracted_url":"https://example.org/article","confidence":0.85}`,
+		Model: "test-llm",
+	}}
+	service := &Service{
+		captureService:   captureService,
+		refinerService:   refinerService,
+		workspace:        ws,
+		classifyProvider: classify,
+	}
+
+	// No URL in the content, so the regex fast path is skipped and the
+	// LLM classifier is the only path that decides the type.
+	body := `{"content":"the article could be relevant to the team","session_id":"sess-99"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/start", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleStartCaptureSession(context.Background(), res, req)
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if classify.called != 1 {
+		t.Fatalf("classify called %d times, want 1", classify.called)
+	}
+	var payload struct {
+		Data models.CaptureSessionStart `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload.Data.Thought.Type != models.ThoughtTypeURL {
+		t.Fatalf("thought type = %q, want url", payload.Data.Thought.Type)
+	}
+	if payload.Data.Thought.URL != "https://example.org/article" {
+		t.Fatalf("thought url = %q, want https://example.org/article", payload.Data.Thought.URL)
+	}
 }

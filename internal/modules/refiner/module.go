@@ -15,6 +15,7 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/synthesisstore"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/webfetch"
 	"thoughtflow/internal/pkg/workspace"
 )
@@ -64,7 +65,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	if err != nil {
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewRefineProvider(cfg.LLM, cfg.Embedding), webfetch.New(30*time.Second))
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewRefineProvider(cfg.LLM, cfg.Embedding), webfetch.New(30*time.Second), biz.WithLocker(thoughtlock.Default()))
 	m.service.ConfigureSynthesis(ai.NewSynthesisProvider(cfg.LLM), synthesisstore.New(ws.RootPath))
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)

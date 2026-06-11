@@ -459,6 +459,38 @@ func isThoughtBodySection(line string) bool {
 	}
 }
 
+// AppendAINotes appends a timestamped paragraph to the AI Notes section
+// of a thought body. If the section is missing, it is created just
+// before the trailing separator (or appended to the end). The returned
+// string is the new value for ThoughtContent.AINotes.
+func AppendAINotes(existing string, paragraph string, now time.Time) string {
+	cleanParagraph := strings.TrimRight(paragraph, "\n")
+	header := fmt.Sprintf("\n### %s\n", now.UTC().Format("2006-01-02 15:04:05 UTC"))
+	if strings.TrimSpace(existing) == "" {
+		return "## AI Notes\n" + header + cleanParagraph + "\n"
+	}
+	// Insert before any trailing "---" separator so the AI Notes block
+	// stays adjacent to the previous content rather than slipping past the
+	// front-matter divider. If no separator is found, append at the end.
+	lines := strings.Split(existing, "\n")
+	insertAt := len(lines)
+	for idx := len(lines) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(lines[idx]) == "---" {
+			insertAt = idx
+			break
+		}
+	}
+	prefix := strings.Join(lines[:insertAt], "\n")
+	suffix := strings.Join(lines[insertAt:], "\n")
+	if strings.TrimSpace(prefix) == "" {
+		return "## AI Notes\n" + header + cleanParagraph + "\n" + suffix
+	}
+	if !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	return prefix + header + cleanParagraph + "\n" + suffix
+}
+
 func displayTitle(thought models.Thought, content models.ThoughtContent) string {
 	if thought.UserTitle != "" {
 		return thought.UserTitle

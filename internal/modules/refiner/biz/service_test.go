@@ -14,6 +14,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/webfetch"
 )
 
@@ -361,6 +362,66 @@ func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	}
 	if gotThought.RefineStatus != models.RefineStatusRefined || gotThought.Summary != "retry succeeded" {
 		t.Fatalf("thought after retry = %#v", gotThought)
+	}
+}
+
+func TestRefineJobSkippedWhenThoughtLocked(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	thoughtID := "20260609-153500-locked"
+	now := time.Date(2026, 6, 9, 15, 35, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID:            thoughtID,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash("locked content"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "locked content"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	locker := thoughtlock.New(time.Second)
+	if err := locker.Acquire(thoughtID, "capture-session-A"); err != nil {
+		t.Fatalf("seed acquire: %v", err)
+	}
+
+	provider := &countingRefineProvider{}
+	jobs := jobstore.New(ws.JobsPath)
+	service := NewService(ws, jobs, nil, nil, provider, webfetch.New(time.Second), WithLocker(locker))
+	job, err := jobs.CreateWithMaxAttempts(models.JobTypeRefine, models.ResourceTypeThought, thoughtID, "refine queued", refineMaxAttempts)
+	if err != nil {
+		t.Fatalf("CreateWithMaxAttempts() error = %v", err)
+	}
+	service.refineJob(job, false)
+
+	loaded, err := jobs.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get(job) error = %v", err)
+	}
+	if loaded.Status != models.JobStatusSucceeded {
+		t.Fatalf("locked job status = %q", loaded.Status)
+	}
+	if !strings.Contains(loaded.Message, "locked") {
+		t.Fatalf("locked job message = %q", loaded.Message)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider should not have been called, calls = %d", provider.calls)
 	}
 }
 

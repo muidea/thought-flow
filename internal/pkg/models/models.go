@@ -63,6 +63,7 @@ const (
 	EventGitCommitSucceeded    = "git.commit_succeeded"
 	EventGitCommitFailed       = "git.commit_failed"
 	EventJobUpdated            = "job.updated"
+	EventThoughtPatched        = "thought.patched"
 )
 
 type Workspace struct {
@@ -147,6 +148,35 @@ type CaptureCommand struct {
 	Tags       []string `json:"tags"`
 	TopicHints []string `json:"topic_hints"`
 	Source     string   `json:"source"`
+}
+
+// ThoughtPatchRequest is the body of PATCH /api/thoughts/:id. Pointer
+// fields distinguish "field absent" (leave the existing value alone) from
+// "field present with empty value" (clear the value). PatchThought
+// rejects unknown fields with a 400; see service.PatchThought.
+type ThoughtPatchRequest struct {
+	Title         *string   `json:"title,omitempty"`
+	Tags          *[]string `json:"tags,omitempty"`
+	AINotesAppend *string   `json:"ai_notes_append,omitempty"`
+	TopicIDs      *[]string `json:"topic_ids,omitempty"`
+}
+
+type ThoughtSuggestion struct {
+	ThoughtID string   `json:"thought_id"`
+	Title     string   `json:"title"`
+	Tags      []string `json:"tags"`
+	Model     string   `json:"model"`
+}
+
+// CaptureSessionStart is the response body of
+// POST /api/capture/sessions/start. The session_id is the caller's
+// conversation id (echoed back unchanged); the suggestion is best-effort
+// and may be empty if the refiner is not configured.
+type CaptureSessionStart struct {
+	SessionID  string            `json:"session_id"`
+	Thought    Thought           `json:"thought"`
+	Jobs       []Job             `json:"jobs"`
+	Suggestion ThoughtSuggestion `json:"suggestion"`
 }
 
 type CaptureResult struct {

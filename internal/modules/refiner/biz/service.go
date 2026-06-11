@@ -15,6 +15,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/synthesisstore"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/webfetch"
 )
 
@@ -27,10 +28,12 @@ type Service struct {
 	fetcher           *webfetch.Fetcher
 	synthesisProvider ai.SynthesisProvider
 	synthesisStore    *synthesisstore.Store
+	locker            *thoughtlock.Locker
 }
 
 const refineMaxAttempts = 3
 const skippedUnchangedModel = "cached-unchanged"
+const refinerSessionID = "refiner"
 
 type retryableRefineError struct {
 	err error
@@ -59,8 +62,19 @@ func (e retryableRefineError) Unwrap() error {
 	return e.err
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.RefineProvider, fetcher *webfetch.Fetcher) *Service {
-	return &Service{
+type Option func(*Service)
+
+// WithLocker attaches a thoughtlock.Locker. The same instance should be
+// shared with the capture service so PATCH and refine serialize against
+// each other.
+func WithLocker(locker *thoughtlock.Locker) Option {
+	return func(s *Service) {
+		s.locker = locker
+	}
+}
+
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.RefineProvider, fetcher *webfetch.Fetcher, options ...Option) *Service {
+	service := &Service{
 		workspace:  workspace,
 		jobs:       jobs,
 		eventHub:   eventHub,
@@ -68,6 +82,10 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub even
 		provider:   provider,
 		fetcher:    fetcher,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) ConfigureSynthesis(provider ai.SynthesisProvider, store *synthesisstore.Store) {
@@ -123,6 +141,43 @@ func (s *Service) refineAsync(thoughtID string, force bool) (models.Job, error) 
 
 func (s *Service) RefineNow(ctx context.Context, thoughtID string) (models.ThoughtRefinement, error) {
 	return s.refineNow(ctx, thoughtID, false)
+}
+
+func (s *Service) Suggest(ctx context.Context, thoughtID string) (models.ThoughtSuggestion, error) {
+	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		return models.ThoughtSuggestion{}, err
+	}
+	if thought.ExtractedTitle != "" {
+		return models.ThoughtSuggestion{
+			ThoughtID: thoughtID,
+			Title:     thought.ExtractedTitle,
+			Tags:      append([]string{}, thought.AITags...),
+			Model:     "extracted",
+		}, nil
+	}
+	if thought.RefineStatus == models.RefineStatusRefined {
+		title := thought.UserTitle
+		if title == "" {
+			title = thought.ExtractedTitle
+		}
+		return models.ThoughtSuggestion{
+			ThoughtID: thoughtID,
+			Title:     title,
+			Tags:      append([]string{}, thought.AITags...),
+			Model:     "refined",
+		}, nil
+	}
+	fallback := strings.SplitN(strings.TrimSpace(content.Original), "\n", 2)[0]
+	if len(fallback) > 80 {
+		fallback = fallback[:80]
+	}
+	return models.ThoughtSuggestion{
+		ThoughtID: thoughtID,
+		Title:     fallback,
+		Tags:      []string{},
+		Model:     "fallback",
+	}, nil
 }
 
 func (s *Service) refineNow(ctx context.Context, thoughtID string, force bool) (models.ThoughtRefinement, error) {
@@ -187,6 +242,17 @@ func (s *Service) MarkSynthesisSaved(ctx context.Context, draftID string, conten
 
 func (s *Service) refineJob(job models.Job, force bool) {
 	ctx := context.Background()
+	// Skip the job cleanly if a Capture session is currently editing the
+	// thought. We don't queue or retry — the next background sweep will
+	// pick it up once the session releases the lock or the TTL elapses.
+	if s.locker != nil {
+		if err := s.locker.Acquire(job.ResourceID, refinerSessionID); err != nil {
+			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked by an active session")
+			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
+			return
+		}
+		defer s.locker.Release(job.ResourceID, refinerSessionID)
+	}
 	for {
 		job, _ = s.jobs.MarkRunning(job)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))

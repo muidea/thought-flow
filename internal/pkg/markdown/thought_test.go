@@ -191,3 +191,39 @@ hello
 		t.Fatalf("known errors field should not be duplicated:\n%s", text)
 	}
 }
+
+func TestAppendAINotes_CreatesSectionIfMissing(t *testing.T) {
+	now := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+	got := AppendAINotes("", "First note", now)
+	if !strings.Contains(got, "## AI Notes") {
+		t.Fatalf("expected AI Notes header, got %q", got)
+	}
+	if !strings.Contains(got, "First note") {
+		t.Fatalf("expected note text in output, got %q", got)
+	}
+	if !strings.Contains(got, "2026-06-10 09:00:00 UTC") {
+		t.Fatalf("expected timestamp heading, got %q", got)
+	}
+}
+
+func TestAppendAINotes_AppendsBelowExisting(t *testing.T) {
+	now := time.Date(2026, 6, 10, 9, 30, 0, 0, time.UTC)
+	existing := "## AI Notes\n\n### 2026-06-10 09:00:00 UTC\nEarlier note\n\n---"
+	got := AppendAINotes(existing, "Newer note", now)
+	if !strings.Contains(got, "Earlier note") {
+		t.Fatalf("existing note lost: %q", got)
+	}
+	if !strings.Contains(got, "Newer note") {
+		t.Fatalf("new note missing: %q", got)
+	}
+	if !strings.Contains(got, "2026-06-10 09:30:00 UTC") {
+		t.Fatalf("new timestamp missing: %q", got)
+	}
+	// The trailing separator should still be present and stay at the end
+	// of the file, after the new note.
+	noteIdx := strings.Index(got, "Newer note")
+	sepIdx := strings.LastIndex(got, "---")
+	if noteIdx < 0 || sepIdx < 0 || sepIdx <= noteIdx {
+		t.Fatalf("separator should come after new note: note=%d sep=%d body=%q", noteIdx, sepIdx, got)
+	}
+}
