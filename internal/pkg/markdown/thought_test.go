@@ -228,6 +228,70 @@ func TestAppendAINotes_AppendsBelowExisting(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadExpansionFields(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 12, 10, 15, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID:                "20260612-101500-expand",
+		Type:              models.ThoughtTypeURL,
+		Source:            models.ThoughtSourceManual,
+		UserTitle:         "Web 页面采集",
+		Path:              filepath.ToSlash(ThoughtRelativePath("20260612-101500-expand")),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		ContentHash:       models.ContentHash("seed"),
+		RelatedThoughtIDs: []string{"20260501-090000-rag", "20260420-080000-crawl"},
+		SuggestedTopicIDs: []string{"topic-web-research", "topic-pipelines"},
+		URLFollowups: []models.URLFollowup{
+			{URL: "https://example.com/a", Title: "A primer", Snippet: "intro to A"},
+			{URL: "https://example.com/b", Title: "B deep dive"},
+		},
+		ExpansionPlan: "## 背景\n用户在搭建一个 web 采集工具。\n\n## 步骤\n1. 列目标站点\n2. 调度抓取",
+	}
+	if err := WriteThought(root, thought, models.ThoughtContent{Original: "https://example.com/seed"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	gotThought, _, err := ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if got, want := gotThought.RelatedThoughtIDs, []string{"20260420-080000-crawl", "20260501-090000-rag"}; !equalStrings(got, want) {
+		t.Fatalf("RelatedThoughtIDs = %v, want %v", got, want)
+	}
+	if got, want := gotThought.SuggestedTopicIDs, []string{"topic-pipelines", "topic-web-research"}; !equalStrings(got, want) {
+		t.Fatalf("SuggestedTopicIDs = %v, want %v", got, want)
+	}
+	if len(gotThought.URLFollowups) != 2 {
+		t.Fatalf("URLFollowups length = %d, want 2", len(gotThought.URLFollowups))
+	}
+	if gotThought.URLFollowups[0].URL != "https://example.com/a" ||
+		gotThought.URLFollowups[0].Title != "A primer" ||
+		gotThought.URLFollowups[0].Snippet != "intro to A" {
+		t.Fatalf("URLFollowups[0] = %#v", gotThought.URLFollowups[0])
+	}
+	if gotThought.URLFollowups[1].URL != "https://example.com/b" ||
+		gotThought.URLFollowups[1].Title != "B deep dive" ||
+		gotThought.URLFollowups[1].Snippet != "" {
+		t.Fatalf("URLFollowups[1] = %#v", gotThought.URLFollowups[1])
+	}
+	if !strings.Contains(gotThought.ExpansionPlan, "## 背景") ||
+		!strings.Contains(gotThought.ExpansionPlan, "2. 调度抓取") {
+		t.Fatalf("ExpansionPlan = %q", gotThought.ExpansionPlan)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCleanupOrphanThoughtTempFilesRemovesDotTmp(t *testing.T) {
 	thoughts := t.TempDir()
 	target := filepath.Join(thoughts, "2026", "06")

@@ -43,6 +43,28 @@ type SynthesisRequest struct {
 	SourceLinks []string
 }
 
+// ExpandRequest is the post-refine expansion input. The expander
+// passes the refined thought, its current content, and the LLM-side
+// signals (summary / key points / ai tags) so the LLM can produce a
+// self-contained "处理思路与方案" without re-reading the entire
+// content body. This is intentionally narrower than RefineRequest —
+// the plan does not need the full Content struct.
+type ExpandRequest struct {
+	Thought models.Thought
+	Content models.ThoughtContent
+	Summary string
+	Tags    []string
+}
+
+// ExpandResult is the expansion plan as the LLM returned it. The
+// caller persists Result.Plan to the thought's expansion_plan front
+// matter and shows it under "处理思路与方案" in the UI.
+type ExpandResult struct {
+	Plan        string
+	Model       string
+	GeneratedAt time.Time
+}
+
 type RefineProvider interface {
 	Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error)
 }
@@ -57,6 +79,10 @@ type WeaveProvider interface {
 
 type SynthesisProvider interface {
 	Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error)
+}
+
+type ExpandProvider interface {
+	Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error)
 }
 
 type Provider interface {
@@ -114,6 +140,13 @@ func NewSynthesisProvider(cfg appconfig.LLMConfig) SynthesisProvider {
 	return observedSynthesisProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
 }
 
+func NewExpandProvider(cfg appconfig.LLMConfig) ExpandProvider {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return observedExpandProvider{next: NewLocalRefineProvider()}
+	}
+	return observedExpandProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
+}
+
 type observedRefineProvider struct {
 	next RefineProvider
 }
@@ -148,6 +181,15 @@ type observedSynthesisProvider struct {
 func (p observedSynthesisProvider) Synthesize(ctx context.Context, req SynthesisRequest) (models.SynthesisDraft, error) {
 	observability.IncrementAIRequest()
 	return p.next.Synthesize(ctx, req)
+}
+
+type observedExpandProvider struct {
+	next ExpandProvider
+}
+
+func (p observedExpandProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
+	observability.IncrementAIRequest()
+	return p.next.Expand(ctx, req)
 }
 
 func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
@@ -224,6 +266,48 @@ func (p *LocalRefineProvider) Synthesize(ctx context.Context, req SynthesisReque
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}, nil
+}
+
+// Expand returns a best-effort local expansion plan built from the
+// summary, key points, and original content. The result is good
+// enough to populate the "处理思路与方案" section when no LLM is
+// configured; the LLM path is the production path and is expected
+// to overwrite this.
+func (p *LocalRefineProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
+	_ = ctx
+	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
+	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
+	body := strings.TrimSpace(req.Content.Original)
+	if body == "" {
+		body = strings.TrimSpace(req.Content.ExtractedContent)
+	}
+	var plan strings.Builder
+	plan.WriteString("## 背景与现状分析\n\n")
+	if summary != "" {
+		plan.WriteString(summary)
+		plan.WriteString("\n\n")
+	} else {
+		plan.WriteString("基于标题「")
+		plan.WriteString(title)
+		plan.WriteString("」补全背景：用户提交了一条碎片笔记，需要进一步梳理思路和落地步骤。\n\n")
+	}
+	if body != "" {
+		plan.WriteString("笔记原文要点：\n\n")
+		plan.WriteString("- ")
+		plan.WriteString(strings.Join(strings.Fields(strings.SplitN(body, "\n", 2)[0]), " "))
+		plan.WriteString("\n\n")
+	}
+	plan.WriteString("## 可能的处理方向\n\n")
+	for _, tag := range req.Tags {
+		plan.WriteString("- 围绕「")
+		plan.WriteString(tag)
+		plan.WriteString("」延伸出一个具体的下一步动作\n")
+	}
+	if len(req.Tags) == 0 {
+		plan.WriteString("- 列出 3 个最直接的下一步动作\n")
+	}
+	plan.WriteString("\n## 推荐的具体步骤\n\n1. 复述本笔记的目标\n2. 关联 1-2 条已有 Thought（搜索 hybrid 模式）\n3. 写入专题并触发 weave\n\n## 关键注意事项\n\n- 涉及 URL 时走 Jina reader 抓取\n- 专题判定阈值默认 0.75，near-miss 阈值 0.55\n- 锁与 refiner 共享，避免与正在 refine 的 Thought 互踩\n\n## 延伸阅读建议\n\n- 现有的相关专题文档\n- 与本笔记同类型的前置笔记")
+	return ExpandResult{Plan: plan.String(), Model: "local-rule", GeneratedAt: time.Now().UTC()}, nil
 }
 
 type OpenAICompatibleProvider struct {
@@ -467,6 +551,106 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 
 func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
 	return postOpenAICompatibleJSON(ctx, p.client, p.baseURL, p.apiKey, path, payload, target)
+}
+
+// Expand asks the LLM for a "处理思路与方案" Markdown plan. Unlike
+// Refine/Weave/Synthesize the response is plain Markdown, not JSON —
+// the prompt explicitly forbids code fences, so the caller can show
+// the raw `Choices[0].Message.Content` directly.
+func (p *OpenAICompatibleProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
+	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
+	original := firstNonEmpty(strings.TrimSpace(req.Content.Original), strings.TrimSpace(req.Content.ExtractedContent))
+	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
+	payload := map[string]any{
+		"model": p.chatModel,
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": expandSystemPrompt(),
+			},
+			{
+				"role":    "user",
+				"content": expandUserPrompt(title, summary, req.Thought.KeyPoints, req.Tags, original, req.Thought.Type, req.Thought.URL),
+			},
+		},
+		"temperature": 0.3,
+	}
+	var response chatCompletionResponse
+	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+		return ExpandResult{}, err
+	}
+	if len(response.Choices) == 0 {
+		return ExpandResult{}, errors.New("expand returned no choices")
+	}
+	plan := strings.TrimSpace(stripMarkdownFence(response.Choices[0].Message.Content))
+	if plan == "" {
+		return ExpandResult{}, errors.New("expand plan is empty")
+	}
+	return ExpandResult{Plan: plan, Model: p.chatModel, GeneratedAt: time.Now().UTC()}, nil
+}
+
+func expandSystemPrompt() string {
+	return "你是 ThoughtFlow 的研究助手。用户提交了一条碎片笔记，请你基于笔记内容产出" +
+		"「处理思路与方案」。要求：1. 直接出方案，不要提问、不要反问、不要「我需要更多信息」。" +
+		"2. 至少包含五个段落：背景与现状分析、可能的处理方向、推荐的具体步骤（带顺序编号）、关键注意事项、延伸阅读建议。" +
+		"3. 使用中文，简洁专业；可使用 Markdown 列表、引用、加粗；不要使用 ```markdown 围栏。" +
+		"4. 长度 400-800 字。如果原内容太短无法支撑方案，先基于常识补全背景，再给方向。"
+}
+
+func expandUserPrompt(title string, summary string, keyPoints []string, tags []string, original string, thoughtType string, thoughtURL string) string {
+	var b strings.Builder
+	b.WriteString("标题：")
+	b.WriteString(title)
+	b.WriteString("\n摘要：")
+	b.WriteString(firstNonEmpty(summary, "(无摘要)"))
+	b.WriteString("\n关键点：\n")
+	if len(keyPoints) == 0 {
+		b.WriteString("- (无关键点)\n")
+	} else {
+		for _, kp := range keyPoints {
+			b.WriteString("- ")
+			b.WriteString(kp)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("AI 标签：")
+	if len(tags) == 0 {
+		b.WriteString("(无)")
+	} else {
+		b.WriteString(strings.Join(tags, ", "))
+	}
+	b.WriteString("\n类型：")
+	b.WriteString(firstNonEmpty(thoughtType, "text"))
+	if thoughtURL != "" {
+		b.WriteString("\nURL：")
+		b.WriteString(thoughtURL)
+	}
+	b.WriteString("\n原始内容：\n")
+	if strings.TrimSpace(original) == "" {
+		b.WriteString("(无原始内容)")
+	} else {
+		b.WriteString(original)
+	}
+	b.WriteString("\n\n请输出处理思路与方案。")
+	return b.String()
+}
+
+// stripMarkdownFence removes an optional ``` ... ``` wrapping that
+// some chat models still emit even when prompted not to. It is
+// conservative: if the fence markers are not present, the input is
+// returned unchanged.
+func stripMarkdownFence(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "```") {
+		return value
+	}
+	body := strings.TrimPrefix(trimmed, "```")
+	if newline := strings.Index(body, "\n"); newline >= 0 {
+		body = body[newline+1:]
+	}
+	body = strings.TrimRight(body, "`")
+	body = strings.TrimRight(body, "\n")
+	return strings.TrimSpace(body)
 }
 
 func postOpenAICompatibleJSON(ctx context.Context, client *http.Client, baseURL string, apiKey string, path string, payload any, target any) error {

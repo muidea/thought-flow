@@ -17,6 +17,7 @@ import (
 
 	_ "thoughtflow/internal/modules/application/thoughtflow"
 	_ "thoughtflow/internal/modules/capture"
+	_ "thoughtflow/internal/modules/expander"
 	_ "thoughtflow/internal/modules/git_sync"
 	_ "thoughtflow/internal/modules/refiner"
 	_ "thoughtflow/internal/modules/search"

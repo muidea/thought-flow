@@ -173,3 +173,104 @@ func TestFetcherReturnsLocalErrorWhenReaderAlsoFails(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestFetcherLocalExtractsLinks(t *testing.T) {
+	body := strings.Repeat("Local body &amp; text with enough readable words for direct extraction. ", 8)
+	html := `<html><head><title>Local</title></head><body><main>
+		<h1>Project</h1>
+		<p>` + body + `</p>
+		<ul>
+			<li><a href="https://example.com/a">Alpha</a></li>
+			<li><a href="https://example.com/b">Beta</a></li>
+			<li><a href="#section">Skip</a></li>
+			<li><a href="mailto:x@y">Mail</a></li>
+			<li><a href="/relative">Relative</a></li>
+			<li><a href="javascript:void(0)">JS</a></li>
+			<li><a href="https://example.com/a">Duplicate</a></li>
+		</ul>
+	</main></body></html>`
+	local := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "text/html")
+		_, _ = res.Write([]byte(html))
+	}))
+	defer local.Close()
+
+	fetcher := New(time.Second)
+	result, err := fetcher.Fetch(context.Background(), local.URL)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(result.Links) != 2 {
+		t.Fatalf("links length = %d, want 2 (got %#v)", len(result.Links), result.Links)
+	}
+	if result.Links[0].URL != "https://example.com/a" || result.Links[0].Title != "Alpha" {
+		t.Fatalf("link[0] = %#v", result.Links[0])
+	}
+	if result.Links[1].URL != "https://example.com/b" || result.Links[1].Title != "Beta" {
+		t.Fatalf("link[1] = %#v", result.Links[1])
+	}
+}
+
+func TestFetcherReaderExtractsMarkdownLinks(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "text/html")
+		_, _ = res.Write([]byte(`<html><head><title>Shell</title></head><body><main>Skip to content</main></body></html>`))
+	}))
+	defer local.Close()
+	readerBody := "Title: Reader title\n\n# Heading\n\nSee [Alpha](https://example.com/a) and [Beta](https://example.com/b).\n\n[skip](#anchor) and [dup](https://example.com/a)."
+	reader := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "text/plain")
+		_, _ = res.Write([]byte(readerBody))
+	}))
+	defer reader.Close()
+
+	fetcher := New(time.Second, WithReaderBaseURL(reader.URL))
+	result, err := fetcher.Fetch(context.Background(), local.URL)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(result.Links) != 2 {
+		t.Fatalf("links length = %d, want 2 (got %#v)", len(result.Links), result.Links)
+	}
+	if result.Links[0].URL != "https://example.com/a" || result.Links[0].Title != "Alpha" {
+		t.Fatalf("link[0] = %#v", result.Links[0])
+	}
+	if result.Links[1].URL != "https://example.com/b" || result.Links[1].Title != "Beta" {
+		t.Fatalf("link[1] = %#v", result.Links[1])
+	}
+}
+
+func TestFetcherLocalCapsFollowupLinksAtFive(t *testing.T) {
+	body := strings.Repeat("Local body &amp; text with enough readable words for direct extraction. ", 8)
+	var items strings.Builder
+	for i := 0; i < 12; i++ {
+		items.WriteString(`<li><a href="https://example.com/l` + intToA(i) + `">L` + intToA(i) + `</a></li>`)
+	}
+	local := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "text/html")
+		_, _ = res.Write([]byte(`<html><head><title>Local</title></head><body><main>` + body + `<ul>` + items.String() + `</ul></main></body></html>`))
+	}))
+	defer local.Close()
+
+	fetcher := New(time.Second)
+	result, err := fetcher.Fetch(context.Background(), local.URL)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(result.Links) != 5 {
+		t.Fatalf("links length = %d, want 5 (got %#v)", len(result.Links), result.Links)
+	}
+}
+
+func intToA(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	const digits = "0123456789"
+	var out []byte
+	for n > 0 {
+		out = append([]byte{digits[n%10]}, out...)
+		n /= 10
+	}
+	return string(out)
+}

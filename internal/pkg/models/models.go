@@ -41,6 +41,7 @@ const (
 	JobTypeReindex    = "reindex"
 	JobTypeTopicMatch = "topic_match"
 	JobTypeTopicWeave = "topic_weave"
+	JobTypeExpand     = "expand"
 
 	ResourceTypeThought   = "thought"
 	ResourceTypeWorkspace = "workspace"
@@ -64,6 +65,7 @@ const (
 	EventGitCommitFailed       = "git.commit_failed"
 	EventJobUpdated            = "job.updated"
 	EventThoughtPatched        = "thought.patched"
+	EventThoughtExpanded       = "thought.expanded"
 )
 
 type Workspace struct {
@@ -79,27 +81,51 @@ type Workspace struct {
 }
 
 type Thought struct {
-	ID             string     `json:"id"`
-	Type           string     `json:"type"`
-	Source         string     `json:"source"`
-	UserTitle      string     `json:"user_title,omitempty"`
-	ExtractedTitle string     `json:"extracted_title,omitempty"`
-	DisplayTitle   string     `json:"display_title,omitempty"`
-	URL            string     `json:"url,omitempty"`
-	Path           string     `json:"path"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	ContentHash    string     `json:"content_hash"`
-	UserTags       []string   `json:"user_tags,omitempty"`
-	AITags         []string   `json:"ai_tags,omitempty"`
-	TopicIDs       []string   `json:"topic_ids,omitempty"`
-	Summary        string     `json:"summary,omitempty"`
-	KeyPoints      []string   `json:"key_points,omitempty"`
-	Errors         []ErrorRef `json:"errors,omitempty"`
-	CaptureStatus  string     `json:"capture_status"`
-	RefineStatus   string     `json:"refine_status"`
-	IndexStatus    string     `json:"index_status"`
-	TopicStatus    string     `json:"topic_status"`
+	ID                string        `json:"id"`
+	Type              string        `json:"type"`
+	Source            string        `json:"source"`
+	UserTitle         string        `json:"user_title,omitempty"`
+	ExtractedTitle    string        `json:"extracted_title,omitempty"`
+	DisplayTitle      string        `json:"display_title,omitempty"`
+	URL               string        `json:"url,omitempty"`
+	Path              string        `json:"path"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	ContentHash       string        `json:"content_hash"`
+	UserTags          []string      `json:"user_tags,omitempty"`
+	AITags            []string      `json:"ai_tags,omitempty"`
+	TopicIDs          []string      `json:"topic_ids,omitempty"`
+	Summary           string        `json:"summary,omitempty"`
+	KeyPoints         []string      `json:"key_points,omitempty"`
+	Errors            []ErrorRef    `json:"errors,omitempty"`
+	CaptureStatus     string        `json:"capture_status"`
+	RefineStatus      string        `json:"refine_status"`
+	IndexStatus       string        `json:"index_status"`
+	TopicStatus       string        `json:"topic_status"`
+	RelatedThoughtIDs []string      `json:"related_thought_ids,omitempty" yaml:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs []string      `json:"suggested_topic_ids,omitempty" yaml:"suggested_topic_ids,omitempty"`
+	URLFollowups      []URLFollowup `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
+	ExpansionPlan     string        `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
+}
+
+// URLFollowup is one related URL harvested from the main URL of a
+// URL-type thought during post-refine expansion. The snippet is a short
+// lead-in the fetcher pulled alongside the link; it can be empty when
+// the source page did not provide a useful preview.
+type URLFollowup struct {
+	URL     string `json:"url" yaml:"url"`
+	Title   string `json:"title" yaml:"title"`
+	Snippet string `json:"snippet,omitempty" yaml:"snippet,omitempty"`
+}
+
+// TopicMatchSuggestion is one near-miss topic returned by
+// TopicService.NearMissTopics. Score is the same cosine/keyword score
+// that a hard match would have used, but below the topic's
+// Rules.Semantic.Threshold; the UI surfaces it as "possibly related".
+type TopicMatchSuggestion struct {
+	TopicID   string  `json:"topic_id" yaml:"topic_id"`
+	TopicName string  `json:"topic_name" yaml:"topic_name"`
+	Score     float64 `json:"score" yaml:"score"`
 }
 
 type ThoughtContent struct {

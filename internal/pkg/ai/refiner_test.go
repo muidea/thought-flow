@@ -277,3 +277,99 @@ func TestOpenAICompatibleProviderSynthesizePreservesSourceLinks(t *testing.T) {
 		t.Fatalf("expected source link to be appended, content = %q", draft.Content)
 	}
 }
+
+func TestLocalProviderExpandCoversFiveSections(t *testing.T) {
+	provider := NewLocalRefineProvider()
+	result, err := provider.Expand(context.Background(), ExpandRequest{
+		Thought: models.Thought{ID: "thought-1", Type: models.ThoughtTypeText},
+		Content: models.ThoughtContent{Original: "需要开发一个 web 页面采集工具"},
+		Summary: "用户提交了一条 web 采集相关笔记",
+		Tags:    []string{"web", "scraping"},
+	})
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	for _, heading := range []string{
+		"## 背景与现状分析",
+		"## 可能的处理方向",
+		"## 推荐的具体步骤",
+		"## 关键注意事项",
+		"## 延伸阅读建议",
+	} {
+		if !strings.Contains(result.Plan, heading) {
+			t.Fatalf("plan missing %q:\n%s", heading, result.Plan)
+		}
+	}
+	if result.Model != "local-rule" {
+		t.Fatalf("model = %q", result.Model)
+	}
+}
+
+func TestOpenAICompatibleProviderExpandStripsFence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": "```markdown\n## 背景\n线下调研\n```\n",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	}, appconfig.EmbeddingConfig{})
+	result, err := provider.Expand(context.Background(), ExpandRequest{
+		Thought: models.Thought{ID: "thought-1", Type: models.ThoughtTypeText, UserTitle: "采集工具"},
+		Content: models.ThoughtContent{Original: "需要做个 web 页面采集"},
+		Summary: "采集工具笔记",
+		Tags:    []string{"scraping"},
+	})
+	if err != nil {
+		t.Fatalf("Expand() error = %v", err)
+	}
+	if strings.Contains(result.Plan, "```") {
+		t.Fatalf("expected fence stripped, got: %q", result.Plan)
+	}
+	if !strings.Contains(result.Plan, "## 背景") {
+		t.Fatalf("plan = %q", result.Plan)
+	}
+	if result.Model != "chat-model" {
+		t.Fatalf("model = %q", result.Model)
+	}
+}
+
+func TestOpenAICompatibleProviderExpandRejectsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{"content": "   \n"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	}, appconfig.EmbeddingConfig{})
+	_, err := provider.Expand(context.Background(), ExpandRequest{
+		Thought: models.Thought{ID: "thought-1", Type: models.ThoughtTypeText},
+		Content: models.ThoughtContent{Original: "x"},
+	})
+	if err == nil {
+		t.Fatalf("expected error for empty plan")
+	}
+}

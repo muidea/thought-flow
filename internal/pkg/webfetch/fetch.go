@@ -18,7 +18,19 @@ import (
 type Result struct {
 	Title   string
 	Content string
+	Links   []Link
 }
+
+// Link is a candidate reference surface extracted from a fetched
+// page. The expander picks a subset of these for Thought.URLFollowups;
+// we expose the raw list so callers can apply their own ranking or
+// filtering (e.g. drop navigation/footer links by host).
+type Link struct {
+	URL   string
+	Title string
+}
+
+const maxFollowupLinks = 5
 
 type Fetcher struct {
 	client        *http.Client
@@ -176,6 +188,7 @@ func (f *Fetcher) fetchLocal(ctx context.Context, rawURL string) (Result, error)
 	return Result{
 		Title:   extractTitle(html),
 		Content: htmlToText(html),
+		Links:   extractHTMLLinks(html),
 	}, nil
 }
 
@@ -203,6 +216,7 @@ func (f *Fetcher) fetchReader(ctx context.Context, rawURL string) (Result, error
 	return Result{
 		Title:   extractReaderTitle(rawText),
 		Content: content,
+		Links:   extractMarkdownLinks(rawText),
 	}, nil
 }
 
@@ -326,4 +340,105 @@ func cleanStructuredText(text string) string {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// linkRe captures <a href="URL" ...>LABEL</a>; the label is a
+// non-greedy capture that allows nested tags (e.g. <em>). The href
+// attribute value is matched in a separate group so the link
+// extractor can decide whether to keep it. Only the first N matches
+// are returned to bound the result for very link-heavy pages.
+var (
+	htmlLinkRe   = regexp.MustCompile(`(?is)<a\s+[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>`)
+	markdownLink = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^\s)]+)\)`)
+)
+
+// extractHTMLLinks walks the raw HTML of a local page and returns up
+// to maxFollowupLinks links with absolute http(s) URLs. Anchors,
+// mailto:, javascript:, relative paths, and downloads are dropped.
+func extractHTMLLinks(raw string) []Link {
+	matches := htmlLinkRe.FindAllStringSubmatch(raw, -1)
+	seen := map[string]bool{}
+	links := make([]Link, 0, maxFollowupLinks)
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		href := strings.TrimSpace(match[1])
+		if !keepLink(href) {
+			continue
+		}
+		if seen[href] {
+			continue
+		}
+		title := cleanAnchorText(match[2])
+		if title == "" {
+			title = href
+		}
+		seen[href] = true
+		links = append(links, Link{URL: href, Title: title})
+		if len(links) >= maxFollowupLinks {
+			break
+		}
+	}
+	return links
+}
+
+// extractMarkdownLinks walks a Jina-reader-style markdown body and
+// returns up to maxFollowupLinks links. Inline `[title](url)` is the
+// primary pattern; reference-style and autolinks are not common in
+// Jina output and are deliberately ignored to keep the regex simple.
+func extractMarkdownLinks(raw string) []Link {
+	matches := markdownLink.FindAllStringSubmatch(raw, -1)
+	seen := map[string]bool{}
+	links := make([]Link, 0, maxFollowupLinks)
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		href := strings.TrimSpace(match[2])
+		if !keepLink(href) {
+			continue
+		}
+		if seen[href] {
+			continue
+		}
+		title := cleanText(match[1])
+		if title == "" {
+			title = href
+		}
+		seen[href] = true
+		links = append(links, Link{URL: href, Title: title})
+		if len(links) >= maxFollowupLinks {
+			break
+		}
+	}
+	return links
+}
+
+// keepLink rejects anchors, mailto: / javascript: / tel: schemes,
+// relative paths, and empty hrefs. The expander can apply a stricter
+// host filter on top of this if it wants to drop cross-domain
+// referrals.
+func keepLink(href string) bool {
+	if href == "" {
+		return false
+	}
+	lower := strings.ToLower(href)
+	if strings.HasPrefix(lower, "#") {
+		return false
+	}
+	for _, blocked := range []string{"javascript:", "mailto:", "tel:", "data:"} {
+		if strings.HasPrefix(lower, blocked) {
+			return false
+		}
+	}
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	return true
+}
+
+func cleanAnchorText(raw string) string {
+	stripped := tagRe.ReplaceAllString(raw, " ")
+	return cleanText(stripped)
 }

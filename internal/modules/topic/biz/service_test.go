@@ -545,3 +545,165 @@ func hasDiffOp(lines []models.TopicDocumentDiffLine, op string) bool {
 	}
 	return false
 }
+
+func TestServiceNearMissTopicsReturnsBelowThreshold(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	embedder := &fixedEmbeddingProvider{record: models.EmbeddingRecord{
+		Model:     "test-embedding",
+		Dimension: 4,
+		Vector:    []float64{1, 0, 0, 0},
+	}}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil)
+	ctx := context.Background()
+
+	// A high-threshold semantic topic: a thought with 60% similarity
+	// (topic vec = [1,0,0,0], thought vec = [0.6,0.8,0,0] normalized
+	// yields 0.6) should NOT auto-match but should show up as
+	// near-miss.
+	highThresholdTopic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:        "Strict Topic",
+		Description: "high bar",
+		Rules: models.TopicRule{
+			Semantic: models.SemanticRule{Enabled: true, Threshold: 0.75},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	// A keyword-only topic that does not match the thought's content
+	// at all (no overlap, no semantic enabled).
+	keywordTopic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Keyword Only",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"definitely-not-in-the-thought"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	thought := serviceTestThought("20260612-near-miss-1", "Near miss target")
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "loosely related topic body"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	suggestions, err := service.NearMissTopics(ctx, thought.ID, 3, 0.4)
+	if err != nil {
+		t.Fatalf("NearMissTopics() error = %v", err)
+	}
+	if len(suggestions) == 0 {
+		t.Fatalf("expected at least one near-miss suggestion")
+	}
+	hit := false
+	for _, suggestion := range suggestions {
+		if suggestion.TopicID == highThresholdTopic.ID {
+			hit = true
+			if suggestion.TopicName != "Strict Topic" {
+				t.Fatalf("topic name = %q", suggestion.TopicName)
+			}
+			if suggestion.Score < 0.4 {
+				t.Fatalf("score = %v, want >= 0.4", suggestion.Score)
+			}
+		}
+		if suggestion.TopicID == keywordTopic.ID {
+			t.Fatalf("keyword-only topic with no semantic path should not appear in near-miss")
+		}
+	}
+	if !hit {
+		t.Fatalf("expected high-threshold topic in near-miss suggestions: %#v", suggestions)
+	}
+}
+
+func TestServiceNearMissTopicsSortsByScoreDesc(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	embedder := &fixedEmbeddingProvider{record: models.EmbeddingRecord{
+		Model:     "test-embedding",
+		Dimension: 3,
+		Vector:    []float64{1, 0, 0},
+	}}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil)
+	ctx := context.Background()
+
+	topicA, err := service.CreateTopic(ctx, models.TopicCreateRequest{Name: "A", Rules: models.TopicRule{
+		Semantic: models.SemanticRule{Enabled: true, Threshold: 0.95},
+	}})
+	if err != nil {
+		t.Fatalf("CreateTopic A: %v", err)
+	}
+	topicB, err := service.CreateTopic(ctx, models.TopicCreateRequest{Name: "B", Rules: models.TopicRule{
+		Semantic: models.SemanticRule{Enabled: true, Threshold: 0.95},
+	}})
+	if err != nil {
+		t.Fatalf("CreateTopic B: %v", err)
+	}
+
+	thought := serviceTestThought("20260612-near-miss-2", "Sort target")
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "alpha beta gamma"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	suggestions, err := service.NearMissTopics(ctx, thought.ID, 5, 0)
+	if err != nil {
+		t.Fatalf("NearMissTopics() error = %v", err)
+	}
+	if len(suggestions) < 2 {
+		t.Fatalf("expected 2 suggestions, got %d", len(suggestions))
+	}
+	for i := 1; i < len(suggestions); i++ {
+		if suggestions[i-1].Score < suggestions[i].Score {
+			t.Fatalf("suggestions not sorted by score desc: %#v", suggestions)
+		}
+	}
+	first := suggestions[0]
+	if first.TopicID != topicA.ID && first.TopicID != topicB.ID {
+		t.Fatalf("unexpected first suggestion: %#v", first)
+	}
+}
+
+// fixedEmbeddingProvider is a deterministic embedding stub. Unlike
+// countingEmbeddingProvider, it does not record calls and is shared
+// across multiple tests that don't care about call counts.
+type fixedEmbeddingProvider struct {
+	record models.EmbeddingRecord
+}
+
+func (p *fixedEmbeddingProvider) Refine(ctx context.Context, req ai.RefineRequest) (models.ThoughtRefinement, error) {
+	_ = ctx
+	_ = req
+	return models.ThoughtRefinement{}, nil
+}
+
+func (p *fixedEmbeddingProvider) Embed(ctx context.Context, req ai.EmbedRequest) (models.EmbeddingRecord, error) {
+	_ = ctx
+	_ = req
+	return p.record, nil
+}

@@ -128,6 +128,10 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeList(&buf, "topic_ids", thought.TopicIDs)
 	writeScalar(&buf, "summary", thought.Summary)
 	writeList(&buf, "key_points", thought.KeyPoints)
+	writeList(&buf, "related_thought_ids", thought.RelatedThoughtIDs)
+	writeList(&buf, "suggested_topic_ids", thought.SuggestedTopicIDs)
+	writeURLFollowups(&buf, "url_followups", thought.URLFollowups)
+	writeBlockScalar(&buf, "expansion_plan", thought.ExpansionPlan)
 	writeScalar(&buf, "capture_status", thought.CaptureStatus)
 	writeScalar(&buf, "refine_status", thought.RefineStatus)
 	writeScalar(&buf, "index_status", thought.IndexStatus)
@@ -198,6 +202,40 @@ func writeList(buf *bytes.Buffer, key string, values []string) {
 	_, _ = fmt.Fprintf(buf, "%s:\n", key)
 	for _, value := range copied {
 		_, _ = fmt.Fprintf(buf, "  - %q\n", value)
+	}
+}
+
+// writeBlockScalar emits a YAML block scalar (|) for multi-line text
+// such as the LLM expansion plan. Indented lines stay verbatim and
+// trailing newlines are stripped. An empty value is a no-op so the
+// thought file doesn't accumulate empty keys.
+func writeBlockScalar(buf *bytes.Buffer, key string, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(buf, "%s: |\n", key)
+	for _, line := range strings.Split(strings.TrimRight(value, "\n"), "\n") {
+		_, _ = fmt.Fprintf(buf, "  %s\n", line)
+	}
+}
+
+// writeURLFollowups emits the url_followups list as a sequence of
+// inline maps. Sorted by URL for deterministic file output.
+func writeURLFollowups(buf *bytes.Buffer, key string, values []models.URLFollowup) {
+	if len(values) == 0 {
+		return
+	}
+	copied := append([]models.URLFollowup(nil), values...)
+	sort.Slice(copied, func(i, j int) bool { return copied[i].URL < copied[j].URL })
+	_, _ = fmt.Fprintf(buf, "%s:\n", key)
+	for _, v := range copied {
+		_, _ = fmt.Fprintf(buf, "  - url: %q\n", v.URL)
+		if v.Title != "" {
+			_, _ = fmt.Fprintf(buf, "    title: %q\n", v.Title)
+		}
+		if v.Snippet != "" {
+			_, _ = fmt.Fprintf(buf, "    snippet: %q\n", v.Snippet)
+		}
 	}
 }
 
@@ -306,6 +344,10 @@ func knownThoughtFrontMatterKey(key string) bool {
 		"topic_ids",
 		"summary",
 		"key_points",
+		"related_thought_ids",
+		"suggested_topic_ids",
+		"url_followups",
+		"expansion_plan",
 		"capture_status",
 		"refine_status",
 		"index_status",
@@ -369,6 +411,14 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.Summary = value
 		case "key_points":
 			thought.KeyPoints = parseList(lines, &idx)
+		case "related_thought_ids":
+			thought.RelatedThoughtIDs = parseList(lines, &idx)
+		case "suggested_topic_ids":
+			thought.SuggestedTopicIDs = parseList(lines, &idx)
+		case "url_followups":
+			thought.URLFollowups = parseURLFollowups(lines, &idx)
+		case "expansion_plan":
+			thought.ExpansionPlan = parseBlockScalar(lines, &idx)
 		case "capture_status":
 			thought.CaptureStatus = value
 		case "refine_status":
@@ -381,6 +431,85 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.Errors = parseErrors(lines, &idx, value)
 		}
 	}
+}
+
+// parseBlockScalar reads a YAML `key: |` block scalar. The header line
+// itself is the current one; subsequent indented (>=2 spaces) lines are
+// accumulated verbatim until the indent drops to zero.
+func parseBlockScalar(lines []string, idx *int) string {
+	var buf strings.Builder
+	for j := *idx + 1; j < len(lines); j++ {
+		raw := lines[j]
+		if raw == "" {
+			buf.WriteString("\n")
+			continue
+		}
+		// A non-indented line ends the block. parseFrontMatter's loop
+		// sees the same line and will dispatch on the new key, so we
+		// must not consume it.
+		if !strings.HasPrefix(raw, "  ") && !strings.HasPrefix(raw, "\t") {
+			break
+		}
+		buf.WriteString(strings.TrimPrefix(raw, "  "))
+		buf.WriteString("\n")
+		*idx = j
+	}
+	return strings.TrimRight(buf.String(), "\n")
+}
+
+// parseURLFollowups reads a sequence of inline maps written by
+// writeURLFollowups. Each item starts with `- url: ...` followed by
+// optional `title:` / `snippet:` lines indented to the same column.
+func parseURLFollowups(lines []string, idx *int) []models.URLFollowup {
+	out := []models.URLFollowup{}
+	for j := *idx + 1; j < len(lines); j++ {
+		raw := strings.TrimSpace(lines[j])
+		if raw == "" {
+			continue
+		}
+		if !strings.HasPrefix(raw, "-") {
+			break
+		}
+		entry := models.URLFollowup{}
+		rest := strings.TrimSpace(strings.TrimPrefix(raw, "-"))
+		if key, val, ok := splitKV(rest); ok && key == "url" {
+			entry.URL = unquote(val)
+		}
+		for k := j + 1; k < len(lines); k++ {
+			cont := lines[k]
+			stripped := strings.TrimSpace(cont)
+			if stripped == "" {
+				continue
+			}
+			if !strings.HasPrefix(cont, "    ") {
+				break
+			}
+			if key, val, ok := splitKV(stripped); ok {
+				switch key {
+				case "title":
+					entry.Title = unquote(val)
+				case "snippet":
+					entry.Snippet = unquote(val)
+				}
+			}
+			j = k
+		}
+		out = append(out, entry)
+		*idx = j
+	}
+	return out
+}
+
+func splitKV(s string) (string, string, bool) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
+}
+
+func unquote(s string) string {
+	return strings.Trim(strings.TrimSpace(s), `"`)
 }
 
 func parseErrors(lines []string, idx *int, value string) []models.ErrorRef {

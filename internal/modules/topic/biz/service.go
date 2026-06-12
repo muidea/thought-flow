@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -201,7 +202,7 @@ func (s *Service) weaveInput(ctx context.Context, topicID string, thoughtID stri
 	if err != nil {
 		return models.Topic{}, models.Thought{}, models.ThoughtContent{}, models.TopicMembership{}, err
 	}
-	membership, ok := s.matchTopic(ctx, topic, thought, content)
+	membership, ok := s.matchTopic(ctx, topic, thought, content, 0)
 	if !ok {
 		now := time.Now().UTC()
 		membership = models.TopicMembership{
@@ -290,7 +291,7 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 	}
 	memberships := []models.TopicMembership{}
 	for _, topic := range topics {
-		membership, ok := s.matchTopic(ctx, topic, thought, content)
+		membership, ok := s.matchTopic(ctx, topic, thought, content, 0)
 		if !ok {
 			continue
 		}
@@ -310,10 +311,53 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 	return memberships, nil
 }
 
+// NearMissTopics returns up to topK topics whose semantic score
+// against the given thought is below the topic's own threshold but
+// still meaningful. The expander uses this to suggest topics to the
+// user that did not auto-match; minScore acts as a hard floor (any
+// score strictly below it is dropped), and the topK cap bounds the
+// number of suggestions shown in the UI.
+//
+// The default minScore (0) returns every scored topic, including
+// zeros, so the ranking is purely by score. Callers that want only
+// "near" matches should pass a positive floor such as 0.4.
+func (s *Service) NearMissTopics(ctx context.Context, thoughtID string, topK int, minScore float64) ([]models.TopicMatchSuggestion, error) {
+	if topK <= 0 {
+		topK = 3
+	}
+	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		return nil, err
+	}
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	suggestions := []models.TopicMatchSuggestion{}
+	for _, topic := range topics {
+		membership, _ := s.matchTopic(ctx, topic, thought, content, minScore)
+		if membership.Score <= 0 || membership.Score < minScore {
+			continue
+		}
+		suggestions = append(suggestions, models.TopicMatchSuggestion{
+			TopicID:   topic.ID,
+			TopicName: topic.Name,
+			Score:     membership.Score,
+		})
+	}
+	sort.Slice(suggestions, func(i, j int) bool { return suggestions[i].Score > suggestions[j].Score })
+	if len(suggestions) > topK {
+		suggestions = suggestions[:topK]
+	}
+	return suggestions, nil
+}
+
 func (s *Service) rebuildTopicJob(job models.Job) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	topic, count, changedThoughtPaths, err := s.store.RebuildWithMatcher(context.Background(), job.ResourceID, s.matchTopic)
+	topic, count, changedThoughtPaths, err := s.store.RebuildWithMatcher(context.Background(), job.ResourceID, func(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+		return s.matchTopic(ctx, topic, thought, content, 0)
+	})
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.topic.rebuild_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
@@ -329,8 +373,11 @@ func (s *Service) rebuildTopicJob(job models.Job) {
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedThoughtPaths...))
 }
 
-func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, minScore float64) (models.TopicMembership, bool) {
 	if membership, ok := s.store.MatchThought(topic, thought, content); ok {
+		if membership.Score < minScore {
+			return models.TopicMembership{}, false
+		}
 		return membership, true
 	}
 	if !topic.Rules.Semantic.Enabled || s.embedder == nil || semanticHardExcluded(topic, thought, content) {
@@ -349,25 +396,27 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 	if threshold <= 0 {
 		threshold = 0.75
 	}
-	if score, ok := s.cachedSemanticScore(ctx, thought.ID, topicEmbedding); ok {
-		if score < threshold {
-			return models.TopicMembership{}, false
+	score := 0.0
+	if cached, ok := s.cachedSemanticScore(ctx, thought.ID, topicEmbedding); ok {
+		score = cached
+	} else {
+		thoughtEmbedding, ok := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
+		if ok && len(thoughtEmbedding.Vector) != len(topicEmbedding.Vector) {
+			ok = false
 		}
-		return semanticMembership(topic.ID, thought.ID, score), true
-	}
-	thoughtEmbedding, ok := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
-	if ok && len(thoughtEmbedding.Vector) != len(topicEmbedding.Vector) {
-		ok = false
-	}
-	if !ok {
-		thoughtEmbedding, err = s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: thoughtText})
-		if err != nil {
-			return models.TopicMembership{}, false
+		if !ok {
+			thoughtEmbedding, err = s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: thoughtText})
+			if err != nil {
+				return models.TopicMembership{}, false
+			}
 		}
+		score = cosine(topicEmbedding.Vector, thoughtEmbedding.Vector)
 	}
-	score := cosine(topicEmbedding.Vector, thoughtEmbedding.Vector)
+	if score < minScore {
+		return models.TopicMembership{Score: score}, false
+	}
 	if score < threshold {
-		return models.TopicMembership{}, false
+		return models.TopicMembership{Score: score}, false
 	}
 	return semanticMembership(topic.ID, thought.ID, score), true
 }
