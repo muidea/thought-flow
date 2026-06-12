@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	mnet "github.com/muidea/magicCommon/foundation/net"
-
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
@@ -325,11 +323,32 @@ type OpenAICompatibleEmbeddingProvider struct {
 	client  *http.Client
 }
 
-func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig.EmbeddingConfig) *OpenAICompatibleProvider {
-	client := mnet.NewDNSCacheHttpClient()
-	if cfg.Timeout > 0 {
-		client.Timeout = cfg.Timeout
+// newLLMHttpClient builds an http.Client whose every timeout layer
+// respects `cfg.Timeout`. mnet.NewDNSCacheHttpClient pins
+// Transport.ResponseHeaderTimeout to 10s and Client.Timeout to 15s
+// internally; a subsequent `client.Timeout = cfg.Timeout` only covers
+// the outer deadline, so a slow LLM cold-start would still be killed
+// at 10s before the configured 600s ever matters. Cloning the default
+// transport lets us lift every ceiling to cfg.Timeout uniformly and
+// also raise the TLS handshake to 30s so handshake latency on a
+// long-lived connection never causes spurious failures.
+func newLLMHttpClient(timeout time.Duration) *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
 	}
+	tr := base.Clone()
+	if timeout > 0 {
+		tr.ResponseHeaderTimeout = timeout
+		tr.TLSHandshakeTimeout = 30 * time.Second
+		tr.ExpectContinueTimeout = 10 * time.Second
+		return &http.Client{Timeout: timeout, Transport: tr}
+	}
+	return &http.Client{Transport: tr}
+}
+
+func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig.EmbeddingConfig) *OpenAICompatibleProvider {
+	client := newLLMHttpClient(cfg.Timeout)
 	var embeddingProvider EmbeddingProvider
 	if strings.TrimSpace(embeddingCfg.APIKey) != "" {
 		embeddingProvider = NewOpenAICompatibleEmbeddingProvider(embeddingCfg)
@@ -344,10 +363,7 @@ func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig
 }
 
 func NewOpenAICompatibleEmbeddingProvider(cfg appconfig.EmbeddingConfig) *OpenAICompatibleEmbeddingProvider {
-	client := mnet.NewDNSCacheHttpClient()
-	if cfg.Timeout > 0 {
-		client.Timeout = cfg.Timeout
-	}
+	client := newLLMHttpClient(cfg.Timeout)
 	return &OpenAICompatibleEmbeddingProvider{
 		baseURL: strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
 		apiKey:  strings.TrimSpace(cfg.APIKey),
@@ -590,11 +606,11 @@ func (p *OpenAICompatibleProvider) Expand(ctx context.Context, req ExpandRequest
 }
 
 func expandSystemPrompt() string {
-	return "你是 ThoughtFlow 的研究助手。用户提交了一条碎片笔记，请你基于笔记内容产出" +
-		"「处理思路与方案」。要求：1. 直接出方案，不要提问、不要反问、不要「我需要更多信息」。" +
-		"2. 至少包含五个段落：背景与现状分析、可能的处理方向、推荐的具体步骤（带顺序编号）、关键注意事项、延伸阅读建议。" +
-		"3. 使用中文，简洁专业；可使用 Markdown 列表、引用、加粗；不要使用 ```markdown 围栏。" +
-		"4. 长度 400-800 字。如果原内容太短无法支撑方案，先基于常识补全背景，再给方向。"
+	return "你是 ThoughtFlow 的研究助手。用户提交了一条碎片笔记，请你基于笔记内容产出「处理思路与方案」。" +
+		"要求：1. 直接给方案，不要反问、不要「我需要更多信息」。" +
+		"2. 必须包含三段并使用 Markdown 二级标题：## 设计思路（分析问题与核心抓手）、## 推荐步骤（用有序列表给 3-6 步可执行动作）、## 参考与延伸（列 2-4 条延伸阅读或相关方向）。" +
+		"3. 使用中文，简洁专业；可用列表、引用、加粗；不要输出 ```markdown 围栏，不要复述原文。" +
+		"4. 长度 300-500 字；原内容不足时基于常识合理补全，给出清晰的方向与可执行步骤。"
 }
 
 func expandUserPrompt(title string, summary string, keyPoints []string, tags []string, original string, thoughtType string, thoughtURL string) string {

@@ -56,6 +56,10 @@ type Service struct {
 	topicSuggester TopicSuggester
 	searcherFn     func() Searcher
 	topicFn        func() TopicSuggester
+
+	// timeout bounds the 4-way parallel pipeline. The default is
+	// 30s; deployments can raise it via SetPipelineTimeout.
+	timeout time.Duration
 }
 
 // expanderSessionID is the well-known lock holder for the expansion
@@ -66,8 +70,18 @@ const expanderSessionID = "expander"
 
 const expandTopKRelated = 3
 const expandTopKNearTopics = 3
-const expandTimeout = 30 * time.Second
+// expandTimeout bounds the 4-way parallel pipeline. The previous hard
+// 30s limit frequently starved the LLM Expand call when the chat
+// provider was a remote model: the system prompt asks for a 400-800
+// character Markdown plan which can take 30-90s end-to-end through a
+// remote API. The 30s default is preserved for tests / tight local
+// setups; the [expander] config block lets deployments raise it
+// independently of the LLM client's own timeout.
+const defaultExpandTimeout = 30 * time.Second
 
+// NewService wires the expander. Callers that need a non-default
+// pipeline timeout should follow up with SetPipelineTimeout before
+// the first job runs.
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.ExpandProvider, fetcher *webfetch.Fetcher, locker *thoughtlock.Locker) *Service {
 	return &Service{
 		workspace:  workspace,
@@ -77,7 +91,21 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub even
 		provider:   provider,
 		fetcher:    fetcher,
 		locker:     locker,
+		timeout:    defaultExpandTimeout,
 	}
+}
+
+// SetPipelineTimeout overrides the default 30s pipeline deadline.
+// The LLM Expand stage in particular is sensitive to this — a
+// remote chat model taking 60s to return a 600-char plan is normal,
+// and the previous 30s ceiling caused `llm: context deadline
+// exceeded` partial failures. Use a value comfortably above the
+// expected p99 LLM latency for the configured provider.
+func (s *Service) SetPipelineTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	s.timeout = timeout
 }
 
 // SetSearcherLookup registers a function that returns the search
@@ -240,7 +268,11 @@ func (s *Service) expandJob(job models.Job) {
 // continue so the partial result can be persisted. The returned
 // values are always safe to use (defaults are nil/empty).
 func (s *Service) runPipeline(ctx context.Context, thought models.Thought, content models.ThoughtContent) ([]string, string, []models.TopicMatchSuggestion, []models.URLFollowup, error) {
-	ctx, cancel := context.WithTimeout(ctx, expandTimeout)
+	timeout := s.timeout
+	if timeout <= 0 {
+		timeout = defaultExpandTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	g, gctx := errgroup.WithContext(ctx)

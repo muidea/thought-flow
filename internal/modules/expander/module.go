@@ -72,6 +72,9 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
 	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewExpandProvider(cfg.LLM), webfetch.New(30*time.Second), thoughtlock.Default())
+	if cfg.Expander.PipelineTimeout > 0 {
+		m.service.SetPipelineTimeout(cfg.Expander.PipelineTimeout)
+	}
 	m.service.SetSearcherLookup(func() biz.Searcher {
 		svc := searchmodule.Current()
 		if svc == nil {

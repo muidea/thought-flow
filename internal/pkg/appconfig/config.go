@@ -19,6 +19,7 @@ type Config struct {
 	Runtime   RuntimeConfig
 	Capture   CaptureConfig
 	Refiner   RefinerConfig
+	Expander  ExpanderConfig
 	GitSync   GitSyncConfig
 	Search    SearchConfig
 	Topic     TopicConfig
@@ -49,6 +50,15 @@ type RefinerConfig struct {
 	Concurrency        int
 	URLFetchTimeout    time.Duration
 	URLFetchTimeoutRaw int
+}
+
+// ExpanderConfig governs the post-refine expansion pipeline. The
+// default 30s pipeline deadline is fine for local LLMs but starves
+// remote chat models whose 400-800 character plan can take 30-90s.
+// PipelineTimeoutSeconds overrides the hard-coded default when > 0.
+type ExpanderConfig struct {
+	PipelineTimeoutSeconds int
+	PipelineTimeout        time.Duration
 }
 
 type GitSyncConfig struct {
@@ -224,6 +234,8 @@ func applyFrameworkOverrides(cfg *Config) {
 	cfg.Refiner.Concurrency = configInt(appConfig, "refiner.concurrency", cfg.Refiner.Concurrency)
 	cfg.Refiner.URLFetchTimeoutRaw = configInt(appConfig, "refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)
 	cfg.Refiner.URLFetchTimeout = time.Duration(cfg.Refiner.URLFetchTimeoutRaw) * time.Second
+	cfg.Expander.PipelineTimeoutSeconds = configInt(appConfig, "expander.pipeline_timeout_seconds", cfg.Expander.PipelineTimeoutSeconds)
+	cfg.Expander.PipelineTimeout = time.Duration(cfg.Expander.PipelineTimeoutSeconds) * time.Second
 	cfg.GitSync.Enabled = configBool(appConfig, "git_sync.enabled", cfg.GitSync.Enabled)
 	cfg.GitSync.DebounceSeconds = configInt(appConfig, "git_sync.debounce_seconds", cfg.GitSync.DebounceSeconds)
 	cfg.GitSync.DebounceDuration = time.Duration(cfg.GitSync.DebounceSeconds) * time.Second
