@@ -9,9 +9,11 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -132,6 +134,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/topics/:id/weave-proposals", engine.GET, s.handleListWeaveProposals)
 	s.registry.AddHandler("/api/topics/:id", engine.GET, s.handleGetTopic)
 	s.registry.AddHandler("/api/topics/:id", engine.PUT, s.handleUpdateTopic)
+	s.registry.AddHandler("/api/jobs", engine.GET, s.handleListJobs)
 	s.registry.AddHandler("/api/jobs/:id", engine.GET, s.handleGetJob)
 	s.registry.AddHandler("/api/events", engine.GET, s.handleEvents)
 	s.registry.AddHandler("/api/system/status", engine.GET, s.handleSystemStatus)
@@ -894,6 +897,92 @@ func (s *Service) handleGetJob(ctx context.Context, res http.ResponseWriter, req
 		return
 	}
 	writeJSON(res, req, http.StatusOK, job)
+}
+
+// handleListJobs powers the diagnostic "runtime" cards in the web UI
+// (Notes page status panel, system metrics rollup). The frontend
+// calls /api/jobs?limit=8 and expects the data field to be a JSON
+// array of Job records, most-recent-first. Optional query filters:
+//   - type=refine|expand|index|git_commit|... narrows by job type
+//   - status=queued|running|succeeded|failed|... narrows by status
+//   - resource_id=<thought-id> restricts to one thought's jobs
+//   - limit=N keeps only the most recent N (after filtering)
+//
+// The store's List() orders ASC by created_at; the runtime card
+// wants the latest job first, so we sort DESC after filtering. We
+// copy the slice before mutating it so the in-memory job order in
+// the store stays untouched.
+func (s *Service) handleListJobs(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.jobs == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.jobs.unavailable", "job store is not ready")
+		return
+	}
+	jobs, err := s.jobs.List()
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.jobs.list_failed", err.Error())
+		return
+	}
+	jobs = filterAndSortJobs(jobs, req.URL.Query())
+	writeJSON(res, req, http.StatusOK, jobs)
+}
+
+func filterAndSortJobs(jobs []models.Job, query url.Values) []models.Job {
+	if len(jobs) == 0 {
+		return jobs
+	}
+	sorted := make([]models.Job, len(jobs))
+	copy(sorted, jobs)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].CreatedAt.Equal(sorted[j].CreatedAt) {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].CreatedAt.After(sorted[j].CreatedAt)
+	})
+	if typeFilter := strings.TrimSpace(query.Get("type")); typeFilter != "" {
+		sorted = filterJobsByField(sorted, "type", typeFilter)
+	}
+	if statusFilter := strings.TrimSpace(query.Get("status")); statusFilter != "" {
+		sorted = filterJobsByField(sorted, "status", statusFilter)
+	}
+	if resourceFilter := strings.TrimSpace(query.Get("resource_id")); resourceFilter != "" {
+		sorted = filterJobsByField(sorted, "resource_id", resourceFilter)
+	}
+	if limit := parseJobsLimit(query.Get("limit")); limit > 0 && limit < len(sorted) {
+		sorted = sorted[:limit]
+	}
+	return sorted
+}
+
+func filterJobsByField(jobs []models.Job, field string, want string) []models.Job {
+	filtered := jobs[:0]
+	for _, job := range jobs {
+		var got string
+		switch field {
+		case "type":
+			got = job.Type
+		case "status":
+			got = job.Status
+		case "resource_id":
+			got = job.ResourceID
+		}
+		if got == want {
+			filtered = append(filtered, job)
+		}
+	}
+	return filtered
+}
+
+func parseJobsLimit(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
 }
 
 func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req *http.Request) {

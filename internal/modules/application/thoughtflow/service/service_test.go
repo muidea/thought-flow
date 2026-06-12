@@ -1444,3 +1444,106 @@ func TestHandleStartCaptureSessionUsesClassifyForAmbiguousInput(t *testing.T) {
 		t.Fatalf("thought url = %q, want https://example.org/article", payload.Data.Thought.URL)
 	}
 }
+
+// TestHandleListJobsCoversAllFilterModes locks in the diagnostic
+// surface of GET /api/jobs: most-recent-first ordering, optional
+// type/status/resource_id narrowing, and the limit cap. The runtime
+// card on the web UI calls /api/jobs?limit=8 and would silently
+// fall back to an empty-state hint if the endpoint ever stopped
+// returning an array; the contract tested here is what the
+// frontend's `Array.isArray(list) ? list : (list?.jobs || [])`
+// fallback chain depends on.
+func TestHandleListJobsCoversAllFilterModes(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "local",
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	jobs := jobstore.New(ws.JobsPath)
+	base := time.Date(2026, 6, 12, 8, 0, 0, 0, time.UTC)
+	// Out-of-order on purpose so the test confirms sort, not file order.
+	fixtures := []models.Job{
+		{ID: "refine-A", Type: models.JobTypeRefine, ResourceType: models.ResourceTypeThought, ResourceID: "thought-A", Status: models.JobStatusSucceeded, CreatedAt: base.Add(2 * time.Minute)},
+		{ID: "index-A", Type: models.JobTypeIndex, ResourceType: models.ResourceTypeThought, ResourceID: "thought-A", Status: models.JobStatusFailed, CreatedAt: base.Add(4 * time.Minute)},
+		{ID: "git-A", Type: models.JobTypeGitCommit, ResourceType: models.ResourceTypeWorkspace, ResourceID: ws.ID, Status: models.JobStatusSucceeded, CreatedAt: base.Add(6 * time.Minute)},
+		{ID: "refine-B", Type: models.JobTypeRefine, ResourceType: models.ResourceTypeThought, ResourceID: "thought-B", Status: models.JobStatusRunning, CreatedAt: base.Add(8 * time.Minute)},
+	}
+	for _, job := range fixtures {
+		if err := jobs.Save(job); err != nil {
+			t.Fatalf("Save(%s) error = %v", job.ID, err)
+		}
+	}
+	service := &Service{jobs: jobs}
+	ctx := context.Background()
+
+	type call struct {
+		query string
+		want  []string
+	}
+	cases := []call{
+		{query: "", want: []string{"refine-B", "git-A", "index-A", "refine-A"}},
+		{query: "?type=refine", want: []string{"refine-B", "refine-A"}},
+		{query: "?status=failed", want: []string{"index-A"}},
+		{query: "?resource_id=thought-A", want: []string{"index-A", "refine-A"}},
+		{query: "?type=refine&status=running", want: []string{"refine-B"}},
+		{query: "?limit=2", want: []string{"refine-B", "git-A"}},
+		{query: "?type=refine&limit=1", want: []string{"refine-B"}},
+		{query: "?type=does-not-exist", want: []string{}},
+	}
+	for _, tc := range cases {
+		res := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/jobs"+tc.query, nil)
+		service.handleListJobs(ctx, res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("query=%q status = %d, body = %s", tc.query, res.Code, res.Body.String())
+		}
+		var payload struct {
+			Data []models.Job `json:"data"`
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("query=%q Unmarshal() error = %v", tc.query, err)
+		}
+		got := make([]string, len(payload.Data))
+		for i, job := range payload.Data {
+			got[i] = job.ID
+		}
+		if !equalStringSlices(got, tc.want) {
+			t.Fatalf("query=%q got %v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestHandleListJobsReportsStoreErrors(t *testing.T) {
+	service := &Service{jobs: brokenJobStore{}}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	service.handleListJobs(context.Background(), res, req)
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "thoughtflow.jobs.list_failed") {
+		t.Fatalf("body = %s, want list_failed code", res.Body.String())
+	}
+}
+
+type brokenJobStore struct{}
+
+func (brokenJobStore) Get(string) (models.Job, error)                              { return models.Job{}, errors.New("nope") }
+func (brokenJobStore) List() ([]models.Job, error)                                { return nil, errors.New("store offline") }
+func (brokenJobStore) RecentByResource(string, int) ([]models.Job, error)         { return nil, errors.New("nope") }
+func (brokenJobStore) RuntimeStatus() models.BackgroundRuntimeStatus              { return models.BackgroundRuntimeStatus{} }
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
