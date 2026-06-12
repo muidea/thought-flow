@@ -342,18 +342,29 @@ func TestSubtractStringsRemovesAllOccurrences(t *testing.T) {
 	}
 }
 
-// stubCapture records Capture / PatchThought calls so the commit
-// pipeline can be exercised without a real capture Service.
+// stubCapture records Capture / PatchThought / ApplyDraftInternal
+// calls so the commit pipeline can be exercised without a real
+// capture Service. The two patch paths are tracked separately so
+// tests can assert which one the scratchpad commit flow chose —
+// fresh commits must go through ApplyDraftInternal (no lock) so
+// the async refiner / expander don't see "thought is locked" and
+// skip the thought forever.
 type stubCapture struct {
-	captureCalls   int
-	patchCalls     int
-	patchReq       models.ThoughtPatchRequest
-	captureResult  models.CaptureResult
-	patchResult    models.ThoughtSnapshot
-	patchErr       error
-	captureErr     error
-	lastPatchRaw   []byte
-	lastSessionID  string
+	captureCalls      int
+	patchCalls        int
+	applyCalls        int
+	patchReq          models.ThoughtPatchRequest
+	applyReq          models.ThoughtPatchRequest
+	captureResult     models.CaptureResult
+	patchResult       models.ThoughtSnapshot
+	applyResult       models.ThoughtSnapshot
+	patchErr          error
+	applyErr          error
+	captureErr        error
+	lastPatchRaw      []byte
+	lastApplyRaw      []byte
+	lastSessionID     string
+	lastApplySessionID string
 }
 
 func (s *stubCapture) Capture(_ context.Context, cmd models.CaptureCommand) (models.CaptureResult, error) {
@@ -373,6 +384,17 @@ func (s *stubCapture) PatchThought(_ context.Context, thoughtID, sessionID strin
 		return models.ThoughtSnapshot{}, s.patchErr
 	}
 	return s.patchResult, nil
+}
+
+func (s *stubCapture) ApplyDraftInternal(_ context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error) {
+	s.applyCalls++
+	s.applyReq = request
+	s.lastApplyRaw = rawBody
+	s.lastApplySessionID = sessionID
+	if s.applyErr != nil {
+		return models.ThoughtSnapshot{}, s.applyErr
+	}
+	return s.applyResult, nil
 }
 
 func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T) {
@@ -395,6 +417,20 @@ func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T)
 	}
 	if captureStub.captureCalls != 1 {
 		t.Fatalf("Capture called %d times, want 1", captureStub.captureCalls)
+	}
+	// Fresh commit must apply the draft through the lock-free
+	// ApplyDraftInternal path; going through PatchThought would
+	// hold the thought lock for the whole write, and the async
+	// refiner / expander jobs that the Capture step just enqueued
+	// would then see the lock and MarkSucceeded("skipped: thought
+	// is locked by an active session") without retrying — the
+	// thought would permanently lose its summary / ai_tags /
+	// key_points / expansion_plan.
+	if captureStub.applyCalls != 1 {
+		t.Fatalf("ApplyDraftInternal called %d, want 1", captureStub.applyCalls)
+	}
+	if captureStub.patchCalls != 0 {
+		t.Fatalf("PatchThought should not be called on fresh commit, got %d", captureStub.patchCalls)
 	}
 	sp, _ := store.Get("s1")
 	if sp.CommittedThoughtID != "thought-1" {
@@ -438,17 +474,23 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	if captureStub.captureCalls != 0 {
 		t.Fatalf("Capture should not run on repeat commit, called %d", captureStub.captureCalls)
 	}
-	if captureStub.patchCalls != 1 {
-		t.Fatalf("PatchThought called %d, want 1", captureStub.patchCalls)
+	// Repeat commit goes through the lock-free ApplyDraftInternal
+	// path so the refiner / expander async jobs don't see the
+	// thought as "locked by an active session" and skip it forever.
+	if captureStub.applyCalls != 1 {
+		t.Fatalf("ApplyDraftInternal called %d, want 1", captureStub.applyCalls)
 	}
-	if captureStub.patchReq.Title == nil || *captureStub.patchReq.Title != "renamed" {
-		t.Fatalf("Title = %v, want renamed", captureStub.patchReq.Title)
+	if captureStub.patchCalls != 0 {
+		t.Fatalf("PatchThought should not be called on repeat commit (would race refiner), got %d", captureStub.patchCalls)
 	}
-	if captureStub.patchReq.Tags == nil || len(*captureStub.patchReq.Tags) != 1 {
-		t.Fatalf("Tags = %v", captureStub.patchReq.Tags)
+	if captureStub.applyReq.Title == nil || *captureStub.applyReq.Title != "renamed" {
+		t.Fatalf("Title = %v, want renamed", captureStub.applyReq.Title)
 	}
-	if captureStub.lastSessionID != "s1" {
-		t.Fatalf("session id = %q, want s1", captureStub.lastSessionID)
+	if captureStub.applyReq.Tags == nil || len(*captureStub.applyReq.Tags) != 1 {
+		t.Fatalf("Tags = %v", captureStub.applyReq.Tags)
+	}
+	if captureStub.lastApplySessionID != "s1" {
+		t.Fatalf("session id = %q, want s1", captureStub.lastApplySessionID)
 	}
 	if result.Thought.ID != "thought-1" {
 		t.Fatalf("result thought id = %q, want thought-1", result.Thought.ID)

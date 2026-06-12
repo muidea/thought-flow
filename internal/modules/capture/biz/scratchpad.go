@@ -65,6 +65,7 @@ type ScratchpadStore interface {
 type CaptureCommitter interface {
 	Capture(ctx context.Context, cmd models.CaptureCommand) (models.CaptureResult, error)
 	PatchThought(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error)
+	ApplyDraftInternal(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error)
 }
 
 // eventHub is the minimal publish/subscribe surface the commit
@@ -408,7 +409,7 @@ func (s *ScratchpadService) commitRepeat(ctx context.Context, sp scratchpad.Scra
 	if sessionID == "" {
 		sessionID = sp.SessionID
 	}
-	if _, err := s.capture.PatchThought(ctx, sp.CommittedThoughtID, sessionID, *patch, rawBody); err != nil {
+	if _, err := s.capture.ApplyDraftInternal(ctx, sp.CommittedThoughtID, sessionID, *patch, rawBody); err != nil {
 		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, err
 	}
 	s.publishCommittedEvent(sp.CommittedThoughtID, sp.SessionID, "repeat")
@@ -434,7 +435,7 @@ func (s *ScratchpadService) applyDraftToThought(ctx context.Context, sp scratchp
 	if sessionID == "" {
 		sessionID = sp.SessionID
 	}
-	_, err = s.capture.PatchThought(ctx, thoughtID, sessionID, *patch, rawBody)
+	_, err = s.capture.ApplyDraftInternal(ctx, thoughtID, sessionID, *patch, rawBody)
 	return err
 }
 
