@@ -173,6 +173,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/topics/:id/weave-accept", engine.POST, s.handleAcceptWeave)
 	s.registry.AddHandler("/api/topics/:id/weave-proposals/:proposal_id", engine.GET, s.handleGetWeaveProposal)
 	s.registry.AddHandler("/api/topics/:id/weave-proposals", engine.GET, s.handleListWeaveProposals)
+	s.registry.AddHandler("/api/topics/:id/candidates", engine.GET, s.handleListSessionCandidates)
 	s.registry.AddHandler("/api/topics/:id", engine.GET, s.handleGetTopic)
 	s.registry.AddHandler("/api/topics/:id", engine.PUT, s.handleUpdateTopic)
 	s.registry.AddHandler("/api/jobs", engine.GET, s.handleListJobs)
@@ -1175,6 +1176,20 @@ func (s *Service) handleGetWeaveProposal(ctx context.Context, res http.ResponseW
 		return
 	}
 	writeJSON(res, req, http.StatusOK, proposal)
+}
+
+func (s *Service) handleListSessionCandidates(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/candidates")
+	if topicID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
+		return
+	}
+	candidates, err := s.topicService.ListSessionCandidates(ctx, topicID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.list_candidates_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, candidates)
 }
 
 func (s *Service) handleGetJob(ctx context.Context, res http.ResponseWriter, req *http.Request) {

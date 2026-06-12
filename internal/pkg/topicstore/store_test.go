@@ -534,3 +534,82 @@ func (fakeWeaver) Weave(ctx context.Context, req models.TopicWeaveRequest) (mode
 		Strategy: "test",
 	}, nil
 }
+
+func TestStoreSessionCandidatesRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+	topic, err := store.Create(ctx, models.TopicCreateRequest{Name: "Test"})
+	if err != nil {
+		t.Fatalf("Create error = %v", err)
+	}
+
+	got, err := store.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates on missing file error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty list for fresh topic, got %d", len(got))
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	candidates := []models.TopicSessionCandidate{
+		{SessionID: "sp-1", TopicID: topic.ID, Title: "first", MatchType: "tag_hint", Score: 1, Status: "candidate", UpdatedAt: now},
+		{SessionID: "sp-2", TopicID: topic.ID, Title: "second", MatchType: "keyword", Score: 0.6, Status: "near_miss", UpdatedAt: now},
+	}
+	if err := store.SaveSessionCandidates(ctx, topic.ID, candidates); err != nil {
+		t.Fatalf("SaveSessionCandidates error = %v", err)
+	}
+
+	path := filepath.Join(root, "topics", "test", "candidates.yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected candidates file at %s: %v", path, err)
+	}
+
+	got, err = store.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates after save error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(got))
+	}
+	if got[0].SessionID != "sp-1" || got[1].SessionID != "sp-2" {
+		t.Fatalf("candidate order mismatch: %+v", got)
+	}
+
+	// Save empty list should write a valid (empty) file, not a missing one.
+	if err := store.SaveSessionCandidates(ctx, topic.ID, []models.TopicSessionCandidate{}); err != nil {
+		t.Fatalf("SaveSessionCandidates(empty) error = %v", err)
+	}
+	got, err = store.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates after empty save error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty list after overwrite, got %d", len(got))
+	}
+}
+
+func TestStoreDetailIncludesSessionCandidates(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+	topic, err := store.Create(ctx, models.TopicCreateRequest{Name: "DetailTest"})
+	if err != nil {
+		t.Fatalf("Create error = %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.SaveSessionCandidates(ctx, topic.ID, []models.TopicSessionCandidate{
+		{SessionID: "sp-a", TopicID: topic.ID, Title: "alpha", MatchType: "tag_hint", Status: "candidate", UpdatedAt: now},
+	}); err != nil {
+		t.Fatalf("SaveSessionCandidates error = %v", err)
+	}
+
+	detail, err := store.Detail(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("Detail error = %v", err)
+	}
+	if len(detail.SessionCandidates) != 1 || detail.SessionCandidates[0].SessionID != "sp-a" {
+		t.Fatalf("SessionCandidates not populated: %+v", detail.SessionCandidates)
+	}
+}

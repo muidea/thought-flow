@@ -250,7 +250,12 @@ func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpa
 		RelatedThoughtIDs: trimNonEmpty(ctx.RelatedThoughtIDs),
 		SuggestedTopicIDs: trimNonEmpty(ctx.SuggestedTopicIDs),
 	}
-	return s.store.Save(sp)
+	saved, err := s.store.Save(sp)
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	s.publishContextUpdatedEvent(sessionID)
+	return saved, nil
 }
 
 // SetArchiveIntent records WHO is driving the archive. The values
@@ -1060,14 +1065,15 @@ func patchRequestToRawBody(req models.ThoughtPatchRequest) ([]byte, error) {
 
 // publishCommittedEvent emits a scratchpad-committed domain event
 // so the diagnostic /api/events stream can show the user that
-// the commit fired.
+// the commit fired, and so the topic module can purge the session
+// from every topic's candidate list.
 func (s *ScratchpadService) publishCommittedEvent(thoughtID, sessionID, mode string) {
 	if s.eventHub == nil {
 		return
 	}
 	now := s.now()
 	ev := models.DomainEvent{
-		EventType:      "scratchpad.committed",
+		EventType:      models.EventScratchpadCommitted,
 		SourceUnit:     "capture",
 		OccurredAt:     now,
 		WorkspaceID:    "",
@@ -1078,6 +1084,31 @@ func (s *ScratchpadService) publishCommittedEvent(thoughtID, sessionID, mode str
 			"thought_id": thoughtID,
 			"session_id": sessionID,
 			"mode":       mode,
+		},
+	}
+	eventutil.Post(s.eventHub, ev)
+}
+
+// publishContextUpdatedEvent emits a scratchpad-context-updated
+// domain event so the topic module can re-match the session against
+// every topic's rules. The event is best-effort: a missing event
+// hub leaves the candidate list slightly stale until the next
+// event, but the data is still on disk.
+func (s *ScratchpadService) publishContextUpdatedEvent(sessionID string) {
+	if s.eventHub == nil {
+		return
+	}
+	now := s.now()
+	ev := models.DomainEvent{
+		EventType:      models.EventScratchpadContextUpdated,
+		SourceUnit:     "capture",
+		OccurredAt:     now,
+		WorkspaceID:    "",
+		ResourceType:   models.ResourceTypeSession,
+		ResourceID:     sessionID,
+		PayloadVersion: 1,
+		Payload: map[string]any{
+			"session_id": sessionID,
 		},
 	}
 	eventutil.Post(s.eventHub, ev)

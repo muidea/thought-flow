@@ -143,7 +143,11 @@ func (s *Store) Detail(ctx context.Context, id string) (models.TopicDetail, erro
 	if err != nil {
 		return models.TopicDetail{}, err
 	}
-	return models.TopicDetail{Topic: topic, Document: document, Members: memberships}, nil
+	candidates, _ := s.ListSessionCandidates(ctx, topic.ID)
+	if candidates == nil {
+		candidates = []models.TopicSessionCandidate{}
+	}
+	return models.TopicDetail{Topic: topic, Document: document, Members: memberships, SessionCandidates: candidates}, nil
 }
 
 func (s *Store) detailMemberships(topic models.Topic, document string) ([]models.TopicMembership, error) {
@@ -960,6 +964,84 @@ func (s *Store) membershipPath(topic models.Topic, thoughtID string) (string, er
 		return "", err
 	}
 	return path, nil
+}
+
+// candidatesPath resolves the per-topic session-candidates file.
+// Sessions are stored in a single YAML rather than per-session files
+// because the candidate list is a read-only projection that is
+// rewritten wholesale on every refresh — the volume is tiny (one
+// entry per unarchived session) and there is no per-session history
+// to preserve.
+func (s *Store) candidatesPath(topic models.Topic) (string, error) {
+	slug := Slugify(firstNonEmpty(topic.Slug, topic.ID))
+	if slug == "" {
+		return "", errors.New("topic id is required")
+	}
+	path := filepath.Join(s.rootPath, "topics", slug, "candidates.yaml")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// ListSessionCandidates returns the scratchpad sessions currently
+// matching this topic, in the order written (most-recent match first
+// by convention of the writer). A missing file is not an error and
+// returns an empty slice; the topic has simply never been refreshed
+// while any session was uncommitted.
+func (s *Store) ListSessionCandidates(ctx context.Context, id string) ([]models.TopicSessionCandidate, error) {
+	_ = ctx
+	topic, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	path, err := s.candidatesPath(topic)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []models.TopicSessionCandidate{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return []models.TopicSessionCandidate{}, nil
+	}
+	var candidates []models.TopicSessionCandidate
+	if err := yaml.Unmarshal(raw, &candidates); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// SaveSessionCandidates overwrites the candidates file for the given
+// topic. Callers should pass the full desired list — the file is not
+// a log, it is a snapshot. Empty input is allowed and writes an
+// empty (but valid) YAML so subsequent reads do not see a "missing
+// file" sentinel.
+func (s *Store) SaveSessionCandidates(ctx context.Context, id string, candidates []models.TopicSessionCandidate) error {
+	_ = ctx
+	topic, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if candidates == nil {
+		candidates = []models.TopicSessionCandidate{}
+	}
+	path, err := s.candidatesPath(topic)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(candidates)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
 }
 
 func (s *Store) weaveProposalDir(topic models.Topic) (string, error) {

@@ -50,6 +50,7 @@ const (
 	ResourceTypeThought   = "thought"
 	ResourceTypeWorkspace = "workspace"
 	ResourceTypeTopic     = "topic"
+	ResourceTypeSession   = "scratchpad_session"
 
 	EventThoughtCaptured       = "thought.captured"
 	EventThoughtRefineStarted  = "thought.refine_started"
@@ -64,6 +65,8 @@ const (
 	EventTopicUpdated          = "topic.updated"
 	EventTopicRebuildStarted   = "topic.rebuild_started"
 	EventTopicRebuildFailed    = "topic.rebuild_failed"
+	EventScratchpadContextUpdated = "scratchpad.context_updated"
+	EventScratchpadCommitted      = "scratchpad.committed"
 	EventGitCommitRequested    = "git.commit_requested"
 	EventGitCommitSucceeded    = "git.commit_succeeded"
 	EventGitCommitFailed       = "git.commit_failed"
@@ -574,10 +577,30 @@ type TopicUpdateRequest struct {
 }
 
 type TopicDetail struct {
-	Topic      Topic             `json:"topic"`
-	Document   string            `json:"document"`
-	Members    []TopicMembership `json:"members"`
-	Activities []DomainEvent     `json:"activities,omitempty"`
+	Topic             Topic                   `json:"topic"`
+	Document          string                  `json:"document"`
+	Members           []TopicMembership       `json:"members"`
+	SessionCandidates []TopicSessionCandidate `json:"session_candidates,omitempty"`
+	Activities        []DomainEvent           `json:"activities,omitempty"`
+}
+
+// TopicSessionCandidate is a read-only projection of an unarchived
+// scratchpad session that matched a topic via the LLM-maintained
+// SessionContext.SuggestedTopicIDs tag hint, the keyword rules, or
+// a semantic cosine score. Candidates are NEVER written to the
+// topic's main document; the user must explicitly archive the
+// scratchpad (strategy=new) before the candidate becomes a formal
+// TopicMembership. MatchType is one of "tag_hint" | "keyword" |
+// "semantic"; Status is "candidate" | "near_miss" | "conflict".
+type TopicSessionCandidate struct {
+	SessionID string    `json:"session_id" yaml:"session_id"`
+	TopicID   string    `json:"topic_id" yaml:"topic_id"`
+	Title     string    `json:"title" yaml:"title"`
+	MatchType string    `json:"match_type" yaml:"match_type"`
+	Score     float64   `json:"score" yaml:"score"`
+	Reasons   []string  `json:"reasons" yaml:"reasons"`
+	Status    string    `json:"status" yaml:"status"`
+	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type SynthesisRequest struct {

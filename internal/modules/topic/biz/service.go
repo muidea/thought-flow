@@ -18,6 +18,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
+	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/topicstore"
 )
 
@@ -29,6 +30,7 @@ type Service struct {
 	background task.BackgroundRoutine
 	embedder   ai.EmbeddingProvider
 	cache      EmbeddingCache
+	scratchpad ScratchpadProvider
 }
 
 type EmbeddingCache interface {
@@ -39,7 +41,17 @@ type SemanticScoreCache interface {
 	CachedSemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool)
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, cache EmbeddingCache) *Service {
+// ScratchpadProvider is the subset of scratchpad operations the
+// topic service needs to match unarchived sessions against topics.
+// Defined as an interface so the topic module can be wired without
+// depending on the capture service (which would form a cycle when
+// the capture service subscribes back to topic events).
+type ScratchpadProvider interface {
+	List() []scratchpad.Summary
+	Get(sessionID string) (scratchpad.Scratchpad, error)
+}
+
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, cache EmbeddingCache, scratchpadProvider ScratchpadProvider) *Service {
 	return &Service{
 		workspace:  workspace,
 		jobs:       jobs,
@@ -48,6 +60,7 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topics
 		background: background,
 		embedder:   embedder,
 		cache:      cache,
+		scratchpad: scratchpadProvider,
 	}
 }
 
@@ -55,10 +68,32 @@ func (s *Service) ID() string {
 	return "topic.thought-observer"
 }
 
+// SetScratchpadProvider injects the scratchpad store after
+// construction. The topic module's Setup cannot do this directly
+// because the scratchpad store is owned by the capture module and
+// the application layer decides the wiring order.
+func (s *Service) SetScratchpadProvider(provider ScratchpadProvider) {
+	s.scratchpad = provider
+}
+
 func (s *Service) Notify(ev event.Event, result event.Result) {
 	domainEvent, ok := ev.Data().(models.DomainEvent)
-	if ok && domainEvent.ResourceType == models.ResourceTypeThought && domainEvent.ResourceID != "" {
-		_, _ = s.MatchThoughtAsync(domainEvent.ResourceID)
+	if !ok {
+		if result != nil {
+			result.Set(nil, nil)
+		}
+		return
+	}
+	switch domainEvent.EventType {
+	case models.EventScratchpadContextUpdated, models.EventScratchpadCommitted:
+		sessionID := extractSessionID(domainEvent.Payload)
+		if sessionID != "" {
+			_, _ = s.MatchScratchpadAsync(sessionID)
+		}
+	case models.EventThoughtPatched, models.EventThoughtRefined, models.EventSearchIndexUpdated:
+		if domainEvent.ResourceType == models.ResourceTypeThought && domainEvent.ResourceID != "" {
+			_, _ = s.MatchThoughtAsync(domainEvent.ResourceID)
+		}
 	}
 	if result != nil {
 		result.Set(nil, nil)
@@ -130,6 +165,26 @@ func (s *Service) ListWeaveProposals(ctx context.Context, topicID string) ([]mod
 
 func (s *Service) GetWeaveProposal(ctx context.Context, topicID string, proposalID string) (models.TopicWeaveProposal, error) {
 	return s.store.GetWeaveProposal(ctx, topicID, proposalID)
+}
+
+// ListSessionCandidates returns the unarchived scratchpad sessions
+// currently matching the given topic. The list is a snapshot read
+// of the per-topic candidates.yaml — it does not recompute matches;
+// callers wanting a fresh pass should trigger MatchScratchpadAsync
+// on each session first.
+func (s *Service) ListSessionCandidates(ctx context.Context, topicID string) ([]models.TopicSessionCandidate, error) {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return nil, errors.New("topic id is required")
+	}
+	candidates, err := s.store.ListSessionCandidates(ctx, topicID)
+	if err != nil {
+		return nil, err
+	}
+	if candidates == nil {
+		candidates = []models.TopicSessionCandidate{}
+	}
+	return candidates, nil
 }
 
 func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
@@ -238,6 +293,322 @@ func (s *Service) MatchThoughtAsync(thoughtID string) (models.Job, error) {
 	}
 	go run()
 	return job, nil
+}
+
+// MatchScratchpadAsync enqueues a job that re-evaluates a single
+// unarchived session against every topic and writes the result into
+// the per-topic candidates.yaml. A session with no matches produces
+// no candidates (the file is left empty if it was empty before).
+//
+// Returned errors are limited to job-creation failures; the actual
+// matching always runs in the background so a single scratchpad
+// can never block the calling event dispatch.
+func (s *Service) MatchScratchpadAsync(sessionID string) (models.Job, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return models.Job{}, errors.New("session id is required")
+	}
+	if s.scratchpad == nil {
+		return models.Job{}, errors.New("scratchpad provider is not configured")
+	}
+	job, err := s.jobs.Create(models.JobTypeTopicMatch, models.ResourceTypeSession, sessionID, "session match queued")
+	if err != nil {
+		return models.Job{}, err
+	}
+	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+	run := func() {
+		s.matchScratchpadJob(job)
+	}
+	if s.background != nil {
+		if err := s.background.AsyncFunction(run); err == nil {
+			return job, nil
+		}
+	}
+	go run()
+	return job, nil
+}
+
+func (s *Service) matchScratchpadJob(job models.Job) {
+	job, _ = s.jobs.MarkRunning(job)
+	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+	count, err := s.matchScratchpad(context.Background(), job.ResourceID)
+	if err != nil {
+		errRef := models.NewErrorRef("thoughtflow.topic.session_match_failed", err.Error(), true)
+		job, _ = s.jobs.MarkFailed(job, errRef)
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+		return
+	}
+	job.Message = "session match succeeded"
+	job, _ = s.jobs.MarkSucceeded(job, fmt.Sprintf("session matched to %d topics", count))
+	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+}
+
+// matchScratchpad reads one session, computes candidates for every
+// topic, and writes the per-topic candidates.yaml. Returns the
+// number of (topic, session) candidate pairs successfully written
+// — used only for the job summary message.
+func (s *Service) matchScratchpad(ctx context.Context, sessionID string) (int, error) {
+	if s.scratchpad == nil {
+		return 0, errors.New("scratchpad provider is not configured")
+	}
+	sp, err := s.scratchpad.Get(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if sp.CommittedThoughtID != "" {
+		_ = s.removeSessionFromAllCandidateLists(ctx, sessionID)
+		return 0, nil
+	}
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, topic := range topics {
+		candidate, matched := s.buildSessionCandidate(ctx, sp, topic)
+		if !matched {
+			if err := s.removeSessionFromCandidateList(ctx, topic, sessionID); err != nil {
+				return count, err
+			}
+			continue
+		}
+		if err := s.upsertSessionCandidate(ctx, topic, candidate); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+// buildSessionCandidate applies the matching rules in priority order
+// (tag hint > keyword > semantic) and returns the candidate. The
+// boolean is false when the session does not match the topic at any
+// level — the caller then prunes the session from the topic's
+// candidate list.
+func (s *Service) buildSessionCandidate(ctx context.Context, sp scratchpad.Scratchpad, topic models.Topic) (models.TopicSessionCandidate, bool) {
+	now := time.Now().UTC()
+	hints := sp.SessionContext.SuggestedTopicIDs
+	for _, id := range hints {
+		if strings.TrimSpace(id) == topic.ID {
+			return models.TopicSessionCandidate{
+				SessionID: sp.SessionID,
+				TopicID:   topic.ID,
+				Title:     sessionTitle(sp),
+				MatchType: "tag_hint",
+				Score:     1.0,
+				Reasons:   []string{fmt.Sprintf("session_context.suggested_topic_ids includes %q", topic.ID)},
+				Status:    candidateStatus(sp),
+				UpdatedAt: now,
+			}, true
+		}
+	}
+	if score, reasons, ok := sessionKeywordScore(topic, sp); ok {
+		return models.TopicSessionCandidate{
+			SessionID: sp.SessionID,
+			TopicID:   topic.ID,
+			Title:     sessionTitle(sp),
+			MatchType: "keyword",
+			Score:     score,
+			Reasons:   reasons,
+			Status:    candidateStatus(sp),
+			UpdatedAt: now,
+		}, true
+	}
+	if score, reasons, ok := s.sessionSemanticScore(ctx, topic, sp); ok {
+		return models.TopicSessionCandidate{
+			SessionID: sp.SessionID,
+			TopicID:   topic.ID,
+			Title:     sessionTitle(sp),
+			MatchType: "semantic",
+			Score:     score,
+			Reasons:   reasons,
+			Status:    candidateStatus(sp),
+			UpdatedAt: now,
+		}, true
+	}
+	return models.TopicSessionCandidate{}, false
+}
+
+func sessionTitle(sp scratchpad.Scratchpad) string {
+	if t := strings.TrimSpace(sp.SessionContext.CandidateTitle); t != "" {
+		return t
+	}
+	return strings.TrimSpace(sp.Title)
+}
+
+func candidateStatus(sp scratchpad.Scratchpad) string {
+	if len(sp.SessionContext.Conflicts) > 0 {
+		return "conflict"
+	}
+	if len(sp.SessionContext.OpenQuestions) > 0 {
+		return "near_miss"
+	}
+	return "candidate"
+}
+
+// sessionKeywordScore mirrors the keyword path of topicstore.MatchThought
+// for a session. We deliberately do NOT call the store method
+// directly: the store works on markdown Thought records, while
+// sessions have a different content shape (no title hierarchy, no
+// extracted content, no AINotes). Keeping the matcher local to the
+// topic service means a future change to the session shape does
+// not have to ripple through the topic store.
+func sessionKeywordScore(topic models.Topic, sp scratchpad.Scratchpad) (float64, []string, bool) {
+	searchText := strings.ToLower(strings.Join([]string{
+		sp.SessionContext.Topic,
+		sp.SessionContext.Goal,
+		sp.SessionContext.CandidateTitle,
+		sp.SessionContext.CandidateSummary,
+		sp.SessionContext.CandidateBody,
+		strings.Join(sp.SessionContext.CandidateTags, " "),
+		strings.Join(sp.SessionContext.ConfirmedFacts, " "),
+	}, "\n"))
+	if strings.TrimSpace(searchText) == "" {
+		return 0, nil, false
+	}
+	for _, excluded := range topic.Rules.Keywords.Exclude {
+		excluded = strings.ToLower(strings.TrimSpace(excluded))
+		if excluded != "" && strings.Contains(searchText, excluded) {
+			return 0, nil, false
+		}
+	}
+	reasons := []string{}
+	score := 0.0
+	for _, required := range topic.Rules.Keywords.All {
+		required = strings.ToLower(strings.TrimSpace(required))
+		if required != "" && !strings.Contains(searchText, required) {
+			return 0, nil, false
+		}
+	}
+	for _, keyword := range topic.Rules.Keywords.Any {
+		keyword = strings.ToLower(strings.TrimSpace(keyword))
+		if keyword != "" && strings.Contains(searchText, keyword) {
+			reasons = append(reasons, "keyword:"+keyword)
+			score += 0.4
+		}
+	}
+	for _, expected := range topic.Rules.Tags.Any {
+		if containsStringFold(sp.SessionContext.CandidateTags, expected) {
+			reasons = append(reasons, "tag:"+expected)
+			score += 0.5
+		}
+	}
+	if score <= 0 {
+		return 0, nil, false
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score, reasons, true
+}
+
+func (s *Service) sessionSemanticScore(ctx context.Context, topic models.Topic, sp scratchpad.Scratchpad) (float64, []string, bool) {
+	if !topic.Rules.Semantic.Enabled || s.embedder == nil {
+		return 0, nil, false
+	}
+	topicText := semanticTopicText(topic)
+	sessionText := strings.TrimSpace(strings.Join([]string{
+		sp.SessionContext.Topic,
+		sp.SessionContext.Goal,
+		sp.SessionContext.CandidateTitle,
+		sp.SessionContext.CandidateSummary,
+		sp.SessionContext.CandidateBody,
+	}, "\n"))
+	if topicText == "" || sessionText == "" {
+		return 0, nil, false
+	}
+	topicEmbedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{Text: topicText})
+	if err != nil {
+		return 0, nil, false
+	}
+	sessionEmbedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{Text: sessionText})
+	if err != nil {
+		return 0, nil, false
+	}
+	score := cosine(topicEmbedding.Vector, sessionEmbedding.Vector)
+	threshold := topic.Rules.Semantic.Threshold
+	if threshold <= 0 {
+		threshold = 0.75
+	}
+	if score < threshold {
+		return 0, nil, false
+	}
+	return score, []string{fmt.Sprintf("semantic:%.3f", score)}, true
+}
+
+func (s *Service) upsertSessionCandidate(ctx context.Context, topic models.Topic, candidate models.TopicSessionCandidate) error {
+	existing, err := s.store.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for idx := range existing {
+		if existing[idx].SessionID == candidate.SessionID {
+			existing[idx] = candidate
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		existing = append(existing, candidate)
+	}
+	return s.store.SaveSessionCandidates(ctx, topic.ID, existing)
+}
+
+func (s *Service) removeSessionFromCandidateList(ctx context.Context, topic models.Topic, sessionID string) error {
+	existing, err := s.store.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		return err
+	}
+	filtered := existing[:0]
+	changed := false
+	for _, c := range existing {
+		if c.SessionID == sessionID {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	if !changed {
+		return nil
+	}
+	return s.store.SaveSessionCandidates(ctx, topic.ID, filtered)
+}
+
+func (s *Service) removeSessionFromAllCandidateLists(ctx context.Context, sessionID string) error {
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, topic := range topics {
+		if err := s.removeSessionFromCandidateList(ctx, topic, sessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func containsStringFold(values []string, expected string) bool {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if expected == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func extractSessionID(payload any) string {
+	switch p := payload.(type) {
+	case map[string]any:
+		if v, ok := p["session_id"].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func (s *Service) RebuildTopic(ctx context.Context, id string) (models.Job, error) {

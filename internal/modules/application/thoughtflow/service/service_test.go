@@ -316,7 +316,7 @@ func TestHandleWeaveProposalsListsAndReadsPersistentProposal(t *testing.T) {
 			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
 		}
 	}
-	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
 	service := &Service{topicService: topicService}
 	ctx := context.Background()
 	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{
@@ -401,7 +401,7 @@ func TestHandleGetTopicIncludesRecentActivities(t *testing.T) {
 			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
 		}
 	}
-	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{Name: "Activity Topic"})
 	if err != nil {
@@ -442,6 +442,61 @@ func TestHandleGetTopicIncludesRecentActivities(t *testing.T) {
 	}
 	if payload.Data.Activities[0].EventID != "evt-topic" || payload.Data.Activities[1].EventID != "evt-membership" {
 		t.Fatalf("activities order = %#v", payload.Data.Activities)
+	}
+}
+
+func TestHandleListSessionCandidatesReturnsEmptyListForFreshTopic(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
+	ctx := context.Background()
+	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{Name: "CandidateTopic"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	service := &Service{topicService: topicService}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/topics/"+topic.ID+"/candidates", nil)
+	res := httptest.NewRecorder()
+	service.handleListSessionCandidates(ctx, res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", res.Code, res.Body.String())
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var candidates []models.TopicSessionCandidate
+	if err := json.Unmarshal(raw, &candidates); err != nil {
+		t.Fatalf("candidate shape: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected empty candidates, got %d", len(candidates))
+	}
+}
+
+func TestHandleListSessionCandidatesReturnsBadRequestForEmptyID(t *testing.T) {
+	topicService := topicbiz.NewService(&models.Workspace{}, jobstore.New(filepath.Join(t.TempDir(), "jobs")), topicstore.New(t.TempDir()), nil, nil, nil, nil, nil)
+	service := &Service{topicService: topicService}
+	req := httptest.NewRequest(http.MethodGet, "/api/topics//candidates", nil)
+	res := httptest.NewRecorder()
+	service.handleListSessionCandidates(context.Background(), res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", res.Code, res.Body.String())
 	}
 }
 

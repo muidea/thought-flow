@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/task"
+
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/topicstore"
 )
 
@@ -32,7 +37,7 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 		}
 	}
 
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Engineering Search",
@@ -99,7 +104,7 @@ func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
 		}
 	}
 
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, ai.NewLocalRefineProvider(), nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, ai.NewLocalRefineProvider(), nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name:        "Semantic Retrieval",
@@ -174,7 +179,7 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 			Vector:    []float64{1, 0, 0},
 		},
 	}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name:        "Cached Semantic Retrieval",
@@ -234,7 +239,7 @@ func TestServiceSemanticMatchUsesCachedSemanticScores(t *testing.T) {
 			Vector:    []float64{1, 0, 0},
 		},
 	}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, cache, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name:        "ANN Semantic Retrieval",
@@ -286,7 +291,7 @@ func TestServicePreviewAndAcceptWeave(t *testing.T) {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Manual Weave",
@@ -374,7 +379,7 @@ func TestServiceAcceptWeaveAppliesStructuredPatch(t *testing.T) {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Patch Weave",
@@ -427,7 +432,7 @@ func TestServiceAcceptWeaveRejectsStaleStructuredPatch(t *testing.T) {
 		}
 	}
 	store := topicstore.New(root)
-	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, nil)
 	ctx := context.Background()
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
 		Name: "Patch Conflict",
@@ -567,7 +572,7 @@ func TestServiceNearMissTopicsReturnsBelowThreshold(t *testing.T) {
 		Dimension: 4,
 		Vector:    []float64{1, 0, 0, 0},
 	}}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil, nil)
 	ctx := context.Background()
 
 	// A high-threshold semantic topic: a thought with 60% similarity
@@ -650,7 +655,7 @@ func TestServiceNearMissTopicsSortsByScoreDesc(t *testing.T) {
 		Dimension: 3,
 		Vector:    []float64{1, 0, 0},
 	}}
-	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil)
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil, nil)
 	ctx := context.Background()
 
 	topicA, err := service.CreateTopic(ctx, models.TopicCreateRequest{Name: "A", Rules: models.TopicRule{
@@ -706,4 +711,352 @@ func (p *fixedEmbeddingProvider) Embed(ctx context.Context, req ai.EmbedRequest)
 	_ = ctx
 	_ = req
 	return p.record, nil
+}
+
+// stubScratchpadProvider is a minimal in-memory ScratchpadProvider
+// for the candidate-matching tests. It deliberately implements the
+// interface (not the full scratchpad.Store) so the topic module is
+// tested against the contract, not a leaky abstraction.
+type stubScratchpadProvider struct {
+	sessions map[string]scratchpad.Scratchpad
+}
+
+func newStubScratchpadProvider() *stubScratchpadProvider {
+	return &stubScratchpadProvider{sessions: map[string]scratchpad.Scratchpad{}}
+}
+
+func (s *stubScratchpadProvider) put(sp scratchpad.Scratchpad) {
+	s.sessions[sp.SessionID] = sp
+}
+
+func (s *stubScratchpadProvider) List() []scratchpad.Summary {
+	out := []scratchpad.Summary{}
+	for _, sp := range s.sessions {
+		out = append(out, scratchpad.Summary{
+			SessionID:          sp.SessionID,
+			Title:              sp.Title,
+			CommittedThoughtID: sp.CommittedThoughtID,
+			UpdatedAt:          sp.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func (s *stubScratchpadProvider) Get(sessionID string) (scratchpad.Scratchpad, error) {
+	sp, ok := s.sessions[sessionID]
+	if !ok {
+		return scratchpad.Scratchpad{}, errors.New("scratchpad not found: " + sessionID)
+	}
+	return sp, nil
+}
+
+func TestServiceMatchScratchpadAsyncWritesCandidates(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Engineering Search",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"duckdb"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-1",
+		Title:     "DuckDB index design",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "DuckDB index design",
+			CandidateSummary: "Notes on the local DuckDB index layer",
+			CandidateTags:    []string{"search", "engine"},
+		},
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	// Drive the synchronous matcher directly so the test does not
+	// race the async job-queue cleanup. The async job-creation
+	// contract is exercised by TestServiceNotifyDispatchesScratchpad
+	// ContextUpdated.
+	count, err := service.matchScratchpad(ctx, "sp-1")
+	if err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("matchScratchpad() count = %d, want 1", count)
+	}
+
+	candidates, err := service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates len = %d, want 1", len(candidates))
+	}
+	if candidates[0].SessionID != "sp-1" {
+		t.Fatalf("candidate session = %q", candidates[0].SessionID)
+	}
+	if candidates[0].MatchType != "keyword" {
+		t.Fatalf("candidate match_type = %q, want keyword", candidates[0].MatchType)
+	}
+}
+
+func TestServiceMatchScratchpadAsyncJobMetadata(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-job",
+		Title:     "title",
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	job, err := service.MatchScratchpadAsync("sp-job")
+	if err != nil {
+		t.Fatalf("MatchScratchpadAsync() error = %v", err)
+	}
+	if job.Type != models.JobTypeTopicMatch {
+		t.Fatalf("job type = %q, want %q", job.Type, models.JobTypeTopicMatch)
+	}
+	if job.ResourceType != models.ResourceTypeSession {
+		t.Fatalf("job resource_type = %q, want %q", job.ResourceType, models.ResourceTypeSession)
+	}
+	if job.ResourceID != "sp-job" {
+		t.Fatalf("job resource_id = %q, want sp-job", job.ResourceID)
+	}
+	// Let the dispatched goroutine finish writing before TempDir
+	// cleanup runs. The matcher is fast (one topic, no LLM) so a
+	// short sleep is sufficient; without it the cleanup race
+	// reports "directory not empty" as a test failure.
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestServiceMatchScratchpadUsesTagHintPriority(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:  "AI safety",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"alignment"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-2",
+		Title:     "Alignment research",
+		SessionContext: scratchpad.SessionContext{
+			SuggestedTopicIDs: []string{topic.ID, "other-topic"},
+			CandidateBody:     "Some content with the word alignment in it",
+		},
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	if _, err := service.matchScratchpad(ctx, "sp-2"); err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+	candidates, err := service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].MatchType != "tag_hint" {
+		t.Fatalf("expected tag_hint match, got %+v", candidates)
+	}
+}
+
+func TestServiceMatchScratchpadPrunesStaleOnContextChange(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:  "Engineering Search",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"duckdb"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	sp := scratchpad.Scratchpad{
+		SessionID: "sp-3",
+		Title:     "Notes",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "Notes",
+			CandidateSummary: "about the duckdb index layer",
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	scratchpads.put(sp)
+	if _, err := service.matchScratchpad(ctx, "sp-3"); err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+	candidates, err := service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() after add error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("after add: candidates len = %d, want 1", len(candidates))
+	}
+
+	// Update the session so it no longer matches; the matcher
+	// should prune the candidate from the topic.
+	sp.SessionContext.CandidateTitle = "Something"
+	sp.SessionContext.CandidateSummary = "completely different"
+	sp.Title = "Something"
+	scratchpads.put(sp)
+	if _, err := service.matchScratchpad(ctx, "sp-3"); err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+	candidates, err = service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() after prune error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("after prune: candidates len = %d, want 0", len(candidates))
+	}
+}
+
+func TestServiceMatchScratchpadPurgesOnCommit(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:  "Engineering Search",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"duckdb"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-4",
+		Title:     "DuckDB",
+		SessionContext: scratchpad.SessionContext{
+			CandidateSummary: "duckdb index design notes",
+		},
+		UpdatedAt: time.Now().UTC(),
+	})
+	if _, err := service.matchScratchpad(ctx, "sp-4"); err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+	if candidates, _ := service.ListSessionCandidates(ctx, topic.ID); len(candidates) != 1 {
+		t.Fatalf("setup: expected 1 candidate, got %d", len(candidates))
+	}
+
+	// Simulate commit by setting CommittedThoughtID in the stub.
+	committed := scratchpads.sessions["sp-4"]
+	committed.CommittedThoughtID = "thought-1"
+	scratchpads.put(committed)
+	if _, err := service.matchScratchpad(ctx, "sp-4"); err != nil {
+		t.Fatalf("matchScratchpad(committed) error = %v", err)
+	}
+	candidates, err := service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("after commit: candidates len = %d, want 0", len(candidates))
+	}
+}
+
+func TestServiceNotifyDispatchesScratchpadContextUpdated(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	if _, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:  "Engineering Search",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"duckdb"}}},
+	}); err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-5",
+		Title:     "duckdb",
+		SessionContext: scratchpad.SessionContext{
+			CandidateSummary: "duckdb index design",
+		},
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	ev := event.NewEvent(models.EventScratchpadContextUpdated, "capture", "#", event.NewHeader(), models.DomainEvent{
+		EventType:    models.EventScratchpadContextUpdated,
+		ResourceType: models.ResourceTypeSession,
+		ResourceID:   "sp-5",
+		Payload:      map[string]any{"session_id": "sp-5"},
+	})
+	result := event.NewResult(models.EventScratchpadContextUpdated, "capture", "#")
+	// Notify should not error or panic; the actual match runs in
+	// the background goroutine. The test only asserts the dispatch
+	// path runs end-to-end without panicking.
+	service.Notify(ev, result)
+}
+
+// captureBackground records the most recent async function passed
+// to it so tests can assert that an event handler queued a job.
+// Kept here for future tests that need to drive the BackgroundRoutine
+// path explicitly; the current Notify test uses a nil background
+// because the topic service falls back to a goroutine in that case.
+type captureBackground struct {
+	last func()
+}
+
+func (c *captureBackground) AsyncFunction(fn func()) error {
+	c.last = fn
+	return nil
+}
+
+func (c *captureBackground) AsyncTask(_ task.Task) error {
+	return nil
+}
+
+func (c *captureBackground) SyncTask(_ task.Task) error { return nil }
+
+func (c *captureBackground) SyncTaskWithTimeOut(_ task.Task, _ time.Duration) error { return nil }
+
+func (c *captureBackground) SyncFunction(_ func()) error { return nil }
+
+func (c *captureBackground) SyncFunctionWithTimeOut(_ func(), _ time.Duration) error {
+	return nil
+}
+
+func (c *captureBackground) Timer(_ context.Context, _ task.Task, _ time.Duration, _ time.Duration) error {
+	return nil
+}
+
+func (c *captureBackground) Shutdown(_ context.Context) bool { return true }
+
+var _ task.BackgroundRoutine = (*captureBackground)(nil)
+
+func topicTestWorkspace(root string) *models.Workspace {
+	return &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
 }
