@@ -1671,6 +1671,25 @@ func (f *fakeScratchpadStore) Reset(sessionID string) (scratchpad.Scratchpad, er
 	return sp, nil
 }
 
+func (f *fakeScratchpadStore) LastActive() (scratchpad.Scratchpad, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *scratchpad.Scratchpad
+	for _, sp := range f.items {
+		if strings.TrimSpace(sp.CommittedThoughtID) != "" {
+			continue
+		}
+		if best == nil || sp.UpdatedAt.After(best.UpdatedAt) {
+			copy := sp
+			best = &copy
+		}
+	}
+	if best == nil {
+		return scratchpad.Scratchpad{}, false
+	}
+	return *best, true
+}
+
 // TestHandleGetScratchpadReturnsEmptyForMissingSession locks in the
 // "200 + zero value" behavior so the UI never has to special-case
 // 404 on first chat of a new session.
@@ -1788,6 +1807,57 @@ func TestHandleListScratchpadsReturnsSummaries(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "\"a\"") || !strings.Contains(res.Body.String(), "\"b\"") {
 		t.Fatalf("list body missing sessions: %s", res.Body.String())
+	}
+}
+
+func TestHandleListScratchpadsExposesLastActiveForUncommitted(t *testing.T) {
+	store := newFakeScratchpadStore()
+	store.Save(scratchpad.Scratchpad{SessionID: "older", Content: "first draft"})
+	now := time.Now().UTC()
+	// "latest" is fresher and uncommitted — it should win.
+	store.Save(scratchpad.Scratchpad{SessionID: "latest", Content: "still in flight", UpdatedAt: now.Add(time.Hour)})
+	// "archived" is the most recently *touched* but already committed — excluded.
+	store.Save(scratchpad.Scratchpad{SessionID: "archived", Content: "done", UpdatedAt: now.Add(2 * time.Hour)})
+	store.MarkCommitted("archived", "thought-archived")
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capture/scratchpad/list", nil)
+	res := httptest.NewRecorder()
+	service.handleListScratchpads(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var payload struct {
+		Summaries           []scratchpad.Summary `json:"summaries"`
+		LastActiveSessionID string               `json:"last_active_session_id"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("payload shape: %v; raw = %s", err, raw)
+	}
+	if payload.LastActiveSessionID != "latest" {
+		t.Fatalf("last_active_session_id = %q, want latest (archived must be excluded)", payload.LastActiveSessionID)
+	}
+}
+
+func TestHandleListScratchpadsOmitsLastActiveWhenAllCommitted(t *testing.T) {
+	store := newFakeScratchpadStore()
+	store.Save(scratchpad.Scratchpad{SessionID: "done-1"})
+	store.MarkCommitted("done-1", "thought-1")
+	store.Save(scratchpad.Scratchpad{SessionID: "done-2"})
+	store.MarkCommitted("done-2", "thought-2")
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capture/scratchpad/list", nil)
+	res := httptest.NewRecorder()
+	service.handleListScratchpads(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+	if strings.Contains(res.Body.String(), "last_active_session_id") {
+		t.Fatalf("body unexpectedly contains last_active_session_id: %s", res.Body.String())
 	}
 }
 

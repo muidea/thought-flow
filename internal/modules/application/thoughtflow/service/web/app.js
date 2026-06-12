@@ -1699,30 +1699,78 @@ async function refreshCaptureSessionsFromServer() {
   try {
     response = await api("/api/capture/scratchpad/list", { method: "GET" });
   } catch (_) {
-    return;
+    return null;
   }
   const summaries = response.summaries || response.Summaries || [];
-  if (!Array.isArray(summaries) || summaries.length === 0) return;
-  // Project server summaries into the local session shape so the
-  // existing switchCaptureSession / rememberCaptureSession code
-  // path can route to them.
-  const existing = new Map((state.capture.sessions || []).map((item) => [item.sessionId, item]));
-  for (const summary of summaries) {
-    if (!summary || !summary.session_id) continue;
-    const id = summary.session_id;
-    if (existing.has(id)) continue;
-    state.capture.sessions.unshift({
-      sessionId: id,
-      thoughtId: summary.committed_thought_id || "",
-      title: summary.title || id,
-      updatedAt: summary.updated_at || new Date().toISOString(),
-      source: "server",
-    });
+  if (Array.isArray(summaries) && summaries.length > 0) {
+    // Project server summaries into the local session shape so the
+    // existing switchCaptureSession / rememberCaptureSession code
+    // path can route to them.
+    const existing = new Map((state.capture.sessions || []).map((item) => [item.sessionId, item]));
+    for (const summary of summaries) {
+      if (!summary || !summary.session_id) continue;
+      const id = summary.session_id;
+      if (existing.has(id)) continue;
+      state.capture.sessions.unshift({
+        sessionId: id,
+        thoughtId: summary.committed_thought_id || "",
+        title: summary.title || id,
+        updatedAt: summary.updated_at || new Date().toISOString(),
+        source: "server",
+      });
+    }
+    state.capture.sessions = (state.capture.sessions || []).slice(0, 24);
+    saveCaptureSessions();
+    // Re-render only the list (skip the recursive server fetch).
+    redrawCaptureSessionsList();
   }
-  state.capture.sessions = (state.capture.sessions || []).slice(0, 24);
-  saveCaptureSessions();
-  // Re-render only the list (skip the recursive server fetch).
-  redrawCaptureSessionsList();
+  // The server also exposes last_active_session_id — the scratchpad
+  // the boot path should land the user on. We surface it through
+  // this same fetch so callers (boot) don't have to issue a second
+  // round trip.
+  return response.last_active_session_id || response.LastActiveSessionID || "";
+}
+
+// rehydrateActiveScratchpad asks the server for the scratchpad
+// the boot path should re-open, then mirrors it into local state.
+// The server decides which scratchpad qualifies (most recently
+// updated *uncommitted* one) so a tab refresh, a server restart,
+// or a cross-device open all land the user in the same
+// conversation without losing input.
+//
+// We skip rehydration when the user is already in a session — for
+// example, the in-flight capture from a hot reload shouldn't be
+// overridden by a stale "last active" from disk.
+async function rehydrateActiveScratchpad() {
+  if (state.capture.activeScratchpad && state.capture.activeScratchpad.session_id) {
+    return;
+  }
+  let lastActiveID = "";
+  try {
+    lastActiveID = await refreshCaptureSessionsFromServer();
+  } catch (_) {
+    return;
+  }
+  if (!lastActiveID) return;
+  let detail;
+  try {
+    detail = await api(`/api/capture/scratchpad?session_id=${encodeURIComponent(lastActiveID)}`);
+  } catch (_) {
+    return;
+  }
+  if (!detail || !detail.session_id) return;
+  // Server may have marked the scratchpad committed in the gap
+  // between list and get — drop it instead of opening an empty
+  // bubble the user can't chat into.
+  if ((detail.committed_thought_id || "").trim() !== "") return;
+  state.capture.activeScratchpad = detail;
+  state.capture.sessionId = detail.session_id;
+  // Restore the chat history verbatim so the user sees the same
+  // composer state they had when they refreshed.
+  state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : [];
+  if (typeof renderCaptureConversation === "function") {
+    renderCaptureConversation();
+  }
 }
 
 function redrawCaptureSessionsList() {
@@ -3369,6 +3417,12 @@ async function boot() {
   await loadMetrics();
   await runSearch();
   await applyRoute();
+  // Land the user back in the most recent uncommitted capture
+  // session if there is one, so a refresh doesn't dump them onto
+  // an empty composer. The server's last_active_session_id is the
+  // authority — we only fall back to the local cache if the
+  // server explicitly says there's nothing to rehydrate.
+  await rehydrateActiveScratchpad();
   connectEvents();
 }
 

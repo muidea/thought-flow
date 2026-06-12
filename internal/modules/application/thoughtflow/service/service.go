@@ -81,6 +81,7 @@ type scratchpadStore interface {
 	List() []scratchpad.Summary
 	MarkCommitted(sessionID, thoughtID string) (scratchpad.Scratchpad, error)
 	Reset(sessionID string) (scratchpad.Scratchpad, error)
+	LastActive() (scratchpad.Scratchpad, bool)
 }
 
 type eventPublisher interface {
@@ -600,9 +601,19 @@ func (s *Service) handleListScratchpads(ctx context.Context, res http.ResponseWr
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
 		return
 	}
-	writeJSON(res, req, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"summaries": s.scratchpad.List(),
-	})
+	}
+	// last_active_session_id is the scratchpad the front-end boot
+	// path should land the user on when the capture page opens. It
+	// is the most recently updated *uncommitted* scratchpad — once
+	// a scratchpad has been committed, it has no content left to
+	// chat against, so rehydrating it would surface a confusing
+	// empty state. Omitted when no uncommitted scratchpad exists.
+	if last, ok := s.scratchpad.LastActive(); ok {
+		payload["last_active_session_id"] = last.SessionID
+	}
+	writeJSON(res, req, http.StatusOK, payload)
 }
 
 // handleNewCaptureSession explicitly opens a fresh scratchpad by

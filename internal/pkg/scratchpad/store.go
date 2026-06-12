@@ -278,6 +278,44 @@ func (s *Store) List() []Summary {
 	return out
 }
 
+// LastActive returns the most recently updated uncommitted
+// scratchpad, if any. A scratchpad is considered "uncommitted"
+// when CommittedThoughtID is empty — once the user archives the
+// session into a real thought, the entry stays on disk for
+// history/audit but is not a candidate for the page-restore hook
+// (it has no content to chat against). Returns (zero, false) when
+// no candidate exists.
+//
+// The intent: the front-end boot path asks "which scratchpad, if
+// any, should the user land on when the capture page opens?"
+// Server answers with the most recent unfinished draft so a tab
+// refresh, a server restart, or a cross-device open all land in
+// the same conversation without losing input.
+func (s *Store) LastActive() (Scratchpad, bool) {
+	if s == nil {
+		return Scratchpad{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best *Scratchpad
+	for _, sp := range s.items {
+		if sp == nil {
+			continue
+		}
+		if strings.TrimSpace(sp.CommittedThoughtID) != "" {
+			continue
+		}
+		if best == nil || sp.UpdatedAt.After(best.UpdatedAt) {
+			copy := *sp
+			best = &copy
+		}
+	}
+	if best == nil {
+		return Scratchpad{}, false
+	}
+	return cloneScratchpad(*best), true
+}
+
 // RuntimeStatus reports whether the store is ready. Mirrors the
 // shape of jobstore.RuntimeStatus so it can be exposed via the
 // /api/system/status endpoint without a custom handler.

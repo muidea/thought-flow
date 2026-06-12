@@ -259,6 +259,70 @@ func TestStoreListOrdersByUpdatedAtDesc(t *testing.T) {
 	}
 }
 
+func TestStoreLastActivePicksFreshestUncommitted(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	base := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	// first: 早创建,早标记 committed
+	store.now = func() time.Time { return base }
+	if _, err := store.Save(Scratchpad{SessionID: "first"}); err != nil {
+		t.Fatalf("Save first: %v", err)
+	}
+	store.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if _, err := store.MarkCommitted("first", "thought-1"); err != nil {
+		t.Fatalf("MarkCommitted first: %v", err)
+	}
+	// older: 中间创建,未 commit
+	store.now = func() time.Time { return base.Add(1 * time.Minute) }
+	if _, err := store.Save(Scratchpad{SessionID: "older"}); err != nil {
+		t.Fatalf("Save older: %v", err)
+	}
+	// latest: 最晚创建,未 commit → 应被选中
+	store.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if _, err := store.Save(Scratchpad{SessionID: "latest"}); err != nil {
+		t.Fatalf("Save latest: %v", err)
+	}
+	got, ok := store.LastActive()
+	if !ok {
+		t.Fatalf("LastActive = (_, false), want (_, true)")
+	}
+	if got.SessionID != "latest" {
+		t.Fatalf("LastActive.SessionID = %q, want latest", got.SessionID)
+	}
+}
+
+func TestStoreLastActiveSkipsAllCommitted(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	base := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	for i, sid := range []string{"a", "b"} {
+		store.now = func() time.Time { return base.Add(time.Duration(i) * time.Minute) }
+		if _, err := store.Save(Scratchpad{SessionID: sid}); err != nil {
+			t.Fatalf("Save %s: %v", sid, err)
+		}
+		store.now = func() time.Time { return base.Add(time.Duration(i+10) * time.Minute) }
+		if _, err := store.MarkCommitted(sid, "thought-"+sid); err != nil {
+			t.Fatalf("MarkCommitted %s: %v", sid, err)
+		}
+	}
+	got, ok := store.LastActive()
+	if ok {
+		t.Fatalf("LastActive = (%+v, true), want (_, false) — both committed", got)
+	}
+}
+
+func TestStoreLastActiveEmptyStore(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	got, ok := store.LastActive()
+	if ok {
+		t.Fatalf("LastActive on empty store = (%+v, true), want (_, false)", got)
+	}
+	if got.SessionID != "" {
+		t.Fatalf("LastActive.SessionID = %q, want empty", got.SessionID)
+	}
+}
+
 func TestStoreRuntimeStatusReportsReady(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
