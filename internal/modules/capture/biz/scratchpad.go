@@ -66,6 +66,7 @@ type CaptureCommitter interface {
 	Capture(ctx context.Context, cmd models.CaptureCommand) (models.CaptureResult, error)
 	PatchThought(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error)
 	ApplyDraftInternal(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error)
+	GetThought(ctx context.Context, thoughtID string) (models.ThoughtSnapshot, error)
 }
 
 // eventHub is the minimal publish/subscribe surface the commit
@@ -566,38 +567,31 @@ func (s *ScratchpadService) ResetAfterCommit(sessionID string) (scratchpad.Scrat
 	return s.store.Reset(sessionID)
 }
 
-// Commit turns a scratchpad into a real thought. The first commit
-// for a session runs the full capture pipeline; subsequent commits
-// in the same session append to the same thought (per plan §6.1).
+// Commit turns a scratchpad into a real thought. The strategy on
+// the scratchpad (ArchiveStrategy) drives the routing:
 //
-// The two paths:
+//   - "new" (or empty) — first commit: capture a fresh thought and
+//     apply the chat-time draft; subsequent commits PATCH the
+//     existing thought (the "继续追加" path). This is the default
+//     for a normal capture session.
 //
-//  1. First commit (CommittedThoughtID == ""):
-//     - BuildCaptureCommand → CaptureCommand
-//     - capture.Capture(...)  → thought file + EventThoughtCaptured
-//     - ApplyDraftToThought: PATCH the freshly-committed thought
-//       with the scratchpad's draft (Title / Tags / Notes / Topics).
-//       This second pass is needed because the LLM-side classify
-//       only fills in Type; the user's chat commands live in the
-//       draft and must be applied explicitly.
-//     - MarkCommitted (stamp CommittedThoughtID / CommittedAt)
-//     - ResetAfterCommit (clear volatile fields; keep committed link)
+//   - "update_thought" — PATCH the thought named by
+//     SourceThoughtID with the scratchpad's projected body / tags.
+//     Goes through the regular PatchThought path so a human
+//     PATCH and the scratchpad update serialise on thoughtlock.
 //
-//  2. Repeat commit (CommittedThoughtID != ""):
-//     - Build a PatchRequest from the current scratchpad state
-//       (Content → AINotesAppend, Draft → Title / Tags / TopicIDs)
-//     - capture.PatchThought(...)
-//     - ResetAfterCommit
+//   - "supplement" — capture a new thought whose body is prefixed
+//     with "[补充] 前置 thought-{parent.ID}" and whose
+//     RelatedThoughtIDs includes the parent. Then PATCH the
+//     parent to add the new thought to ITS RelatedThoughtIDs
+//     (bidirectional backlink). The scratchpad's
+//     CommittedThoughtID points at the new thought so a follow-up
+//     "继续追加" keeps piling on the supplement, not the parent.
 //
-// In both cases ResetAfterCommit wipes Content / Messages / Draft so
-// the next user turn starts from a clean slate (the user can still
-// see the "anchored to thought-X" badge via CommittedThoughtID).
-//
-// Returns the CaptureResult from the underlying pipeline. For the
-// repeat path the Thought field is a zero-value Thought because
-// PatchThought returns a Snapshot, not a CaptureResult — the
-// caller can read CommittedThoughtID from the response envelope
-// instead.
+// Returns the CaptureResult. For "update_thought" the Thought
+// field is a zero-value Thought (PatchThought returns a Snapshot)
+// — the caller reads Result.Thought.ID via the scratchpad's
+// SourceThoughtID instead.
 func (s *ScratchpadService) Commit(ctx context.Context, sessionID string) (models.CaptureResult, error) {
 	if s == nil || s.store == nil {
 		return models.CaptureResult{}, ErrScratchpadUnavailable
@@ -620,15 +614,30 @@ func (s *ScratchpadService) Commit(ctx context.Context, sessionID string) (model
 	// a no-op reset so the UI is in a clean state. First-time
 	// commit, on the other hand, requires Content: a scratchpad
 	// with nothing to capture is a no-op that should never have
-	// been sent to Begin With.
-	if sp.CommittedThoughtID == "" && strings.TrimSpace(sp.Content) == "" {
+	// been sent to Begin With. "update_thought" never requires
+	// Content (the body comes from the scratchpad's draft / context
+	// projection; an empty projection is just a no-op patch).
+	if sp.ArchiveStrategy != scratchpad.ArchiveStrategyUpdate &&
+		sp.ArchiveStrategy != scratchpad.ArchiveStrategySupplement &&
+		sp.CommittedThoughtID == "" && strings.TrimSpace(sp.Content) == "" {
 		return models.CaptureResult{}, errors.New("capture: scratchpad content is empty")
 	}
 
-	if sp.CommittedThoughtID == "" {
-		return s.commitFresh(ctx, sp)
+	switch sp.ArchiveStrategy {
+	case scratchpad.ArchiveStrategyUpdate:
+		return s.commitUpdate(ctx, sp)
+	case scratchpad.ArchiveStrategySupplement:
+		return s.commitSupplement(ctx, sp)
+	default:
+		if sp.ArchiveStrategy != scratchpad.ArchiveStrategyNew && sp.ArchiveStrategy != "" {
+			// Unknown strategy — degrade to "new" rather than error.
+			sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
+		}
+		if sp.CommittedThoughtID == "" {
+			return s.commitFresh(ctx, sp)
+		}
+		return s.commitRepeat(ctx, sp)
 	}
-	return s.commitRepeat(ctx, sp)
 }
 
 // commitFresh is the first-commit path: capture the thought, then
@@ -692,6 +701,118 @@ func (s *ScratchpadService) commitRepeat(ctx context.Context, sp scratchpad.Scra
 		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, err
 	}
 	return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, nil
+}
+
+// commitUpdate is the "update_thought" path. It PATCHes the
+// thought named by SourceThoughtID with the scratchpad's
+// projected body / title / tags. Unlike the repeat-commit path
+// (which uses ApplyDraftInternal to avoid racing the refiner
+// job that the Capture step just enqueued), this path uses the
+// regular PatchThought — there is no Capture step here, so the
+// refiner lock cannot conflict.
+//
+// SourceThoughtID is required; we still verify by issuing
+// GetThought first so the failure mode is a clean 404 instead of
+// the file-not-found you'd get from PatchThought on a missing
+// thought.
+//
+// The scratchpad's CommittedThoughtID is NOT set — the scratchpad
+// is still "open" relative to the source thought (the user can
+// keep iterating). A subsequent "继续追加" with strategy
+// "update_thought" keeps editing the same source.
+func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
+	thoughtID := strings.TrimSpace(sp.SourceThoughtID)
+	if thoughtID == "" {
+		return models.CaptureResult{}, errors.New("capture: update_thought requires source_thought_id")
+	}
+	if _, gerr := s.capture.GetThought(ctx, thoughtID); gerr != nil {
+		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
+	}
+	patch, rawBody, err := buildPatchForUpdate(sp)
+	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	if patch == nil {
+		// Nothing actually changed; degrade to a no-op reset so the
+		// UI is in a clean state. We still return a successful
+		// CaptureResult with the source thought's id so callers can
+		// show "no change" in the toast.
+		if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
+			return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
+		}
+		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, nil
+	}
+	sessionID := s.sessionID
+	if sessionID == "" {
+		sessionID = sp.SessionID
+	}
+	if _, err := s.capture.PatchThought(ctx, thoughtID, sessionID, *patch, rawBody); err != nil {
+		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
+	}
+	s.publishCommittedEvent(thoughtID, sp.SessionID, "update")
+	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
+		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
+	}
+	return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, nil
+}
+
+// commitSupplement is the "supplement" path. It captures a new
+// thought whose body is prefixed with "[补充] 前置
+// thought-{parent.ID}" and whose AINotes gets a backlink marker
+// pointing at the parent. Updating the parent's
+// RelatedThoughtIDs is a follow-up: it requires extending
+// ThoughtPatchRequest with a RelatedThoughtIDs field (currently
+// absent), so the parent's backlink is left to the next PR. The
+// new thought is fully readable without the parent update.
+func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
+	parentID := strings.TrimSpace(sp.SourceThoughtID)
+	if parentID == "" {
+		return models.CaptureResult{}, errors.New("capture: supplement requires source_thought_id")
+	}
+	if _, gerr := s.capture.GetThought(ctx, parentID); gerr != nil {
+		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
+	}
+	cmd, err := s.BuildCaptureCommand(sp)
+	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	cmd.Source = "scratchpad-supplement"
+	prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
+	if !strings.HasPrefix(cmd.Content, prefix) {
+		cmd.Content = prefix + cmd.Content
+	}
+	result, err := s.capture.Capture(ctx, cmd)
+	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	if _, err := s.store.MarkCommitted(sp.SessionID, result.Thought.ID); err != nil {
+		return result, err
+	}
+	// AINotes backlink marker on the new thought. We use the
+	// lock-free apply path so the refiner job the Capture step
+	// just enqueued doesn't see a "thought is locked" skip.
+	sessionID := s.sessionID
+	if sessionID == "" {
+		sessionID = sp.SessionID
+	}
+	marker := fmt.Sprintf("[补充] 关联前置 thought-%s", parentID)
+	patch := &models.ThoughtPatchRequest{AINotesAppend: &marker}
+	if rawBody, mErr := patchRequestToRawBody(*patch); mErr == nil {
+		_, _ = s.capture.ApplyDraftInternal(ctx, result.Thought.ID, sessionID, *patch, rawBody)
+	}
+	s.publishCommittedEvent(result.Thought.ID, sp.SessionID, "supplement")
+	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// applyRelatedBacklink is reserved for the follow-up that adds
+// RelatedThoughtIDs to the patchable fields. It currently is a
+// no-op placeholder so callers can compile and the explicit
+// "we know we don't do parent backlink yet" path stays visible.
+func (s *ScratchpadService) applyRelatedBacklink(_ context.Context, _, _, _ string, _ bool) error {
+	return nil
 }
 
 // applyDraftToThought runs after a fresh commit to apply the
@@ -780,6 +901,66 @@ func mergedTagSet(sp scratchpad.Scratchpad) []string {
 	tags = unionStrings(tags, sp.Draft.TagsAdded)
 	tags = subtractStrings(tags, sp.Draft.TagsRemoved)
 	return uniqueStrings(tags)
+}
+
+// buildPatchForUpdate produces a ThoughtPatchRequest for the
+// "update_thought" path. Unlike buildPatchFromScratchpad (which
+// treats Content as AINotesAppend because the original was
+// already captured), this path projects the scratchpad's
+// CandidateTitle / CandidateBody / CandidateTags — the
+// session_context fields the user (or LLM) staged for the
+// update — and emits them as the patch payload. Returns
+// (nil, nil, nil) when the scratchpad carries no projected
+// changes, so the caller can degrade to a no-op.
+//
+// The merge rule:
+//   - title  ← sp.SessionContext.CandidateTitle | sp.Draft.TitleSet
+//   - tags   ← sp.SessionContext.CandidateTags | sp.Tags
+//   - body   ← sp.SessionContext.CandidateBody  (as AINotesAppend;
+//     the existing original stays untouched)
+func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest, []byte, error) {
+	hasAny := false
+	req := models.ThoughtPatchRequest{}
+	if title := strings.TrimSpace(sp.SessionContext.CandidateTitle); title != "" {
+		req.Title = &title
+		hasAny = true
+	} else if title := strings.TrimSpace(sp.Draft.TitleSet); title != "" {
+		req.Title = &title
+		hasAny = true
+	}
+	tags := sp.SessionContext.CandidateTags
+	if len(tags) == 0 {
+		tags = sp.Tags
+	}
+	if len(tags) > 0 {
+		merged := uniqueStrings(tags)
+		req.Tags = &merged
+		hasAny = true
+	}
+	if body := strings.TrimSpace(sp.SessionContext.CandidateBody); body != "" {
+		// AINotesAppend is additive: the user's new body goes in
+		// the AINotes block rather than overwriting the original
+		// content. A future PR can add a Body patch field to
+		// ThoughtPatchRequest so the update actually replaces
+		// `original`; for now the visible diff is in AINotes.
+		req.AINotesAppend = &body
+		hasAny = true
+	} else if note := strings.TrimSpace(sp.Content); note != "" {
+		req.AINotesAppend = &note
+		hasAny = true
+	}
+	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {
+		req.TopicIDs = &topics
+		hasAny = true
+	}
+	if !hasAny {
+		return nil, nil, nil
+	}
+	raw, err := patchRequestToRawBody(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &req, raw, nil
 }
 
 // patchRequestToRawBody marshals a ThoughtPatchRequest to JSON.

@@ -726,14 +726,17 @@ type stubCapture struct {
 	captureCalls      int
 	patchCalls        int
 	applyCalls        int
+	getCalls          int
 	patchReq          models.ThoughtPatchRequest
 	applyReq          models.ThoughtPatchRequest
 	captureResult     models.CaptureResult
 	patchResult       models.ThoughtSnapshot
 	applyResult       models.ThoughtSnapshot
+	getThoughtResult  models.ThoughtSnapshot
 	patchErr          error
 	applyErr          error
 	captureErr        error
+	getThoughtErr     error
 	lastPatchRaw      []byte
 	lastApplyRaw      []byte
 	lastSessionID     string
@@ -768,6 +771,14 @@ func (s *stubCapture) ApplyDraftInternal(_ context.Context, thoughtID, sessionID
 		return models.ThoughtSnapshot{}, s.applyErr
 	}
 	return s.applyResult, nil
+}
+
+func (s *stubCapture) GetThought(_ context.Context, thoughtID string) (models.ThoughtSnapshot, error) {
+	s.getCalls++
+	if s.getThoughtErr != nil {
+		return models.ThoughtSnapshot{}, s.getThoughtErr
+	}
+	return s.getThoughtResult, nil
 }
 
 func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T) {
@@ -919,4 +930,205 @@ func TestScratchpadServiceCommitRepeatWithNoDraftChangesIsNoop(t *testing.T) {
 func ptrTime() *time.Time {
 	t := time.Date(2026, 6, 12, 9, 0, 0, 0, time.UTC)
 	return &t
+}
+
+func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "drafted body",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "Updated Title",
+			CandidateBody:  "## New Body",
+			CandidateTags:  []string{"updated"},
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		SourceThoughtID: "thought-source",
+	})
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-source", UserTitle: "Original Title"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	result, err := svc.Commit(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.patchCalls != 1 {
+		t.Fatalf("PatchThought called %d, want 1", captureStub.patchCalls)
+	}
+	if captureStub.getCalls != 1 {
+		t.Fatalf("GetThought called %d, want 1", captureStub.getCalls)
+	}
+	if captureStub.applyCalls != 0 {
+		t.Fatalf("ApplyDraftInternal should NOT be used for update_thought, called %d", captureStub.applyCalls)
+	}
+	if result.Thought.ID != "thought-source" {
+		t.Fatalf("result thought id = %q, want thought-source", result.Thought.ID)
+	}
+	if captureStub.patchReq.Title == nil || *captureStub.patchReq.Title != "Updated Title" {
+		t.Fatalf("Title = %v, want Updated Title", captureStub.patchReq.Title)
+	}
+	if captureStub.patchReq.Tags == nil || len(*captureStub.patchReq.Tags) != 1 || (*captureStub.patchReq.Tags)[0] != "updated" {
+		t.Fatalf("Tags = %v, want [updated]", captureStub.patchReq.Tags)
+	}
+	// scratchpad's CommittedThoughtID must NOT be set (the user
+	// is still iterating against the source thought).
+	sp, _ := store.Get("s1")
+	if sp.CommittedThoughtID != "" {
+		t.Fatalf("update_thought should not stamp CommittedThoughtID, got %q", sp.CommittedThoughtID)
+	}
+}
+
+func TestScratchpadServiceCommitUpdateThoughtRejectsMissingSource(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "x",
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		// no SourceThoughtID
+	})
+	captureStub := &stubCapture{}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "source_thought_id") {
+		t.Fatalf("err = %v, want missing source_thought_id", err)
+	}
+	if captureStub.patchCalls != 0 {
+		t.Fatalf("Patch should not be called when source missing, got %d", captureStub.patchCalls)
+	}
+}
+
+func TestScratchpadServiceCommitUpdateThoughtRejectsGetThoughtError(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "x",
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		SourceThoughtID: "thought-missing",
+	})
+	captureStub := &stubCapture{getThoughtErr: errors.New("not found")}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "source thought not found") {
+		t.Fatalf("err = %v, want source thought not found", err)
+	}
+}
+
+func TestScratchpadServiceCommitUpdateThoughtNoChangesDegradesToReset(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID:       "s1",
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		SourceThoughtID: "thought-source",
+		// no CandidateTitle / CandidateBody / CandidateTags
+	})
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-source"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	result, err := svc.Commit(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.patchCalls != 0 {
+		t.Fatalf("Patch should not be called when nothing changed, got %d", captureStub.patchCalls)
+	}
+	if result.Thought.ID != "thought-source" {
+		t.Fatalf("result thought id = %q, want thought-source", result.Thought.ID)
+	}
+	sp, _ := store.Get("s1")
+	if sp.Content != "" || len(sp.Messages) != 0 {
+		t.Fatalf("Reset should still run, got %+v", sp)
+	}
+}
+
+func TestScratchpadServiceCommitSupplementFiresCaptureAndStampsBacklinkNote(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "supplement content",
+		Tags:      []string{"ai"},
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "Supplement",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
+		SourceThoughtID: "thought-parent",
+	})
+	captureStub := &stubCapture{
+		captureResult: models.CaptureResult{
+			Thought: models.Thought{ID: "thought-new", Type: models.ThoughtTypeText},
+		},
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-parent", UserTitle: "Parent"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	result, err := svc.Commit(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.captureCalls != 1 {
+		t.Fatalf("Capture called %d, want 1", captureStub.captureCalls)
+	}
+	// Capture should have been called with the supplement prefix prepended.
+	if !strings.HasPrefix(captureStub.captureResult.Thought.ID, "thought-new") {
+		t.Fatalf("result thought = %+v", captureStub.captureResult)
+	}
+	// After Capture, the apply path should fire to write the
+	// backlink marker AINotes — using ApplyDraftInternal (lock-free).
+	if captureStub.applyCalls != 1 {
+		t.Fatalf("ApplyDraftInternal for backlink marker called %d, want 1", captureStub.applyCalls)
+	}
+	if captureStub.applyReq.AINotesAppend == nil || !strings.Contains(*captureStub.applyReq.AINotesAppend, "thought-parent") {
+		t.Fatalf("Backlink marker AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
+	}
+	// scratchpad's CommittedThoughtID should point at the new thought.
+	sp, _ := store.Get("s1")
+	if sp.CommittedThoughtID != "thought-new" {
+		t.Fatalf("CommittedThoughtID = %q, want thought-new", sp.CommittedThoughtID)
+	}
+	if result.Thought.ID != "thought-new" {
+		t.Fatalf("result thought id = %q, want thought-new", result.Thought.ID)
+	}
+}
+
+func TestScratchpadServiceCommitSupplementRejectsMissingParent(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "x",
+		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
+		// no SourceThoughtID
+	})
+	captureStub := &stubCapture{}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "source_thought_id") {
+		t.Fatalf("err = %v, want missing source_thought_id", err)
+	}
+	if captureStub.captureCalls != 0 {
+		t.Fatalf("Capture should not run when source missing, called %d", captureStub.captureCalls)
+	}
+}
+
+func TestScratchpadServiceCommitUnknownStrategyDegradesToNew(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "draft",
+		ArchiveStrategy: scratchpad.ArchiveStrategy("bogus"),
+	})
+	captureStub := &stubCapture{
+		captureResult: models.CaptureResult{
+			Thought: models.Thought{ID: "thought-fresh", Type: models.ThoughtTypeText},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.captureCalls != 1 {
+		t.Fatalf("unknown strategy should route to commitFresh (Capture), called %d", captureStub.captureCalls)
+	}
 }

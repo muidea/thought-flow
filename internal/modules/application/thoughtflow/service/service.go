@@ -152,6 +152,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/intent", engine.POST, s.handleSessionIntent)
 	s.registry.AddHandler("/api/capture/sessions/:id/strategy", engine.POST, s.handleSessionStrategy)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
+	s.registry.AddHandler("/api/capture/sessions/:id/archive", engine.POST, s.handleSessionArchive)
 	// Deprecation shims — old paths kept on purpose; see handleLegacyDeprecationLog.
 	s.registry.AddHandler("/api/capture/sessions/start", engine.POST, s.handleStartCaptureSession)
 	s.registry.AddHandler("/api/capture/scratchpad", engine.GET, s.handleGetScratchpad)
@@ -2199,6 +2200,88 @@ func (s *Service) handleArchivePreview(ctx context.Context, res http.ResponseWri
 		"preview":   preview,
 		"persisted": true,
 	})
+}
+
+// handleSessionArchive lands a scratchpad as a real thought. The
+// routing decision (new / update_thought / supplement) is read
+// from the scratchpad; the request body may override with
+// {strategy, thought_id} for the menu-driven path. The handler
+// always runs the preview-equivalent validations first: an
+// update_thought / supplement request with no SourceThoughtID
+// returns 400, and the "confirmed" flag is recorded but does not
+// gate the actual commit (the UI is expected to show the preview
+// before this endpoint is hit).
+//
+//	POST /api/capture/sessions/{id}/archive
+//	body: {strategy?, thought_id?, confirmed?}
+func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/archive")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body struct {
+		Strategy scratchpad.ArchiveStrategy `json:"strategy"`
+		ThoughtID string                   `json:"thought_id"`
+		Confirmed bool                     `json:"confirmed"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	// Apply the request body's overrides onto the scratchpad so
+	// the underlying Commit can stay strategy-agnostic. The two
+	// side effects (stamp strategy, stamp source_thought_id) are
+	// both safe to do on a "menu" path; for a re-commit the
+	// scratchpad already carries the right values and the body
+	// is allowed to leave them alone.
+	if body.Strategy != "" {
+		thoughtID := body.ThoughtID
+		if _, err := s.scratchpadSvc.SetArchiveStrategy(sessionID, body.Strategy, thoughtID); err != nil {
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+			return
+		}
+	}
+	// If the user explicitly confirmed, stamp the intent so the
+	// scratchpad carries the audit trail.
+	if body.Confirmed {
+		if _, err := s.scratchpadSvc.SetArchiveIntent(sessionID, scratchpad.ArchiveIntentMenu); err != nil {
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+			return
+		}
+	}
+	result, err := s.scratchpadSvc.Commit(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, capturebiz.ErrDiffRequired) {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", err.Error())
+			return
+		}
+		if errors.Is(err, capturebiz.ErrAlreadyCommitted) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.already_committed", err.Error())
+			return
+		}
+		// Capture-side validation (empty content / invalid command)
+		// surfaces as 400; everything else is 500.
+		if strings.Contains(err.Error(), "is required") || strings.Contains(err.Error(), "is empty") {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+			return
+		}
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.commit_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, result)
 }
 
 // handleReopenSession is the "从已归档 Thought 重新整理" entry
