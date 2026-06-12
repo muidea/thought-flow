@@ -500,6 +500,66 @@ func TestHandleListSessionCandidatesReturnsBadRequestForEmptyID(t *testing.T) {
 	}
 }
 
+func TestHandlePrivacyReportReflectsConfig(t *testing.T) {
+	cfg := appconfig.Config{
+		LLM:       appconfig.LLMConfig{BaseURL: "https://api.openai.com", APIKey: "sk-test"},
+		Embedding: appconfig.EmbeddingConfig{BaseURL: "https://api.openai.com"},
+		Reader:    appconfig.ReaderConfig{BaseURL: "https://r.jina.ai/http://", APIKey: ""},
+	}
+	report := buildPrivacyReport(cfg, time.Now().UTC())
+	if !report.LLM.Configured {
+		t.Fatalf("LLM should be configured when APIKey is set")
+	}
+	if report.Embedding.Configured {
+		t.Fatalf("Embedding should not be configured when APIKey is empty")
+	}
+	if report.LLM.Provider != "openai" {
+		t.Fatalf("LLM provider = %q, want openai", report.LLM.Provider)
+	}
+	if report.Reader.Provider != "jina" {
+		t.Fatalf("Reader provider = %q, want jina", report.Reader.Provider)
+	}
+	if !strings.Contains(report.LLM.Hint, "https://api.openai.com") {
+		t.Fatalf("LLM hint missing base URL: %q", report.LLM.Hint)
+	}
+	if !strings.Contains(report.Embedding.Hint, "未配置 API key") {
+		t.Fatalf("Embedding hint should mention unconfigured state: %q", report.Embedding.Hint)
+	}
+	// Action list should expose capture_message with the LLM surface.
+	var messageAction *models.ExternalAction
+	for i := range report.Actions {
+		if report.Actions[i].Action == "capture_message" {
+			messageAction = &report.Actions[i]
+			break
+		}
+	}
+	if messageAction == nil {
+		t.Fatalf("capture_message action missing: %+v", report.Actions)
+	}
+	if len(messageAction.Surfaces) != 1 || messageAction.Surfaces[0] != "llm" {
+		t.Fatalf("capture_message surfaces = %v, want [llm]", messageAction.Surfaces)
+	}
+}
+
+func TestHandlePrivacyReportAllDisabled(t *testing.T) {
+	cfg := appconfig.Config{
+		LLM:       appconfig.LLMConfig{BaseURL: "https://api.openai.com"},
+		Embedding: appconfig.EmbeddingConfig{BaseURL: "https://api.openai.com"},
+		Reader:    appconfig.ReaderConfig{Enabled: false, BaseURL: "https://r.jina.ai/http://"},
+	}
+	report := buildPrivacyReport(cfg, time.Now().UTC())
+	if report.LLM.Configured || report.Embedding.Configured || report.Reader.Configured {
+		t.Fatalf("nothing should be configured: %+v", report)
+	}
+	// Actions should not surface any external surface in the
+	// all-disabled case — UI badges fall back to "no external request".
+	for _, action := range report.Actions {
+		if len(action.Surfaces) != 0 {
+			t.Fatalf("action %q surfaces = %v, want empty", action.Action, action.Surfaces)
+		}
+	}
+}
+
 func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

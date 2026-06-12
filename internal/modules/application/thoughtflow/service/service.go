@@ -180,6 +180,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/jobs/:id", engine.GET, s.handleGetJob)
 	s.registry.AddHandler("/api/events", engine.GET, s.handleEvents)
 	s.registry.AddHandler("/api/system/status", engine.GET, s.handleSystemStatus)
+	s.registry.AddHandler("/api/system/privacy", engine.GET, s.handlePrivacyReport)
 	s.registry.AddHandler("/api/system/metrics", engine.GET, s.handleSystemMetrics)
 	s.registry.AddHandler("/api/system/reindex", engine.POST, s.handleReindex)
 	s.registry.AddHandler("/metrics", engine.GET, s.handlePrometheusMetrics)
@@ -1345,6 +1346,12 @@ func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWrite
 	writeJSON(res, req, http.StatusOK, status)
 }
 
+func (s *Service) handlePrivacyReport(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	report := buildPrivacyReport(s.config, time.Now().UTC())
+	writeJSON(res, req, http.StatusOK, report)
+}
+
 func (s *Service) handleSystemMetrics(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	metrics, err := s.systemMetrics(ctx, time.Now().UTC())
 	if err != nil {
@@ -1527,6 +1534,7 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 	}
 	llmStatus := llmRuntimeStatus(cfg)
 	embeddingStatus := embeddingRuntimeStatus(cfg)
+	readerStatus := readerRuntimeStatus(cfg)
 	gitStatus := models.GitRuntimeStatus{Status: "disabled"}
 	if s.gitQueries != nil {
 		gitStatus = s.gitQueries.RuntimeStatus(ctx)
@@ -1543,7 +1551,7 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 		backgroundStatus.Status == "ready" &&
 		eventsStatus.Status == "ready"
 	status := "ready"
-	if !ready || llmStatus.Status != "ready" || embeddingStatus.Status != "ready" || gitStatus.Status == "degraded" {
+	if !ready || llmStatus.Status != "ready" || embeddingStatus.Status != "ready" || readerStatus.Status == "degraded" || gitStatus.Status == "degraded" {
 		status = "degraded"
 	}
 	return models.SystemStatus{
@@ -1553,6 +1561,7 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 		DuckDB:     duckdbStatus,
 		LLM:        llmStatus,
 		Embedding:  embeddingStatus,
+		Reader:     readerStatus,
 		Git:        gitStatus,
 		Background: backgroundStatus,
 		Events:     eventsStatus,
@@ -1585,6 +1594,148 @@ func embeddingRuntimeStatus(cfg appconfig.Config) models.EmbeddingRuntimeStatus 
 		BaseURL:    cfg.Embedding.BaseURL,
 		Model:      cfg.Embedding.Model,
 	}
+}
+
+func readerRuntimeStatus(cfg appconfig.Config) models.ReaderRuntimeStatus {
+	if !cfg.Reader.Enabled {
+		return models.ReaderRuntimeStatus{Status: "disabled", Enabled: false, BaseURL: cfg.Reader.BaseURL}
+	}
+	status := "ready"
+	configured := strings.TrimSpace(cfg.Reader.APIKey) != ""
+	return models.ReaderRuntimeStatus{
+		Status:     status,
+		Enabled:    true,
+		Configured: configured,
+		BaseURL:    cfg.Reader.BaseURL,
+	}
+}
+
+// buildPrivacyReport composes the privacy view. The hint text is
+// built here (not in the UI) so wording changes land in one place
+// and so unit tests can assert on it without spinning up a browser.
+// The Actions list is intentionally small: the UI only needs to
+// badge the user-visible triggers, not every internal call site.
+func buildPrivacyReport(cfg appconfig.Config, now time.Time) models.PrivacyReport {
+	llm := buildSurface("llm", cfg.LLM.APIKey, cfg.LLM.BaseURL, "AI 整理/扩展/分类会向此地址发送会话内容")
+	embedding := buildSurface("embedding", cfg.Embedding.APIKey, cfg.Embedding.BaseURL, "Embedding 与近邻匹配会向此地址发送内容")
+	reader := buildSurface("reader", cfg.Reader.APIKey, cfg.Reader.BaseURL, "网页正文抓取会向此地址发送目标 URL")
+
+	actions := []models.ExternalAction{
+		{Action: "capture_message", Method: "POST", Path: "/api/capture/sessions/{id}/messages", Surfaces: llmSurfaces(llm, embedding), Hint: messageActionHint(llm, embedding)},
+		{Action: "capture_commit", Method: "POST", Path: "/api/capture/sessions/{id}/archive", Surfaces: commitSurfaces(llm, embedding, reader), Hint: commitActionHint(llm, embedding, reader)},
+		{Action: "url_capture", Method: "POST", Path: "/api/thoughts", Surfaces: readerSurfaces(reader), Hint: urlActionHint(reader)},
+		{Action: "topic_refresh", Method: "POST", Path: "/api/topics/{id}/refresh", Surfaces: embeddingSurfaces(embedding), Hint: embedding.Hint},
+	}
+	return models.PrivacyReport{
+		GeneratedAt: now,
+		LLM:         llm,
+		Embedding:   embedding,
+		Reader:      reader,
+		Actions:     actions,
+	}
+}
+
+func buildSurface(kind string, apiKey string, baseURL string, hintTemplate string) models.ExternalSurface {
+	configured := strings.TrimSpace(apiKey) != ""
+	provider := providerForBaseURL(baseURL)
+	hint := ""
+	if configured {
+		hint = strings.Replace(hintTemplate, "此地址", baseURL, 1)
+	} else {
+		hint = strings.Replace(hintTemplate, "此地址", baseURL+" (未配置 API key,使用公共端点)", 1)
+	}
+	return models.ExternalSurface{
+		Kind:       kind,
+		Configured: configured,
+		Enabled:    true,
+		Provider:   provider,
+		BaseURL:    baseURL,
+		Hint:       hint,
+	}
+}
+
+func providerForBaseURL(baseURL string) string {
+	lower := strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(lower, "openai.com"):
+		return "openai"
+	case strings.Contains(lower, "jina.ai"):
+		return "jina"
+	case strings.Contains(lower, "anthropic.com"):
+		return "anthropic"
+	case strings.Contains(lower, "localhost"), strings.Contains(lower, "127.0.0.1"):
+		return "local"
+	}
+	return "custom"
+}
+
+func llmSurfaces(llm models.ExternalSurface, _ models.ExternalSurface) []string {
+	if !llm.Configured {
+		return nil
+	}
+	return []string{"llm"}
+}
+
+func embeddingSurfaces(embedding models.ExternalSurface) []string {
+	if !embedding.Configured {
+		return nil
+	}
+	return []string{"embedding"}
+}
+
+func readerSurfaces(reader models.ExternalSurface) []string {
+	if !reader.Configured {
+		return nil
+	}
+	return []string{"reader"}
+}
+
+func commitSurfaces(llm, embedding, reader models.ExternalSurface) []string {
+	out := []string{}
+	if llm.Configured {
+		out = append(out, "llm")
+	}
+	if embedding.Configured {
+		out = append(out, "embedding")
+	}
+	if reader.Configured {
+		out = append(out, "reader")
+	}
+	return out
+}
+
+func messageActionHint(llm, embedding models.ExternalSurface) string {
+	if llm.Configured {
+		return "将调用 LLM 维护 session_context,可能包含正在讨论的笔记内容"
+	}
+	if embedding.Configured {
+		return "LLM 未配置,Embedding 仅在自动匹配时触发"
+	}
+	return "当前配置仅在本地运行,无外部请求"
+}
+
+func commitActionHint(llm, embedding, reader models.ExternalSurface) string {
+	parts := []string{}
+	if llm.Configured {
+		parts = append(parts, "LLM")
+	}
+	if embedding.Configured {
+		parts = append(parts, "Embedding")
+	}
+	if reader.Configured {
+		parts = append(parts, "Reader")
+	}
+	if len(parts) == 0 {
+		return "归档流程在本地完成,不触发外部请求"
+	}
+	return "归档将触发 " + strings.Join(parts, " + ")
+}
+
+func urlActionHint(reader models.ExternalSurface) string {
+	if !reader.Configured {
+		return "Reader 未配置,URL 抓取走本地解析(可能失败)"
+	}
+	return "将通过 Reader 抓取目标网页正文"
 }
 
 func backgroundRuntimeStatus(status models.BackgroundRuntimeStatus, background backgroundTaskAcceptor) models.BackgroundRuntimeStatus {

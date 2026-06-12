@@ -26,6 +26,7 @@ type Config struct {
 	Events    EventsConfig
 	LLM       LLMConfig
 	Embedding EmbeddingConfig
+	Reader    ReaderConfig
 }
 
 type ServerConfig struct {
@@ -93,6 +94,21 @@ type EmbeddingConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	Timeout time.Duration
+}
+
+// ReaderConfig is the third-party web page reader / fetcher that
+// ThoughtFlow falls back to when a URL thought cannot be summarized
+// from raw HTML alone. The classic provider is Jina Reader
+// (https://r.jina.ai/) but the URL is configurable so any
+// open-source reader proxy can be substituted. The Configured
+// field drives the privacy UI hint — when no API key is set the
+// fetcher transparently uses the Jina public endpoint (which is
+// itself an external request, so the hint still fires).
+type ReaderConfig struct {
+	Enabled bool
+	BaseURL string
+	APIKey  string
 	Timeout time.Duration
 }
 
@@ -211,6 +227,12 @@ func defaultConfig() Config {
 			Model:   "text-embedding-3-small",
 			Timeout: 30 * time.Second,
 		},
+		Reader: ReaderConfig{
+			Enabled: true,
+			BaseURL: "https://r.jina.ai/http://",
+			APIKey:  "",
+			Timeout: 20 * time.Second,
+		},
 	}
 }
 
@@ -253,6 +275,10 @@ func applyFrameworkOverrides(cfg *Config) {
 	cfg.Embedding.APIKey = configString(appConfig, "embedding.api_key", cfg.Embedding.APIKey)
 	cfg.Embedding.Model = configString(appConfig, "embedding.model", cfg.Embedding.Model)
 	cfg.Embedding.Timeout = time.Duration(configInt(appConfig, "embedding.timeout_seconds", int(cfg.Embedding.Timeout/time.Second))) * time.Second
+	cfg.Reader.Enabled = configBool(appConfig, "reader.enabled", cfg.Reader.Enabled)
+	cfg.Reader.BaseURL = configString(appConfig, "reader.base_url", cfg.Reader.BaseURL)
+	cfg.Reader.APIKey = configString(appConfig, "reader.api_key", cfg.Reader.APIKey)
+	cfg.Reader.Timeout = time.Duration(configInt(appConfig, "reader.timeout_seconds", int(cfg.Reader.Timeout/time.Second))) * time.Second
 }
 
 func applicationConfig() map[string]any {

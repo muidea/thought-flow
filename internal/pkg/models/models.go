@@ -299,9 +299,58 @@ type SystemStatus struct {
 	DuckDB     DuckDBRuntimeStatus     `json:"duckdb"`
 	LLM        LLMRuntimeStatus        `json:"llm"`
 	Embedding  EmbeddingRuntimeStatus  `json:"embedding"`
+	Reader     ReaderRuntimeStatus     `json:"reader"`
 	Git        GitRuntimeStatus        `json:"git"`
 	Background BackgroundRuntimeStatus `json:"background"`
 	Events     EventsRuntimeStatus     `json:"events"`
+}
+
+// ReaderRuntimeStatus is the runtime view of the third-party web
+// reader integration. UI uses it (and the PrivacyReport sibling) to
+// decide whether to render the "外部请求" hint next to URL-type
+// capture buttons. Configured distinguishes "API key set" from
+// "Enabled, falling back to the Jina public endpoint".
+type ReaderRuntimeStatus struct {
+	Status     string `json:"status"`
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+	BaseURL    string `json:"base_url"`
+}
+
+// PrivacyReport is the lightweight view served by
+// GET /api/system/privacy. Each ExternalSurface tells the UI
+// whether the corresponding action will trigger an external HTTP
+// call, what provider it would hit, and a human-readable hint the
+// UI can render next to the action button. The hint text is built
+// on the server so the i18n / wording lives in one place rather
+// than being duplicated in every UI surface.
+type PrivacyReport struct {
+	GeneratedAt time.Time          `json:"generated_at"`
+	LLM         ExternalSurface    `json:"llm"`
+	Embedding   ExternalSurface    `json:"embedding"`
+	Reader      ExternalSurface    `json:"reader"`
+	Actions     []ExternalAction   `json:"actions"`
+}
+
+type ExternalSurface struct {
+	Kind       string `json:"kind"`
+	Configured bool   `json:"configured"`
+	Enabled    bool   `json:"enabled"`
+	Provider   string `json:"provider"`
+	BaseURL    string `json:"base_url"`
+	Hint       string `json:"hint"`
+}
+
+// ExternalAction pairs an API action with the surfaces it triggers.
+// The UI fetches this list once and uses it to badge the matching
+// buttons. The Action field is the HTTP method + path; the
+// Surfaces field is the list of Kind values the action will hit.
+type ExternalAction struct {
+	Action   string   `json:"action"`
+	Method   string   `json:"method"`
+	Path     string   `json:"path"`
+	Surfaces []string `json:"surfaces"`
+	Hint     string   `json:"hint"`
 }
 
 type SystemMetrics struct {
