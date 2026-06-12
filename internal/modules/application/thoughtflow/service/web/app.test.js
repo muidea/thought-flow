@@ -120,6 +120,11 @@ function loadAppFunctionsWith(opts = {}) {
       classifyCaptureInput,
       parseCaptureCommand,
       appendCaptureMessage,
+      renderCaptureThoughtCard,
+      renderCaptureThoughtCardFromSnapshot,
+      buildCaptureExpansionSections,
+      formatPatchFeedback,
+      renderCaptureBubbleBody,
       formatBadgeCount,
       computeSidebarBadgeCounts,
       appendExpansionSections,
@@ -692,4 +697,135 @@ test("appendExpansionSections surfaces partial-failure errors", () => {
     errors: [{ code: "thoughtflow.expand.partial_failed", message: "search index offline" }],
   });
   assert.match(out, /thoughts\.expansion_failed/);
+});
+
+test("renderCaptureThoughtCardFromSnapshot renders status chips and refine sections", () => {
+  const app = loadAppFunctions();
+  const snapshot = {
+    thought: {
+      id: "20260610-100000-rag",
+      display_title: "RAG 检索范式",
+      capture_status: "captured",
+      refine_status: "refined",
+      index_status: "indexed",
+      topic_status: "matched",
+      summary: "RAG 范式把检索与生成结合。",
+      key_points: ["检索外部知识", "拼到 prompt", "用 LLM 生成回答"],
+      ai_tags: ["RAG", "检索", "生成"],
+      user_tags: ["重点"],
+    },
+    jobs: [{ id: "j1", type: "refine", status: "succeeded" }],
+  };
+  const html = app.renderCaptureThoughtCardFromSnapshot(snapshot);
+  assert.match(html, /RAG 检索范式/);
+  assert.match(html, /data-status="refine-refined"/);
+  assert.match(html, /data-status="index-indexed"/);
+  assert.match(html, /data-status="topic-matched"/);
+  assert.match(html, /RAG 范式把检索与生成结合/);
+  assert.match(html, /<li>检索外部知识<\/li>/);
+  assert.match(html, /data-tag="user"[^>]*>重点/);
+  assert.match(html, /data-tag="ai"[^>]*>RAG/);
+});
+
+test("renderCaptureThoughtCardFromSnapshot renders the 4 expansion sections", () => {
+  const app = loadAppFunctions();
+  const snapshot = {
+    thought: {
+      id: "t1",
+      display_title: "demo",
+      refine_status: "expanding",
+      related_thought_ids: ["t2", "t3"],
+      suggested_topic_ids: ["topic-A"],
+      url_followups: [{ url: "https://example.com/a", title: "A primer" }],
+      expansion_plan: "## 步骤\n1. 先检索",
+    },
+  };
+  const html = app.renderCaptureThoughtCardFromSnapshot(snapshot);
+  assert.match(html, /thoughts\.section_related/);
+  assert.match(html, /thoughts\.section_near_topics/);
+  assert.match(html, /thoughts\.section_url_followups/);
+  assert.match(html, /thoughts\.section_expansion_plan/);
+  // Related section lists every id and links to the thoughts page.
+  assert.match(html, /href="#\/thoughts\?id=t2"/);
+  assert.match(html, /href="#\/thoughts\?id=t3"/);
+  // Plan is rendered through renderMarkdown so ## 步骤 becomes a heading.
+  assert.match(html, /<h2[^>]*>步骤<\/h2>/);
+});
+
+test("renderCaptureThoughtCardFromSnapshot surfaces a pending hint when nothing has landed yet", () => {
+  const app = loadAppFunctions();
+  const snapshot = {
+    thought: {
+      id: "t1",
+      display_title: "demo",
+      refine_status: "refined",
+    },
+  };
+  const html = app.renderCaptureThoughtCardFromSnapshot(snapshot);
+  assert.match(html, /thoughts\.expansion_pending/);
+  // The pending hint wraps in tf-capture-expansion-stack but no actual
+  // <details> expansion block has rendered yet.
+  assert.doesNotMatch(html, /<details class="tf-capture-expansion"/);
+});
+
+test("renderCaptureThoughtCardFromSnapshot surfaces partial-failure errors", () => {
+  const app = loadAppFunctions();
+  const snapshot = {
+    thought: {
+      id: "t1",
+      display_title: "demo",
+      related_thought_ids: ["x"],
+      errors: [{ code: "thoughtflow.expand.partial_failed", message: "LLM timeout" }],
+    },
+  };
+  const html = app.renderCaptureThoughtCardFromSnapshot(snapshot);
+  assert.match(html, /thoughts\.expansion_failed/);
+});
+
+test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles from the active snapshot", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  // Set up an active thought + a freshly refined snapshot.
+  app._state.capture.activeThoughtId = "t1";
+  app._state.capture.activeSnapshot = {
+    thought: {
+      id: "t1",
+      display_title: "Before refine",
+      refine_status: "pending",
+    },
+  };
+  // Message bound to the active thought — should be regenerated.
+  const message = { id: "m1", role: "ai", thoughtId: "t1", html: "<stale/>" };
+  // Now simulate the refine landing.
+  app._state.capture.activeSnapshot = {
+    thought: {
+      id: "t1",
+      display_title: "After refine",
+      refine_status: "refined",
+      summary: "Refine succeeded.",
+    },
+  };
+  const out = app.renderCaptureBubbleBody(message);
+  assert.match(out, /After refine/);
+  assert.match(out, /Refine succeeded/);
+  assert.doesNotMatch(out, /<stale\/>/);
+});
+
+test("renderCaptureBubbleBody falls back to stored html/text for non-bound messages", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  const out = app.renderCaptureBubbleBody({ role: "system", text: "hello" });
+  assert.match(out, /<div class="tf-msg-body">hello<\/div>/);
+  const htmlOut = app.renderCaptureBubbleBody({ role: "ai", html: "<b>static</b>" });
+  assert.match(htmlOut, /<b>static<\/b>/);
+});
+
+test("formatPatchFeedback picks the right message per PATCH shape", () => {
+  const app = loadAppFunctions();
+  const snap = { thought: { id: "t1" } };
+  assert.match(app.formatPatchFeedback({ title: "新标题" }, snap), /capture\.feedback\.renamed/);
+  assert.match(app.formatPatchFeedback({ tags: ["a", "b"] }, snap), /capture\.feedback\.tags_added/);
+  assert.match(app.formatPatchFeedback({ ai_notes_append: "x" }, snap), /capture\.feedback\.note_appended/);
+  app.appState.topics = [{ id: "tt1", name: "研究专题" }];
+  assert.match(app.formatPatchFeedback({ topic_ids: ["tt1"] }, snap), /capture\.feedback\.moved_to_topic/);
+  // Unknown patch shapes still produce a sensible saved-path message.
+  assert.match(app.formatPatchFeedback({}, snap), /capture\.session\.saved_path/);
 });

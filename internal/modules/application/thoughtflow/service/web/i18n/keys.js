@@ -88,6 +88,19 @@ export const Key = Object.freeze({
   CaptureResultContinue: "capture.result.continue",
   CaptureResultNoJobs: "capture.result.no_jobs",
   CaptureDuplicateDefault: "capture.duplicate.default",
+  // Capture rich card: status chips, refine section, per-command feedback.
+  CaptureCardStatusCapture: "capture.card.status_capture",
+  CaptureCardStatusRefine: "capture.card.status_refine",
+  CaptureCardStatusIndex: "capture.card.status_index",
+  CaptureCardStatusTopic: "capture.card.status_topic",
+  CaptureCardSectionRefine: "capture.card.section_refine",
+  CaptureFeedbackRenamed: "capture.feedback.renamed",
+  CaptureFeedbackTagsAdded: "capture.feedback.tags_added",
+  CaptureFeedbackNoteAppended: "capture.feedback.note_appended",
+  CaptureFeedbackMovedToTopic: "capture.feedback.moved_to_topic",
+  CaptureFeedbackRefineQueued: "capture.feedback.refine_queued",
+  // SSE-derived chat feedback (not from a user command).
+  CaptureSessionExpanded: "capture.session.expanded",
 
   // Thoughts page
   ThoughtsTitle: "thoughts.title",

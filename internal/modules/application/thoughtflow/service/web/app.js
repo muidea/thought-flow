@@ -1550,6 +1550,11 @@ function appendCaptureMessage(message) {
   const entry = {
     id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     at: new Date().toISOString(),
+    // thoughtId binds the message to an active thought; when set, the
+    // html is regenerated on every render from the freshest snapshot so
+    // SSE updates (refined / expanded / patched) flow into the bubble
+    // in place without rewriting the conversation history.
+    thoughtId: message.thoughtId || null,
     ...message,
   };
   state.capture.messages = [...(state.capture.messages || []), entry];
@@ -1567,6 +1572,19 @@ function captureRoleClass(role) {
   }
 }
 
+// renderCaptureBubbleBody chooses between a stored static body and a
+// re-renderable snapshot. Messages that carry thoughtId always pick up
+// the freshest snapshot (refine / expand / patch) so the user sees the
+// AI bubble update in place as the pipeline progresses.
+function renderCaptureBubbleBody(msg) {
+  if (msg.thoughtId && msg.thoughtId === state.capture.activeThoughtId && state.capture.activeSnapshot) {
+    return renderCaptureThoughtCardFromSnapshot(state.capture.activeSnapshot);
+  }
+  if (msg.html) return msg.html;
+  if (msg.text) return `<div class="tf-msg-body">${escapeHTML(msg.text)}</div>`;
+  return "";
+}
+
 function renderCaptureConversation() {
   const list = $("#capture-conversation");
   if (!list) return;
@@ -1577,11 +1595,7 @@ function renderCaptureConversation() {
     list.innerHTML = messages.map((msg) => {
       const cls = captureRoleClass(msg.role);
       const roleLabel = msg.role ? escapeHTML(msg.role) : "";
-      const body = msg.html
-        ? msg.html
-        : msg.text
-          ? `<div class="tf-msg-body">${escapeHTML(msg.text)}</div>`
-          : "";
+      const body = renderCaptureBubbleBody(msg);
       const meta = msg.meta ? `<div class="tf-msg-meta">${escapeHTML(msg.meta)}</div>` : "";
       return `<li class="tf-msg ${cls}" data-role="${roleLabel}">${body}${meta}</li>`;
     }).join("");
@@ -1785,6 +1799,7 @@ async function startCaptureThought(text) {
   });
   appendCaptureMessage({
     role: "ai",
+    thoughtId,
     html: renderCaptureThoughtCard(thought, result.jobs || [], result.suggestion || result.Suggestion),
   });
   if (result.suggestion || result.Suggestion) {
@@ -1795,21 +1810,135 @@ async function startCaptureThought(text) {
 }
 
 function renderCaptureThoughtCard(thought, jobs) {
-  const title = escapeHTML(thought?.display_title || thought?.user_title || thought?.extracted_title || thought?.id || "");
-  const warning = thought?.capture_status === "duplicate_warned"
+  // Backward-compatible entry point. New callers prefer
+  // renderCaptureThoughtCardFromSnapshot(snapshot) which has access to
+  // the refine + expand fields; this thin wrapper handles the legacy
+  // startCaptureThought call which only has a partial response.
+  const snapshot = { thought: thought || {}, jobs: jobs || [] };
+  return renderCaptureThoughtCardFromSnapshot(snapshot);
+}
+
+// renderCaptureThoughtCardFromSnapshot is the rich AI bubble for the
+// active capture thought. It reuses the same section shape as the
+// thoughts-page preview so the user sees the same fields in both
+// surfaces: AI refine (summary / key_points / ai_tags) and the
+// post-refine expansion pipeline (related / near-topics / url-followups /
+// plan). The function is idempotent — calling it on the same snapshot
+// produces identical HTML — so SSE updates can re-run it freely.
+//
+// All sections stay out of the bubble when their field is empty or
+// missing; that way freshly-captured thoughts collapse to a title + id
+// + actions skeleton and grow as the pipeline lands. A small "pending"
+// hint is shown only while ALL four expansion sections are still empty
+// AND the thought has not been marked expanded yet, so we don't keep
+// nagging once the pipeline is at least partially through.
+function renderCaptureThoughtCardFromSnapshot(snapshot) {
+  const thought = (snapshot && snapshot.thought) || {};
+  const jobs = (snapshot && snapshot.jobs) || [];
+  const title = escapeHTML(thought.display_title || thought.user_title || thought.extracted_title || thought.id || "");
+  const id = escapeHTML(thought.id || "");
+  const captureStatus = escapeHTML(thought.capture_status || "accepted");
+  const refineStatus = thought.refine_status;
+  const indexStatus = thought.index_status;
+  const topicStatus = thought.topic_status;
+  const summary = typeof thought.summary === "string" ? thought.summary.trim() : "";
+  const keyPoints = Array.isArray(thought.key_points) ? thought.key_points.filter((kp) => typeof kp === "string" && kp.trim()) : [];
+  const aiTags = Array.isArray(thought.ai_tags) ? thought.ai_tags.filter((tag) => typeof tag === "string" && tag.trim()) : [];
+  const userTags = Array.isArray(thought.user_tags) ? thought.user_tags.filter((tag) => typeof tag === "string" && tag.trim()) : [];
+  const relatedIDs = Array.isArray(thought.related_thought_ids) ? thought.related_thought_ids : [];
+  const suggestedTopicIDs = Array.isArray(thought.suggested_topic_ids) ? thought.suggested_topic_ids : [];
+  const urlFollowups = Array.isArray(thought.url_followups) ? thought.url_followups : [];
+  const expansionPlan = typeof thought.expansion_plan === "string" ? thought.expansion_plan.trim() : "";
+  const expandError = (thought.errors || []).find((e) => typeof e?.code === "string" && e.code.startsWith("thoughtflow.expand."));
+
+  const warning = thought.capture_status === "duplicate_warned"
     ? `<div class="tf-alert tf-alert-warning">${escapeHTML((thought.errors || []).map((error) => error.message || error.code).join("; ") || t("capture.duplicate.default"))}</div>`
     : "";
-  const jobLinks = renderJobLinks(jobs || []);
+
+  const statusChips = [
+    `<span class="tf-chip" data-status="capture-${captureStatus}">${escapeHTML(t("capture.card.status_capture"))}: ${captureStatus}</span>`,
+  ];
+  if (refineStatus) statusChips.push(`<span class="tf-chip" data-status="refine-${escapeHTML(refineStatus)}">${escapeHTML(t("capture.card.status_refine"))}: ${escapeHTML(refineStatus)}</span>`);
+  if (indexStatus) statusChips.push(`<span class="tf-chip" data-status="index-${escapeHTML(indexStatus)}">${escapeHTML(t("capture.card.status_index"))}: ${escapeHTML(indexStatus)}</span>`);
+  if (topicStatus) statusChips.push(`<span class="tf-chip" data-status="topic-${escapeHTML(topicStatus)}">${escapeHTML(t("capture.card.status_topic"))}: ${escapeHTML(topicStatus)}</span>`);
+
+  const refineBlock = (summary || keyPoints.length > 0 || aiTags.length > 0)
+    ? `<div class="tf-capture-section">
+        <div class="tf-capture-section-title">${escapeHTML(t("capture.card.section_refine"))}</div>
+        ${summary ? `<div class="tf-capture-summary">${escapeHTML(summary)}</div>` : ""}
+        ${keyPoints.length > 0
+          ? `<ul class="tf-capture-keypoints">${keyPoints.map((kp) => `<li>${escapeHTML(kp)}</li>`).join("")}</ul>`
+          : ""}
+        ${(aiTags.length > 0 || userTags.length > 0)
+          ? `<div class="tf-capture-tags">${[...userTags.map((tag) => `<span class="tf-chip tf-chip-user" data-tag="user">${escapeHTML(tag)}</span>`), ...aiTags.map((tag) => `<span class="tf-chip tf-chip-ai" data-tag="ai">${escapeHTML(tag)}</span>`)].join("")}</div>`
+          : ""}
+      </div>`
+    : "";
+
+  const expansionSections = buildCaptureExpansionSections(thought, {
+    relatedIDs, suggestedTopicIDs, urlFollowups, expansionPlan, expandError,
+  });
+
   return `<div class="tf-suggestion-card">
-    <strong>${title}</strong>
-    <div class="topic-meta">${escapeHTML(thought?.id || "")} · ${escapeHTML(thought?.capture_status || "accepted")}</div>
+    <strong class="tf-capture-title">${title || id}</strong>
+    <div class="topic-meta">${id}${captureStatus ? ` · ${captureStatus}` : ""}</div>
+    <div class="tf-capture-status-row">${statusChips.join("")}</div>
     ${warning}
+    ${refineBlock}
+    ${expansionSections}
     <div class="tf-action-row">
-      <a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(thought?.id || "")}">${escapeHTML(t("capture.result.view_thought"))}</a>
+      <a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(thought.id || "")}">${escapeHTML(t("capture.result.view_thought"))}</a>
       <a class="tf-btn" href="#/search">${escapeHTML(t("capture.result.search_related"))}</a>
     </div>
-    ${jobLinks}
+    ${renderJobLinks(jobs)}
   </div>`;
+}
+
+// buildCaptureExpansionSections renders the post-refine expansion
+// pipeline as collapsible <details> blocks. Each section is omitted
+// while its field is empty so the bubble stays compact before the
+// pipeline lands. A "pending" hint is shown only when ALL four sections
+// are still empty — once any one lands we stop pestering the user.
+function buildCaptureExpansionSections(thought, { relatedIDs, suggestedTopicIDs, urlFollowups, expansionPlan, expandError }) {
+  const anyLanded = relatedIDs.length > 0 || suggestedTopicIDs.length > 0 || urlFollowups.length > 0 || Boolean(expansionPlan);
+  const blocks = [];
+  if (relatedIDs.length > 0) {
+    blocks.push(`<details class="tf-capture-expansion" open>
+      <summary>${escapeHTML(t("thoughts.section_related"))} <span class="tf-capture-count">${relatedIDs.length}</span></summary>
+      <ul class="tf-capture-related">${relatedIDs.map((rid) => `<li><a href="#/thoughts?id=${encodeURIComponent(rid)}">${escapeHTML(rid)}</a></li>`).join("")}</ul>
+    </details>`);
+  }
+  if (suggestedTopicIDs.length > 0) {
+    blocks.push(`<details class="tf-capture-expansion" open>
+      <summary>${escapeHTML(t("thoughts.section_near_topics"))} <span class="tf-capture-count">${suggestedTopicIDs.length}</span></summary>
+      <ul class="tf-capture-topics">${suggestedTopicIDs.map((tid) => `<li>${escapeHTML(tid)}</li>`).join("")}</ul>
+    </details>`);
+  }
+  if (urlFollowups.length > 0) {
+    const lines = urlFollowups.map((item) => {
+      const url = escapeHTML(item.url || "");
+      const itemTitle = item && typeof item.title === "string" && item.title.trim() ? escapeHTML(item.title) : url;
+      return `<li><a href="${url}" target="_blank" rel="noopener">${itemTitle}</a></li>`;
+    }).join("");
+    blocks.push(`<details class="tf-capture-expansion" open>
+      <summary>${escapeHTML(t("thoughts.section_url_followups"))} <span class="tf-capture-count">${urlFollowups.length}</span></summary>
+      <ul class="tf-capture-followups">${lines}</ul>
+    </details>`);
+  }
+  if (expansionPlan) {
+    blocks.push(`<details class="tf-capture-expansion" open>
+      <summary>${escapeHTML(t("thoughts.section_expansion_plan"))}</summary>
+      <div class="tf-capture-plan">${renderMarkdown(expansionPlan)}</div>
+    </details>`);
+  }
+  if (!anyLanded && (thought.refine_status === "refined" || thought.refine_status === "expanding")) {
+    blocks.push(`<div class="tf-capture-pending">${escapeHTML(t("thoughts.expansion_pending"))}</div>`);
+  }
+  if (expandError) {
+    blocks.push(`<div class="tf-alert tf-alert-warning">${escapeHTML(t("thoughts.expansion_failed"))}</div>`);
+  }
+  if (blocks.length === 0) return "";
+  return `<div class="tf-capture-expansion-stack">${blocks.join("")}</div>`;
 }
 
 const CAPTURE_COMMANDS = [
@@ -1951,14 +2080,49 @@ async function patchActiveThought(patch) {
     return;
   }
   state.capture.activeSnapshot = snapshot;
-  appendCaptureMessage({ role: "ai", text: t("capture.session.saved_path", { id: thoughtId }) });
+  // Feedback is a separate, plain-text confirmation message. We
+  // deliberately do NOT bind it to the active thoughtId: that would
+  // re-render it from the snapshot card and bury the per-command
+  // acknowledgment. The original rich card message (appended in
+  // startCaptureThought with thoughtId) re-renders in place from the
+  // fresh snapshot below via refreshActiveCaptureThought.
+  appendCaptureMessage({
+    role: "ai",
+    text: formatPatchFeedback(patch, snapshot),
+  });
   rememberCaptureSession({
     sessionId,
     thoughtId,
     title: snapshot?.thought?.display_title || snapshot?.thought?.user_title || thoughtId,
     messages: state.capture.messages,
   });
+  // The AI bubble bound to this thoughtId will re-render from the
+  // freshest snapshot, picking up any newly-cleared errors and the
+  // updated title / tags without needing a separate system message.
   refreshActiveCaptureThought();
+}
+
+// formatPatchFeedback turns a successful PATCH payload into a one-line
+// ai-side confirmation that names the field the user just changed. The
+// thoughtId-bound bubble re-renders below with the full snapshot, so
+// this message exists only to acknowledge the action.
+function formatPatchFeedback(patch, snapshot) {
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "title")) {
+    return t("capture.feedback.renamed", { title: patch.title });
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "tags")) {
+    const tags = Array.isArray(patch.tags) ? patch.tags.join(", ") : String(patch.tags || "");
+    return t("capture.feedback.tags_added", { tags });
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "ai_notes_append")) {
+    return t("capture.feedback.note_appended");
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "topic_ids")) {
+    const topics = state.topics || [];
+    const match = topics.find((topic) => Array.isArray(patch.topic_ids) && patch.topic_ids[0] === topic.id);
+    return t("capture.feedback.moved_to_topic", { topic: match?.name || (Array.isArray(patch.topic_ids) ? patch.topic_ids[0] : "") });
+  }
+  return t("capture.session.saved_path", { id: snapshot?.thought?.id || "" });
 }
 
 async function retryRefineForActive() {
@@ -1966,7 +2130,7 @@ async function retryRefineForActive() {
   if (!thoughtId) return;
   try {
     const job = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}/retry-refine`, { method: "POST" });
-    appendCaptureMessage({ role: "system", text: t("toast.retry_refine_queued", { id: job?.id || "" }) });
+    appendCaptureMessage({ role: "system", text: t("capture.feedback.refine_queued") });
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
   }
@@ -2542,13 +2706,18 @@ function connectEvents() {
           // Refresh the open thought preview if it matches — both the
           // notes-page inline preview and the drawer-backed preview
           // read the same `state.activeThoughtId`, so a single
-          // re-render covers both. The capture conversation owns its
-          // own copy of the snapshot and is refreshed by the thought
-          // .refined/.patched branch above; a thought.expanded after
-          // capture is also a no-op there because the conversation
-          // bubble list does not surface expansion sections.
+          // re-render covers both.
           if (state.activeThoughtId === expandedID) {
             previewThought(expandedID).catch((error) => toast(error.message));
+          }
+          // The capture conversation owns its own copy of the snapshot
+          // and re-renders thoughtId-bound bubbles in place from the
+          // freshest snapshot — so a thought.expanded event simply
+          // triggers refreshActiveCaptureThought which fetches and
+          // re-renders the ai bubble to surface the new sections.
+          if (state.capture.activeThoughtId === expandedID) {
+            refreshActiveCaptureThought();
+            appendCaptureMessage({ role: "system", text: t("capture.session.expanded", { id: expandedID }) });
           }
         } catch (_) { /* malformed event payload */ }
       }

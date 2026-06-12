@@ -515,14 +515,119 @@ test("capture composer starts a new session, persists a thought, and shows the c
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => document.querySelectorAll("#capture-conversation .tf-msg").length >= 2);
+    // Phase 10 capture UX: the AI bubble should render the rich
+    // status-chip card (capture / refine / index / topic) once the
+    // follow-up GET /api/thoughts/:id returns. Wait for the chip to
+    // land before asserting — the initial capture response does not
+    // include refine_status, so the bubble re-renders shortly after.
+    await page.waitForExpression(() => {
+      const aiBubble = document.querySelector("#capture-conversation .tf-msg-ai");
+      return aiBubble && /data-status="refine-pending"/.test(aiBubble.outerHTML || "");
+    });
     const messages = await page.evaluate(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.textContent || ""));
     assert.ok(messages.some((text) => text.includes("Browser session smoke text")), "user message should be in conversation");
     assert.ok(messages.some((text) => text.includes("thought-capture")), "AI response should include the new thought id");
+    const cardHTML = await page.evaluate(() => {
+      const aiBubbles = Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai"));
+      const bubble = aiBubbles.length > 0 ? aiBubbles[aiBubbles.length - 1] : null;
+      return bubble ? bubble.outerHTML : "";
+    });
+    assert.match(cardHTML, /data-status="refine-pending"/, "rich card should expose refine status chip");
+    assert.match(cardHTML, /data-status="capture-captured"/, "rich card should expose capture status chip");
+    assert.match(cardHTML, /href="#\/thoughts\?id=thought-capture"/, "rich card should keep the view-thought link");
+    assert.match(cardHTML, /href="#\/search"/, "rich card should keep the search-related link");
     const sessionsRaw = await page.evaluate(() => window.localStorage.getItem("tflow.capture.sessions"));
     assert.ok(sessionsRaw, "capture sessions should be persisted to localStorage");
     const sessions = JSON.parse(sessionsRaw || "[]");
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].thoughtId, "thought-capture");
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("capture conversation re-renders the AI bubble in place after a PATCH command", async (t) => {
+  const server = await startFixtureServer();
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || target.skip) {
+    t.skip(target ? target.skip : "Chrome not available");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    const errors = [];
+    page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+    page.onEvent("Log.entryAdded", (event) => {
+      if (event.entry?.level === "error") errors.push(event.entry.text);
+    });
+    await page.send("Page.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    // Use en-US so per-command feedback ("Renamed to", "Added tags")
+    // is assertion-friendly; the i18n registry and language switcher
+    // are exercised in the dedicated locale test.
+    await page.navigate(`${baseURL}/?lang=en-US`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    // Start a session and wait for the initial AI bubble.
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "Multi-turn browser smoke";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    await page.waitForExpression(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai")).length >= 1);
+    // Issue a rename command; the PATCH fixture returns a refined
+    // snapshot with summary / key_points / ai_tags / expansion fields,
+    // so the AI bubble should re-render in place with the new data.
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "rename to Renamed in browser";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    // Poll for the rename to land in the rich card; if it doesn't,
+    // dump the conversation for diagnosis.
+    let renamed = false;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      renamed = await page.evaluate(() => {
+        const bubble = document.querySelector("#capture-conversation .tf-msg-ai");
+        return bubble && /Renamed in browser/.test(bubble.textContent || "");
+      });
+      if (renamed) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!renamed) {
+      const dump = await page.evaluate(() => ({
+        messages: Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.outerHTML),
+        composerValue: document.querySelector("#capture-composer-input")?.value || "",
+      }));
+      console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
+    }
+    assert.ok(renamed, "rename command should re-render the AI bubble with the new title");
+    const rendered = await page.evaluate(() => {
+      const bubble = document.querySelector("#capture-conversation .tf-msg-ai");
+      return bubble ? bubble.outerHTML : "";
+    });
+    // The thoughtId-bound bubble must re-render with refine / index /
+    // topic chips from the post-PATCH snapshot, plus the new title.
+    assert.match(rendered, /Renamed in browser/);
+    assert.match(rendered, /data-status="refine-refined"/);
+    assert.match(rendered, /data-status="index-indexed"/);
+    assert.match(rendered, /data-status="topic-matched"/);
+    // Per-command feedback: a separate AI bubble acknowledges the rename.
+    // The feedback bubble is plain text (not bound to the active thought
+    // snapshot) so it carries the per-command message verbatim.
+    const feedback = await page.evaluate(() => {
+      const bubbles = Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai"));
+      return bubbles.find((el) => /Renamed to/.test(el.textContent || ""))?.textContent || "";
+    });
+    assert.match(feedback, /Renamed to/, "rename command should produce a dedicated feedback bubble");
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -747,7 +852,11 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
 function startFixtureServer() {
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
-  const server = http.createServer((req, res) => {
+  // Per-thought PATCH state. The GET response reflects the most recent
+  // PATCH so the AI bubble stays consistent after refreshActiveCaptureThought
+  // re-fetches; the unit tests cover the full PATCH contract.
+  const thoughtState = new Map();
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     switch (url.pathname) {
       case "/":
@@ -867,14 +976,50 @@ function startFixtureServer() {
           jobs: [{ id: "job-capture", type: "refine", status: "succeeded" }],
         }));
       case "/api/thoughts/thought-capture":
+        if (req.method === "PATCH") {
+          // Phase 10 capture UX: PATCH on the active thought is what
+          // drives the per-command feedback bubble in the chat. The
+          // fixture only has to echo a snapshot back so the test can
+          // assert the in-place re-render; the unit tests cover the
+          // full PATCH contract.
+          const body = (await readJson(req)) || {};
+          const next = {
+            display_title: body.title || "Browser capture renamed",
+            user_title: body.title || "Browser capture renamed",
+            user_tags: Array.isArray(body.tags) ? body.tags : ["browser", "smoke"],
+            refine_status: "refined",
+            index_status: "indexed",
+            topic_status: "matched",
+          };
+          thoughtState.set("thought-capture", next);
+          return json(res, api({
+            thought: {
+              id: "thought-capture",
+              ...next,
+              capture_status: "captured",
+              path: "thoughts/browser-capture.md",
+              summary: "Refine landed after rename.",
+              key_points: ["First key point", "Second key point"],
+              ai_tags: ["rename", "ux"],
+              related_thought_ids: ["thought-1"],
+              suggested_topic_ids: ["demo"],
+            },
+            content: { original: "Captured from browser smoke" },
+            jobs: [{ id: "job-capture", type: "refine", status: "succeeded" }],
+          }), 200);
+        }
+        // GET — overlay any PATCH state set earlier.
+        const patched = thoughtState.get("thought-capture") || {};
         return json(res, api({
           thought: {
             id: "thought-capture",
-            display_title: "Browser capture",
-            user_title: "Browser capture",
-            refine_status: "pending",
-            index_status: "pending",
-            topic_status: "unmatched",
+            display_title: patched.display_title || "Browser capture",
+            user_title: patched.user_title || "Browser capture",
+            capture_status: "captured",
+            refine_status: patched.refine_status || "pending",
+            index_status: patched.index_status || "pending",
+            topic_status: patched.topic_status || "unmatched",
+            user_tags: patched.user_tags || ["browser", "smoke"],
             path: "thoughts/browser-capture.md",
             summary: "",
           },
@@ -946,6 +1091,26 @@ function serveFile(res, filePath, contentType) {
 function json(res, body, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(body);
+}
+
+// readJson drains the request body and parses it as JSON. Used by the
+// PATCH/POST fixtures; returns null on missing or malformed payloads
+// so the caller can fall back to defaults.
+function readJson(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8");
+      if (!text) return resolve(null);
+      try {
+        resolve(JSON.parse(text));
+      } catch (_) {
+        resolve(null);
+      }
+    });
+    req.on("error", () => resolve(null));
+  });
 }
 
 async function launchChrome(viewport) {
