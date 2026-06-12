@@ -305,3 +305,78 @@ UI 验证环境：
 
 各 PR 完成后 `make check` 全部绿：26/26 go + 35/35 node + 5/5 i18n + 11/13 browser smoke（Firefox / Safari 在 Linux host 不可用，按目标声明 skip）。
 
+## 2026-06-12 Phase 10：Post-Refine Expansion
+
+问题：refine 完成后用户只看得到「标题 / 摘要 / 标签」三件套，没有任何主动扩展。Search hybrid top-K 多为 recency 占位（早餐、Go runtime），无法把「我刚记的 web 采集」与「一个月前记的 RAG 检索范式」关联起来。
+
+解法：在 `EventThoughtRefined` 后接 `internal/modules/expander` 模块，跑 4 路并行管线，把结果持久化到 thought front matter，UI 一次性展示。
+
+**4 路并行管线**（`internal/modules/expander/biz/service.go:runPipeline`，`errgroup.WithContext` + 30s timeout，任一失败不阻塞其他）：
+
+1. **相关 thought** — `Searcher.Search` hybrid 模式 top-3，排除自身 → `related_thought_ids`
+2. **LLM 主动补全** — `ExpandProvider.Expand` 出中文「处理思路与方案」markdown（背景/方向/步骤/注意事项/延伸阅读 5 段）→ `expansion_plan`
+3. **专题近命中** — `TopicService.NearMissTopics` 走 0.4 阈值 top-3 → `suggested_topic_ids`
+4. **URL 延伸阅读** — `Fetcher.Fetch` 抓主页面提取 top-2 内链（仅 URL 类型 thought）→ `url_followups`
+
+**模型字段**（`internal/pkg/models/models.go`）：
+
+- 新增常量：`JobTypeExpand = "expand"`、`EventThoughtExpanded = "thought.expanded"`
+- `Thought` 加 4 个字段：`RelatedThoughtIDs` / `SuggestedTopicIDs` / `URLFollowups` / `ExpansionPlan`
+- 新增类型：`URLFollowup{URL,Title,Snippet}`、`TopicMatchSuggestion{TopicID,TopicName,Score}`
+- `ThoughtSnapshot` 同步透传，前端 `GET /api/thoughts/:id` 自动拿到 4 个新字段
+
+**关键复用**：
+
+- 后端 atomic 写：`markdown.WriteThought`（已支持任意 YAML field + block scalar + list of maps）
+- Job 框架：`jobstore.Store.Create/MarkRunning/MarkSucceeded/MarkFailed`
+- 事件：`eventutil.Post` + `EventGitCommitRequested` 复用现有 git_sync 5s 去重
+- LLM 共享：`postOpenAICompatibleJSON`，`LocalRefineProvider.Expand` 在 LLM 未配时优雅降级
+- Fetcher 扩链：`extractHTMLLinks` / `extractMarkdownLinks` + `keepLink` 过滤锚/mailto/javascript/相对路径
+- 锁：`thoughtlock.Locker.Acquire(id, "expander")` 复用 refiner 同款 TTL/heartbeat；refiner 与 expander 谁先到谁先持
+- Topic 共享：`matchTopic` 加 `minScore` 参数（默认 0 保持兼容），`NearMissTopics` 内部传 0.4 走宽阈值
+
+**模块接线**：
+
+- 新增 `internal/modules/expander/module.go`（Weight=250，订阅 `EventThoughtRefined`）
+- `cmd/thoughtflow/main.go` 加 blank import
+- `internal/modules/application/thoughtflow/module.go` SSE 列表加 `"thought.expanded"`
+- `go.mod` 引入 `golang.org/x/sync v0.19.0`（errgroup）
+
+**前端**（PR5b）：
+
+- `i18n/keys.js` 加 7 个常量：`thoughts.section_related / section_near_topics / section_url_followups / section_expansion_plan / expansion_failed / expansion_pending / no_related`，中英双语全量翻译
+- `app.js:previewThought` 拆出 `appendExpansionSections(thought)` helper：4 字段均为空时显示 `expansion_pending` 斜体提示；任一字段落地后立即静默；`thought.errors` 中含 `thoughtflow.expand.*` 时追加 `expansion_failed` 提示
+- `app.js:connectEvents` SSE 列表加 `"thought.expanded"`，active thought 收到事件自动 `previewThought(id)` 重渲染
+- URL followup 走 markdown link `[title](url)`；title 为空回落到 url；related / suggested topic 以 `` `id` `` 形式展示
+
+**测试**：
+
+- `internal/pkg/markdown/thought_test.go` — `TestWriteAndReadExpansionFields` 验证 4 字段 round-trip（含 multi-line plan + list of maps）
+- `internal/pkg/webfetch/fetch_test.go` — 3 个 fetcher link 提取测试
+- `internal/pkg/ai/refiner_test.go` — 3 个 LLM Expand 测试（含 fence strip）
+- `internal/modules/topic/biz/service_test.go` — 2 个 NearMissTopics 测试
+- `internal/modules/expander/biz/service_test.go` — 4 个 4-way 管线测试（happy / partial failure / lock skip / URL 跳过 text）
+- `app.test.js` — 4 个 `appendExpansionSections` 单元测试
+- `api.e2e.test.js` — 2 处：原 lifecycle 测试 PATCH 加 409 retry 循环（吸收 expander 锁竞争）；新测试 `post-refine expansion writes 4 fields to the thought` 验证 capture → refine → expand 链路落地 4 字段
+
+**失败模型**：
+
+- 单路失败记 `thoughtflow.expand.<stage>_failed` ErrorRef（`retryable=false`）
+- 多路失败聚合为 `thoughtflow.expand.partial_failed` 写 thought front matter
+- 锁竞争（refiner 在跑）记 `thoughtflow.expand.skipped_locked`，job 标 succeeded 不重试
+- 4 路全失败仍写盘（仅 errors 累加），用户可见空 section
+
+**验证**：
+
+```bash
+go test ./...                          # 20 packages ok
+go build -o thoughtflow ./cmd/thoughtflow
+make node-check                        # 8 个 js 文件 syntax 绿
+make node-test                         # 41 个 node 组件测试通过
+make node-test-i18n                    # 5 个 i18n 字典测试通过
+make browser-test                      # 11 通过 + 2 skipped（Linux host 缺 Firefox/Safari）
+make e2e-test                          # 18 个 e2e 测试通过（含 1 个新 expansion case + 1 个 PATCH retry 改造）
+```
+
+`make check` 端到端绿。Phase 10 收口完成，后续如需补 PR 标题/正文/CHANGELOG 单独立 PR。
+
