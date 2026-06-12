@@ -17,6 +17,7 @@ import (
 
 	"thoughtflow/internal/modules/application/thoughtflow/service"
 	"thoughtflow/internal/modules/capture"
+	capturebiz "thoughtflow/internal/modules/capture/biz"
 	"thoughtflow/internal/modules/git_sync"
 	"thoughtflow/internal/modules/refiner"
 	"thoughtflow/internal/modules/search"
@@ -24,6 +25,7 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -126,8 +128,13 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	}
 
 	jobs := jobstore.New(ws.JobsPath)
+	scratchpadStore := scratchpad.New(ws.ScratchpadPath)
+	scratchpadSvc := capture.NewScratchpadService(scratchpadStore,
+		capture.WithCapture(captureService),
+		capturebiz.WithEventHub(eventHub),
+	)
 	registry := engine.NewRouteRegistry()
-	m.httpService = service.New(registry, captureService, refinerService, searchService, topicService, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
+	m.httpService = service.New(registry, captureService, scratchpadSvc, refinerService, searchService, topicService, scratchpadStore, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
 	m.httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
 	if err != nil {

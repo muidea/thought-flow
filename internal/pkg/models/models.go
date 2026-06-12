@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"thoughtflow/internal/pkg/scratchpad"
+)
 
 const (
 	ThoughtTypeText = "text"
@@ -76,6 +80,7 @@ type Workspace struct {
 	AttachmentsPath string    `json:"attachments_path"`
 	RuntimePath     string    `json:"runtime_path"`
 	JobsPath        string    `json:"jobs_path"`
+	ScratchpadPath  string    `json:"scratchpad_path"`
 	GitEnabled      bool      `json:"git_enabled"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -198,12 +203,24 @@ type ThoughtSuggestion struct {
 // POST /api/capture/sessions/start. The session_id is the caller's
 // conversation id (echoed back unchanged); the suggestion is best-effort
 // and may be empty if the refiner is not configured.
+//
+// In the scratchpad-based capture flow, Thought / Jobs / Suggestion
+// stay zero-valued at the start of a session: the user has not yet
+// committed the scratchpad to a real thought. The Scratchpad field
+// carries the freshly-staged session state, and the frontend can
+// read /api/capture/scratchpad afterwards to keep the chat in sync.
 type CaptureSessionStart struct {
 	SessionID  string            `json:"session_id"`
 	Thought    Thought           `json:"thought"`
 	Jobs       []Job             `json:"jobs"`
 	Suggestion ThoughtSuggestion `json:"suggestion"`
+	Scratchpad ScratchpadEnvelope `json:"scratchpad"`
 }
+
+// ScratchpadEnvelope is the response body for the scratchpad-aware
+// endpoints. The actual scratchpad.Scratchpad lives under "data" so
+// the response matches the standard API envelope shape.
+type ScratchpadEnvelope = scratchpad.Scratchpad
 
 type CaptureResult struct {
 	Thought Thought `json:"thought"`
@@ -320,6 +337,7 @@ type WorkspaceRuntimeStatus struct {
 	AttachmentsPath string `json:"attachments_path"`
 	RuntimePath     string `json:"runtime_path"`
 	JobsPath        string `json:"jobs_path"`
+	ScratchpadPath  string `json:"scratchpad_path"`
 	GitEnabled      bool   `json:"git_enabled"`
 	Writable        bool   `json:"writable"`
 	Error           string `json:"error,omitempty"`

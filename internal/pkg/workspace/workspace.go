@@ -30,6 +30,7 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 		AttachmentsPath: filepath.Join(rootPath, "attachments"),
 		RuntimePath:     dataPath,
 		JobsPath:        filepath.Join(dataPath, "jobs"),
+		ScratchpadPath:  filepath.Join(rootPath, ".scratchpad"),
 		GitEnabled:      cfg.GitSync.Enabled,
 		CreatedAt:       time.Now().UTC(),
 	}
@@ -41,6 +42,7 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 		ws.AttachmentsPath,
 		ws.RuntimePath,
 		ws.JobsPath,
+		ws.ScratchpadPath,
 		filepath.Join(ws.RuntimePath, "logs"),
 	}
 	for _, dir := range dirs {
@@ -128,6 +130,7 @@ func RuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus {
 	status.AttachmentsPath = ws.AttachmentsPath
 	status.RuntimePath = ws.RuntimePath
 	status.JobsPath = ws.JobsPath
+	status.ScratchpadPath = ws.ScratchpadPath
 	status.GitEnabled = ws.GitEnabled
 	if err := os.MkdirAll(ws.RuntimePath, 0o755); err != nil {
 		status.Error = err.Error()

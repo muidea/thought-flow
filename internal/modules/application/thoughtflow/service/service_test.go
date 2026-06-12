@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
+	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/searchdb"
 	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/thoughtlock"
@@ -661,7 +663,7 @@ func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
 
 func TestHandleEventsStopsWhenServiceCloses(t *testing.T) {
 	stream := eventstream.New(10)
-	service := New(nil, nil, nil, nil, nil, nil, nil, nil, nil, stream, nil, appconfig.Config{})
+	service := New(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream, nil, appconfig.Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	res := httptest.NewRecorder()
@@ -1340,29 +1342,34 @@ func TestHandleCreateThoughtFallsBackToTextOnClassifyError(t *testing.T) {
 	}
 }
 
-func TestHandleStartCaptureSessionCreatesThoughtAndReturns(t *testing.T) {
+// TestHandleStartCaptureSessionStagesInScratchpad locks in the new
+// scratchpad-aware behavior: the first user message is appended to
+// the scratchpad; no thought is written, no classifier is called,
+// the response carries a 200 + populated scratchpad.
+func TestHandleStartCaptureSessionStagesInScratchpad(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
-		ID:           "test",
-		RootPath:     root,
-		ThoughtsPath: filepath.Join(root, "thoughts"),
-		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+		ID:             "test",
+		RootPath:       root,
+		ThoughtsPath:   filepath.Join(root, "thoughts"),
+		JobsPath:       filepath.Join(root, ".thoughtflow", "jobs"),
+		ScratchpadPath: filepath.Join(root, ".scratchpad"),
 	}
-	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
+	if err := os.MkdirAll(ws.ScratchpadPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
-	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
-	classify := &stubClassifyProvider{result: ai.ClassifyResult{
-		Raw:   `{"type":"text","confidence":0.95}`,
-		Model: "test-llm",
-	}}
+	store := scratchpad.New(ws.ScratchpadPath)
+	scratchpadSvc := capturebiz.NewScratchpadService(store)
 	service := &Service{
-		captureService:   captureService,
-		refinerService:   refinerService,
-		workspace:        ws,
-		classifyProvider: classify,
+		captureService: capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil),
+		scratchpadSvc:  scratchpadSvc,
+		scratchpad:     store,
+		workspace:      ws,
+		classifyProvider: &stubClassifyProvider{result: ai.ClassifyResult{
+			Raw:   `{"type":"text","confidence":0.95}`,
+			Model: "test-llm",
+		}},
 	}
 
 	body := `{"content":"brainstorm ideas for the next refactor","session_id":"sess-42"}`
@@ -1370,78 +1377,111 @@ func TestHandleStartCaptureSessionCreatesThoughtAndReturns(t *testing.T) {
 	res := httptest.NewRecorder()
 	service.handleStartCaptureSession(context.Background(), res, req)
 
-	if res.Code != http.StatusAccepted {
+	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 	var payload struct {
 		Data models.CaptureSessionStart `json:"data"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
+		t.Fatalf("Unmarshal: %v", err)
 	}
 	if payload.Data.SessionID != "sess-42" {
-		t.Fatalf("session_id = %q, want sess-42", payload.Data.SessionID)
+		t.Fatalf("session_id = %q", payload.Data.SessionID)
 	}
-	if payload.Data.Thought.ID == "" {
-		t.Fatalf("thought id missing")
+	if payload.Data.Scratchpad.SessionID != "sess-42" {
+		t.Fatalf("scratchpad session_id = %q", payload.Data.Scratchpad.SessionID)
 	}
-	if payload.Data.Thought.Type != models.ThoughtTypeText {
-		t.Fatalf("thought type = %q, want text", payload.Data.Thought.Type)
+	if payload.Data.Scratchpad.Content != "brainstorm ideas for the next refactor" {
+		t.Fatalf("scratchpad content = %q", payload.Data.Scratchpad.Content)
 	}
-	if classify.called != 1 {
-		t.Fatalf("classify called %d times, want 1", classify.called)
+	if len(payload.Data.Scratchpad.Messages) != 1 || payload.Data.Scratchpad.Messages[0].Role != "user" {
+		t.Fatalf("expected one user message, got %+v", payload.Data.Scratchpad.Messages)
+	}
+	// The thought is intentionally NOT created at this stage.
+	if payload.Data.Thought.ID != "" {
+		t.Fatalf("thought id should be empty, got %q", payload.Data.Thought.ID)
+	}
+	// And no thought file should be on disk.
+	if _, err := os.Stat(filepath.Join(ws.ThoughtsPath, "anything.md")); err == nil {
+		t.Fatalf("thought file should not exist yet")
 	}
 }
 
-func TestHandleStartCaptureSessionUsesClassifyForAmbiguousInput(t *testing.T) {
+// TestHandleStartCaptureSessionSkipsClassifyInScratchpadMode locks in
+// that classify is NOT called when the user kicks off a scratchpad
+// session — the classifier only runs at commit time, when there is
+// real content to classify.
+func TestHandleStartCaptureSessionSkipsClassifyInScratchpadMode(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
-		ID:           "test",
-		RootPath:     root,
-		ThoughtsPath: filepath.Join(root, "thoughts"),
-		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+		ID:             "test",
+		RootPath:       root,
+		ThoughtsPath:   filepath.Join(root, "thoughts"),
+		JobsPath:       filepath.Join(root, ".thoughtflow", "jobs"),
+		ScratchpadPath: filepath.Join(root, ".scratchpad"),
 	}
-	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
+	if err := os.MkdirAll(ws.ScratchpadPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
-	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
+	store := scratchpad.New(ws.ScratchpadPath)
+	scratchpadSvc := capturebiz.NewScratchpadService(store)
 	classify := &stubClassifyProvider{result: ai.ClassifyResult{
 		Raw:   `{"type":"url","extracted_url":"https://example.org/article","confidence":0.85}`,
 		Model: "test-llm",
 	}}
 	service := &Service{
-		captureService:   captureService,
-		refinerService:   refinerService,
+		captureService:   capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil),
+		scratchpadSvc:    scratchpadSvc,
+		scratchpad:       store,
 		workspace:        ws,
 		classifyProvider: classify,
 	}
 
-	// No URL in the content, so the regex fast path is skipped and the
-	// LLM classifier is the only path that decides the type.
 	body := `{"content":"the article could be relevant to the team","session_id":"sess-99"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/start", strings.NewReader(body))
 	res := httptest.NewRecorder()
 	service.handleStartCaptureSession(context.Background(), res, req)
 
-	if res.Code != http.StatusAccepted {
+	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
-	if classify.called != 1 {
-		t.Fatalf("classify called %d times, want 1", classify.called)
+	if classify.called != 0 {
+		t.Fatalf("classify should not run at session start, called %d times", classify.called)
 	}
-	var payload struct {
-		Data models.CaptureSessionStart `json:"data"`
+}
+
+// TestHandleStartCaptureSessionRequiresSessionID enforces the new
+// contract: session_id is required (the UI calls /new-session first
+// to mint one), so we no longer auto-default to "anonymous".
+func TestHandleStartCaptureSessionRequiresSessionID(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:             "test",
+		RootPath:       root,
+		ScratchpadPath: filepath.Join(root, ".scratchpad"),
 	}
-	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
+	if err := os.MkdirAll(ws.ScratchpadPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
-	if payload.Data.Thought.Type != models.ThoughtTypeURL {
-		t.Fatalf("thought type = %q, want url", payload.Data.Thought.Type)
+	store := scratchpad.New(ws.ScratchpadPath)
+	scratchpadSvc := capturebiz.NewScratchpadService(store)
+	service := &Service{
+		scratchpad:  store,
+		scratchpadSvc: scratchpadSvc,
+		workspace:   ws,
 	}
-	if payload.Data.Thought.URL != "https://example.org/article" {
-		t.Fatalf("thought url = %q, want https://example.org/article", payload.Data.Thought.URL)
+
+	body := `{"content":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/start", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleStartCaptureSession(context.Background(), res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "thoughtflow.capture.scratchpad.invalid_session") {
+		t.Fatalf("body = %s", res.Body.String())
 	}
 }
 
@@ -1546,4 +1586,240 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// fakeScratchpadStore is the in-memory stub used by the handler tests
+// in this file. It mirrors the production store's contract: Get on
+// a missing session returns a zero-value scratchpad (not an error),
+// Save is upsert, and Delete is idempotent.
+type fakeScratchpadStore struct {
+	mu    sync.Mutex
+	items map[string]scratchpad.Scratchpad
+}
+
+func newFakeScratchpadStore() *fakeScratchpadStore {
+	return &fakeScratchpadStore{items: map[string]scratchpad.Scratchpad{}}
+}
+
+func (f *fakeScratchpadStore) Get(sessionID string) (scratchpad.Scratchpad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.items[sessionID]; ok {
+		return existing, nil
+	}
+	return scratchpad.Scratchpad{SessionID: sessionID}, nil
+}
+
+func (f *fakeScratchpadStore) Save(sp scratchpad.Scratchpad) (scratchpad.Scratchpad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items[sp.SessionID] = sp
+	return sp, nil
+}
+
+func (f *fakeScratchpadStore) Delete(sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.items, sessionID)
+	return nil
+}
+
+func (f *fakeScratchpadStore) List() []scratchpad.Summary {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]scratchpad.Summary, 0, len(f.items))
+	for _, sp := range f.items {
+		out = append(out, scratchpad.Summary{
+			SessionID:          sp.SessionID,
+			Title:              sp.Title,
+			CommittedThoughtID: sp.CommittedThoughtID,
+			MessageCount:       len(sp.Messages),
+			ContentLength:      len(sp.Content),
+			UpdatedAt:          sp.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func (f *fakeScratchpadStore) MarkCommitted(sessionID, thoughtID string) (scratchpad.Scratchpad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp, ok := f.items[sessionID]
+	if !ok {
+		return scratchpad.Scratchpad{}, errors.New("scratchpad not found")
+	}
+	sp.CommittedThoughtID = thoughtID
+	now := time.Now().UTC()
+	sp.CommittedAt = &now
+	sp.UpdatedAt = now
+	f.items[sessionID] = sp
+	return sp, nil
+}
+
+func (f *fakeScratchpadStore) Reset(sessionID string) (scratchpad.Scratchpad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp, ok := f.items[sessionID]
+	if !ok {
+		return scratchpad.Scratchpad{}, errors.New("scratchpad not found")
+	}
+	sp.Content = ""
+	sp.Messages = nil
+	sp.Draft = scratchpad.Draft{}
+	sp.UpdatedAt = time.Now().UTC()
+	f.items[sessionID] = sp
+	return sp, nil
+}
+
+// TestHandleGetScratchpadReturnsEmptyForMissingSession locks in the
+// "200 + zero value" behavior so the UI never has to special-case
+// 404 on first chat of a new session.
+func TestHandleGetScratchpadReturnsEmptyForMissingSession(t *testing.T) {
+	store := newFakeScratchpadStore()
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capture/scratchpad?session_id=fresh", nil)
+	res := httptest.NewRecorder()
+	service.handleGetScratchpad(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if env.Error != nil {
+		t.Fatalf("unexpected error: %+v", env.Error)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var sp scratchpad.Scratchpad
+	if err := json.Unmarshal(raw, &sp); err != nil {
+		t.Fatalf("data shape: %v", err)
+	}
+	if sp.SessionID != "fresh" || sp.Content != "" {
+		t.Fatalf("empty scratchpad shape wrong: %+v", sp)
+	}
+}
+
+func TestHandleGetScratchpadRejectsMissingSessionID(t *testing.T) {
+	store := newFakeScratchpadStore()
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capture/scratchpad", nil)
+	res := httptest.NewRecorder()
+	service.handleGetScratchpad(context.Background(), res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "thoughtflow.capture.scratchpad.invalid_session") {
+		t.Fatalf("body = %s", res.Body.String())
+	}
+}
+
+func TestHandlePostScratchpadStoresAndReturns(t *testing.T) {
+	store := newFakeScratchpadStore()
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	body := scratchpad.Scratchpad{
+		SessionID: "sess-1",
+		Content:   "hello",
+		Messages:  []scratchpad.Message{{Role: "user", Text: "hi"}},
+	}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/scratchpad", strings.NewReader(string(raw)))
+	res := httptest.NewRecorder()
+	service.handlePostScratchpad(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", res.Code, res.Body.String())
+	}
+	saved, err := store.Get("sess-1")
+	if err != nil {
+		t.Fatalf("Get(sess-1) error = %v", err)
+	}
+	if saved.Content != "hello" || len(saved.Messages) != 1 {
+		t.Fatalf("saved scratchpad = %+v", saved)
+	}
+}
+
+func TestHandlePostScratchpadRejectsEmptySessionID(t *testing.T) {
+	store := newFakeScratchpadStore()
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	body := scratchpad.Scratchpad{Content: "hi"}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/scratchpad", strings.NewReader(string(raw)))
+	res := httptest.NewRecorder()
+	service.handlePostScratchpad(context.Background(), res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.Code)
+	}
+}
+
+func TestHandleDeleteScratchpadIsIdempotent(t *testing.T) {
+	store := newFakeScratchpadStore()
+	if _, err := store.Save(scratchpad.Scratchpad{SessionID: "del", Content: "x"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+
+	// First delete: real call.
+	req := httptest.NewRequest(http.MethodDelete, "/api/capture/scratchpad?session_id=del", nil)
+	res := httptest.NewRecorder()
+	service.handleDeleteScratchpad(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("first delete status = %d", res.Code)
+	}
+
+	// Second delete on missing session: still 200, no error.
+	req2 := httptest.NewRequest(http.MethodDelete, "/api/capture/scratchpad?session_id=del", nil)
+	res2 := httptest.NewRecorder()
+	service.handleDeleteScratchpad(context.Background(), res2, req2)
+	if res2.Code != http.StatusOK {
+		t.Fatalf("idempotent delete status = %d, body = %s", res2.Code, res2.Body.String())
+	}
+}
+
+func TestHandleListScratchpadsReturnsSummaries(t *testing.T) {
+	store := newFakeScratchpadStore()
+	store.Save(scratchpad.Scratchpad{SessionID: "a", Content: "0123"})
+	store.Save(scratchpad.Scratchpad{SessionID: "b", Content: "56789"})
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/capture/scratchpad/list", nil)
+	res := httptest.NewRecorder()
+	service.handleListScratchpads(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "\"a\"") || !strings.Contains(res.Body.String(), "\"b\"") {
+		t.Fatalf("list body missing sessions: %s", res.Body.String())
+	}
+}
+
+func TestHandleNewCaptureSessionGeneratesFreshID(t *testing.T) {
+	store := newFakeScratchpadStore()
+	service := &Service{scratchpad: store, workspace: &models.Workspace{ID: "local"}}
+	body, _ := json.Marshal(map[string]string{"prev_session_id": "old"})
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/new-session", strings.NewReader(string(body)))
+	res := httptest.NewRecorder()
+	service.handleNewCaptureSession(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", res.Code, res.Body.String())
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var sp scratchpad.Scratchpad
+	if err := json.Unmarshal(raw, &sp); err != nil {
+		t.Fatalf("shape: %v", err)
+	}
+	if sp.SessionID == "" || sp.SessionID == "old" {
+		t.Fatalf("expected new session id, got %q", sp.SessionID)
+	}
+	// The "old" session was deleted; Get on a missing session returns a
+	// zero-value scratchpad (no error), which is the contract.
+	prev, err := store.Get("old")
+	if err != nil {
+		t.Fatalf("Get(old) error = %v", err)
+	}
+	if prev.Content != "" {
+		t.Fatalf("old session should be empty after delete, got %+v", prev)
+	}
 }

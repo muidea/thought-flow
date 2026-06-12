@@ -33,6 +33,7 @@ const state = {
     sessionId: "",
     activeThoughtId: "",
     activeSnapshot: null,
+    activeScratchpad: null,
     messages: [],
     sessions: [],
     suggestion: null,
@@ -1661,6 +1662,72 @@ function rememberCaptureSession(session) {
 function renderCaptureSessionsDrawer() {
   const list = $("#capture-sessions-list");
   if (!list) return;
+  // Local "sessions" cache is augmented with the server-side
+  // scratchpad summaries (which may include scratchpads from other
+  // tabs / a prior server lifetime). The remote list is the
+  // source of truth; the local list is for fast client-side
+  // boot. We render them in two sections so the user can see
+  // what's been freshly staged on the server vs what's only in
+  // localStorage.
+  const local = state.capture.sessions || [];
+  if (local.length === 0) {
+    list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
+  } else {
+    list.innerHTML = local.map((session) => {
+      const label = session.title || session.thoughtId || session.sessionId;
+      const archived = session.thoughtId ? `<span class="tf-pill tf-pill--success">${escapeHTML(t("capture.drawer.archived"))}</span>` : `<span class="tf-pill tf-pill--draft">${escapeHTML(t("capture.drawer.draft"))}</span>`;
+      return `<li class="tf-sessions-item" data-session-id="${escapeHTML(session.sessionId)}">
+        <button class="tf-btn tf-sessions-open" type="button" data-session-id="${escapeHTML(session.sessionId)}">
+          <span class="tf-sessions-label">${escapeHTML(label)}</span>
+          <span class="tf-sessions-meta">${archived} <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span></span>
+        </button>
+      </li>`;
+    }).join("");
+  }
+  list.querySelectorAll(".tf-sessions-open").forEach((button) => {
+    button.addEventListener("click", () => switchCaptureSession(button.dataset.sessionId));
+  });
+  // Always re-fetch the server-side list to keep the drawer in
+  // sync with cross-tab scratchpads and crashes that left orphan
+  // files behind. The fetch is best-effort: failure leaves the
+  // local cache rendered.
+  refreshCaptureSessionsFromServer();
+}
+
+async function refreshCaptureSessionsFromServer() {
+  let response;
+  try {
+    response = await api("/api/capture/scratchpad/list", { method: "GET" });
+  } catch (_) {
+    return;
+  }
+  const summaries = response.summaries || response.Summaries || [];
+  if (!Array.isArray(summaries) || summaries.length === 0) return;
+  // Project server summaries into the local session shape so the
+  // existing switchCaptureSession / rememberCaptureSession code
+  // path can route to them.
+  const existing = new Map((state.capture.sessions || []).map((item) => [item.sessionId, item]));
+  for (const summary of summaries) {
+    if (!summary || !summary.session_id) continue;
+    const id = summary.session_id;
+    if (existing.has(id)) continue;
+    state.capture.sessions.unshift({
+      sessionId: id,
+      thoughtId: summary.committed_thought_id || "",
+      title: summary.title || id,
+      updatedAt: summary.updated_at || new Date().toISOString(),
+      source: "server",
+    });
+  }
+  state.capture.sessions = (state.capture.sessions || []).slice(0, 24);
+  saveCaptureSessions();
+  // Re-render only the list (skip the recursive server fetch).
+  redrawCaptureSessionsList();
+}
+
+function redrawCaptureSessionsList() {
+  const list = $("#capture-sessions-list");
+  if (!list) return;
   const sessions = state.capture.sessions || [];
   if (sessions.length === 0) {
     list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
@@ -1668,10 +1735,11 @@ function renderCaptureSessionsDrawer() {
   }
   list.innerHTML = sessions.map((session) => {
     const label = session.title || session.thoughtId || session.sessionId;
+    const archived = session.thoughtId ? `<span class="tf-pill tf-pill--success">${escapeHTML(t("capture.drawer.archived"))}</span>` : `<span class="tf-pill tf-pill--draft">${escapeHTML(t("capture.drawer.draft"))}</span>`;
     return `<li class="tf-sessions-item" data-session-id="${escapeHTML(session.sessionId)}">
       <button class="tf-btn tf-sessions-open" type="button" data-session-id="${escapeHTML(session.sessionId)}">
-        <span>${escapeHTML(label)}</span>
-        <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span>
+        <span class="tf-sessions-label">${escapeHTML(label)}</span>
+        <span class="tf-sessions-meta">${archived} <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span></span>
       </button>
     </li>`;
   }).join("");
@@ -1754,11 +1822,12 @@ async function submitCaptureComposer(event) {
   input.value = "";
   setButtonLoading(send, true, t("capture.composer.sending"));
   try {
-    if (!state.capture.activeThoughtId) {
-      await startCaptureThought(text);
-    } else {
-      await dispatchCaptureCommand(text);
-    }
+    // In the scratchpad flow, the first user turn stages the
+    // scratchpad (no thought is created). The first turn is the
+    // bootstrap; subsequent turns route to the scratchpad PATCH
+    // helper or, if the scratchpad is already anchored to a
+    // thought, to the PATCH-thought path.
+    await stageScratchpadTurn(text);
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
     toast(error.message || t("toast.request_failed"));
@@ -1767,12 +1836,38 @@ async function submitCaptureComposer(event) {
   }
 }
 
-async function startCaptureThought(text) {
-  // The backend /api/capture/sessions/start endpoint runs Classify
-  // (URL regex → LLM → text fallback) and returns the created thought
-  // plus a best-effort suggestion. Sending raw text keeps the type
-  // resolution on the server, matching the plan's "一律后端 LLM 判定"
-  // decision.
+// stageScratchpadTurn routes a single user message into the
+// scratchpad layer:
+//
+//   - If the scratchpad has not been committed yet (activeThoughtId
+//     is empty), the first turn bootstraps the scratchpad. We POST
+//     /api/capture/sessions/start which appends the message to the
+//     scratchpad and returns the freshly-staged state.
+//   - If the scratchpad has already been committed, subsequent
+//     turns are routed through dispatchCaptureCommand (which
+//     already handles rename / add_tag / append_note for an
+//     existing thought). See stageScratchpadTurn below for the
+//     detail of how the routing decides.
+async function stageScratchpadTurn(text) {
+  if (!state.capture.activeThoughtId) {
+    await bootstrapScratchpad(text);
+    return;
+  }
+  // Scratchpad already anchored to a thought: subsequent text
+  // turns PATCH the thought directly. The command-recognition
+  // path (rename / add_tag / etc.) is implemented in
+  // dispatchCaptureCommand.
+  await dispatchCaptureCommand(text);
+}
+
+// bootstrapScratchpad stages the first user turn in the scratchpad
+// and updates state.capture with the freshly-returned session. No
+// thought is created yet — the user must explicitly say "归档" /
+// "commit" to push the scratchpad into the real capture pipeline.
+//
+// This replaces the old startCaptureThought that called
+// /api/capture/sessions/start and immediately wrote a thought file.
+async function bootstrapScratchpad(text) {
   const result = await api("/api/capture/sessions/start", {
     method: "POST",
     body: JSON.stringify({
@@ -1780,32 +1875,23 @@ async function startCaptureThought(text) {
       session_id: state.capture.sessionId,
     }),
   });
-  const thought = result.thought || result.Thought;
-  const thoughtId = thought?.id || thought?.ID;
-  if (!thoughtId) {
+  const scratchpad = result.scratchpad || result.Scratchpad;
+  if (!scratchpad || !scratchpad.session_id) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
   }
-  state.capture.activeThoughtId = thoughtId;
-  state.capture.activeSnapshot = result;
-  if (window.tflowSessionLock) {
-    window.tflowSessionLock.acquire(thoughtId, state.capture.sessionId);
-  }
+  state.capture.activeScratchpad = scratchpad;
+  state.capture.sessionId = scratchpad.session_id;
+  // activeThoughtId stays empty until the user commits. The UI
+  // should hide / defer the "view thought" actions until then.
+  state.capture.activeThoughtId = "";
   rememberCaptureSession({
-    sessionId: state.capture.sessionId,
-    thoughtId,
-    title: thought?.display_title || thought?.user_title || thought?.extracted_title || thoughtId,
+    sessionId: scratchpad.session_id,
+    thoughtId: "",
+    title: scratchpad.title || scratchpad.session_id,
     messages: state.capture.messages,
   });
-  appendCaptureMessage({
-    role: "ai",
-    thoughtId,
-    html: renderCaptureThoughtCard(thought, result.jobs || [], result.suggestion || result.Suggestion),
-  });
-  if (result.suggestion || result.Suggestion) {
-    state.capture.suggestion = result.suggestion || result.Suggestion;
-  }
-  toast(t("toast.captured", { id: thoughtId }));
+  toast(t("toast.captured", { id: scratchpad.session_id }));
   refreshActiveCaptureThought();
 }
 
@@ -1981,6 +2067,27 @@ const CAPTURE_COMMANDS = [
       ? { kind: "refine_again" }
       : null),
   },
+  {
+    name: "commit",
+    // "归档" / "保存" / "提交" / "落档" / "commit" / "save" — single
+    // whole-line match. Anchored with ^...$ so a sentence like
+    // "我想 commit 一段代码" is NOT misclassified as the commit
+    // command; it falls through to the text body and is appended to
+    // the scratchpad as a normal user turn.
+    match: (text) => (/^(归档|保存|提交|落档|commit|save|存档)\s*$/i.test(text)
+      ? { kind: "commit" }
+      : null),
+  },
+  {
+    name: "new_session",
+    // "新会话" / "重开" / "清空" / "new session" / "reset" — same
+    // single-line anchor as commit. The match hands off to
+    // /api/capture/new-session which deletes the previous scratchpad
+    // and mints a fresh session id.
+    match: (text) => (/^(新会话|重开|清空|new session|reset)\s*$/i.test(text)
+      ? { kind: "new_session" }
+      : null),
+  },
 ];
 
 function parseCaptureCommand(text) {
@@ -2003,8 +2110,73 @@ async function dispatchCaptureCommand(text) {
     });
     return;
   }
+
+  // Scratchpad-stage routing: when activeThoughtId is empty, the
+  // scratchpad has not been committed yet. We route commands to the
+  // scratchpad endpoints so the chat can rename / add_tag / etc. on
+  // the draft, or fire commit / new_session to transition to a real
+  // thought. Once committed, activeThoughtId is set and the legacy
+  // thought-stage routing takes over.
+  if (!state.capture.activeThoughtId) {
+    await dispatchScratchpadCommand(parsed, text);
+    return;
+  }
+
+  await dispatchThoughtCommand(parsed);
+}
+
+// dispatchScratchpadCommand handles every command kind when the
+// scratchpad has not been committed. The scratchpad is the source
+// of truth in this stage; the backend's scratchpad service
+// accumulates commands into Draft and projects the latest values
+// into Title / Tags so the chat UI can render them immediately.
+async function dispatchScratchpadCommand(parsed, text) {
+  if (parsed.kind === "commit") {
+    await commitScratchpad();
+    return;
+  }
+  if (parsed.kind === "new_session") {
+    await openNewCaptureSession();
+    return;
+  }
+  // Map rename / add_tag / append_note / move_topic / refine_again
+  // onto the scratchpad's Draft shape.
+  const draft = {
+    title_set: "",
+    tags_added: [],
+    tags_removed: [],
+    notes_appended: [],
+    topic_ids: [],
+    refine_requested: false,
+  };
+  if (parsed.kind === "rename") {
+    draft.title_set = parsed.title;
+  } else if (parsed.kind === "add_tag") {
+    draft.tags_added = parsed.tags;
+  } else if (parsed.kind === "append_note") {
+    draft.notes_appended = [parsed.paragraph];
+  } else if (parsed.kind === "move_topic") {
+    const match = await resolveScratchpadTopic(parsed.topicRef);
+    if (!match) {
+      appendCaptureMessage({ role: "system", text: t("toast.select_topic_first") });
+      return;
+    }
+    draft.topic_ids = [match.id];
+  } else if (parsed.kind === "refine_again") {
+    appendCaptureMessage({ role: "system", text: t("capture.command.commit_first") });
+    return;
+  } else {
+    appendCaptureMessage({ role: "system", text: t("capture.command.unknown", { text }) });
+    return;
+  }
+  await patchScratchpad(draft);
+}
+
+// dispatchThoughtCommand is the legacy PATCH-thought path. It runs
+// after the scratchpad has been committed, so every command
+// applies to the real thought file (and triggers a git commit).
+async function dispatchThoughtCommand(parsed) {
   const thoughtId = state.capture.activeThoughtId;
-  if (!thoughtId) return;
   if (parsed.kind === "rename") {
     await patchActiveThought({ title: parsed.title });
     return;
@@ -2035,7 +2207,174 @@ async function dispatchCaptureCommand(text) {
     await retryRefineForActive();
     return;
   }
+  if (parsed.kind === "commit") {
+    // Repeat commit on an already-committed scratchpad: the
+    // backend's commit endpoint handles "继续追加" semantics
+    // automatically (PATCH the existing thought with the new
+    // content / draft deltas).
+    await commitScratchpad();
+    return;
+  }
+  if (parsed.kind === "new_session") {
+    await openNewCaptureSession();
+    return;
+  }
   appendCaptureMessage({ role: "system", text: t("capture.command.unknown", { text }) });
+}
+
+// patchScratchpad pushes a Draft delta onto the current scratchpad.
+// The backend returns the freshly-updated scratchpad; we mirror
+// that into state so the UI re-renders with the latest title /
+// tags without needing a separate GET.
+async function patchScratchpad(draft) {
+  const sp = state.capture.activeScratchpad;
+  if (!sp) {
+    appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
+    return;
+  }
+  const merged = mergeScratchpadDraft(sp, draft);
+  const next = await api("/api/capture/scratchpad", {
+    method: "POST",
+    body: JSON.stringify(merged),
+  });
+  state.capture.activeScratchpad = next;
+  appendCaptureMessage({
+    role: "ai",
+    text: formatScratchpadFeedback(draft),
+  });
+  refreshActiveCaptureThought();
+}
+
+// mergeScratchpadDraft unions a fresh Draft delta onto the
+// existing scratchpad's Draft + Title / Tags / TopicHints. The
+// server would do the same on its AppendDraft path, but the
+// frontend mirrors it locally so the response is enough to
+// re-render without a round-trip.
+function mergeScratchpadDraft(sp, draft) {
+  const next = {
+    session_id: sp.session_id || sp.SessionID,
+    workspace_id: sp.workspace_id || sp.WorkspaceID,
+    title: sp.title || sp.Title || "",
+    tags: Array.from(new Set([...(sp.tags || sp.Tags || []), ...(draft.tags_added || [])])),
+    topic_hints: Array.from(new Set([...(sp.topic_hints || sp.TopicHints || []), ...(draft.topic_ids || [])])),
+    url: sp.url || sp.URL || "",
+    content: sp.content || sp.Content || "",
+    messages: sp.messages || sp.Messages || [],
+    draft: {
+      title_set: draft.title_set || sp.draft?.title_set || sp.Draft?.TitleSet || "",
+      tags_added: Array.from(new Set([...(sp.draft?.tags_added || sp.Draft?.TagsAdded || []), ...(draft.tags_added || [])])),
+      tags_removed: Array.from(new Set([...(sp.draft?.tags_removed || sp.Draft?.TagsRemoved || []), ...(draft.tags_removed || [])])),
+      notes_appended: [...(sp.draft?.notes_appended || sp.Draft?.NotesAppended || []), ...(draft.notes_appended || [])],
+      topic_ids: Array.from(new Set([...(sp.draft?.topic_ids || sp.Draft?.TopicIDs || []), ...(draft.topic_ids || [])])),
+      refine_requested: (sp.draft?.refine_requested || sp.Draft?.RefineRequested) || draft.refine_requested,
+    },
+    committed_thought_id: sp.committed_thought_id || sp.CommittedThoughtID || "",
+    committed_at: sp.committed_at || sp.CommittedAt || null,
+    created_at: sp.created_at || sp.CreatedAt || "",
+    updated_at: sp.updated_at || sp.UpdatedAt || "",
+  };
+  if (draft.title_set) {
+    next.title = draft.title_set;
+    next.draft.title_set = draft.title_set;
+  }
+  return next;
+}
+
+function formatScratchpadFeedback(draft) {
+  if (draft.title_set) return t("capture.command.scratchpad_renamed", { title: draft.title_set });
+  if (draft.tags_added && draft.tags_added.length) {
+    return t("capture.command.scratchpad_tagged", { tags: draft.tags_added.join(", ") });
+  }
+  if (draft.notes_appended && draft.notes_appended.length) {
+    return t("capture.command.scratchpad_note_added");
+  }
+  if (draft.topic_ids && draft.topic_ids.length) {
+    return t("capture.command.scratchpad_topic_added");
+  }
+  return t("capture.command.scratchpad_updated");
+}
+
+// resolveScratchpadTopic matches a topic by id or by name. The
+// scratchpad-stage routing uses the same lookup as the thought
+// stage, so the user can refer to topics by either identifier.
+async function resolveScratchpadTopic(topicRef) {
+  if (!topicRef) return null;
+  const topics = state.topics || [];
+  const ref = String(topicRef).toLowerCase();
+  return topics.find((topic) => topic.id === topicRef) ||
+    topics.find((topic) => String(topic.name || "").toLowerCase() === ref) ||
+    null;
+}
+
+// commitScratchpad fires POST /api/capture/scratchpad/commit, which
+// runs the full capture pipeline (refine / expand / index / topic /
+// git_commit) on the staged content. On success, the response
+// carries the new thought id; we mirror that into state so
+// subsequent commands route through dispatchThoughtCommand.
+async function commitScratchpad() {
+  if (!state.capture.sessionId) {
+    appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
+    return;
+  }
+  let result;
+  try {
+    result = await api("/api/capture/scratchpad/commit", {
+      method: "POST",
+      body: JSON.stringify({ session_id: state.capture.sessionId }),
+    });
+  } catch (error) {
+    appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
+    return;
+  }
+  const thoughtId = result.thought_id || result.ThoughtID || (result.thought && (result.thought.id || result.thought.ID)) || "";
+  if (thoughtId) {
+    state.capture.activeThoughtId = thoughtId;
+    if (window.tflowSessionLock) {
+      window.tflowSessionLock.acquire(thoughtId, state.capture.sessionId);
+    }
+    appendCaptureMessage({ role: "ai", thoughtId, text: t("capture.command.committed", { id: thoughtId }) });
+  } else {
+    appendCaptureMessage({ role: "ai", text: t("capture.command.committed_no_id") });
+  }
+  // The scratchpad itself has been reset on the server; clear
+  // the local copy so the next "新会话" / "归档" cycle starts
+  // from a known state.
+  state.capture.activeScratchpad = null;
+  rememberCaptureSession({
+    sessionId: state.capture.sessionId,
+    thoughtId,
+    title: thoughtId,
+    messages: state.capture.messages,
+  });
+  refreshActiveCaptureThought();
+}
+
+// openNewCaptureSession POSTs /api/capture/new-session, which
+// mints a fresh session id and (optionally) deletes the previous
+// scratchpad. The local state is reset to match the new scratchpad
+// so the chat composer is in sync.
+async function openNewCaptureSession() {
+  let next;
+  try {
+    next = await api("/api/capture/new-session", {
+      method: "POST",
+      body: JSON.stringify({ prev_session_id: state.capture.sessionId }),
+    });
+  } catch (error) {
+    appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
+    return;
+  }
+  state.capture.sessionId = (next && (next.session_id || next.SessionID)) || newCaptureSessionId();
+  state.capture.activeThoughtId = "";
+  state.capture.activeSnapshot = null;
+  state.capture.activeScratchpad = next || null;
+  state.capture.suggestion = null;
+  state.capture.messages = [];
+  if (window.tflowSessionLock && state.capture.activeThoughtId) {
+    window.tflowSessionLock.release(state.capture.activeThoughtId, state.capture.sessionId);
+  }
+  appendCaptureMessage({ role: "system", text: t("capture.command.new_session_started") });
+  refreshActiveCaptureThought();
 }
 
 async function patchActiveThought(patch) {

@@ -41,6 +41,20 @@ func Current() *biz.Service {
 	return defaultService
 }
 
+// NewScratchpadService is a thin re-export of biz.NewScratchpadService
+// so the application module can wire the scratchpad layer without
+// importing the biz package directly (which would tangle the
+// dependency graph: biz depends on scratchpad, application depends
+// on capture).
+func NewScratchpadService(store biz.ScratchpadStore, options ...biz.ScratchpadServiceOption) *biz.ScratchpadService {
+	return biz.NewScratchpadService(store, options...)
+}
+
+// WithCapture re-exports biz.WithCapture for the application layer.
+func WithCapture(c biz.CaptureCommitter) biz.ScratchpadServiceOption {
+	return biz.WithCapture(c)
+}
+
 func setCurrent(service *biz.Service) {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
