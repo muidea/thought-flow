@@ -380,3 +380,27 @@ make e2e-test                          # 18 个 e2e 测试通过（含 1 个新 
 
 `make check` 端到端绿。Phase 10 收口完成，后续如需补 PR 标题/正文/CHANGELOG 单独立 PR。
 
+## 2026-06-12 e2e 覆盖（#104）
+
+PRD §7.12 验收测试明确要求覆盖会话恢复、对话保存、菜单保存、Thought 重新整理、专题候选刷新、Web 交互刷新和隐私提示。前 7 项里 Web 交互刷新由 `browser-test` 接管（desktop / mobile viewport 矩阵已就位），其余 6 项加 1 项 deprecation path 回归保护都集中进 `api.e2e.test.js`，让 `make e2e-test` 一次性完成服务端真实接口端到端验证。
+
+**新增 e2e subtest（7 个）**：
+
+- `capture session start returns a scratchpad` — `#98` 把 `/api/capture/sessions/start` 标成 deprecation 后，原断言 `data.thought.id` 一直挂着，本测试改成验证 deprecation 路径仍能正确返回 `session_id` + `scratchpad.session_id`，避免后续 PR 不小心把 start 路径整个干废。
+- `capture session recovery round-trips through active and reuse_last` — 验证 PRD §8.1 的会话恢复：`POST /api/capture/sessions`（content + `X-Session-Id` 头）创建 scratchpad → `GET /api/capture/sessions/active` 回吐最新未归档会话 → `POST /api/capture/sessions {reuse_last: true}` 在不传 id 的情况下回吐同一会话。
+- `session_context update persists structured fields and survives a follow-up read` — 验证 PRD §3.1 的 14 字段 `session_context` 整体替换：`POST /api/capture/sessions/{id}/context` 用扁平 SessionContext payload（不是嵌套 envelope）覆盖，断言 `topic / goal / confirmed_facts` round-trip，再 `GET` 一次确认持久化。
+- `archive preview then commit (new strategy) lands a thought` — 验证 PRD §8.2/§8.3 的归档预览+提交：`GET /api/capture/sessions/{id}/archive/preview` 返回 `preview.strategy=new`、`preview.title`；`POST .../archive {strategy: "new", confirmed: true}` 落地 Thought + jobs 列表。
+- `reopen-session seeds supplement strategy and commit lands a sibling thought` — 验证 PRD §8.4 的 Thought 重新整理：`POST /api/thoughts/{id}/reopen-session` 创建新 session，断言默认 `archive_strategy=supplement`、`source_thought_id` 回填、`title` 从源 Thought 同步；追加 follow-up 消息后 `POST .../archive {strategy: "supplement", thought_id: sourceID}` 提交，断言 `thought.id !== sourceID`（生成兄弟 Thought 而非覆盖）。
+- `topic candidates list returns matching unarchived sessions` — 验证 PRD §8.7 的专题候选：建一个 `keywords.any=["zooglefloof"]` 的 topic，会话把 `zooglefloof` 写进 `session_context.candidate_body`（sessionKeywordScore 只读 SessionContext.* 字段，不读 message log），更新 context 触发 `EventScratchpadContextUpdated` → `MatchScratchpadAsync`，4 秒内轮询 `/api/topics/{id}/candidates` 直到命中；并验证 `match_type` 是 `tag_hint / keyword / semantic` 之一。
+- `system privacy report lists surfaces and actions` — 验证 PRD §8.9 的隐私提示：`GET /api/system/privacy` 顶层 `llm / embedding / reader` 三个 `ExternalSurface`（断言 `configured / enabled / provider / base_url / hint` 字段齐备），`actions` 列表含 `capture_message / capture_commit / url_capture / topic_refresh` 4 个用户可见 trigger，且每个 action 的 `hint` 非空。e2e harness 不配 api_key 所以 `llm / embedding` 都标 `configured=false`，但 `enabled` 始终 `true`（surface builder 当前只读 base_url 不读 feature flag），用 configured 而非 enabled 做断言能稳定跨未来配置扩展。
+
+**回归顺手处理**：
+
+- `capture session start returns a thought` → `capture session start returns a scratchpad`：deprecation 路径从「返回 thought」改成「返回 scratchpad」后，旧断言 `data.thought.id` 必然失败。改 test 比改 service 风险更小（service 改动会牵动前端 deprecation 提示）。
+
+**端到端结果**：
+
+```bash
+make e2e-test                          # 24 个 e2e 测试通过（7 新增 + 1 deprecation 回归保护 + 16 已有）
+```
+

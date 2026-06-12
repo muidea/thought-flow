@@ -312,7 +312,12 @@ test("API e2e", async (t) => {
     assert.equal(typeof snapshot.thought.expansion_plan, "string", "expansion_plan must be a string");
   });
 
-  await t.test("capture session start returns a thought", async () => {
+  await t.test("capture session start returns a scratchpad", async () => {
+    // /api/capture/sessions/start is the deprecated (but still
+    // accepted) entry point after the path-alignment PR (#98). It
+    // now materialises a scratchpad rather than a thought, mirroring
+    // the new /api/capture/sessions contract. We keep this assertion
+    // to guard the deprecation path against accidental breakage.
     const res = await request(server.baseURL, "/api/capture/sessions/start", "POST", {
       body: { content: "Captured via e2e", session_id: "e2e-capture-1" },
       headers: { "X-Session-Id": "e2e-capture-1" },
@@ -320,7 +325,8 @@ test("API e2e", async (t) => {
     assert.ok([200, 202].includes(res.status), `start session status=${res.status} body=${res.text}`);
     const data = envelope(res).data;
     assert.ok(data.session_id, "session_id must be echoed back");
-    assert.ok(data.thought && data.thought.id, "thought.id must be present");
+    assert.equal(data.session_id, "e2e-capture-1");
+    assert.ok(data.scratchpad && data.scratchpad.session_id === "e2e-capture-1", "scratchpad.session_id must echo the request id");
   });
 
   await t.test("search responds in keyword, semantic and hybrid modes", async () => {
@@ -430,6 +436,254 @@ test("API e2e", async (t) => {
       body: { draft_id: draftId, content: "E2E saved synthesis", format: "summary" },
     });
     assert.ok([200, 202, 400].includes(save.status), `synthesis save status=${save.status}`);
+  });
+
+  await t.test("capture session recovery round-trips through active and reuse_last", async () => {
+    // Open a brand-new session via the new POST /api/capture/sessions
+    // contract: content + X-Session-Id both required to materialise
+    // the scratchpad. This mirrors the UI's first turn on the
+    // capture page.
+    const sessionID = `e2e-recover-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "Recovery seed message" },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200, `start status=${start.status} body=${start.text}`);
+    assert.equal(envelope(start).data.session_id, sessionID);
+
+    // GET /api/capture/sessions/active must surface the most-recent
+    // uncommitted scratchpad so the front end can rehydrate on
+    // reload. With one session present it must be the one we just
+    // created.
+    const active = await request(server.baseURL, "/api/capture/sessions/active", "GET");
+    assert.equal(active.status, 200);
+    const activeData = envelope(active).data;
+    assert.equal(activeData.session_id, sessionID, "active session must be the freshly started one");
+
+    // POST /api/capture/sessions with reuse_last must echo the
+    // same scratchpad back without minting a new id. This is the
+    // "boot the page without a fresh id" path the UI uses.
+    const reuse = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { reuse_last: true },
+    });
+    assert.equal(reuse.status, 200, `reuse status=${reuse.status} body=${reuse.text}`);
+    const reuseData = envelope(reuse).data;
+    assert.equal(reuseData.session_id, sessionID, "reuse_last must round-trip the active session id");
+    assert.ok(Array.isArray(reuseData.messages), "scratchpad must include the message log");
+  });
+
+  await t.test("session_context update persists structured fields and survives a follow-up read", async () => {
+    const sessionID = `e2e-context-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "Context seed" },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200);
+
+    // POST /api/capture/sessions/{id}/context takes a flat
+    // SessionContext payload (not a wrapped {session_context: ...}
+    // envelope). The LLM tool surface calls this on every
+    // refinement turn with a fully-replaced context block.
+    const contextBody = {
+      topic: "e2e context topic",
+      goal: "verify session_context round-trip",
+      confirmed_facts: ["fact one", "fact two"],
+      open_questions: ["q one"],
+      conflicts: [],
+      suggested_topic_ids: ["e2e topic context"],
+    };
+    const ctx = await request(server.baseURL, `/api/capture/sessions/${sessionID}/context`, "POST", {
+      body: contextBody,
+    });
+    assert.equal(ctx.status, 200, `context status=${ctx.status} body=${ctx.text}`);
+    const ctxData = envelope(ctx).data;
+    assert.equal(ctxData.session_context.topic, "e2e context topic");
+    assert.equal(ctxData.session_context.goal, "verify session_context round-trip");
+    assert.deepEqual(ctxData.session_context.confirmed_facts, ["fact one", "fact two"]);
+
+    // Re-read the session and confirm the context survived.
+    const get = await request(server.baseURL, `/api/capture/sessions/${sessionID}`, "GET");
+    assert.equal(get.status, 200);
+    const reloaded = envelope(get).data;
+    assert.equal(reloaded.session_context.topic, "e2e context topic");
+  });
+
+  await t.test("archive preview then commit (new strategy) lands a thought", async () => {
+    const sessionID = `e2e-archive-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "Archive flow e2e" },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200);
+
+    const preview = await request(
+      server.baseURL,
+      `/api/capture/sessions/${sessionID}/archive/preview`,
+      "GET"
+    );
+    assert.equal(preview.status, 200, `preview status=${preview.status} body=${preview.text}`);
+    const previewData = envelope(preview).data;
+    assert.ok(previewData.preview, "preview response must include preview block");
+    assert.equal(previewData.preview.strategy, "new", "fresh session should default to strategy=new");
+    assert.ok(typeof previewData.preview.title === "string", "preview.title must be a string");
+
+    // Commit with explicit strategy=new. The LLM is disabled in
+    // the e2e harness so the refiner falls back to the local
+    // provider which still produces a non-empty thought.
+    const commit = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive`, "POST", {
+      body: { strategy: "new", confirmed: true },
+    });
+    assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);
+    const commitData = envelope(commit).data;
+    assert.ok(commitData.thought && commitData.thought.id, "commit must return thought.id");
+    assert.ok(Array.isArray(commitData.jobs), "commit must include jobs array");
+  });
+
+  await t.test("reopen-session seeds supplement strategy and commit lands a sibling thought", async () => {
+    // Land a real thought first so reopen has a source.
+    const create = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "reopen source", content: "Source content for reopen flow." },
+    });
+    const sourceID = envelope(create).data.thought.id;
+
+    // POST /api/thoughts/{id}/reopen-session → new session id,
+    // scratchpad seeded from the thought, default strategy=supplement.
+    const reopen = await request(server.baseURL, `/api/thoughts/${sourceID}/reopen-session`, "POST", {
+      body: {},
+    });
+    assert.equal(reopen.status, 200, `reopen status=${reopen.status} body=${reopen.text}`);
+    const reopenData = envelope(reopen).data;
+    const newSession = reopenData.session_id;
+    assert.ok(newSession, "reopen must return a new session_id");
+    assert.equal(reopenData.scratchpad.archive_strategy, "supplement", "default strategy must be supplement");
+    assert.equal(reopenData.scratchpad.source_thought_id, sourceID, "scratchpad must remember the source thought");
+    assert.equal(reopenData.scratchpad.title, "reopen source", "scratchpad.title seeded from source thought");
+
+    // Append a follow-up message and commit; the commit path
+    // should land a sibling thought and emit the supplement
+    // event so the topic can wire a backlink.
+    const followup = await request(server.baseURL, `/api/capture/sessions/${newSession}/messages`, "POST", {
+      body: { role: "user", text: "Adding a follow-up angle." },
+    });
+    assert.equal(followup.status, 200, `followup status=${followup.status} body=${followup.text}`);
+
+    const commit = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive`, "POST", {
+      body: { strategy: "supplement", thought_id: sourceID, confirmed: true },
+    });
+    assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);
+    const commitData = envelope(commit).data;
+    assert.ok(commitData.thought && commitData.thought.id, "supplement commit must return thought.id");
+    assert.notEqual(commitData.thought.id, sourceID, "supplement must create a sibling thought, not overwrite");
+  });
+
+  await t.test("topic candidates list returns matching unarchived sessions", async () => {
+    // Build a topic whose keyword only one of the live sessions
+    // will match. Other sessions (created earlier in this e2e run)
+    // must not show up as candidates for this topic.
+    const create = await request(server.baseURL, "/api/topics", "POST", {
+      body: {
+        name: "e2e candidate topic",
+        description: "topic for session candidate e2e",
+        rules: { keywords: { any: ["zooglefloof"] }, auto_weave: false },
+      },
+    });
+    assert.equal(create.status, 201, `topic create status=${create.status} body=${create.text}`);
+    const topicID = envelope(create).data.id;
+
+    // Empty candidates for a brand-new topic — no session has
+    // hit it yet.
+    const empty = await request(server.baseURL, `/api/topics/${topicID}/candidates`, "GET");
+    assert.equal(empty.status, 200);
+    assert.deepEqual(envelope(empty).data, [], "fresh topic must have empty candidates");
+
+    // Create a session whose only message contains the keyword.
+    const sessionID = `e2e-cand-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "First turn about zooglefloof indexing" },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200);
+
+    // MatchScratchpadAsync fires from the scratchpad.context_updated
+    // event. Touching the session context is the easiest way to
+    // publish that event deterministically from the e2e harness.
+    // sessionKeywordScore only reads SessionContext.* fields
+    // (Topic / CandidateTitle / CandidateBody / ...), not the
+    // scratchpad message log, so we have to populate the keyword
+    // into the context block, not the message content.
+    const ctx = await request(server.baseURL, `/api/capture/sessions/${sessionID}/context`, "POST", {
+      body: {
+        topic: "zooglefloof deep-dive",
+        candidate_title: "zooglefloof indexing field notes",
+        candidate_body: "Working out how zooglefloof ingestion should land in the topic candidate list.",
+      },
+    });
+    assert.equal(ctx.status, 200);
+
+    // The matching job is dispatched on the background routine; a
+    // short poll covers the dispatcher latency on a fresh boot.
+    const deadline = Date.now() + 4000;
+    let candidates = [];
+    while (Date.now() < deadline) {
+      const list = await request(server.baseURL, `/api/topics/${topicID}/candidates`, "GET");
+      assert.equal(list.status, 200);
+      candidates = envelope(list).data;
+      if (candidates.length > 0) break;
+      await sleep(150);
+    }
+    assert.ok(candidates.length >= 1, "matching session must surface as a candidate");
+    const matched = candidates.find((c) => c.session_id === sessionID);
+    assert.ok(matched, "candidates list must include our session by id");
+    assert.ok(["tag_hint", "keyword", "semantic"].includes(matched.match_type), "match_type must be one of the known kinds");
+  });
+
+  await t.test("system privacy report lists surfaces and actions", async () => {
+    const res = await request(server.baseURL, "/api/system/privacy", "GET");
+    assert.equal(res.status, 200, `privacy status=${res.status} body=${res.text}`);
+    const data = envelope(res).data;
+    // The wire shape is flat: top-level llm / embedding / reader
+    // ExternalSurface fields plus an actions list. We assert each
+    // surface is well-formed and the actions list covers the four
+    // user-visible triggers documented in the privacy UI.
+    assert.ok(data.llm, "report must include llm surface");
+    assert.ok(data.embedding, "report must include embedding surface");
+    assert.ok(data.reader, "report must include reader surface");
+    for (const surface of [data.llm, data.embedding, data.reader]) {
+      assert.equal(typeof surface.kind, "string");
+      assert.equal(typeof surface.configured, "boolean");
+      assert.equal(typeof surface.enabled, "boolean");
+      assert.equal(typeof surface.provider, "string");
+      assert.ok(typeof surface.base_url === "string" && surface.base_url.length > 0, `${surface.kind} surface must include base_url`);
+      assert.ok(typeof surface.hint === "string" && surface.hint.length > 0, `${surface.kind} surface must include a non-empty hint`);
+    }
+    // The e2e harness has [llm] configured=false (no api_key) and
+    // [embedding] enabled=false (also no api_key, since the harness
+    // does not set one). The privacy surface builder always reports
+    // surfaces as `enabled: true` (the URL is what gets hit, not a
+    // feature flag); "configured" is what flips to false when the
+    // API key is absent. We assert that semantic here so the test
+    // stays stable if the builder ever reads an explicit enabled
+    // flag from config.
+    assert.equal(data.llm.configured, false, "llm surface must be marked unconfigured when api_key is empty");
+    assert.equal(data.embedding.configured, false, "embedding surface must be marked unconfigured when api_key is empty");
+
+    assert.ok(Array.isArray(data.actions), "report must include actions array");
+    const actionNames = data.actions.map((a) => a.action);
+    for (const expected of ["capture_message", "capture_commit", "url_capture", "topic_refresh"]) {
+      assert.ok(actionNames.includes(expected), `actions must include ${expected}`);
+    }
+    for (const action of data.actions) {
+      assert.equal(typeof action.method, "string");
+      assert.equal(typeof action.path, "string");
+      // action.surfaces is a nil slice when the surfaces it would
+      // reference are not configured (e.g. the e2e harness leaves
+      // llm / embedding unconfigured); JSON serialises a nil slice
+      // to `null` rather than `[]` because the field has no
+      // omitempty tag. We accept either so the test still works
+      // with partial configurations.
+      assert.ok(action.surfaces === null || Array.isArray(action.surfaces), `action ${action.action} surfaces must be an array or null`);
+      assert.ok(typeof action.hint === "string" && action.hint.length > 0, `action ${action.action} must include a non-empty hint`);
+    }
   });
 
   await t.test("jobs and metrics endpoints respond", async () => {
