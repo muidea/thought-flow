@@ -807,12 +807,95 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 	return result, nil
 }
 
-// applyRelatedBacklink is reserved for the follow-up that adds
-// RelatedThoughtIDs to the patchable fields. It currently is a
-// no-op placeholder so callers can compile and the explicit
-// "we know we don't do parent backlink yet" path stays visible.
-func (s *ScratchpadService) applyRelatedBacklink(_ context.Context, _, _, _ string, _ bool) error {
-	return nil
+// ReopenFromThought seeds a brand-new scratchpad from an existing
+// archived thought (PRD §3.1.1). The new session is wired up
+// such that:
+//
+//   - SourceThoughtID points at the parent thought;
+//   - SessionContext is pre-populated from the thought's
+//     metadata so the LLM can resume the conversation without
+//     re-reading the file;
+//   - ArchiveStrategy defaults to "supplement" so the next commit
+//     lands as a sibling thought with a backlink. The user can
+//     override via /api/capture/sessions/{id}/strategy before
+//     committing.
+//
+// The function generates a new sessionID if the caller did not
+// supply one (the common case — the front end wants a clean
+// slate with no risk of merging into an old conversation).
+//
+// Returns the new scratchpad, already persisted.
+func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, sessionID string) (scratchpad.Scratchpad, error) {
+	if s == nil || s.store == nil {
+		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
+	}
+	if s.capture == nil {
+		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad reopen pipeline is not wired up")
+	}
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return scratchpad.Scratchpad{}, errors.New("capture: thought id is required")
+	}
+	snapshot, err := s.capture.GetThought(ctx, thoughtID)
+	if err != nil {
+		return scratchpad.Scratchpad{}, fmt.Errorf("capture: source thought not found: %w", err)
+	}
+	thought := snapshot.Thought
+	content := snapshot.Content
+
+	newID := strings.TrimSpace(sessionID)
+	if newID == "" {
+		newID = models.NewEventID(s.now())
+	}
+	tags := append([]string(nil), thought.UserTags...)
+	tags = append(tags, thought.AITags...)
+	tags = uniqueStrings(tags)
+	sourceLinks := []string{}
+	if url := strings.TrimSpace(thought.URL); url != "" {
+		sourceLinks = append(sourceLinks, url)
+	}
+	for _, f := range thought.URLFollowups {
+		if u := strings.TrimSpace(f.URL); u != "" {
+			sourceLinks = append(sourceLinks, u)
+		}
+	}
+	sourceLinks = uniqueStrings(sourceLinks)
+
+	title := strings.TrimSpace(thought.UserTitle)
+	if title == "" {
+		title = strings.TrimSpace(thought.ExtractedTitle)
+	}
+
+	related := append([]string(nil), thought.RelatedThoughtIDs...)
+	related = uniqueStrings(related)
+
+	body := strings.TrimSpace(content.Original)
+	if body == "" {
+		body = strings.TrimSpace(content.ExtractedContent)
+	}
+	if body == "" {
+		body = strings.TrimSpace(content.AINotes)
+	}
+
+	sp := scratchpad.Scratchpad{
+		SessionID:       newID,
+		SourceThoughtID: thoughtID,
+		Title:           title,
+		Content:         body,
+		Tags:            tags,
+		TopicHints:      append([]string(nil), thought.TopicIDs...),
+		SessionContext: scratchpad.SessionContext{
+			Topic:             strings.TrimSpace(thought.UserTitle),
+			CandidateTitle:    title,
+			CandidateTags:     tags,
+			CandidateBody:     body,
+			SourceLinks:       sourceLinks,
+			RelatedThoughtIDs: related,
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
+		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
+	}
+	return s.store.Save(sp)
 }
 
 // applyDraftToThought runs after a fresh commit to apply the

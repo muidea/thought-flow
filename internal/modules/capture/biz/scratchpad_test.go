@@ -1132,3 +1132,125 @@ func TestScratchpadServiceCommitUnknownStrategyDegradesToNew(t *testing.T) {
 		t.Fatalf("unknown strategy should route to commitFresh (Capture), called %d", captureStub.captureCalls)
 	}
 }
+
+func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{
+				ID:                "thought-1",
+				UserTitle:         "Original Title",
+				ExtractedTitle:    "Extracted",
+				URL:               "https://example.com",
+				UserTags:          []string{"alpha"},
+				AITags:            []string{"beta", "alpha"},
+				TopicIDs:          []string{"topic-1"},
+				RelatedThoughtIDs: []string{"other-1", "other-2"},
+				URLFollowups: []models.URLFollowup{
+					{URL: "https://followup.com", Title: "Followup"},
+				},
+			},
+			Content: models.ThoughtContent{
+				Original:         "original body",
+				ExtractedContent: "extracted body",
+			},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("scratchpad"))
+	sp, err := svc.ReopenFromThought(context.Background(), "thought-1", "")
+	if err != nil {
+		t.Fatalf("ReopenFromThought: %v", err)
+	}
+	if sp.SessionID == "" {
+		t.Fatalf("SessionID should be auto-generated when empty")
+	}
+	if sp.SourceThoughtID != "thought-1" {
+		t.Fatalf("SourceThoughtID = %q", sp.SourceThoughtID)
+	}
+	if sp.Title != "Original Title" {
+		t.Fatalf("Title = %q (UserTitle wins over ExtractedTitle)", sp.Title)
+	}
+	if sp.Content != "original body" {
+		t.Fatalf("Content = %q (Original wins over ExtractedContent)", sp.Content)
+	}
+	if len(sp.Tags) != 2 {
+		t.Fatalf("Tags = %v (UserTags ∪ AITags, deduplicated)", sp.Tags)
+	}
+	if sp.ArchiveStrategy != scratchpad.ArchiveStrategySupplement {
+		t.Fatalf("ArchiveStrategy = %q, want supplement", sp.ArchiveStrategy)
+	}
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentMenu {
+		t.Fatalf("ArchiveIntent = %q, want menu", sp.ArchiveIntent)
+	}
+	if len(sp.SessionContext.SourceLinks) != 2 {
+		t.Fatalf("SourceLinks = %v (URL + URLFollowups)", sp.SessionContext.SourceLinks)
+	}
+	if len(sp.SessionContext.RelatedThoughtIDs) != 2 {
+		t.Fatalf("RelatedThoughtIDs = %v", sp.SessionContext.RelatedThoughtIDs)
+	}
+	if len(sp.TopicHints) != 1 || sp.TopicHints[0] != "topic-1" {
+		t.Fatalf("TopicHints = %v", sp.TopicHints)
+	}
+	if sp.SessionContext.CandidateTitle != "Original Title" {
+		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
+	}
+	if sp.SessionContext.CandidateBody != "original body" {
+		t.Fatalf("CandidateBody = %q", sp.SessionContext.CandidateBody)
+	}
+}
+
+func TestScratchpadServiceReopenFromThoughtUsesSuppliedSessionID(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-1"},
+			Content: models.ThoughtContent{Original: "x"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("scratchpad"))
+	sp, err := svc.ReopenFromThought(context.Background(), "thought-1", "my-supplied-id")
+	if err != nil {
+		t.Fatalf("ReopenFromThought: %v", err)
+	}
+	if sp.SessionID != "my-supplied-id" {
+		t.Fatalf("SessionID = %q, want my-supplied-id", sp.SessionID)
+	}
+}
+
+func TestScratchpadServiceReopenFromThoughtFallsBackThroughContentLayers(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-1"},
+			Content: models.ThoughtContent{
+				// No Original, no ExtractedContent, but AINotes set
+				AINotes: "from ai notes",
+			},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub))
+	sp, err := svc.ReopenFromThought(context.Background(), "thought-1", "")
+	if err != nil {
+		t.Fatalf("ReopenFromThought: %v", err)
+	}
+	if sp.Content != "from ai notes" {
+		t.Fatalf("Content = %q (should fall back to AINotes)", sp.Content)
+	}
+}
+
+func TestScratchpadServiceReopenFromThoughtRejectsEmptyThoughtID(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad(), WithCapture(&stubCapture{}))
+	if _, err := svc.ReopenFromThought(context.Background(), "", ""); err == nil {
+		t.Fatalf("empty thought id should error")
+	}
+}
+
+func TestScratchpadServiceReopenFromThoughtSurfacesGetThoughtError(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{getThoughtErr: errors.New("not found")}
+	svc := NewScratchpadService(store, WithCapture(captureStub))
+	_, err := svc.ReopenFromThought(context.Background(), "thought-missing", "")
+	if err == nil || !strings.Contains(err.Error(), "source thought not found") {
+		t.Fatalf("err = %v, want source thought not found", err)
+	}
+}

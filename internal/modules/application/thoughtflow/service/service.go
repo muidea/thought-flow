@@ -2285,19 +2285,54 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 }
 
 // handleReopenSession is the "从已归档 Thought 重新整理" entry
-// point (PRD §3.1.1). The full implementation lands in #101;
-// the current shape is a 501 stub so the route exists and the
-// front end can wire a "重新整理" button that surfaces a
-// "coming soon" message rather than a 404.
+// point (PRD §3.1.1). It seeds a brand-new scratchpad from the
+// existing thought's metadata and returns the new session id;
+// the front end then reuses the normal capture flow to chat
+// against the seeded context.
+//
+// The default archive strategy is "supplement" so a subsequent
+// commit creates a sibling thought with a backlink. The user
+// can switch to "update_thought" / "new" via
+// /api/capture/sessions/{new_id}/strategy before committing.
 //
 //	POST /api/thoughts/{id}/reopen-session
+//	body: {session_id?: string}
 func (s *Service) handleReopenSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
 	thoughtID := strings.TrimSpace(pathID(req.URL.Path, "/api/thoughts/"))
 	thoughtID = strings.TrimSuffix(thoughtID, "/reopen-session")
 	if thoughtID == "" || strings.Contains(thoughtID, "/") {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "thought id is required")
 		return
 	}
-	writeError(res, req, http.StatusNotImplemented, "thoughtflow.capture.reopen_session.not_implemented", "reopen-session is wired in #101 (reopen-from-thought)")
+	rawBody, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	var body struct {
+		SessionID string `json:"session_id"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	sp, err := s.scratchpadSvc.ReopenFromThought(ctx, thoughtID, body.SessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "source thought not found") {
+			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.thought_not_found", err.Error())
+			return
+		}
+		if errors.Is(err, capturebiz.ErrScratchpadUnavailable) {
+			writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", err.Error())
+			return
+		}
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.reopen_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{
+		"session_id": sp.SessionID,
+		"scratchpad": sp,
+	})
 }
