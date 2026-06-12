@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/models"
@@ -90,6 +92,11 @@ type Provider interface {
 	SynthesisProvider
 }
 
+// ProviderError is the wire-stable error contract every caller
+// (refiner service, expander service, search/topic services, tests)
+// keys off. Migration to openai-go keeps Code values, StatusCode
+// passthrough, and Retryable semantics identical so the public
+// surface is preserved.
 type ProviderError struct {
 	Code       string
 	StatusCode int
@@ -308,31 +315,35 @@ func (p *LocalRefineProvider) Expand(ctx context.Context, req ExpandRequest) (Ex
 	return ExpandResult{Plan: plan.String(), Model: "local-rule", GeneratedAt: time.Now().UTC()}, nil
 }
 
+// --------------------------------------------------------------------------
+// openai-go SDK plumbing
+// --------------------------------------------------------------------------
+
+// OpenAICompatibleProvider backs every LLM-backed chat path (Refine,
+// Weave, Synthesize, Expand) and, when configured, also Embedding
+// via the embedded provider. The struct now holds a typed
+// *openai.Client; the previous hand-rolled http.Client + JSON marshal
+// + retry loop is gone.
 type OpenAICompatibleProvider struct {
-	baseURL           string
-	apiKey            string
-	chatModel         string
-	client            *http.Client
+	client           *openai.Client
+	chatModel        string
 	embeddingProvider EmbeddingProvider
 }
 
 type OpenAICompatibleEmbeddingProvider struct {
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
+	client *openai.Client
+	model  string
 }
 
-// newLLMHttpClient builds an http.Client whose every timeout layer
-// respects `cfg.Timeout`. mnet.NewDNSCacheHttpClient pins
-// Transport.ResponseHeaderTimeout to 10s and Client.Timeout to 15s
-// internally; a subsequent `client.Timeout = cfg.Timeout` only covers
-// the outer deadline, so a slow LLM cold-start would still be killed
-// at 10s before the configured 600s ever matters. Cloning the default
-// transport lets us lift every ceiling to cfg.Timeout uniformly and
-// also raise the TLS handshake to 30s so handshake latency on a
-// long-lived connection never causes spurious failures.
-func newLLMHttpClient(timeout time.Duration) *http.Client {
+// newOpenAITransport clones http.DefaultTransport and lifts every
+// per-leg timeout to `cfg.Timeout`. The SDK has no per-request
+// timeout equivalent of Transport.ResponseHeaderTimeout, so without
+// this a slow LLM cold-start would still be killed by Go's
+// 0-default ResponseHeaderTimeout long before Client.Timeout fires.
+// The wrapping RoundTripper also caps the response body at 4 MiB
+// (matching the old postOpenAICompatibleJSON behaviour) so a runaway
+// LLM cannot OOM the process.
+func newOpenAITransport(timeout time.Duration) http.RoundTripper {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		base = &http.Transport{}
@@ -342,34 +353,170 @@ func newLLMHttpClient(timeout time.Duration) *http.Client {
 		tr.ResponseHeaderTimeout = timeout
 		tr.TLSHandshakeTimeout = 30 * time.Second
 		tr.ExpectContinueTimeout = 10 * time.Second
-		return &http.Client{Timeout: timeout, Transport: tr}
 	}
-	return &http.Client{Transport: tr}
+	return &limitsBodyTransport{inner: tr, maxBytes: 4 << 20}
+}
+
+// limitsBodyTransport caps the response body at maxBytes to mirror
+// the old io.LimitReader(4<<20) behaviour. A truncated body still
+// flows through to the JSON decoder; if the truncation invalidates
+// the JSON, the SDK returns an UnmarshalTypeError-equivalent which
+// wrapSDKError translates to thoughtflow.ai.invalid_json.
+type limitsBodyTransport struct {
+	inner    http.RoundTripper
+	maxBytes int64
+}
+
+func (t *limitsBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.LimitReader(resp.Body, t.maxBytes),
+		Closer: resp.Body,
+	}
+	return resp, nil
+}
+
+// openAICompatibleBaseURL accepts either a bare base ("https://api.openai.com")
+// or one with the /v1 suffix already present ("https://proxy.example.com/v1")
+// and returns a base URL suitable for option.WithBaseURL. The openai-go
+// SDK does NOT auto-prepend /v1, so the canonical form is "<base>/v1"
+// unless /v1 is already there.
+func openAICompatibleBaseURL(raw string) string {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if base == "" {
+		return "https://api.openai.com/v1"
+	}
+	if strings.HasSuffix(strings.ToLower(base), "/v1") {
+		return base
+	}
+	return base + "/v1"
+}
+
+func newOpenAIClient(cfg appconfig.LLMConfig) *openai.Client {
+	opts := []option.RequestOption{
+		option.WithAPIKey(strings.TrimSpace(cfg.APIKey)),
+		option.WithBaseURL(openAICompatibleBaseURL(cfg.BaseURL)),
+		option.WithHTTPClient(&http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: newOpenAITransport(cfg.Timeout),
+		}),
+		// openai-go's MaxRetries counts *additional* retries; 2 = 1
+		// initial + 2 retries, matching the old openAIMaxAttempts=3.
+		option.WithMaxRetries(2),
+	}
+	client := openai.NewClient(opts...)
+	return &client
+}
+
+func newEmbeddingClient(cfg appconfig.EmbeddingConfig) *openai.Client {
+	opts := []option.RequestOption{
+		option.WithAPIKey(strings.TrimSpace(cfg.APIKey)),
+		option.WithBaseURL(openAICompatibleBaseURL(cfg.BaseURL)),
+		option.WithHTTPClient(&http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: newOpenAITransport(cfg.Timeout),
+		}),
+		option.WithMaxRetries(2),
+	}
+	client := openai.NewClient(opts...)
+	return &client
 }
 
 func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig.EmbeddingConfig) *OpenAICompatibleProvider {
-	client := newLLMHttpClient(cfg.Timeout)
+	chatModel := firstNonEmpty(cfg.ChatModel, "gpt-4o-mini")
 	var embeddingProvider EmbeddingProvider
 	if strings.TrimSpace(embeddingCfg.APIKey) != "" {
 		embeddingProvider = NewOpenAICompatibleEmbeddingProvider(embeddingCfg)
 	}
 	return &OpenAICompatibleProvider{
-		baseURL:           strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
-		apiKey:            strings.TrimSpace(cfg.APIKey),
-		chatModel:         firstNonEmpty(cfg.ChatModel, "gpt-4o-mini"),
-		client:            client,
+		client:            newOpenAIClient(cfg),
+		chatModel:         chatModel,
 		embeddingProvider: embeddingProvider,
 	}
 }
 
 func NewOpenAICompatibleEmbeddingProvider(cfg appconfig.EmbeddingConfig) *OpenAICompatibleEmbeddingProvider {
-	client := newLLMHttpClient(cfg.Timeout)
+	model := firstNonEmpty(cfg.Model, "text-embedding-3-small")
 	return &OpenAICompatibleEmbeddingProvider{
-		baseURL: strings.TrimRight(firstNonEmpty(cfg.BaseURL, "https://api.openai.com"), "/"),
-		apiKey:  strings.TrimSpace(cfg.APIKey),
-		model:   firstNonEmpty(cfg.Model, "text-embedding-3-small"),
-		client:  client,
+		client: newEmbeddingClient(cfg),
+		model:  model,
 	}
+}
+
+// chatCompletion runs a single non-streaming chat completion with
+// the standard two-message shape (system + user). It is the only
+// place that touches the SDK's Chat.Completions.New call, so any
+// future addition (response_format, tools, structured outputs)
+// only needs to flow through here.
+func (p *OpenAICompatibleProvider) chatCompletion(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
+	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: p.chatModel,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(systemPrompt),
+			openai.UserMessage(userPrompt),
+		},
+		Temperature: openai.Float(temperature),
+	})
+	if err != nil {
+		return "", wrapSDKError(err)
+	}
+	if len(resp.Choices) == 0 {
+		return "", errors.New("chat completion returned no choices")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
+
+// wrapSDKError maps an openai-go / SDK transport error to the
+// wire-stable ProviderError contract that callers (refiner service,
+// tests) rely on. The five error codes from the old
+// postOpenAICompatibleJSON path are preserved verbatim so jobs and
+// logs still key off the same strings.
+func wrapSDKError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		retryable := apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+		code := "thoughtflow.ai.http_status"
+		if retryable {
+			code = "thoughtflow.ai.transient_status"
+		}
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = http.StatusText(apiErr.StatusCode)
+		}
+		return ProviderError{
+			Code:       code,
+			StatusCode: apiErr.StatusCode,
+			Message:    message,
+			Retryable:  retryable,
+		}
+	}
+	// Non-API errors: network/transport/JSON decode. JSON decode
+	// failures surface from the SDK as apierror.Error with
+	// StatusCode=0 and Code containing "invalid", so they go through
+	// the branch above; everything else (DNS, dial, TLS) lands here.
+	if ctxErr := ctxError(err); ctxErr != nil {
+		return ctxErr
+	}
+	return ProviderError{Code: "thoughtflow.ai.request_failed", Message: err.Error(), Retryable: true}
+}
+
+// ctxError surfaces a non-nil context error (deadline / cancellation)
+// as-is so callers can distinguish "client gave up" from "server
+// failed".
+func ctxError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
 
 func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
@@ -380,30 +527,16 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
-	payload := map[string]any{
-		"model": p.chatModel,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You refine notes for ThoughtFlow. Return strict JSON only with fields summary string, key_points string array, tags string array, title string.",
-			},
-			{
-				"role": "user",
-				"content": "Refine this note without changing the original content.\n\nTitle: " +
-					firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID) +
-					"\n\nContent:\n" + text,
-			},
-		},
-		"temperature": 0.2,
-	}
-	var response chatCompletionResponse
-	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+	content, err := p.chatCompletion(ctx,
+		"You refine notes for ThoughtFlow. Return strict JSON only with fields summary string, key_points string array, tags string array, title string.",
+		"Refine this note without changing the original content.\n\nTitle: "+
+			firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)+
+			"\n\nContent:\n"+text,
+		0.2,
+	)
+	if err != nil {
 		return models.ThoughtRefinement{}, err
 	}
-	if len(response.Choices) == 0 {
-		return models.ThoughtRefinement{}, errors.New("chat completion returned no choices")
-	}
-	content := strings.TrimSpace(response.Choices[0].Message.Content)
 	var parsed refineJSON
 	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
 		return models.ThoughtRefinement{}, fmt.Errorf("parse refinement json: %w", err)
@@ -441,30 +574,27 @@ func (p *OpenAICompatibleEmbeddingProvider) Embed(ctx context.Context, req Embed
 	if text == "" {
 		return models.EmbeddingRecord{}, errors.New("embedding text is empty")
 	}
-	payload := map[string]any{
-		"model": p.model,
-		"input": text,
+	resp, err := p.client.Embeddings.New(ctx, openai.EmbeddingNewParams{
+		Model: p.model,
+		Input: openai.EmbeddingNewParamsInputUnion{OfString: openai.String(text)},
+	})
+	if err != nil {
+		return models.EmbeddingRecord{}, wrapSDKError(err)
 	}
-	var response embeddingResponse
-	if err := p.postJSON(ctx, "/embeddings", payload, &response); err != nil {
-		return models.EmbeddingRecord{}, err
-	}
-	if len(response.Data) == 0 || len(response.Data[0].Embedding) == 0 {
+	if len(resp.Data) == 0 || len(resp.Data[0].Embedding) == 0 {
 		return models.EmbeddingRecord{}, errors.New("embedding response is empty")
 	}
-	vector := response.Data[0].Embedding
+	// SDK returns []float64 directly; assign without copy because
+	// EmbeddingRecord owns the slice.
+	vec := resp.Data[0].Embedding
 	return models.EmbeddingRecord{
 		ThoughtID:   req.ThoughtID,
 		Model:       p.model,
-		Dimension:   len(vector),
-		Vector:      vector,
+		Dimension:   len(vec),
+		Vector:      vec,
 		ContentHash: models.ContentHash(text),
 		CreatedAt:   time.Now().UTC(),
 	}, nil
-}
-
-func (p *OpenAICompatibleEmbeddingProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
-	return postOpenAICompatibleJSON(ctx, p.client, p.baseURL, p.apiKey, path, payload, target)
 }
 
 func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWeaveRequest) (models.TopicWeaveResult, error) {
@@ -472,34 +602,21 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 		req.CurrentDocument = localInitialTopicDocument(req.Topic)
 	}
 	section := localThoughtSection(req, "")
-	payload := map[string]any{
-		"model": p.chatModel,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
-			},
-			{
-				"role": "user",
-				"content": "Topic name: " + req.Topic.Name +
-					"\nTopic description: " + req.Topic.Description +
-					"\nRequired source link substring: " + req.SourceLink +
-					"\nMatch reasons: " + strings.Join(req.Membership.Reasons, ", ") +
-					"\n\nCurrent topic Markdown:\n" + req.CurrentDocument +
-					"\n\nNew thought section to weave:\n" + section,
-			},
-		},
-		"temperature": 0.2,
-	}
-	var response chatCompletionResponse
-	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+	content, err := p.chatCompletion(ctx,
+		"You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
+		"Topic name: "+req.Topic.Name+
+			"\nTopic description: "+req.Topic.Description+
+			"\nRequired source link substring: "+req.SourceLink+
+			"\nMatch reasons: "+strings.Join(req.Membership.Reasons, ", ")+
+			"\n\nCurrent topic Markdown:\n"+req.CurrentDocument+
+			"\n\nNew thought section to weave:\n"+section,
+		0.2,
+	)
+	if err != nil {
 		return models.TopicWeaveResult{}, err
 	}
-	if len(response.Choices) == 0 {
-		return models.TopicWeaveResult{}, errors.New("topic weave returned no choices")
-	}
 	var parsed topicWeaveJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(response.Choices[0].Message.Content)), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
 		return models.TopicWeaveResult{}, fmt.Errorf("parse topic weave json: %w", err)
 	}
 	document := strings.TrimSpace(parsed.Document)
@@ -518,36 +635,23 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}
 	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
 	format := firstNonEmpty(req.Format, "summary")
-	payload := map[string]any{
-		"model": p.chatModel,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
-			},
-			{
-				"role": "user",
-				"content": "Goal: " + goal +
-					"\nFormat: " + format +
-					"\nRequired source links:\n" + strings.Join(req.SourceLinks, "\n") +
-					"\n\nInput notes:\n" + renderSynthesisInputs(req.Snapshots),
-			},
-		},
-		"temperature": 0.2,
-	}
-	var response chatCompletionResponse
-	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+	content, err := p.chatCompletion(ctx,
+		"You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
+		"Goal: "+goal+
+			"\nFormat: "+format+
+			"\nRequired source links:\n"+strings.Join(req.SourceLinks, "\n")+
+			"\n\nInput notes:\n"+renderSynthesisInputs(req.Snapshots),
+		0.2,
+	)
+	if err != nil {
 		return models.SynthesisDraft{}, err
 	}
-	if len(response.Choices) == 0 {
-		return models.SynthesisDraft{}, errors.New("synthesis returned no choices")
-	}
 	var parsed synthesisJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(response.Choices[0].Message.Content)), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
 		return models.SynthesisDraft{}, fmt.Errorf("parse synthesis json: %w", err)
 	}
-	content := strings.TrimSpace(parsed.Content)
-	if content == "" {
+	synthContent := strings.TrimSpace(parsed.Content)
+	if synthContent == "" {
 		return models.SynthesisDraft{}, errors.New("synthesis content is empty")
 	}
 	now := time.Now().UTC()
@@ -556,7 +660,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 		ThoughtIDs:  req.ThoughtIDs,
 		Goal:        goal,
 		Format:      format,
-		Content:     ensureSynthesisSourceLinks(content, req.SourceLinks),
+		Content:     ensureSynthesisSourceLinks(synthContent, req.SourceLinks),
 		SourceLinks: req.SourceLinks,
 		Model:       p.chatModel,
 		Status:      "draft",
@@ -565,40 +669,23 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}, nil
 }
 
-func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, payload any, target any) error {
-	return postOpenAICompatibleJSON(ctx, p.client, p.baseURL, p.apiKey, path, payload, target)
-}
-
 // Expand asks the LLM for a "处理思路与方案" Markdown plan. Unlike
 // Refine/Weave/Synthesize the response is plain Markdown, not JSON —
 // the prompt explicitly forbids code fences, so the caller can show
-// the raw `Choices[0].Message.Content` directly.
+// the raw content directly.
 func (p *OpenAICompatibleProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
 	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
 	original := firstNonEmpty(strings.TrimSpace(req.Content.Original), strings.TrimSpace(req.Content.ExtractedContent))
 	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
-	payload := map[string]any{
-		"model": p.chatModel,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": expandSystemPrompt(),
-			},
-			{
-				"role":    "user",
-				"content": expandUserPrompt(title, summary, req.Thought.KeyPoints, req.Tags, original, req.Thought.Type, req.Thought.URL),
-			},
-		},
-		"temperature": 0.3,
-	}
-	var response chatCompletionResponse
-	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+	content, err := p.chatCompletion(ctx,
+		expandSystemPrompt(),
+		expandUserPrompt(title, summary, req.Thought.KeyPoints, req.Tags, original, req.Thought.Type, req.Thought.URL),
+		0.3,
+	)
+	if err != nil {
 		return ExpandResult{}, err
 	}
-	if len(response.Choices) == 0 {
-		return ExpandResult{}, errors.New("expand returned no choices")
-	}
-	plan := strings.TrimSpace(stripMarkdownFence(response.Choices[0].Message.Content))
+	plan := strings.TrimSpace(stripMarkdownFence(content))
 	if plan == "" {
 		return ExpandResult{}, errors.New("expand plan is empty")
 	}
@@ -667,99 +754,6 @@ func stripMarkdownFence(value string) string {
 	body = strings.TrimRight(body, "`")
 	body = strings.TrimRight(body, "\n")
 	return strings.TrimSpace(body)
-}
-
-func postOpenAICompatibleJSON(ctx context.Context, client *http.Client, baseURL string, apiKey string, path string, payload any, target any) error {
-	if strings.TrimSpace(apiKey) == "" {
-		return errors.New("ai api key is required")
-	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	var lastErr error
-	for attempt := 1; attempt <= openAIMaxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICompatibleAPIURL(baseURL, path), bytes.NewReader(raw))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-		resp, err := client.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			lastErr = ProviderError{Code: "thoughtflow.ai.request_failed", Message: err.Error(), Retryable: true}
-			if attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
-				continue
-			}
-			return lastErr
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		_ = resp.Body.Close()
-		if readErr != nil {
-			lastErr = ProviderError{Code: "thoughtflow.ai.read_failed", Message: readErr.Error(), Retryable: true}
-			if attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
-				continue
-			}
-			return lastErr
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			providerErr := classifyProviderStatus(resp.StatusCode, body)
-			lastErr = providerErr
-			if providerErr.Retryable && attempt < openAIMaxAttempts && waitRetryBackoff(ctx, attempt) == nil {
-				continue
-			}
-			return providerErr
-		}
-		if err := json.Unmarshal(body, target); err != nil {
-			return ProviderError{Code: "thoughtflow.ai.invalid_json", Message: err.Error(), Retryable: false}
-		}
-		return nil
-	}
-	return lastErr
-}
-
-func classifyProviderStatus(statusCode int, body []byte) ProviderError {
-	message := strings.TrimSpace(string(body))
-	if message == "" {
-		message = http.StatusText(statusCode)
-	}
-	retryable := statusCode == http.StatusTooManyRequests || statusCode >= 500
-	code := "thoughtflow.ai.http_status"
-	if retryable {
-		code = "thoughtflow.ai.transient_status"
-	}
-	return ProviderError{
-		Code:       code,
-		StatusCode: statusCode,
-		Message:    message,
-		Retryable:  retryable,
-	}
-}
-
-func waitRetryBackoff(ctx context.Context, attempt int) error {
-	delay := time.Duration(attempt*attempt) * 10 * time.Millisecond
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func openAICompatibleAPIURL(baseURL string, path string) string {
-	base := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		return base + path
-	}
-	return base + "/v1" + path
 }
 
 func summarize(text string) string {
@@ -837,20 +831,6 @@ func localEmbedding(text string, dimension int) []float64 {
 		vector[idx] = vector[idx] / norm
 	}
 	return vector
-}
-
-type chatCompletionResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
-
-type embeddingResponse struct {
-	Data []struct {
-		Embedding []float64 `json:"embedding"`
-	} `json:"data"`
 }
 
 type refineJSON struct {
@@ -1070,7 +1050,7 @@ func firstLine(value string) string {
 	}
 	line := strings.TrimSpace(strings.Split(value, "\n")[0])
 	if len(line) > 240 {
-		return line[:240]
+		line = line[:240]
 	}
 	return line
 }

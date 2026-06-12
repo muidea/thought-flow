@@ -8,7 +8,10 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/openai/openai-go"
+
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/observability"
 )
 
 // ClassifyRequest is the input to a ClassifyProvider. The LLM receives the
@@ -81,34 +84,19 @@ func (LocalRefineClassify) Classify(_ context.Context, req ClassifyRequest) (Cla
 // Classify implements ClassifyProvider on the existing OpenAI provider
 // without disturbing its Refine/Embed/Synthesize methods. The chat
 // completion prompt asks for a strict JSON object with a type, an
-// optional extracted_url, and a confidence score.
+// optional extracted_url, and a confidence score. The same SDK
+// `chatCompletion` helper used by Refine/Weave/Synthesize/Expand is
+// reused here so error mapping and retry semantics stay identical.
 func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyRequest) (ClassifyResult, error) {
-	if strings.TrimSpace(p.apiKey) == "" {
-		return ClassifyResult{}, errors.New("ai api key is required")
-	}
 	temperature := req.Temperature
 	if temperature == 0 {
 		temperature = 0
 	}
-	payload := map[string]any{
-		"model":       p.chatModel,
-		"temperature": temperature,
-		"messages": []map[string]string{
-			{"role": "system", "content": req.System},
-			{"role": "user", "content": req.User},
-		},
-	}
-	if req.MaxTokens > 0 {
-		payload["max_tokens"] = req.MaxTokens
-	}
-	var response chatCompletionResponse
-	if err := p.postJSON(ctx, "/chat/completions", payload, &response); err != nil {
+	content, err := p.chatCompletionWithMaxTokens(ctx, req.System, req.User, temperature, req.MaxTokens)
+	if err != nil {
 		return ClassifyResult{}, err
 	}
-	if len(response.Choices) == 0 {
-		return ClassifyResult{}, errors.New("classify returned no choices")
-	}
-	raw := strings.TrimSpace(response.Choices[0].Message.Content)
+	raw := strings.TrimSpace(content)
 	if raw == "" {
 		return ClassifyResult{}, errors.New("classify returned empty content")
 	}
@@ -118,6 +106,33 @@ func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyReq
 		return ClassifyResult{}, fmt.Errorf("classify: parse json: %w", err)
 	}
 	return ClassifyResult{Raw: extractJSONObject(raw), Model: p.chatModel}, nil
+}
+
+// chatCompletionWithMaxTokens is the Classify-shaped variant of
+// chatCompletion: same retry + error translation, but accepts an
+// optional MaxTokens cap (Refine/Weave/Synthesize/Expand do not need
+// it). The MaxTokens field is only attached to the SDK request when
+// > 0, matching the previous "max_tokens" optional-key behaviour.
+func (p *OpenAICompatibleProvider) chatCompletionWithMaxTokens(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, maxTokens int) (string, error) {
+	params := openai.ChatCompletionNewParams{
+		Model: p.chatModel,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(systemPrompt),
+			openai.UserMessage(userPrompt),
+		},
+		Temperature: openai.Float(temperature),
+	}
+	if maxTokens > 0 {
+		params.MaxTokens = openai.Int(int64(maxTokens))
+	}
+	resp, err := p.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return "", wrapSDKError(err)
+	}
+	if len(resp.Choices) == 0 {
+		return "", errors.New("chat completion returned no choices")
+	}
+	return resp.Choices[0].Message.Content, nil
 }
 
 // DefaultClassifySystem is the system prompt used by the capture service
@@ -131,5 +146,17 @@ func NewClassifyProvider(cfg appconfig.LLMConfig) ClassifyProvider {
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return NewLocalRefineClassify()
 	}
-	return NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})
+	return observedClassifyProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
+}
+
+// observedClassifyProvider mirrors the other observed* wrappers so the
+// Classify path participates in observability counters symmetrically
+// with Refine/Weave/Synthesize/Expand/Embed.
+type observedClassifyProvider struct {
+	next ClassifyProvider
+}
+
+func (p observedClassifyProvider) Classify(ctx context.Context, req ClassifyRequest) (ClassifyResult, error) {
+	observability.IncrementAIRequest()
+	return p.next.Classify(ctx, req)
 }
