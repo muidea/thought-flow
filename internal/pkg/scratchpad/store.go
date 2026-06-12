@@ -56,23 +56,107 @@ type Draft struct {
 	RefineRequested bool     `json:"refine_requested,omitempty"`
 }
 
+// SessionContext is the PRD §3.1 structured-context block. It is
+// maintained by the LLM (and editable by the user) across chat
+// rounds: each turn re-fills the fields and the UI / topic /
+// synthesis paths read from here. Fields are intentionally
+// permissive — an empty value means "not yet known" rather than
+// "absent" — so the JSON contract has zero-value defaults the
+// service can rely on.
+type SessionContext struct {
+	Topic             string   `json:"topic"`
+	Goal              string   `json:"goal"`
+	ConfirmedFacts    []string `json:"confirmed_facts"`
+	OpenQuestions     []string `json:"open_questions"`
+	Conflicts         []string `json:"conflicts"`
+	CandidateTitle    string   `json:"candidate_title"`
+	CandidateTags     []string `json:"candidate_tags"`
+	CandidateSummary  string   `json:"candidate_summary"`
+	CandidateBody     string   `json:"candidate_body"`
+	SourceLinks       []string `json:"source_links"`
+	RelatedThoughtIDs []string `json:"related_thought_ids"`
+	SuggestedTopicIDs []string `json:"suggested_topic_ids"`
+}
+
+// ArchiveIntent captures WHO is driving the archive — the user via a
+// menu click, the LLM after recognising a save intent in chat, or
+// nobody yet. The UI uses it to decide whether to surface a confirm
+// dialog before commit fires.
+type ArchiveIntent string
+
+const (
+	ArchiveIntentNone ArchiveIntent = "none"
+	ArchiveIntentMenu ArchiveIntent = "menu"
+	ArchiveIntentLLM  ArchiveIntent = "llm"
+)
+
+// ArchiveStrategy routes the commit to the correct landing path
+// (PRD §3.1). The session-default is "new"; a scratchpad created by
+// ReopenFromThought defaults to "supplement"; the user can opt
+// into "update_thought" or "new" explicitly.
+type ArchiveStrategy string
+
+const (
+	ArchiveStrategyNew        ArchiveStrategy = "new"
+	ArchiveStrategyUpdate      ArchiveStrategy = "update_thought"
+	ArchiveStrategySupplement  ArchiveStrategy = "supplement"
+)
+
+// ThoughtDiff is the safe-update diff attached to an ArchivePreview
+// when strategy == update_thought. The before/after strings are
+// truncated Markdown; ChangedFields is a stable list of keys the
+// UI can show ("title", "tags", "body", "key_points"). Kept simple
+// on purpose: any LLM-side reconciliation happens at apply time,
+// the preview only needs to make the user comfortable.
+type ThoughtDiff struct {
+	Before        string   `json:"before"`
+	After         string   `json:"after"`
+	ChangedFields []string `json:"changed_fields"`
+}
+
+// ArchivePreview is the read-only projection the UI shows before
+// commit lands. Captured here so the same payload the user
+// confirmed is what the commit path enforces — there is no "I
+// thought I was archiving X but got Y" drift.
+type ArchivePreview struct {
+	ThoughtID     string          `json:"thought_id,omitempty"`
+	Title         string          `json:"title"`
+	Body          string          `json:"body"`
+	Tags          []string        `json:"tags"`
+	SourceLinks   []string        `json:"source_links"`
+	RelatedTopics []string        `json:"related_topics"`
+	Strategy      ArchiveStrategy `json:"strategy"`
+	Diff          *ThoughtDiff    `json:"diff,omitempty"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+}
+
 // Scratchpad is the wire-stable JSON shape persisted to disk. The
 // field tags are the public contract; do not rename without also
 // bumping the file version field (see formatVersion below).
+//
+// v2 (2026-06-12) added SessionContext, ArchiveIntent,
+// ArchiveStrategy, ArchivePreview, SourceThoughtID per PRD §3.1 /
+// §3.1.1. The v1 → v2 migration is implemented in loadFromDisk —
+// old files are read as-is and the new fields are zero-valued.
 type Scratchpad struct {
-	SessionID          string     `json:"session_id"`
-	WorkspaceID        string     `json:"workspace_id"`
-	Title              string     `json:"title"`
-	Tags               []string   `json:"tags"`
-	TopicHints         []string   `json:"topic_hints"`
-	URL                string     `json:"url,omitempty"`
-	Content            string     `json:"content"`
-	Messages           []Message  `json:"messages"`
-	Draft              Draft      `json:"draft"`
-	CommittedThoughtID string     `json:"committed_thought_id,omitempty"`
-	CommittedAt        *time.Time `json:"committed_at,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	SessionID          string         `json:"session_id"`
+	WorkspaceID        string         `json:"workspace_id"`
+	Title              string         `json:"title"`
+	Tags               []string       `json:"tags"`
+	TopicHints         []string       `json:"topic_hints"`
+	URL                string         `json:"url,omitempty"`
+	Content            string         `json:"content"`
+	Messages           []Message      `json:"messages"`
+	Draft              Draft          `json:"draft"`
+	SessionContext     SessionContext `json:"session_context"`
+	ArchiveIntent      ArchiveIntent  `json:"archive_intent"`
+	ArchiveStrategy    ArchiveStrategy `json:"archive_strategy"`
+	ArchivePreview     *ArchivePreview `json:"archive_preview,omitempty"`
+	SourceThoughtID    string         `json:"source_thought_id,omitempty"`
+	CommittedThoughtID string         `json:"committed_thought_id,omitempty"`
+	CommittedAt        *time.Time     `json:"committed_at,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
 // Summary is the diagnostic / drawer view: it strips Messages and
@@ -82,15 +166,25 @@ type Summary struct {
 	SessionID          string    `json:"session_id"`
 	Title              string    `json:"title"`
 	CommittedThoughtID string    `json:"committed_thought_id,omitempty"`
+	SourceThoughtID    string    `json:"source_thought_id,omitempty"`
+	ArchiveStrategy    ArchiveStrategy `json:"archive_strategy,omitempty"`
 	MessageCount       int       `json:"message_count"`
 	ContentLength      int       `json:"content_length"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // formatVersion is stamped on every persisted file. Bump it whenever
-// the on-disk shape changes incompatibly; older files are skipped
-// during load so a partial upgrade cannot crash the service.
-const formatVersion = 1
+// the on-disk shape changes incompatibly; older files are migrated
+// to the current version in loadFromDisk (or skipped if migration
+// fails — never crashed on) so a partial upgrade cannot break the
+// service.
+//
+//	1 — original shape (Title / Tags / TopicHints / URL / Content /
+//	    Messages / Draft / Committed{ThoughtID,At} / CreatedAt /
+//	    UpdatedAt)
+//	2 — adds SessionContext, ArchiveIntent, ArchiveStrategy,
+//	    ArchivePreview, SourceThoughtID (PRD §3.1 / §3.1.1).
+const formatVersion = 2
 
 // persistedFile is the disk layout. We wrap Scratchpad with a
 // version field so future migrations have a hook.
@@ -264,6 +358,8 @@ func (s *Store) List() []Summary {
 			SessionID:          sp.SessionID,
 			Title:              sp.Title,
 			CommittedThoughtID: sp.CommittedThoughtID,
+			SourceThoughtID:    sp.SourceThoughtID,
+			ArchiveStrategy:    sp.ArchiveStrategy,
 			MessageCount:       len(sp.Messages),
 			ContentLength:      len(sp.Content),
 			UpdatedAt:          sp.UpdatedAt,
@@ -380,7 +476,12 @@ func (s *Store) writeFile(sp Scratchpad) error {
 }
 
 // loadFromDisk walks the rootPath at startup and re-hydrates the
-// in-memory map. Corrupt files are logged and skipped.
+// in-memory map. Corrupt files are logged and skipped; unknown
+// future-version files are skipped without crashing; v1 files are
+// transparently migrated to the v2 shape so the in-memory map only
+// ever holds current-version scratchpads. Migration failures are
+// logged and the file is dropped — better to lose one stale draft
+// than to wedge the whole store.
 func (s *Store) loadFromDisk() error {
 	if s.rootPath == "" {
 		return nil
@@ -396,7 +497,8 @@ func (s *Store) loadFromDisk() error {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(s.rootPath, entry.Name()))
+		path := filepath.Join(s.rootPath, entry.Name())
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			log.Printf("scratchpad: read %s: %v", entry.Name(), err)
 			continue
@@ -406,7 +508,24 @@ func (s *Store) loadFromDisk() error {
 			log.Printf("scratchpad: parse %s: %v", entry.Name(), err)
 			continue
 		}
-		if pf.Version != formatVersion {
+		// v1 → v2 migration. The JSON shape is a strict superset
+		// (v1 fields all still exist on v2 with the same JSON
+		// tags), so deserialising into a v2 struct already yields
+		// zero-valued SessionContext / ArchiveIntent / etc. We do
+		// not need a separate v1 mirror struct; we just stamp the
+		// current version and write the file back so subsequent
+		// reads see v2 only.
+		if pf.Version == 1 {
+			pf.Version = formatVersion
+			if migrated, mErr := json.MarshalIndent(pf, "", "  "); mErr == nil {
+				if wErr := os.WriteFile(path, migrated, 0o644); wErr != nil {
+					log.Printf("scratchpad: persist v1→v2 %s: %v", entry.Name(), wErr)
+					// Migration write failed; still load from memory.
+				}
+			} else {
+				log.Printf("scratchpad: marshal v1→v2 %s: %v", entry.Name(), mErr)
+			}
+		} else if pf.Version != formatVersion {
 			log.Printf("scratchpad: skip %s: unknown version %d", entry.Name(), pf.Version)
 			continue
 		}
@@ -461,6 +580,69 @@ func cloneScratchpad(sp Scratchpad) Scratchpad {
 	if sp.CommittedAt != nil {
 		t := *sp.CommittedAt
 		out.CommittedAt = &t
+	}
+	if sp.SessionContext.ConfirmedFacts != nil {
+		facts := make([]string, len(sp.SessionContext.ConfirmedFacts))
+		copy(facts, sp.SessionContext.ConfirmedFacts)
+		out.SessionContext.ConfirmedFacts = facts
+	}
+	if sp.SessionContext.OpenQuestions != nil {
+		questions := make([]string, len(sp.SessionContext.OpenQuestions))
+		copy(questions, sp.SessionContext.OpenQuestions)
+		out.SessionContext.OpenQuestions = questions
+	}
+	if sp.SessionContext.Conflicts != nil {
+		conflicts := make([]string, len(sp.SessionContext.Conflicts))
+		copy(conflicts, sp.SessionContext.Conflicts)
+		out.SessionContext.Conflicts = conflicts
+	}
+	if sp.SessionContext.CandidateTags != nil {
+		tags := make([]string, len(sp.SessionContext.CandidateTags))
+		copy(tags, sp.SessionContext.CandidateTags)
+		out.SessionContext.CandidateTags = tags
+	}
+	if sp.SessionContext.SourceLinks != nil {
+		links := make([]string, len(sp.SessionContext.SourceLinks))
+		copy(links, sp.SessionContext.SourceLinks)
+		out.SessionContext.SourceLinks = links
+	}
+	if sp.SessionContext.RelatedThoughtIDs != nil {
+		ids := make([]string, len(sp.SessionContext.RelatedThoughtIDs))
+		copy(ids, sp.SessionContext.RelatedThoughtIDs)
+		out.SessionContext.RelatedThoughtIDs = ids
+	}
+	if sp.SessionContext.SuggestedTopicIDs != nil {
+		ids := make([]string, len(sp.SessionContext.SuggestedTopicIDs))
+		copy(ids, sp.SessionContext.SuggestedTopicIDs)
+		out.SessionContext.SuggestedTopicIDs = ids
+	}
+	if sp.ArchivePreview != nil {
+		preview := *sp.ArchivePreview
+		if sp.ArchivePreview.Tags != nil {
+			tags := make([]string, len(sp.ArchivePreview.Tags))
+			copy(tags, sp.ArchivePreview.Tags)
+			preview.Tags = tags
+		}
+		if sp.ArchivePreview.SourceLinks != nil {
+			links := make([]string, len(sp.ArchivePreview.SourceLinks))
+			copy(links, sp.ArchivePreview.SourceLinks)
+			preview.SourceLinks = links
+		}
+		if sp.ArchivePreview.RelatedTopics != nil {
+			topics := make([]string, len(sp.ArchivePreview.RelatedTopics))
+			copy(topics, sp.ArchivePreview.RelatedTopics)
+			preview.RelatedTopics = topics
+		}
+		if sp.ArchivePreview.Diff != nil {
+			diff := *sp.ArchivePreview.Diff
+			if sp.ArchivePreview.Diff.ChangedFields != nil {
+				fields := make([]string, len(sp.ArchivePreview.Diff.ChangedFields))
+				copy(fields, sp.ArchivePreview.Diff.ChangedFields)
+				diff.ChangedFields = fields
+			}
+			preview.Diff = &diff
+		}
+		out.ArchivePreview = &preview
 	}
 	return out
 }

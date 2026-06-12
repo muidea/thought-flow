@@ -475,3 +475,245 @@ func TestStoreListSortedByUpdatedAtDescWithEqualTimestampsBreaksOnID(t *testing.
 		t.Fatalf("List = %v", summaries)
 	}
 }
+
+// v1Scratchpad mirrors the on-disk shape that the v1 store wrote
+// before SessionContext / ArchiveIntent / ArchiveStrategy /
+// ArchivePreview / SourceThoughtID were introduced. We keep the
+// declaration here (not in the main package) so the migration
+// path is exercised against a real v1 file the test writes by
+// hand. The v1 shape is a strict subset of v2 with the same JSON
+// tags, which is why deserialising into a v2 struct zero-fills
+// the new fields without a separate v1 mirror struct in the
+// production code.
+type v1Scratchpad struct {
+	SessionID          string     `json:"session_id"`
+	WorkspaceID        string     `json:"workspace_id"`
+	Title              string     `json:"title"`
+	Tags               []string   `json:"tags"`
+	TopicHints         []string   `json:"topic_hints"`
+	URL                string     `json:"url,omitempty"`
+	Content            string     `json:"content"`
+	Messages           []Message  `json:"messages"`
+	Draft              Draft      `json:"draft"`
+	CommittedThoughtID string     `json:"committed_thought_id,omitempty"`
+	CommittedAt        *time.Time `json:"committed_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+func TestStoreMigratesV1FilesToV2OnLoad(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)
+	old := struct {
+		Version     int            `json:"version"`
+		Scratchpad  v1Scratchpad   `json:"scratchpad"`
+	}{
+		Version: 1,
+		Scratchpad: v1Scratchpad{
+			SessionID: "legacy",
+			Title:     "old draft",
+			Content:   "preserved body",
+			Tags:      []string{"legacy"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	raw, err := json.MarshalIndent(old, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal v1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "legacy.json"), raw, 0o644); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+
+	// Loading should transparently migrate the file to v2.
+	store := New(root)
+	got, err := store.Get("legacy")
+	if err != nil {
+		t.Fatalf("Get(legacy) after migration: %v", err)
+	}
+	if got.Title != "old draft" || got.Content != "preserved body" {
+		t.Fatalf("legacy fields not preserved: %+v", got)
+	}
+	if got.SessionContext.Topic != "" || got.ArchiveStrategy != "" {
+		t.Fatalf("new v2 fields not zero-valued: %+v", got.SessionContext)
+	}
+
+	// The on-disk file should now be v2.
+	raw2, err := os.ReadFile(filepath.Join(root, "legacy.json"))
+	if err != nil {
+		t.Fatalf("read after migration: %v", err)
+	}
+	var pf persistedFile
+	if err := json.Unmarshal(raw2, &pf); err != nil {
+		t.Fatalf("unmarshal after migration: %v", err)
+	}
+	if pf.Version != formatVersion {
+		t.Fatalf("file version after migration = %d, want %d", pf.Version, formatVersion)
+	}
+}
+
+func TestStoreSkipsUnknownFutureVersion(t *testing.T) {
+	root := t.TempDir()
+	future := persistedFile{Version: 999, Scratchpad: Scratchpad{SessionID: "future"}}
+	raw, _ := json.MarshalIndent(future, "", "  ")
+	if err := os.WriteFile(filepath.Join(root, "future.json"), raw, 0o644); err != nil {
+		t.Fatalf("write future: %v", err)
+	}
+	store := New(root)
+	sp, err := store.Get("future")
+	if err != nil {
+		t.Fatalf("Get(future) should not error: %v", err)
+	}
+	if sp.SessionID != "future" {
+		t.Fatalf("Get(future) returned non-zero value: %+v", sp)
+	}
+	// The future file should NOT be migrated or overwritten.
+	raw2, _ := os.ReadFile(filepath.Join(root, "future.json"))
+	if !strings.Contains(string(raw2), `"version": 999`) {
+		t.Fatalf("future file was modified on load: %s", string(raw2))
+	}
+}
+
+func TestStorePersistsV2Fields(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	now := time.Date(2026, 6, 12, 9, 0, 0, 0, time.UTC)
+	sp := Scratchpad{
+		SessionID:          "v2-fields",
+		SourceThoughtID:    "thought-source",
+		ArchiveIntent:      ArchiveIntentMenu,
+		ArchiveStrategy:    ArchiveStrategySupplement,
+		ArchivePreview: &ArchivePreview{
+			Title:         "preview title",
+			Body:          "preview body",
+			Tags:          []string{"p1", "p2"},
+			SourceLinks:   []string{"https://x"},
+			RelatedTopics: []string{"topic-1"},
+			Strategy:      ArchiveStrategySupplement,
+			Diff: &ThoughtDiff{
+				Before:        "old",
+				After:         "new",
+				ChangedFields: []string{"title", "body"},
+			},
+			GeneratedAt: now,
+		},
+		SessionContext: SessionContext{
+			Topic:             "AI safety",
+			Goal:              "summarise the latest alignment papers",
+			ConfirmedFacts:    []string{"scaling helps", "RLHF is standard"},
+			OpenQuestions:     []string{"is CoT enough?"},
+			Conflicts:         []string{"x says yes, y says no"},
+			CandidateTitle:    "Alignment Round-up",
+			CandidateTags:     []string{"alignment", "llm"},
+			CandidateSummary:  "Three papers summarised",
+			CandidateBody:     "## Body",
+			SourceLinks:       []string{"https://a", "https://b"},
+			RelatedThoughtIDs: []string{"t-1", "t-2"},
+			SuggestedTopicIDs: []string{"topic-1"},
+		},
+	}
+	if _, err := store.Save(sp); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	fresh := New(root)
+	got, err := fresh.Get("v2-fields")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SourceThoughtID != "thought-source" {
+		t.Fatalf("SourceThoughtID round-trip: %q", got.SourceThoughtID)
+	}
+	if got.ArchiveIntent != ArchiveIntentMenu || got.ArchiveStrategy != ArchiveStrategySupplement {
+		t.Fatalf("ArchiveIntent/Strategy: %+v", got)
+	}
+	if got.ArchivePreview == nil || got.ArchivePreview.Title != "preview title" {
+		t.Fatalf("ArchivePreview lost: %+v", got.ArchivePreview)
+	}
+	if got.ArchivePreview.Diff == nil || len(got.ArchivePreview.Diff.ChangedFields) != 2 {
+		t.Fatalf("ArchivePreview.Diff lost: %+v", got.ArchivePreview.Diff)
+	}
+	if got.SessionContext.Topic != "AI safety" {
+		t.Fatalf("SessionContext.Topic round-trip: %q", got.SessionContext.Topic)
+	}
+	if len(got.SessionContext.ConfirmedFacts) != 2 || got.SessionContext.ConfirmedFacts[0] != "scaling helps" {
+		t.Fatalf("ConfirmedFacts round-trip: %+v", got.SessionContext.ConfirmedFacts)
+	}
+	if len(got.SessionContext.RelatedThoughtIDs) != 2 {
+		t.Fatalf("RelatedThoughtIDs round-trip: %+v", got.SessionContext.RelatedThoughtIDs)
+	}
+}
+
+func TestStoreSummaryExposesV2Fields(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	if _, err := store.Save(Scratchpad{
+		SessionID:       "summary-v2",
+		SourceThoughtID: "thought-1",
+		ArchiveStrategy: ArchiveStrategyUpdate,
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	summaries := store.List()
+	if len(summaries) != 1 {
+		t.Fatalf("List len = %d", len(summaries))
+	}
+	s := summaries[0]
+	if s.SourceThoughtID != "thought-1" {
+		t.Fatalf("Summary.SourceThoughtID = %q", s.SourceThoughtID)
+	}
+	if s.ArchiveStrategy != ArchiveStrategyUpdate {
+		t.Fatalf("Summary.ArchiveStrategy = %q", s.ArchiveStrategy)
+	}
+}
+
+func TestStoreCloneIsDeepCopyForV2Fields(t *testing.T) {
+	original := Scratchpad{
+		SessionID: "deep-v2",
+		SessionContext: SessionContext{
+			ConfirmedFacts:    []string{"a"},
+			CandidateTags:     []string{"x"},
+			SourceLinks:       []string{"https://x"},
+			RelatedThoughtIDs: []string{"t-1"},
+		},
+		ArchivePreview: &ArchivePreview{
+			Tags:          []string{"p"},
+			SourceLinks:   []string{"https://p"},
+			RelatedTopics: []string{"topic-1"},
+			Diff:          &ThoughtDiff{ChangedFields: []string{"title"}},
+		},
+	}
+	clone := cloneScratchpad(original)
+	clone.SessionContext.ConfirmedFacts[0] = "MUTATED"
+	clone.SessionContext.CandidateTags[0] = "MUTATED"
+	clone.SessionContext.SourceLinks[0] = "MUTATED"
+	clone.SessionContext.RelatedThoughtIDs[0] = "MUTATED"
+	clone.ArchivePreview.Tags[0] = "MUTATED"
+	clone.ArchivePreview.SourceLinks[0] = "MUTATED"
+	clone.ArchivePreview.RelatedTopics[0] = "MUTATED"
+	clone.ArchivePreview.Diff.ChangedFields[0] = "MUTATED"
+	if original.SessionContext.ConfirmedFacts[0] == "MUTATED" {
+		t.Fatalf("clone session_context.confirmed_facts shares underlying slice")
+	}
+	if original.SessionContext.CandidateTags[0] == "MUTATED" {
+		t.Fatalf("clone session_context.candidate_tags shares underlying slice")
+	}
+	if original.SessionContext.SourceLinks[0] == "MUTATED" {
+		t.Fatalf("clone session_context.source_links shares underlying slice")
+	}
+	if original.SessionContext.RelatedThoughtIDs[0] == "MUTATED" {
+		t.Fatalf("clone session_context.related_thought_ids shares underlying slice")
+	}
+	if original.ArchivePreview.Tags[0] == "MUTATED" {
+		t.Fatalf("clone archive_preview.tags shares underlying slice")
+	}
+	if original.ArchivePreview.SourceLinks[0] == "MUTATED" {
+		t.Fatalf("clone archive_preview.source_links shares underlying slice")
+	}
+	if original.ArchivePreview.RelatedTopics[0] == "MUTATED" {
+		t.Fatalf("clone archive_preview.related_topics shares underlying slice")
+	}
+	if original.ArchivePreview.Diff.ChangedFields[0] == "MUTATED" {
+		t.Fatalf("clone archive_preview.diff.changed_fields shares underlying slice")
+	}
+}
