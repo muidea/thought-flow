@@ -151,6 +151,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/context", engine.POST, s.handleSessionContext)
 	s.registry.AddHandler("/api/capture/sessions/:id/intent", engine.POST, s.handleSessionIntent)
 	s.registry.AddHandler("/api/capture/sessions/:id/strategy", engine.POST, s.handleSessionStrategy)
+	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
 	// Deprecation shims — old paths kept on purpose; see handleLegacyDeprecationLog.
 	s.registry.AddHandler("/api/capture/sessions/start", engine.POST, s.handleStartCaptureSession)
 	s.registry.AddHandler("/api/capture/scratchpad", engine.GET, s.handleGetScratchpad)
@@ -2110,6 +2111,94 @@ func (s *Service) handleSessionStrategy(ctx context.Context, res http.ResponseWr
 		return
 	}
 	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleArchivePreview renders the read-only preview the UI shows
+// before commit lands (PRD §3.1). The preview is persisted back
+// onto the scratchpad so a re-entry into the capture page surfaces
+// the same view rather than re-deriving it.
+//
+// The handler resolves the strategy in this order:
+//
+//	1. ?strategy=update_thought|supplement|new  (override)
+//	2. sp.ArchiveStrategy (what SetArchiveStrategy last set)
+//	3. "new" (default for fresh sessions)
+//
+// "update_thought" requires the scratchpad to know which thought
+// to update (SourceThoughtID); an empty / unset id returns 400
+// with the same code as the service-layer ErrDiffRequired so the
+// front end has a stable key to key off.
+//
+//	GET /api/capture/sessions/{id}/archive/preview[?strategy=...]
+func (s *Service) handleArchivePreview(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil || s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	if s.captureService == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.unavailable", "capture service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/archive/preview")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	sp, err := s.scratchpad.Get(sessionID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", err.Error())
+		return
+	}
+	// Optional ?strategy= override lets the UI try a different
+	// routing before the user has clicked the menu item.
+	if q := strings.TrimSpace(req.URL.Query().Get("strategy")); q != "" {
+		sp.ArchiveStrategy = scratchpad.ArchiveStrategy(q)
+	}
+	if sp.ArchiveStrategy == "" {
+		sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
+	}
+	var current *models.ThoughtSnapshot
+	if sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate || sp.ArchiveStrategy == scratchpad.ArchiveStrategySupplement {
+		thoughtID := strings.TrimSpace(sp.SourceThoughtID)
+		if thoughtID == "" {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", "source_thought_id is required for update_thought / supplement strategy")
+			return
+		}
+		snapshot, gerr := s.captureService.GetThought(ctx, thoughtID)
+		if gerr != nil {
+			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.thought_not_found", gerr.Error())
+			return
+		}
+		current = &snapshot
+	}
+	preview, err := s.scratchpadSvc.BuildArchivePreview(sp, current)
+	if err != nil {
+		if errors.Is(err, capturebiz.ErrDiffRequired) {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", err.Error())
+			return
+		}
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.preview_failed", err.Error())
+		return
+	}
+	// Persist the preview back so re-entry shows the same view.
+	sp.ArchivePreview = &preview
+	if _, serr := s.scratchpad.Save(sp); serr != nil {
+		// Preview render is the source of truth; persistence is
+		// best-effort — log via the response error code but still
+		// return the preview so the UI can show it.
+		writeJSON(res, req, http.StatusOK, map[string]any{
+			"preview":   preview,
+			"persisted": false,
+			"warning":   serr.Error(),
+		})
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{
+		"preview":   preview,
+		"persisted": true,
+	})
 }
 
 // handleReopenSession is the "从已归档 Thought 重新整理" entry

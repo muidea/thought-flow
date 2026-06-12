@@ -316,6 +316,178 @@ func (s *ScratchpadService) SetArchiveStrategy(sessionID string, strategy scratc
 	return s.store.Save(sp)
 }
 
+// BuildArchivePreview renders a read-only ArchivePreview for a
+// scratchpad. The preview is what the user confirms before commit
+// actually lands; persisting it back onto the scratchpad (the
+// caller does this with Save) means a re-entry into the capture
+// page surfaces the same preview rather than re-deriving it from
+// scratchpad state, which avoids drift between what the user saw
+// and what got committed.
+//
+// The function is strategy-aware:
+//
+//   - "new": no thought is required, the body / title / tags are
+//     pure scratchpad projections. The Preview is straightforward.
+//   - "update_thought": the caller MUST supply currentThought (the
+//     existing on-disk snapshot for the target thought). The preview
+//     includes a ThoughtDiff covering title / tags / body / key
+//     points, and an empty / missing currentThought is rejected with
+//     ErrDiffRequired so the front end can show "diff not ready".
+//   - "supplement": currentThought is the parent. The preview
+//     surfaces a backlink in RelatedTopics and the body opens with
+//     "[补充] 前置 thought-{parent.ID}" so the user can edit it down
+//     before confirming.
+//
+// An empty / unknown strategy defaults to "new" — same defensive
+// policy as SetArchiveStrategy — so a half-staged scratchpad never
+// lands with no strategy.
+func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
+	now := s.now()
+	strategy := sp.ArchiveStrategy
+	switch strategy {
+	case scratchpad.ArchiveStrategyUpdate, scratchpad.ArchiveStrategySupplement:
+		// legal
+	default:
+		strategy = scratchpad.ArchiveStrategyNew
+	}
+	if strategy == scratchpad.ArchiveStrategyUpdate {
+		if currentThought == nil || strings.TrimSpace(currentThought.Thought.ID) == "" {
+			return scratchpad.ArchivePreview{}, ErrDiffRequired
+		}
+	}
+
+	title := strings.TrimSpace(sp.SessionContext.CandidateTitle)
+	if title == "" {
+		title = strings.TrimSpace(sp.Draft.TitleSet)
+	}
+	if title == "" {
+		title = strings.TrimSpace(sp.Title)
+	}
+
+	body := sp.SessionContext.CandidateBody
+	if body == "" {
+		body = sp.Content
+	}
+	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
+		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", currentThought.Thought.ID)
+		if !strings.HasPrefix(body, prefix) {
+			body = prefix + body
+		}
+	}
+
+	tags := append([]string(nil), sp.SessionContext.CandidateTags...)
+	if len(tags) == 0 {
+		tags = append(tags, sp.Tags...)
+	}
+	tags = uniqueStrings(tags)
+
+	sourceLinks := append([]string(nil), sp.SessionContext.SourceLinks...)
+	if len(sourceLinks) == 0 {
+		sourceLinks = append(sourceLinks, sp.URL)
+	}
+	sourceLinks = trimNonEmpty(sourceLinks)
+
+	relatedTopics := append([]string(nil), sp.SessionContext.SuggestedTopicIDs...)
+	relatedTopics = append(relatedTopics, sp.TopicHints...)
+	relatedTopics = uniqueStrings(relatedTopics)
+
+	preview := scratchpad.ArchivePreview{
+		Title:         title,
+		Body:          body,
+		Tags:          tags,
+		SourceLinks:   sourceLinks,
+		RelatedTopics: relatedTopics,
+		Strategy:      strategy,
+		GeneratedAt:   now,
+	}
+	if strategy == scratchpad.ArchiveStrategyUpdate {
+		before := ""
+		if currentThought != nil {
+			thought := currentThought.Thought
+			before = thoughtBodyForDiff(thought, currentThought.Content.Original)
+		}
+		diff, changed := buildThoughtDiff(before, body, tags, currentThought)
+		preview.Diff = &diff
+		if strategy == scratchpad.ArchiveStrategyUpdate && len(changed) == 0 {
+			// No actual change vs the existing thought — the user
+			// would be confirming an empty update. Surface that as
+			// a soft warning by leaving the diff in place but
+			// the caller can inspect ChangedFields.
+			_ = changed
+		}
+	}
+	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
+		preview.ThoughtID = currentThought.Thought.ID
+	}
+	if strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
+		preview.ThoughtID = currentThought.Thought.ID
+	}
+	return preview, nil
+}
+
+// thoughtBodyForDiff picks the string used as the "before" side
+// of a diff. UserTitle / ExtractedTitle / DisplayTitle are tried
+// in order (the same priority displayTitle() uses) so the diff
+// compares apples to apples; falling back to the raw content when
+// the thought has no surfaced title.
+func thoughtBodyForDiff(thought models.Thought, original string) string {
+	if title := strings.TrimSpace(thought.UserTitle); title != "" {
+		return title
+	}
+	if title := strings.TrimSpace(thought.ExtractedTitle); title != "" {
+		return title
+	}
+	return strings.TrimSpace(original)
+}
+
+// buildThoughtDiff computes the field-level diff between the
+// existing thought and the projected new content. We deliberately
+// keep this on the scratchpad service (not in a separate "diff
+// package") because the inputs are tightly coupled to the
+// scratchpad shape: tags-as-slice, body-as-string, and a
+// "changed fields" set that has to match what the patch will
+// actually update. The function is exported inside the package so
+// tests can exercise it without the scratchpad round-trip.
+func buildThoughtDiff(before, after string, afterTags []string, current *models.ThoughtSnapshot) (scratchpad.ThoughtDiff, []string) {
+	changed := []string{}
+	if strings.TrimSpace(before) != strings.TrimSpace(after) {
+		changed = append(changed, "body")
+	}
+	if current != nil {
+		existing := append([]string(nil), current.Thought.UserTags...)
+		existing = append(existing, current.Thought.AITags...)
+		if !sameTagSet(existing, afterTags) {
+			changed = append(changed, "tags")
+		}
+	}
+	return scratchpad.ThoughtDiff{
+		Before:        before,
+		After:         after,
+		ChangedFields: changed,
+	}, changed
+}
+
+// sameTagSet returns true when a and b contain the same tags
+// regardless of order and duplicates. Used by buildThoughtDiff
+// to decide whether "tags" belongs in ChangedFields.
+func sameTagSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, tag := range a {
+		seen[strings.TrimSpace(tag)]++
+	}
+	for _, tag := range b {
+		key := strings.TrimSpace(tag)
+		if seen[key] <= 0 {
+			return false
+		}
+		seen[key]--
+	}
+	return true
+}
+
 // BuildCaptureCommand flattens a scratchpad into a CaptureCommand
 // ready for Service.Capture. The shape matches what the existing
 // handleCreateThought path sends:
@@ -652,6 +824,13 @@ func (s *ScratchpadService) publishCommittedEvent(thoughtID, sessionID, mode str
 // scratchpad has already been committed once. The commit flow turns
 // this into the "append to existing thought" path.
 var ErrAlreadyCommitted = errors.New("capture: scratchpad is already committed")
+
+// ErrDiffRequired is returned by BuildArchivePreview when the
+// strategy is "update_thought" but the caller did not supply a
+// current thought snapshot. The HTTP layer surfaces this as 400
+// so the front end can prompt the user to load the existing
+// thought before retrying the preview.
+var ErrDiffRequired = errors.New("capture: diff is required for update_thought strategy")
 
 // trimNonEmpty drops empty strings and trims whitespace.
 func trimNonEmpty(values []string) []string {

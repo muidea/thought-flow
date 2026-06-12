@@ -456,6 +456,242 @@ func TestScratchpadServiceSetArchiveStrategyRejectsEmptySessionID(t *testing.T) 
 	}
 }
 
+func TestScratchpadServiceBuildArchivePreviewNewStrategyDefaultsToBodyAndTags(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw content",
+		Tags:      []string{"raw"},
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "previewed title",
+			CandidateBody:  "## Body\n\nfrom context",
+			CandidateTags:  []string{"ctx", "draft"},
+			SourceLinks:    []string{"https://x"},
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+	}
+	preview, err := svc.BuildArchivePreview(sp, nil)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if preview.Strategy != scratchpad.ArchiveStrategyNew {
+		t.Fatalf("Strategy = %q", preview.Strategy)
+	}
+	if preview.Title != "previewed title" {
+		t.Fatalf("Title = %q", preview.Title)
+	}
+	if preview.Body != "## Body\n\nfrom context" {
+		t.Fatalf("Body = %q (should prefer session_context.candidate_body)", preview.Body)
+	}
+	if len(preview.Tags) != 2 || preview.Tags[0] != "ctx" || preview.Tags[1] != "draft" {
+		t.Fatalf("Tags = %v (should prefer session_context.candidate_tags)", preview.Tags)
+	}
+	if len(preview.SourceLinks) != 1 || preview.SourceLinks[0] != "https://x" {
+		t.Fatalf("SourceLinks = %v", preview.SourceLinks)
+	}
+	if preview.Diff != nil {
+		t.Fatalf("Diff should be nil for new strategy, got %+v", preview.Diff)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewFallsBackToScratchpadState(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID:   "s1",
+		Content:     "scratchpad body",
+		Title:       "scratchpad title",
+		Tags:        []string{"a", "b"},
+		URL:         "https://y",
+		TopicHints:  []string{"topic-1"},
+		Draft:       scratchpad.Draft{TitleSet: "renamed"},
+		// no SessionContext
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+	}
+	preview, err := svc.BuildArchivePreview(sp, nil)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if preview.Title != "renamed" {
+		t.Fatalf("Title = %q (should fall back to draft.title_set)", preview.Title)
+	}
+	if preview.Body != "scratchpad body" {
+		t.Fatalf("Body = %q (should fall back to content)", preview.Body)
+	}
+	if len(preview.SourceLinks) != 1 || preview.SourceLinks[0] != "https://y" {
+		t.Fatalf("SourceLinks = %v (should fall back to URL)", preview.SourceLinks)
+	}
+	if len(preview.RelatedTopics) != 1 || preview.RelatedTopics[0] != "topic-1" {
+		t.Fatalf("RelatedTopics = %v", preview.RelatedTopics)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewUpdateRequiresCurrentThought(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "new body",
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+	}
+	if _, err := svc.BuildArchivePreview(sp, nil); !errors.Is(err, ErrDiffRequired) {
+		t.Fatalf("err = %v, want ErrDiffRequired", err)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewUpdateComputesDiff(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "## New Body\n\nchanged",
+			CandidateTags: []string{"x", "y"},
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+	}
+	current := &models.ThoughtSnapshot{
+		Thought: models.Thought{
+			ID:        "thought-1",
+			UserTitle: "Old Body",
+			UserTags:  []string{"a"},
+		},
+		Content: models.ThoughtContent{Original: "old raw"},
+	}
+	preview, err := svc.BuildArchivePreview(sp, current)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if preview.Diff == nil {
+		t.Fatalf("Diff should be non-nil for update_thought")
+	}
+	if preview.Diff.Before != "Old Body" {
+		t.Fatalf("Diff.Before = %q (should use UserTitle)", preview.Diff.Before)
+	}
+	if preview.Diff.After != "## New Body\n\nchanged" {
+		t.Fatalf("Diff.After = %q", preview.Diff.After)
+	}
+	wantChanged := map[string]bool{"body": true, "tags": true}
+	for _, c := range preview.Diff.ChangedFields {
+		if !wantChanged[c] {
+			t.Fatalf("unexpected changed field: %q", c)
+		}
+		delete(wantChanged, c)
+	}
+	if len(wantChanged) != 0 {
+		t.Fatalf("missing changed fields: %v", wantChanged)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewUpdateDetectsTagOnlyChange(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "same body",
+			CandidateTags: []string{"x", "y"},
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+	}
+	current := &models.ThoughtSnapshot{
+		Thought: models.Thought{
+			ID:        "thought-1",
+			UserTitle: "same body",
+			UserTags:  []string{"a", "b"},
+		},
+	}
+	preview, err := svc.BuildArchivePreview(sp, current)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if len(preview.Diff.ChangedFields) != 1 || preview.Diff.ChangedFields[0] != "tags" {
+		t.Fatalf("expected only tags in changed fields, got %+v", preview.Diff.ChangedFields)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewUpdateDetectsNoChange(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "same",
+			CandidateTags: []string{"a", "b"},
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+	}
+	current := &models.ThoughtSnapshot{
+		Thought: models.Thought{
+			ID:        "thought-1",
+			UserTitle: "same",
+			UserTags:  []string{"a", "b"},
+		},
+	}
+	preview, err := svc.BuildArchivePreview(sp, current)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if len(preview.Diff.ChangedFields) != 0 {
+		t.Fatalf("expected no changed fields, got %+v", preview.Diff.ChangedFields)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewSupplementPrependsParentTag(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "supplement body",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
+	}
+	current := &models.ThoughtSnapshot{
+		Thought: models.Thought{ID: "parent-1"},
+	}
+	preview, err := svc.BuildArchivePreview(sp, current)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if !strings.HasPrefix(preview.Body, "[补充] 前置 thought-parent-1") {
+		t.Fatalf("Body = %q (should start with [补充] 前置 tag)", preview.Body)
+	}
+	if preview.ThoughtID != "parent-1" {
+		t.Fatalf("ThoughtID = %q (should echo parent for back-link)", preview.ThoughtID)
+	}
+}
+
+func TestScratchpadServiceBuildArchivePreviewUnknownStrategyDefaultsToNew(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID:       "s1",
+		Content:         "x",
+		ArchiveStrategy: scratchpad.ArchiveStrategy("what"),
+	}
+	preview, err := svc.BuildArchivePreview(sp, nil)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if preview.Strategy != scratchpad.ArchiveStrategyNew {
+		t.Fatalf("Strategy = %q (unknown should default to new)", preview.Strategy)
+	}
+}
+
+func TestScratchpadServiceSameTagSetIgnoresOrderAndDuplicates(t *testing.T) {
+	a := []string{"a", "b", "a"}
+	b := []string{"b", "a", "a"}
+	if !sameTagSet(a, b) {
+		t.Fatalf("sameTagSet should ignore order and duplicates")
+	}
+	c := []string{"a", "b", "c"}
+	if sameTagSet(a, c) {
+		t.Fatalf("sameTagSet should detect different sets")
+	}
+}
+
 func TestTrimNonEmpty(t *testing.T) {
 	got := trimNonEmpty([]string{"a", "  ", "b", "", "c"})
 	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
