@@ -1,42 +1,53 @@
 # ThoughtFlow 功能设计文档
 
-> 本文基于 [ThoughtFlow PRD](./thoughtflow-prd.md) 输出功能级设计，用于指导 Go 单二进制应用实现与后续代码收口。当前代码已进入实现收口阶段，具体完成度与剩余限制以 [实现状态](./thoughtflow-implementation-status.md) 为准。
+> 本文基于 [ThoughtFlow PRD](./thoughtflow-prd.md) 输出功能级设计，用于指导 Go 单二进制应用实现与后续代码收口。当前代码以"采集会话持久化 + 异步加工 + 主题缝合 + Git 提交"为骨干；本设计文档在此基础上补充会话式采集的完整生命周期、归档预览、归档策略、Thought 重新整理、专题候选消费与外部请求隐私提示，作为 P0–P3 backlog（#97–#104）的实施蓝图。当前代码完成度请以 [实现状态](./thoughtflow-implementation-status.md) 为准。
 
 ## 1. 设计目标
 
-ThoughtFlow 的功能设计围绕“快速捕捉、异步加工、自动归档、即时检索、可追溯演进”展开。
+ThoughtFlow 的功能设计围绕"快速捕捉、异步加工、自动归档、即时检索、可追溯演进"展开。
 
-核心目标：
+### 1.1 核心目标
 
-1. 用户提交文本或 URL 后，HTTP 请求必须秒级返回，后续加工任务全部异步执行。
-2. Markdown 文件是知识内容的事实源，DuckDB 只承担索引、查询和可重建分析缓存。
-3. Git 自动记录 Markdown 变更，Git 失败不阻断采集主流程。
-4. 后端以 `magicCommon/framework` 运行单元拆分职责，HTTP/SSE 由 `magicEngine` 承载。
-5. 每个搜索结果、专题内容和 LLM 合稿结论都能回溯到原始原子笔记。
+1. **会话优先的采集**：用户输入文本、URL 或问题时默认进入当前采集会话；只有用户明确"归档"才落地为原子 Markdown。`POST /api/thoughts` 直接落 Thought 的"瞬时归档"路径保留，但默认 UI 走会话路径。
+2. **结构化上下文**：每轮对话后由 LLM/本地规则维护 `session_context`（主题、目标、事实、冲突、待澄清、候选标题/标签/摘要/正文、来源链接、关联 Thought、命中专题、归档意图、归档策略），用户可编辑。
+3. **发散-收敛节奏**：每轮对话自动刷新上下文，提示追问、补充关联、识别冲突；系统判断信息足够时可提示归档，但绝不自动保存。
+4. **HTTP 入口秒级响应**：所有 LLM/Embedding/Web fetch/Topic weave 必须走 `magicCommon/framework` `BackgroundRoutine`，HTTP 请求只返回受理状态或当前快照。
+5. **Markdown 为事实源**：DuckDB 仅承担索引、查询与可重建分析缓存；任何写入路径都先落 Markdown。
+6. **Git 自动记录**：Markdown 变更走 `git add / commit`；Git 失败不阻断采集主流程，通过事件回写失败原因。
+7. **运行单元拆分**：`capture` / `refiner` / `topic` / `search` / `git-sync` / `application`；状态由所属运行单元维护，跨单元通过 `event.Hub` 或窄接口协作。
+8. **可溯源**：每个搜索结果、专题内容、合稿结论都能反向链接到原始原子笔记。
 
-非目标：
+### 1.2 非目标
 
 1. 首版不实现多人协作权限体系。
-2. 首版不提供重型数据库服务端依赖。
+2. 首版不提供重型数据库服务端依赖（单二进制 + DuckDB 嵌入式 + 纯文件）。
 3. 首版不把 DuckDB 作为不可恢复主存储。
 4. 首版不承诺全自动 Git 冲突解决，冲突只检测、记录和提示。
+5. 首版不实现实时协同编辑（同一时刻一个会话对应一个用户，PATCH 走 `thoughtlock` 串行化即可）。
+
+---
 
 ## 2. 总体架构
 
 ```text
-Browser / Local UI
+Browser / Local UI  (会话、归档预览、Thought、专题、搜索、设置)
         |
         v
 magicEngine HTTP / SSE
         |
         v
-application runtime unit
+application runtime unit  (路由、Handler 编排、跨单元应用服务)
         |
-        +--> capture   --> Markdown thoughts/        --> EventHub
-        +--> refiner   --> Web fetch / LLM / Embedding --> EventHub
-        +--> search    --> DuckDB FTS + vector index  --> EventHub
-        +--> topic     --> Topic rules / LLM weaving  --> EventHub
-        +--> git-sync  --> git add / commit           --> EventHub
+        +--> capture   --> scratchpad JSON + thoughts/ Markdown
+        |                  └─ EventHub: scratchpad.*, thought.captured, thought.patched
+        +--> refiner   --> Web fetch / LLM / Embedding
+        |                  └─ EventHub: thought.refine_*, search.index_*
+        +--> search    --> DuckDB FTS + 向量索引
+        |                  └─ EventHub: search.index_*
+        +--> topic     --> Topic 规则 / LLM weave / 候选消费
+        |                  └─ EventHub: topic.*, topic.candidate_*
+        +--> git-sync  --> git add / commit
+                           └─ EventHub: git.commit_*
 ```
 
 ### 2.1 框架职责边界
@@ -47,966 +58,565 @@ application runtime unit
 2. 运行单元显式装配和依赖注入。
 3. `event.Hub` 事件发布、订阅和跨单元协同。
 4. `task.BackgroundRoutine` 后台任务调度、关闭和排空。
-5. 配置、日志、健康检查和监控指标承载。
+5. 配置、日志、健康检查、监控指标承载。
 
 `magicEngine` 负责：
 
-1. REST API 路由注册。
+1. REST API 路由注册（`/api/capture/...`、`/api/thoughts/...`、`/api/topics/...`、`/api/search`、`/api/events`、`/api/system/...`）。
 2. Handler 请求解析、响应格式化和错误映射。
 3. SSE 连接管理和事件推送。
-4. 静态 UI 资源托管。
+4. 静态 UI 资源托管（`/`、`/app.js`、`/styles.css`、`/i18n/...`、`/vendor/...`）。
 
 Handler 不直接操作 Markdown、DuckDB、Git 或外部 LLM/Embedding API；这些动作必须进入对应运行单元的 `biz` 或 `service` 层。
 
+### 2.2 实时性
+
+- HTTP API：同步返回受理状态或当前快照；长任务以 `BackgroundRoutine` 异步处理。
+- SSE `GET /api/events`：订阅 EventHub 实时事件，支持 `Last-Event-ID` 续传与 `types` 过滤。
+
+### 2.3 配置与可观测
+
+- 全局 + 模块双层配置（`application.toml`）。
+- `/api/system/status` 暴露 LLM/Embedding/Reader/DuckDB/Git/scratchpad 健康状态。
+- `/api/system/metrics`、`/metrics`（Prometheus）暴露运行指标。
+- 结构化日志，关键失败（provider 调用、Git commit、index、scratchpad 写入）必须能定位。
+
+---
+
 ## 3. 运行单元设计
 
-建议目录结构：
+### 3.1 capture（采集运行单元）
 
-```text
-cmd/thoughtflow/
-internal/modules/
-  application/thoughtflow/
-  capture/
-  refiner/
-  search/
-  topic/
-  git_sync/
-internal/pkg/
-  ai/
-  config/
-  duckdb/
-  gitops/
-  markdown/
-  webfetch/
-pkg/
-web/
-doc/
+#### 3.1.1 职责
+
+1. **会话式采集**：维护 scratchpad 持久化层；接收多轮对话、URL 草稿、文本片段；维护 `session_context` 结构化字段。
+2. **归档路由**：仅在用户显式"保存/归档/提交"时，将 scratchpad 落 Thought；走 `archive_strategy` 路由。
+3. **归档预览**：生成归档预览 payload（标题、正文、标签、来源、策略），不写 Thought，等用户确认。
+4. **Thought 重新整理**：从已归档 Thought 加载上下文，生成"补充/修订/另存"会话。
+5. **去重与告警**：基于 `content_hash` 检测疑似重复，注入 `ErrorRef`，默认不静默丢弃。
+6. **事件发布**：`scratchpad.message_appended`、`scratchpad.draft_updated`、`scratchpad.committed`（fresh/repeat）、`thought.captured`、`thought.patched`、`thought.supplemented`。
+
+#### 3.1.2 scratchpad 持久化
+
+存储位置：`<workspace>/.scratchpad/<sessionID>.json`（升级到 v2，引入 `session_context` 后调整命名空间或目录以保持隔离）。
+
+数据结构（v2 草案，对齐 PRD §3.1）：
+
+```go
+type Scratchpad struct {
+    SessionID   string        `json:"session_id"`
+    WorkspaceID string        `json:"workspace_id"`
+    CreatedAt   time.Time     `json:"created_at"`
+    UpdatedAt   time.Time     `json:"updated_at"`
+
+    // 轻量级 UI 投影（每次 AppendDraft 都更新，便于 UI 立刻看到候选态）
+    Title       string        `json:"title"`
+    Tags        []string      `json:"tags"`
+    TopicHints  []string      `json:"topic_hints"`
+    URL         string        `json:"url,omitempty"`
+
+    // 累积内容（用户原始输入，commit 时作为 CaptureCommand.Content）
+    Content     string        `json:"content"`
+    Messages    []Message     `json:"messages"`
+
+    // 草稿累积（rename / add_tag / remove_tag / notes / topics）
+    Draft       Draft         `json:"draft"`
+
+    // session_context（PRD §3.1 必需字段；v1→v2 迁移时留空）
+    SessionContext SessionContext `json:"session_context"`
+
+    // 归档相关（用户与系统共同维护）
+    ArchiveIntent    ArchiveIntent    `json:"archive_intent"`     // none|menu|llm
+    ArchiveStrategy  ArchiveStrategy  `json:"archive_strategy"`   // new|update_thought|supplement
+    ArchivePreview   *ArchivePreview  `json:"archive_preview,omitempty"`
+
+    // Thought 重新整理
+    SourceThoughtID string `json:"source_thought_id,omitempty"`
+
+    // 已归档关联（commit 后回写）
+    CommittedThoughtID string     `json:"committed_thought_id,omitempty"`
+    CommittedAt        *time.Time `json:"committed_at,omitempty"`
+}
+
+type SessionContext struct {
+    Topic              string   `json:"topic"`
+    Goal               string   `json:"goal"`
+    ConfirmedFacts     []string `json:"confirmed_facts"`
+    OpenQuestions      []string `json:"open_questions"`
+    Conflicts          []string `json:"conflicts"`
+    CandidateTitle     string   `json:"candidate_title"`
+    CandidateTags      []string `json:"candidate_tags"`
+    CandidateSummary   string   `json:"candidate_summary"`
+    CandidateBody      string   `json:"candidate_body"`
+    SourceLinks        []string `json:"source_links"`
+    RelatedThoughtIDs  []string `json:"related_thought_ids"`
+    SuggestedTopicIDs  []string `json:"suggested_topic_ids"`
+}
+
+type ArchiveIntent string  // "none" | "menu" | "llm"
+type ArchiveStrategy string // "new" | "update_thought" | "supplement"
+
+type ArchivePreview struct {
+    ThoughtID      string           `json:"thought_id,omitempty"`      // update_thought / supplement 时必填
+    Title          string           `json:"title"`
+    Body           string           `json:"body"`
+    Tags           []string         `json:"tags"`
+    SourceLinks    []string         `json:"source_links"`
+    RelatedTopics  []string         `json:"related_topics"`
+    Strategy       ArchiveStrategy  `json:"strategy"`
+    Diff           *ThoughtDiff     `json:"diff,omitempty"`            // update_thought 时生成
+}
+
+type ThoughtDiff struct {
+    Before  string   `json:"before"`
+    After   string   `json:"after"`
+    Changed []string `json:"changed_fields"`
+}
 ```
 
-约束：
+格式升级策略：
 
-1. `cmd/thoughtflow` 只保留进程入口、启动参数、配置加载和运行单元显式装配。
-2. 每个运行单元可按需要拆分 `module.go`、`biz/`、`service/`、`pkg/common`、`pkg/models`。
-3. `application/thoughtflow` 负责 HTTP/SSE 接入和跨运行单元应用服务编排，不持有正式业务状态。
-4. `internal/pkg` 只放仓库内部共享技术封装，不放某个运行单元的业务规则。
+- `formatVersion` 从 `1` 升到 `2`。
+- `loadFromDisk` 遇到 `version=1` 文件时执行 v1→v2 迁移：保留旧字段并填充空 `SessionContext` / `ArchiveIntent=none` / `ArchiveStrategy=new` / `SourceThoughtID` 置空。
+- 迁移失败的旧文件记录日志后跳过，不阻断服务。
 
-### 3.1 capture
+#### 3.1.3 业务能力
 
-职责：
+| 方法 | 行为 | 调用方 |
+|---|---|---|
+| `AppendMessage(sessionID, role, text)` | 追加消息；user 角色追加到 `Content` | 每次 chat 提交 |
+| `AppendDraft(sessionID, draft)` | 合并 rename / add_tag / remove_tag / append_note / add_topic；投影到顶层 | chat 内 LLM 工具调用 |
+| `UpdateSessionContext(sessionID, ctx)` | LLM 维护/用户编辑 `SessionContext` | chat 内 LLM 工具调用、UI 编辑 |
+| `SetArchiveIntent(sessionID, intent)` | none / menu / llm | UI 触发 / LLM 识别 |
+| `SetArchiveStrategy(sessionID, strategy)` | new / update_thought / supplement | UI 选择 / LLM 建议 |
+| `BuildArchivePreview(sessionID)` | 渲染 `ArchivePreview`，update_thought 时计算 `Diff` | UI 点"归档"时 |
+| `Commit(sessionID)` | 真正落地：fresh → `Capture`+`applyDraftToThought`；repeat → `ApplyDraftInternal`（锁自由）；supplement → 创建新 Thought + backlink；update_thought → `PatchThought`（带 diff 确认） | UI 确认归档 |
+| `ReopenFromThought(thoughtID)` | 从已归档 Thought 加载上下文到新 scratchpad，置 `SourceThoughtID` | UI 点"重新整理" |
+| `LastActive()` | 返回最近活跃的未归档 scratchpad（已存在） | UI 页面恢复 |
+| `MarkCommitted / Reset` | 已存在，commit 流程使用 | 内部 |
 
-1. 接收文本、URL 和未来扩展采集源的录入命令。
-2. 生成原子笔记 ID、内容 hash 和初始 YAML front matter。
-3. 将原始内容写入 `thoughts/` Markdown 文件。
-4. 发布 `thought.captured` 事件。
-5. 对重复内容做轻量去重提示，默认不静默丢弃。
+#### 3.1.4 归档策略路由
 
-输入：
+| `ArchiveStrategy` | 触发条件 | 落地动作 | 二次确认 |
+|---|---|---|---|
+| `new` | 普通会话；或 reopen 但用户选择"另存" | `Capture` → `applyDraftToThought` | 预览 |
+| `update_thought` | reopen 会话 + 用户选"更新原 Thought" | 渲染 `Diff` → `PatchThought` | 强制 diff 确认 |
+| `supplement` | reopen 会话 + 用户选"生成补充 Thought" | `Capture`（content 标 `[补充] 前置 thought-xxx`）+ 双向 backlink | 预览 |
 
-1. `CaptureCommand`
-2. 文本内容或 URL
-3. 可选用户标题、标签、目标专题提示
+`update_thought` 必须经过 `thoughtlock.Locker` 串行化；`supplement` / `new` 走 `ApplyDraftInternal`（锁自由）以避免与 refiner/expander 抢占。
 
-输出：
+#### 3.1.5 `CaptureCommitter` 接口扩展
 
-1. `ThoughtSnapshot`
-2. 原子 Markdown 文件路径
-3. 采集事件
-
-### 3.2 refiner
-
-职责：
-
-1. 订阅 `thought.captured`，提交后台加工任务。
-2. 对 URL 类型笔记抓取正文，优先使用本地 fetcher，失败时回退 Jina Reader。
-3. 调用 OpenAI 兼容 LLM/Embedding API 生成摘要、核心观点、标签和 embedding。
-4. 将加工结果回写原子 Markdown front matter 和正文附加区。
-5. 发布 `thought.refined` 或 `thought.refine_failed` 事件。
-
-约束：
-
-1. LLM/Embedding provider 调用必须有超时、重试和错误分类。
-2. 原始用户输入不得被 AI 结果覆盖，只能追加结构化结果。
-3. URL 正文抓取失败时，仍保留 URL 原始笔记并标记失败原因。
-
-### 3.3 search
-
-职责：
-
-1. 订阅 `thought.captured`、`thought.refined`、`topic.updated`。
-2. 将 Markdown 元数据和正文索引到 DuckDB。
-3. 提供关键词、语义和混合检索。
-4. 支持搜索结果过滤、排序、分页和原文预览。
-5. 为专题匹配提供候选集合与相似度计算能力。
-
-约束：
-
-1. DuckDB 索引必须可从 Markdown 全量重建。
-2. 检索 API 不直接读取 Git 历史，Git 只作为演进记录。
-3. Embedding 缺失时混合搜索自动降级为关键词搜索。
-
-### 3.4 topic
-
-职责：
-
-1. 管理专题定义、规则、阈值和大纲。
-2. 根据关键词、标签和语义相似度判断新碎片是否命中专题。
-3. 命中后触发 AI 智能缝合，更新 `topics/{slug}/index.md`。
-4. 支持手动重组专题、重算成员关系和重建主文档。
-5. 为 UI 提供专题列表、统计、活动记录和详情视图。
-
-约束：
-
-1. 专题主文档必须保留原子笔记反向链接。
-2. AI 缝合失败不得破坏旧版专题文档；写入采用临时文件加原子替换。
-3. 自动缝合可配置为自动执行、仅建议或关闭。
-
-### 3.5 git-sync
-
-职责：
-
-1. 订阅 Markdown 变更事件。
-2. 将变更路径加入批处理队列。
-3. 后台执行 `git add` 和 `git commit`。
-4. 发布 `git.commit_succeeded` 或 `git.commit_failed`。
-5. 记录冲突、未初始化仓库、用户未配置身份等错误。
-
-约束：
-
-1. Git 操作不阻塞 capture/refiner/topic 主流程。
-2. 多个短时间连续变更合并为一次提交，默认 debounce 3 到 10 秒。
-3. DuckDB 索引文件默认不进入 Git，除非用户显式配置。
-
-### 3.6 application/thoughtflow
-
-职责：
-
-1. 注册 `magicEngine` REST API、SSE 和静态资源路由。
-2. 将 HTTP 请求转换为运行单元命令。
-3. 聚合跨运行单元查询结果。
-4. 将 EventHub 事件转换为 SSE 消息。
-5. 统一错误码、请求 ID、日志字段和响应格式。
-
-约束：
-
-1. 不直接实现 Markdown 写入、AI 调用、DuckDB 查询或 Git 命令。
-2. 长耗时请求只返回任务受理状态或当前快照。
-3. SSE 只推送必要状态和摘要，不推送完整私密正文，除非用户显式开启。
-
-## 4. 数据与文件设计
-
-### 4.1 工作区目录
-
-默认工作区：
-
-```text
-thoughtflow-workspace/
-  thoughts/
-    2026/
-      06/
-        20260609-143010-8f3a.md
-  topics/
-    ai-research/
-      index.md
-      topic.yaml
-      memberships/
-        20260609-143010-8f3a.yaml
-  attachments/
-thoughtflow-runtime/
-  thoughtflow.duckdb
-  jobs/
-  logs/
+```go
+type CaptureCommitter interface {
+    Capture(ctx, cmd) (CaptureResult, error)
+    PatchThought(ctx, thoughtID, sessionID, req, rawBody) (ThoughtSnapshot, error)
+    ApplyDraftInternal(ctx, thoughtID, sessionID, req, rawBody) (ThoughtSnapshot, error)
+    ReopenFromThought(ctx, thoughtID, sessionID) (Scratchpad, error)  // 新增
+}
 ```
 
-说明：
+#### 3.1.6 事件
 
-1. `thoughts/` 和 `topics/` 是用户知识资产，默认进入 Git。
-2. `thoughtflow-runtime/` 是运行状态目录，默认不进入 Git。
-3. 配置目录与运行状态目录分离，默认使用 OS 用户配置目录下的 `thoughtflow/application.toml`，运行态状态目录由 `runtime.state_dir` 明确定义。
-4. `attachments/` 存放未来上传文件、网页快照或图片资源。
-5. Markdown 路径需要兼容 Obsidian 和 Logseq，避免依赖数据库才能阅读。
+| 事件 | Payload 关键字段 | 订阅方 |
+|---|---|---|
+| `scratchpad.message_appended` | session_id, role, text | 暂无（前端 SSE 拉） |
+| `scratchpad.draft_updated` | session_id, draft_diff | 暂无 |
+| `scratchpad.context_updated` | session_id, ctx_diff | topic（命中候选） |
+| `scratchpad.committed` | session_id, thought_id, mode | git-sync（参考 commit 日志） |
+| `thought.captured` | thought | refiner、search、topic、git-sync |
+| `thought.patched` | thought | topic、git-sync |
+| `thought.supplemented` | parent_thought_id, new_thought_id | topic、search（建立双向 backlink） |
 
-### 4.2 原子笔记 Markdown
+#### 3.1.7 错误模型
 
-示例：
+- `ErrInvalidPatchField` → 400。
+- `ErrLocked` → 409（被其他 session 占用）。
+- `ErrRefining` → 409（refiner 持有，建议客户端短暂退避）。
+- `ErrInvalidSession` → 400。
+- `ErrEmptyContent` → 400。
+- `ErrAlreadyCommitted` → 409（已 commit，需要走 reopen-session 路径）。
+- `ErrStrategyRequired` → 400（reopen 会话未选策略）。
+- `ErrDiffRequired` → 400（update_thought 但无 diff，确认未走完）。
 
-```markdown
----
-id: 20260609-143010-8f3a
-type: url
-status: refined
-title: "Example Article"
-url: "https://example.com/article"
-source: "manual"
-created_at: "2026-06-09T14:30:10+08:00"
-updated_at: "2026-06-09T14:31:22+08:00"
-content_hash: "sha256:..."
-tags:
-  - ai
-  - knowledge-management
-topics:
-  - ai-research
-summary: "..."
-key_points:
-  - "..."
-embedding_ref: "duckdb:thought_embeddings/20260609-143010-8f3a"
-errors: []
 ---
 
-## Original
+### 3.2 refiner（精炼运行单元）
 
-用户原始输入或 URL。
+#### 3.2.1 职责
 
-## Extracted Content
+1. 订阅 `thought.captured` 与 `thought.supplemented`，提交后台加工任务。
+2. 对 URL 类笔记抓取正文：本地 fetcher 优先，失败时回退 Jina Reader。
+3. AI 摘要、关键点、AI 标签（`ai_tags`）、`related_thought_ids`、`suggested_topic_ids`、`expansion_plan`。
+4. 生成 embedding，写入 DuckDB 向量索引。
+5. 通过 `BackgroundRoutine` 异步处理；状态通过 EventHub 发布。
 
-网页正文或清洗后的正文。
+#### 3.2.2 状态机
 
-## AI Notes
+`refine_status: pending → running → (succeeded | failed | partial)`，对应 `refine` Job 的 `JobStatus`。
 
-摘要、观点、待确认内容。
+#### 3.2.3 错误模型
+
+- `thoughtflow.ai.transient_status`（429/5xx）→ 退避重试（3 次）。
+- `thoughtflow.ai.http_status`（其他 4xx）→ 不重试。
+- `thoughtflow.ai.invalid_json`（LLM 返回非 JSON）→ 不重试。
+- `thoughtflow.ai.request_failed`（网络）→ 退避重试。
+- `thoughtflow.ai.read_failed`（4 MiB 截断）→ 不重试。
+
+---
+
+### 3.3 topic（专题运行单元）
+
+#### 3.3.1 职责
+
+1. 维护专题规则、关键词触发、语义相似度阈值。
+2. 订阅 `thought.refined` / `search.index_updated` / **`scratchpad.context_updated` / `scratchpad.committed`**：将 scratchpad 候选与正式 Thought 同时纳入匹配。
+3. **状态分层**：
+   - 正式成员 = 已 commit 的 Thought + 命中专题规则。
+   - 候选 = 未 commit 的 scratchpad + 命中专题规则或语义近邻。
+   - 冲突/待确认 = scratchpad 候选之间或与已正式成员存在矛盾（`SessionContext.Conflicts` 非空）。
+4. **智能缝合**：LLM 负责寻找合适章节插入新成员；只接受正式成员进入 `topics/<name>/index.md`。
+5. **全量刷新**：`POST /api/topics/:id/refresh` 触发后，基于"全部 Thought + 全部未 commit scratchpad + 全部从 Thought 重新发起的会话 + synthesis 草稿"刷新正式/候选/冲突三态。
+6. 专题创建/规则更新后自动触发一次 refresh。
+
+#### 3.3.2 候选消费通道
+
+```text
+scratchpad.append_message  ──┐
+scratchpad.draft_updated   ──┼─→ topic.MatchScratchpadAsync(session_id)
+scratchpad.context_updated ──┘                │
+                                              ├─→ 候选列表（只读）
+                                              ├─→ 命中分数 ≥ Threshold：进候选区
+                                              └─→ 冲突/待确认：进冲突区
 ```
 
-约束：
+候选区不写专题主文档；用户可在 UI 上"确认纳入"（触发对应 scratchpad commit 走 `new` 策略）才会正式落地。
 
-1. `Original` 区域只追加，不由 AI 自动改写。
-2. `Extracted Content` 可以重抓取更新，但需更新 `updated_at` 和 Git 记录。
-3. `AI Notes` 标记为派生内容，可被重新生成。
-4. Front matter 字段新增必须向后兼容，未知字段保留。
+#### 3.3.3 API
 
-### 4.3 专题文件
+- `GET /api/topics`
+- `POST /api/topics`
+- `GET /api/topics/:id`
+- `PUT /api/topics/:id`
+- `POST /api/topics/:id/rebuild`（历史兼容）
+- `POST /api/topics/:id/refresh`（PRD §3.3 新增，全量刷新）
+- `GET /api/topics/:id/candidates`（新；返回 scratchpad 候选列表）
 
-`topics/{slug}/topic.yaml`：
+#### 3.3.4 错误模型
+
+- `ErrTopicNotFound` → 404。
+- `ErrTopicRuleInvalid` → 400（规则 JSON 校验失败）。
+- `ErrTopicRefreshInProgress` → 409（同名 refresh 已在跑）。
+
+---
+
+### 3.4 search（检索运行单元）
+
+#### 3.4.1 职责
+
+1. 订阅 `thought.captured` / `thought.patched` / `thought.supplemented` / `refiner.succeeded` → 更新 DuckDB 索引（FTS + 向量）。
+2. `GET /api/search` 混合检索：关键词 FTS + 向量 Embedding 召回 + 重排。
+3. 结果回溯：每条命中带 `source_thought_id`、`source_session_id`（如果是 scratchpad 候选命中）、`backlink`。
+4. 命中 scratchpad 候选的条目标注 `candidate=true`，区分正式与候选。
+
+#### 3.4.2 API
+
+- `GET /api/search?q=...&limit=...&include_candidates=...`
+
+---
+
+### 3.5 git-sync（Git 同步运行单元）
+
+#### 3.5.1 职责
+
+1. 订阅 `git.commit_requested` → 排队 debounce 提交。
+2. 失败时发布 `git.commit_failed`（包含 thought path、错误码），不阻断上游。
+3. 提供只读查询：`GET /api/thoughts/:id` 聚合时返回最近 5 条 commit 摘要。
+
+---
+
+### 3.6 application（应用运行单元）
+
+#### 3.6.1 职责
+
+1. `magicEngine` HTTP/SSE 入口：路由注册、Handler 编排。
+2. 跨单元应用服务（不持有正式状态）：`CommitFromScratchpad`、`ReopenFromThought`、`BuildArchivePreview`。
+3. SSE 事件流转发。
+4. 静态 UI 资源。
+
+#### 3.6.2 Handler 边界
+
+- 只做请求解析、鉴权（如启用）、响应格式化、错误码映射。
+- 业务逻辑必须进入对应运行单元的 `biz` 层。
+
+---
+
+## 4. 核心数据流
+
+### 4.1 会话式采集（默认路径）
+
+```text
+UI 打开采集页
+   └─ GET /api/capture/sessions/active → 后端 LastActive() 恢复
+        └─ 命中：返回 scratchpad，前端渲染历史
+        └─ 未命中：创建空 scratchpad（status 200，不写 Thought）
+
+UI 发送消息
+   └─ POST /api/capture/sessions/{id}/messages
+        ├─ capture.AppendMessage  → 写 scratchpad
+        └─ LLM 维护 session_context（异步，事件：scratchpad.context_updated）
+              └─ topic 订阅 → 命中候选
+
+UI 点击"归档" / LLM 识别"保存"意图
+   └─ POST /api/capture/sessions/{id}/archive/preview
+        └─ capture.BuildArchivePreview → 返回 ArchivePreview（含 Diff）
+   └─ UI 展示预览 → 用户确认
+        └─ POST /api/capture/sessions/{id}/archive  body.strategy
+              ├─ new         → Capture + applyDraftToThought
+              ├─ supplement  → Capture(标注 parent) + 双向 backlink
+              └─ update_thought → PatchThought (走 thoughtlock)
+```
+
+### 4.2 从 Thought 重新整理
+
+```text
+UI Thought 详情 → "重新整理"
+   └─ POST /api/thoughts/{id}/reopen-session
+        ├─ 创建 scratchpad_v2
+        ├─ SourceThoughtID = 原 thought.id
+        └─ SessionContext.* 加载自原 Thought 元数据
+              ├─ Topic ← 关联专题名
+              ├─ CandidateBody ← 原 Original
+              ├─ CandidateTitle ← 原 UserTitle 或 ExtractedTitle
+              ├─ CandidateTags ← 原 UserTags ∪ AITags
+              ├─ SourceLinks ← 原 URL + URLFollowups
+              └─ RelatedThoughtIDs ← 原 RelatedThoughtIDs
+   └─ UI 进入采集页编辑
+   └─ 提交归档
+        ├─ 默认 strategy = supplement（PRD §3.1）
+        ├─ 显式选择 update_thought → 走 diff 确认
+        └─ 显式选择 new → 创建新 Thought 失去 backlink
+```
+
+### 4.3 专题候选消费
+
+```text
+scratchpad 任意变更
+   └─ topic.MatchScratchpadAsync(session_id)
+        ├─ 计算关键词 + 语义分数
+        ├─ ≥ threshold：写入 candidate 列表（Redis/JSONL/dedicated store）
+        └─ 订阅者：UI SSE 推送 candidate 列表更新
+
+UI 打开专题详情
+   └─ GET /api/topics/:id/candidates
+        └─ 用户确认某 scratchpad 纳入
+              └─ 触发该 scratchpad 的 commit 流程（new strategy）
+              └─ 归档后 EventTopicMatched 重新计算 → 进正式成员
+```
+
+### 4.4 异步加工
+
+```text
+EventThoughtCaptured
+   └─ refiner.Enqueue → BackgroundRoutine
+        ├─ web fetch（仅 url 类）
+        ├─ LLM 摘要 / 标签 / 关键点 / expansion_plan
+        ├─ LLM embedding
+        └─ 写回 thought + DuckDB
+              ├─ EventThoughtRefined
+              └─ EventSearchIndexUpdated
+                     └─ topic.MatchThoughtAsync(thought_id)
+                            └─ 命中：EventTopicMatched → 触发 weave → EventTopicUpdated
+                                   └─ git-sync 异步提交
+```
+
+---
+
+## 5. API 契约（对齐 PRD §2.2）
+
+### 5.1 采集会话
+
+| Method | Path | Body | 200 Response | 错误 |
+|---|---|---|---|---|
+| `POST` | `/api/capture/sessions` | `{content?, source_thought_id?, reuse_last?:true}` | `{session_id, scratchpad}` | 400 invalid |
+| `GET` | `/api/capture/sessions/active` | — | `{scratchpad}` 或 204 | — |
+| `GET` | `/api/capture/sessions` | — | `[{session_id, title, ...summary}]` | — |
+| `POST` | `/api/capture/sessions/{id}/messages` | `{role, text}` | `{scratchpad}` | 400 invalid_session |
+| `POST` | `/api/capture/sessions/{id}/context` | `SessionContext` | `{scratchpad}` | 400 invalid |
+| `POST` | `/api/capture/sessions/{id}/intent` | `{intent: none|menu|llm}` | `{scratchpad}` | — |
+| `POST` | `/api/capture/sessions/{id}/strategy` | `{strategy: new\|update_thought\|supplement, thought_id?}` | `{scratchpad}` | 400 strategy_required |
+| `GET` | `/api/capture/sessions/{id}/archive/preview` | — | `ArchivePreview` | 400 empty_content |
+| `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed?:true}` | `CaptureResult` | 409 locked, 400 diff_required |
+| `DELETE` | `/api/capture/sessions/{id}` | — | `{deleted:true}` | 404 not_found |
+
+### 5.2 Thought
+
+| Method | Path | Body | 200 Response | 错误 |
+|---|---|---|---|---|
+| `POST` | `/api/thoughts` | `CaptureCommand` | `CaptureResult` | 400 invalid |
+| `GET` | `/api/thoughts/{id}` | — | `ThoughtSnapshot` | 404 not_found |
+| `PATCH` | `/api/thoughts/{id}` | `ThoughtPatchRequest` + `X-Session-Id` | `ThoughtSnapshot` | 400 invalid_field, 409 locked |
+| `POST` | `/api/thoughts/{id}/retry-refine` | — | `{job_id}` | 404 not_found |
+| `GET` | `/api/thoughts/{id}/suggest` | — | `ThoughtSuggestion` | 404 not_found |
+| `POST` | `/api/thoughts/{id}/reopen-session` | — | `{session_id, scratchpad}` | 404 not_found |
+
+### 5.3 专题
+
+| Method | Path | Body | 200 Response | 错误 |
+|---|---|---|---|---|
+| `GET` | `/api/topics` | — | `[]Topic` | — |
+| `POST` | `/api/topics` | `TopicCreateRequest` | `Topic` | 400 rule_invalid |
+| `GET` | `/api/topics/{id}` | — | `Topic` | 404 not_found |
+| `PUT` | `/api/topics/{id}` | `TopicUpdateRequest` | `Topic` | 400 rule_invalid |
+| `POST` | `/api/topics/{id}/rebuild` | — | `{job_id}` | — |
+| `POST` | `/api/topics/{id}/refresh` | — | `{job_id}` | 409 refresh_in_progress |
+| `GET` | `/api/topics/{id}/candidates` | — | `[]Candidate`（scratchpad 候选） | — |
+| `POST` | `/api/topics/{id}/weave-preview` | — | `WeaveProposal` | — |
+| `POST` | `/api/topics/{id}/weave-accept` | `{proposal_id}` | `{topic}` | 409 stale |
+
+### 5.4 检索 & 合稿
+
+| Method | Path | Body | 200 Response |
+|---|---|---|---|
+| `GET` | `/api/search` | — | `SearchResult{results, candidates}` |
+| `POST` | `/api/synthesis` | `{selected_thought_ids[], prompt?}` | `SynthesisDraft` |
+| `GET` | `/api/synthesis` | — | `[]SynthesisDraft` |
+| `GET` | `/api/synthesis/{id}` | — | `SynthesisDraft` |
+| `POST` | `/api/synthesis/save` | `{draft}` | `{thought}` |
+
+### 5.5 系统 & 实时
+
+| Method | Path | 说明 |
+|---|---|---|
+| `GET` | `/api/system/status` | LLM/Embedding/Reader/DuckDB/Git/scratchpad 健康 |
+| `GET` | `/api/system/metrics` | 业务指标 |
+| `POST` | `/api/system/reindex` | 全量重建 DuckDB |
+| `GET` | `/api/jobs` | Job 列表 |
+| `GET` | `/api/jobs/{id}` | Job 详情 |
+| `GET` | `/api/events` | SSE 事件流 |
+| `GET` | `/metrics` | Prometheus |
+| `GET` | `/health/live` | 进程存活 |
+| `GET` | `/health/ready` | 依赖就绪 |
+
+### 5.6 路径兼容与废弃
+
+旧路径保留 1 个版本过渡期并打印弃用日志：
+
+- `POST /api/capture/sessions/start` → 新 `POST /api/capture/sessions`。
+- `POST /api/capture/scratchpad/commit` → 新 `POST /api/capture/sessions/{id}/archive`。
+- `POST /api/capture/new-session` → 新 `POST /api/capture/sessions`（带 `reuse_last:false`）。
+- `GET/POST/DELETE /api/capture/scratchpad[?session_id=X]` → 新 `/api/capture/sessions/{id}` 系列。
+- `GET /api/capture/scratchpad/list` → 新 `GET /api/capture/sessions`。
+
+---
+
+## 6. 数据模型
+
+### 6.1 scratchpad 字段映射
+
+PRD §3.1 的 `session_context` 14 字段 → scratchpad.SessionContext 同名字段；`archive_intent` / `archive_strategy` 提升为顶层 Scratchpad 字段（PRD 明确"可编辑字段"）。scratchpad v1 的 `Title` / `Tags` / `TopicHints` / `URL` / `Content` / `Messages` / `Draft` 保留作为"UI 投影"。
+
+### 6.2 archive_intent / archive_strategy
+
+```go
+const (
+    ArchiveIntentNone ArchiveIntent = "none"
+    ArchiveIntentMenu ArchiveIntent = "menu"
+    ArchiveIntentLLM  ArchiveIntent = "llm"
+
+    ArchiveStrategyNew          ArchiveStrategy = "new"
+    ArchiveStrategyUpdate       ArchiveStrategy = "update_thought"
+    ArchiveStrategySupplement   ArchiveStrategy = "supplement"
+)
+```
+
+### 6.3 Thought 双向 backlink（supplement 时）
+
+`supplement` 策略在新建 Thought 的 front matter 写入：
 
 ```yaml
-id: ai-research
-name: AI 研究
-slug: ai-research
-description: 跟踪 AI 模型、工具链和知识工程实践
-rules:
-  keywords:
-    any:
-      - AI
-      - LLM
-      - embedding
-    all: []
-    exclude: []
-  tags:
-    any:
-      - ai
-  semantic:
-    enabled: true
-    threshold: 0.78
-outline:
-  - title: 背景与趋势
-  - title: 工程实践
-  - title: 待验证想法
-auto_weave: true
-created_at: "2026-06-09T14:00:00+08:00"
-updated_at: "2026-06-09T14:00:00+08:00"
+related_thought_ids: [<parent_thought_id>]
 ```
 
-`topics/{slug}/index.md`：
-
-```markdown
----
-id: ai-research
-type: topic
-updated_at: "2026-06-09T14:45:00+08:00"
-members:
-  - 20260609-143010-8f3a
----
-
-# AI 研究
-
-## 背景与趋势
-
-整理后的专题内容。
-
-> Sources: [[../../thoughts/2026/06/20260609-143010-8f3a]]
-```
-
-`topics/{slug}/memberships/{thought_id}.yaml`：
+并在原 Thought 的 front matter 加入：
 
 ```yaml
-topic_id: ai-research
-thought_id: 20260609-143010-8f3a
-match_type: semantic
-score: 0.82
-reasons:
-  - semantic:0.820
-status: accepted
-created_at: "2026-06-09T14:10:00Z"
-updated_at: "2026-06-09T14:10:00Z"
+related_thought_ids: [<new_thought_id>]
 ```
 
-约束：
+双向 backlink 写入走两次 `PatchThought`（两次都过 `thoughtlock` 串行化），并触发两次 `git.commit_requested`。
 
-1. `topic.yaml` 保存专题定义和统计快照，不作为成员关系唯一事实源。
-2. `index.md` 保存可读专题主文档和成员快照，不反推命中分数、原因或状态。
-3. `memberships/` 保存 Thought 与 Topic 的关系事实，进入 Git，可由规则重建并可承载后续审批状态。
-4. `approvals/` 保存 topic weave 审批队列和历史，记录候选文档、diff、状态、确认时间和最终确认文档。
+### 6.4 diff 生成
 
-## 5. DuckDB 索引设计
+`update_thought` 时 `ArchivePreview.Diff` 由 `BuildArchivePreview` 计算：
 
-DuckDB 是可重建索引层，建议表：
+- 标题：纯字符串 equal 判断。
+- 标签：集合差集。
+- 正文：行级 LCS 简化版（不强制引入 diff 库，行级 + 公共子串长度足够）。
+- 关键点：集合差集。
 
-| 表 | 用途 |
-| --- | --- |
-| `thoughts` | 原子笔记元数据、路径、状态、时间、hash |
-| `thought_contents` | 清洗正文、摘要、标签文本和可搜索文本 |
-| `thought_embeddings` | embedding 向量、模型、维度、更新时间 |
-| `topics` | 专题配置快照和统计字段 |
-| `topic_memberships` | 专题与原子笔记关系、命中分数、命中原因 |
-| `jobs` | 后台任务快照，供 UI 查询 |
-| `event_offsets` | SSE 或内部事件消费位点，便于断线恢复 |
+返回字段：`{before, after, changed_fields}`，UI 用 unified diff 渲染或只展示"变更字段列表"。
 
-索引策略：
+---
 
-1. `thought_contents.search_text` 建 FTS 索引。
-2. embedding 表按模型和维度区分，避免模型切换后混算。
-3. 混合搜索分数采用 `keyword_score`、`semantic_score` 和 `recency_score` 加权。
-4. 当 Markdown 与 DuckDB 不一致时，以 Markdown 为准重建索引。
+## 7. 隐私与外部请求
 
-## 6. 事件设计
+PRD §5 要求显式标识外部请求并允许禁用。约束：
 
-事件 payload 使用明确结构体，不使用任意 `map[string]any` 作为主协议。
+1. **配置层**：
+   - `llm.enabled`、`llm.api_key`（空则降级 `LocalRefineProvider`）。
+   - `embedding.enabled`、`embedding.api_key`。
+   - `reader.enabled`（webfetch 抓取）、`reader.api_key`（Jina Reader 等）。
+2. **UI 层**：
+   - 触发外部请求的按钮（"AI 摘要"、"AI 标签"、"扩展计划"、"网页正文抓取"）必须带"轻量提示"，文案如"将向 `<provider>` 发送内容"。
+   - 设置页"外部请求"区块可查看全局配置、临时禁用某类外部请求。
+3. **API 层**：
+   - `POST /api/system/external/disable?kind=llm|embedding|reader`（仅在显式启用鉴权时使用；首版可不实现，按 PRD §5 注释留作 backlog）。
+4. **不阻塞**：按 PRD §5，外部请求不强制阻塞确认；UI 提示足够。
 
-| 事件 ID | 来源 | 消费方 | 说明 |
-| --- | --- | --- | --- |
-| `thought.captured` | capture | refiner, search, git-sync, application | 原子笔记已创建 |
-| `thought.refine_started` | refiner | application | 加工开始 |
-| `thought.refined` | refiner | search, topic, git-sync, application | 加工完成 |
-| `thought.refine_failed` | refiner | application, git-sync | 加工失败，保留原文 |
-| `search.index_updated` | search | topic, application | 索引更新完成 |
-| `search.index_failed` | search | application | 索引失败 |
-| `topic.matched` | topic | application | 碎片命中专题 |
-| `topic.updated` | topic | search, git-sync, application | 专题文档更新 |
-| `topic.rebuild_failed` | topic | application | 专题重组失败 |
-| `git.commit_requested` | capture/refiner/topic | git-sync | 请求提交变更 |
-| `git.commit_succeeded` | git-sync | application | Git 提交完成 |
-| `git.commit_failed` | git-sync | application | Git 提交失败 |
+---
 
-推荐事件公共字段：
+## 8. 边界、限制与未决项
 
-```text
-event_id
-event_type
-source_unit
-occurred_at
-trace_id
-workspace_id
-resource_type
-resource_id
-payload_version
-payload
-```
+### 8.1 已确定
 
-## 7. 核心业务流程
+- scratchpad 升级到 v2 时保留 v1 兼容读路径，迁移失败文件日志后跳过。
+- `archive_strategy` 路由必须以 UI 显式选择或 reopen 会话默认 `supplement` 为准，LLM 不能直接 override。
+- `update_thought` 走 `thoughtlock`；`new` / `supplement` 走 `ApplyDraftInternal`（与现有 refiner/expander 兼容）。
+- 专题候选仅展示在候选区，不写专题主文档；用户在 UI 上"确认"后走对应 scratchpad 的 commit 流程。
+- Web 入口保留旧路径 1 个版本过渡期（详见 §5.6）。
 
-### 7.1 文本采集
+### 8.2 遗留与 backlog
 
-1. UI 调用 `POST /api/thoughts`，请求体包含 `type=text` 和 `content`。
-2. application 校验请求并调用 capture。
-3. capture 写入 `thoughts/YYYY/MM/{id}.md`，状态为 `captured`。
-4. capture 发布 `thought.captured`，HTTP 返回 `202 Accepted` 和笔记快照。
-5. refiner 后台生成摘要、标签和 embedding，完成后发布 `thought.refined`。
-6. search 更新 DuckDB 索引。
-7. topic 判断命中并按配置更新专题。
-8. git-sync 批量提交 Markdown 变更。
-9. application 通过 SSE 推送每个阶段状态。
+| # | 项 | 来源 | 状态 |
+|---|---|---|---|
+| #97 | scratchpad v2 字段扩展 + v1→v2 迁移 | PRD §3.1 | 待办 |
+| #98 | API 路径对齐 PRD §2.2 + 旧路径过渡 | PRD §2.2 / §5.6 | 待办 |
+| #99 | 归档预览 `GET /api/capture/sessions/{id}/archive/preview` + UI 渲染 | PRD §3.1 / §4.4 | 待办 |
+| #100 | `archive_strategy` 路由（new / update_thought / supplement）+ diff | PRD §3.1 | 待办 |
+| #101 | `POST /api/thoughts/{id}/reopen-session` + UI 入口 | PRD §3.1.1 | 待办 |
+| #102 | 专题消费 scratchpad 候选 | PRD §3.3 | 待办 |
+| #103 | 隐私提示 UI 标识 + 设置页"外部请求" | PRD §5 | 待办 |
+| #104 | e2e 覆盖（含会话恢复、归档预览、归档策略、reopen、专题候选、隐私提示） | PRD §7 #12 / §8 | 待办 |
+| — | `POST /api/system/external/disable` 运行时禁用接口 | PRD §5 | 可选，留 backlog |
 
-### 7.2 URL 采集
+### 8.3 仍非目标
 
-1. capture 先记录 URL 原始笔记，保证用户输入不丢失。
-2. refiner 后台抓取网页正文。
-3. 抓取成功后生成摘要、标签和 embedding。
-4. 抓取失败时写入错误字段，并发布失败事件。
-5. 用户可在 UI 中重试抓取或手动补正文。
+- 多人协作 / 权限体系。
+- 实时协同编辑。
+- 服务端数据库（Postgres/MySQL）。
+- 全自动 Git 冲突解决。
+- 跨工作区合并。
 
-### 7.3 专题自动缝合
+---
 
-1. topic 收到 `thought.refined` 或 `search.index_updated`。
-2. 根据专题规则计算候选命中：
-   - 关键词命中
-   - 标签命中
-   - 语义相似度命中
-3. 命中后生成 `TopicWeaveJob`。
-4. AI 根据专题大纲、当前 `index.md` 和新碎片内容生成 patch 建议。
-5. topic 校验 patch 必须保留 source link。
-6. 写入临时文件并原子替换 `topics/{slug}/index.md`。
-7. 发布 `topic.updated`，触发 search 和 git-sync。
+## 9. 实施顺序建议
 
-### 7.4 即席检索与合稿
-
-1. UI 通过 `GET /api/search` 发起关键词、语义或混合查询。
-2. search 返回结果、命中片段、分数、来源链接和预览。
-3. 用户勾选多个结果后调用 `POST /api/synthesis`。
-4. application 将选中 ID 交给 refiner 或独立 synthesis service。
-5. AI 生成总结报告或逻辑大纲。
-6. 合稿结果默认是临时视图；用户点击保存后才写入 Markdown。
-
-## 8. API 设计
-
-统一响应：
-
-```json
-{
-  "request_id": "req_...",
-  "data": {},
-  "error": null
-}
-```
-
-统一错误：
-
-```json
-{
-  "request_id": "req_...",
-  "data": null,
-  "error": {
-    "code": "thoughtflow.capture.invalid_request",
-    "message": "content is required",
-    "details": {}
-  }
-}
-```
-
-### 8.1 Thoughts
-
-`POST /api/thoughts`
-
-请求：
-
-```json
-{
-  "type": "text",
-  "content": "一个零散想法",
-  "url": "",
-  "title": "",
-  "tags": ["idea"],
-  "topic_hints": ["ai-research"]
-}
-```
-
-响应：`202 Accepted`
-
-```json
-{
-  "thought": {
-    "id": "20260609-143010-8f3a",
-    "status": "captured",
-    "path": "thoughts/2026/06/20260609-143010-8f3a.md"
-  },
-  "jobs": [
-    {
-      "id": "job_refine_...",
-      "type": "refine",
-      "status": "queued"
-    }
-  ]
-}
-```
-
-`GET /api/thoughts/{id}`
-
-返回原子笔记元数据、正文分区、关联专题、Git commit 摘要和任务状态。
-
-`POST /api/thoughts/{id}/retry-refine`
-
-重试 URL 抓取、AI 摘要和 embedding。
-
-### 8.2 Search
-
-`GET /api/search?q={query}&mode=hybrid&page=1&page_size=20`
-
-参数：
-
-| 参数 | 说明 |
-| --- | --- |
-| `q` | 查询文本 |
-| `mode` | `keyword`、`semantic`、`hybrid` |
-| `sort` | 可选，`score`、`keyword`、`semantic`、`recency`，默认 `score` |
-| `topic_id` | 可选专题过滤 |
-| `tags` | 可选标签过滤 |
-| `from` / `to` | 时间范围 |
-| `explain` | 可选，`true` 时返回分数组件、权重和检索来源 |
-| `keyword_weight` / `semantic_weight` / `recency_weight` | 可选，混合排序权重；传入任一正值时归一化后覆盖默认权重 |
-
-返回：
-
-```json
-{
-  "items": [
-    {
-      "thought_id": "20260609-143010-8f3a",
-      "title": "Example Article",
-      "snippet": "...",
-      "score": 0.91,
-      "keyword_score": 0.72,
-      "semantic_score": 0.88,
-      "recency_score": 0.67,
-      "path": "thoughts/2026/06/20260609-143010-8f3a.md",
-      "topics": ["ai-research"],
-      "explain": {
-        "mode": "hybrid",
-        "sort": "score",
-        "score_formula": "score = keyword_score*0.45 + semantic_score*0.45 + recency_score*0.1",
-        "weights": {"keyword": 0.45, "semantic": 0.45, "recency": 0.1},
-        "components": {"keyword": 0.72, "semantic": 0.88, "recency": 0.67},
-        "keyword_source": "duckdb_fts",
-        "semantic_source": "duckdb_hnsw"
-      }
-    }
-  ],
-  "page": 1,
-  "page_size": 20,
-  "total": 1
-}
-```
-
-`semantic_source` 可能为 `duckdb_hnsw`、`duckdb_array`、`json_cosine` 或默认 fallback store 的 `memory_cosine`；VSS/HNSW 不可用时自动降级。
-
-`POST /api/synthesis`
-
-请求：
-
-```json
-{
-  "thought_ids": ["20260609-143010-8f3a"],
-  "goal": "生成一份研究大纲",
-  "format": "outline"
-}
-```
-
-返回 synthesis 草稿，并写入 `synthesis/drafts/{draft_id}.yaml`，状态为 `draft`。配置 `llm.api_key` 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
-
-`GET /api/synthesis`
-
-返回本地 synthesis 草稿仓库，按更新时间倒序排列。
-
-`GET /api/synthesis/{draft_id}`
-
-返回单个 synthesis 草稿，包括输入 Thought、来源链接、当前内容、状态和保存历史。
-
-`POST /api/synthesis/save`
-
-请求：
-
-```json
-{
-  "draft_id": "job-synthesis-xxxx",
-  "thought_ids": ["20260609-143010-8f3a"],
-  "goal": "生成一份研究大纲",
-  "format": "outline",
-  "content": "# 研究大纲\n\n..."
-}
-```
-
-说明：
-
-1. 保存动作通过 capture 运行单元创建新的 Thought。
-2. 新 Thought 的 `source` 标记为 `synthesis`。
-3. 保存内容会保留来源 Thought 的 Markdown 链接。
-4. 当请求包含 `draft_id` 时，会将 `synthesis/drafts/{draft_id}.yaml` 标记为 `saved`，记录保存时间和生成的 Thought ID。
-
-### 8.3 Topics
-
-`GET /api/topics`
-
-返回专题卡片、统计数据和最近活跃时间。
-
-`POST /api/topics`
-
-创建专题、规则和初始大纲。
-
-`GET /api/topics/{id}`
-
-返回专题配置、`index.md` 渲染内容、成员列表和活动记录。
-
-`PUT /api/topics/{id}`
-
-更新名称、规则、阈值、大纲和自动缝合策略。
-
-`POST /api/topics/{id}/rebuild`
-
-手动重建专题主文档，返回后台任务 ID。
-
-`POST /api/topics/{id}/weave-preview`
-
-请求：
-
-```json
-{
-  "thought_id": "20260609-143010-8f3a"
-}
-```
-
-返回当前 `index.md`、候选新版文档、source link、membership、逐行 diff、结构化 patch 和 proposal ID。该接口不写入专题主文档，但会将 pending proposal 写入 `topics/{slug}/approvals/{proposal_id}.yaml`。
-
-`GET /api/topics/{id}/weave-proposals`
-
-返回该专题的 weave proposal 队列和审批历史，按创建时间倒序排列。
-
-`GET /api/topics/{id}/weave-proposals/{proposal_id}`
-
-返回单个 weave proposal 的候选文档、diff、结构化 patch、状态和确认记录。
-
-`POST /api/topics/{id}/weave-accept`
-
-请求：
-
-```json
-{
-  "proposal_id": "job-topic-weave-proposal-xxxx",
-  "thought_id": "20260609-143010-8f3a",
-  "document": "# AI 研究\n\n..."
-}
-```
-
-确认用户审阅后的候选文档。当请求未修改候选文档时，服务端按 proposal 内的结构化 patch 校验 base hash、上下文行和 proposed hash 后原子写入 `topics/{slug}/index.md`；当前文档已经变化时返回冲突错误。用户编辑过候选文档时，服务端按完整文档写入路径处理，仍校验 source link。确认成功后同步 membership 事实文件、Thought backlink，并将对应 proposal 标记为 `accepted`。
-
-### 8.4 Events
-
-`GET /api/events`
-
-SSE message 示例：
-
-```text
-event: thought.refined
-id: evt_20260609_000001
-data: {"thought_id":"20260609-143010-8f3a","status":"refined"}
-```
-
-支持：
-
-1. `Last-Event-ID` 断线续传。
-2. `types` 查询参数过滤事件类型。
-3. 心跳事件，默认 15 到 30 秒一次。
-4. 前端断线重连后查询 `/api/jobs/{id}` 补齐当前状态。
-
-### 8.5 Jobs 与 System
-
-`GET /api/jobs/{id}`：查询后台任务快照。
-
-`GET /api/system/status`：查询工作区、LLM、Embedding、DuckDB、Git 和索引状态。
-
-`GET /api/system/metrics`：查询 JSON 格式运行指标快照。
-
-`GET /metrics`：查询 Prometheus text exposition 格式运行指标。
-
-`POST /api/system/reindex`：从 Markdown 全量重建 DuckDB 索引。
-
-## 9. UI 功能设计
-
-### 9.1 全局布局
-
-首屏即为可用工作台，不做营销页：
-
-1. 顶部：快速捕捉输入框、URL 粘贴、`Ctrl+K` 搜索入口。
-2. 左侧：专题导航和最近活动。
-3. 主区域：根据当前路由展示专题大盘、搜索中心或专题详情。
-4. 右侧或抽屉：任务进度、笔记预览、规则编辑。
-
-### 9.2 专题管理大盘
-
-展示：
-
-1. 专题卡片：名称、描述、碎片数、字数、最近更新时间。
-2. 异常状态：缝合失败、索引落后、Git 提交失败。
-3. 创建专题入口：名称、描述、关键词、标签、语义阈值。
-
-交互：
-
-1. 点击专题进入工作台。
-2. 支持按活跃度、碎片数、更新时间排序。
-3. 支持禁用或启用自动缝合。
-
-### 9.3 智能检索中心
-
-展示：
-
-1. 搜索输入与模式切换：关键词、语义、混合。
-2. 结果列表：标题、摘要、命中片段、分数、标签、所属专题。
-3. 预览面板：Markdown 渲染、front matter、原始链接。
-4. 批量勾选区：即时合稿入口。
-
-交互：
-
-1. `Ctrl+K` 聚焦搜索。
-2. 实时过滤标签和专题。
-3. 选择多个结果后生成总结或大纲。
-4. 合稿结果可复制、保存为新笔记或加入专题草稿。
-
-### 9.4 专题详情工作台
-
-左侧：
-
-1. `topics/{slug}/index.md` 渲染预览。
-2. 章节目录。
-3. source link 快速跳转原子笔记。
-
-右侧：
-
-1. 专题规则编辑。
-2. 大纲维护。
-3. 成员碎片列表。
-4. 手动重组按钮。
-5. 最近缝合记录和失败原因。
-
-## 10. LLM 与 Embedding 设计
-
-### 10.1 Provider 抽象
-
-内部使用 OpenAI 兼容接口抽象，并将文本生成与向量生成拆分为两个可独立配置的 provider：
-
-1. `LLMProvider`: 摘要、标签、合稿、专题缝合。
-2. `EmbeddingProvider`: embedding 生成。
-3. `ModelInfo(ctx)`: 查询模型、维度和能力。
-
-配置项：
-
-```toml
-[llm]
-base_url = "https://api.example.com"
-api_key = ""
-chat_model = "deepseek-chat"
-timeout_seconds = 60
-
-[embedding]
-base_url = "https://api.example.com"
-api_key = ""
-model = "text-embedding-3-small"
-timeout_seconds = 60
-```
-
-### 10.2 Prompt 任务
-
-| 任务 | 输入 | 输出 |
-| --- | --- | --- |
-| `summarize_thought` | 原文、网页正文、标题、URL | 摘要、核心观点、标签 |
-| `classify_topic` | 原子笔记、专题规则、相似候选 | 命中建议和原因 |
-| `weave_topic` | 专题大纲、旧 index、新碎片 | patch 或完整新版专题文档 |
-| `synthesize_selection` | 选中碎片、用户目标 | 总结报告或逻辑大纲 |
-
-约束：
-
-1. AI 输出必须经过结构化解析和校验。
-2. 专题缝合必须校验 source link 存在。
-3. 所有 AI 派生内容保留模型名、生成时间和输入版本 hash。
-4. 用户可配置关闭云端 LLM/Embedding，此时保留手动整理和关键词搜索能力。
-
-## 11. 配置设计
-
-配置分层：
-
-1. 默认配置：内置在二进制中。
-2. 独立配置目录：`<config-dir>/application.toml`，直接复用 `magicCommon/framework/configuration` 的 `application.toml` 机制。
-3. 启动参数 `--config-dir` 仅用于定位配置目录，不覆盖业务配置。
-
-业务配置只读取 `application.toml` 和内置默认值。虽然 magicCommon framework/configuration 内部支持环境变量合并，ThoughtFlow 读取配置时使用 framework 导出的原始 application 配置，避免环境变量改变运行时行为。
-
-目录约束：
-
-1. 运行状态目录由 `runtime.state_dir` 定义。
-2. `config-dir` 与 `runtime.state_dir` 不能相等。
-3. `config-dir` 与 `runtime.state_dir` 不能互相嵌套。
-
-关键配置：
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 8080
-
-[workspace]
-content_dir = "./thoughtflow-workspace"
-auto_init_git = true
-
-[runtime]
-state_dir = "./thoughtflow-runtime"
-
-[capture]
-duplicate_policy = "warn"
-
-[refiner]
-concurrency = 2
-url_fetch_timeout_seconds = 30
-
-[search]
-duckdb_path = "thoughtflow.duckdb"
-default_mode = "hybrid"
-
-[topic]
-auto_weave = true
-min_semantic_score = 0.78
-
-[git_sync]
-enabled = true
-debounce_seconds = 5
-
-[events]
-sse_heartbeat_seconds = 20
-
-[llm]
-base_url = "https://api.openai.com"
-api_key = ""
-chat_model = "gpt-4o-mini"
-timeout_seconds = 30
-
-[embedding]
-base_url = "https://api.openai.com"
-api_key = ""
-model = "text-embedding-3-small"
-timeout_seconds = 30
-```
-
-## 12. 错误与状态设计
-
-### 12.1 Thought 状态
-
-```text
-captured -> refining -> refined
-captured -> refining -> refine_failed
-refined -> indexed
-indexed -> topic_matched -> topic_updated
-```
-
-状态不强制单字段表达全部流程；原子笔记可保留主状态，后台任务和事件记录表达细分状态。
-
-### 12.2 Job 状态
-
-```text
-queued -> running -> succeeded
-queued -> running -> failed
-queued -> canceled
-running -> retrying -> running
-```
-
-任务必须记录：
-
-1. job ID
-2. 类型
-3. 关联资源 ID
-4. 当前状态
-5. 错误码
-6. 重试次数
-7. 创建、开始、结束时间
-
-### 12.3 错误码
-
-错误码前缀：
-
-| 前缀 | 说明 |
-| --- | --- |
-| `thoughtflow.capture.*` | 采集错误 |
-| `thoughtflow.refiner.*` | 网页抓取、AI、embedding 错误 |
-| `thoughtflow.search.*` | DuckDB、FTS、向量检索错误 |
-| `thoughtflow.topic.*` | 规则、缝合、重组错误 |
-| `thoughtflow.git.*` | Git 初始化、提交、冲突错误 |
-| `thoughtflow.system.*` | 配置、工作区、运行时错误 |
-
-## 13. 安全与隐私
-
-1. 默认只监听 `127.0.0.1`。
-2. API key 只从 `application.toml` 读取，不写入 Markdown。
-3. 发送到 LLM/Embedding Provider 的内容限定为当前任务所需片段。
-4. UI 明示哪些任务会调用云端 LLM 或 embedding provider。
-5. Git remote push 默认关闭，首版只做本地 commit。
-6. 日志不输出完整正文、API key 或 Authorization 头。
-
-## 14. 可观测性
-
-日志字段：
-
-1. `trace_id`
-2. `unit`
-3. `event_type`
-4. `thought_id`
-5. `topic_id`
-6. `job_id`
-7. `duration_ms`
-8. `error_code`
-
-指标：
-
-| 指标 | 说明 |
-| --- | --- |
-| `thoughtflow_capture_total` | 采集总数 |
-| `thoughtflow_refine_duration_seconds` | 加工耗时 |
-| `thoughtflow_ai_request_total` | LLM/Embedding provider 请求数 |
-| `thoughtflow_search_query_total` | 搜索请求数 |
-| `thoughtflow_index_lag_seconds` | 索引延迟 |
-| `thoughtflow_topic_weave_total` | 专题缝合次数 |
-| `thoughtflow_git_commit_total` | Git 提交次数 |
-| `thoughtflow_background_jobs` | 后台任务数量 |
-
-健康检查：
-
-1. live：进程可响应。
-2. ready：工作区可写、DuckDB 可连接、EventHub 可发布、BackgroundRoutine 可接受任务。
-3. degraded：LLM、Embedding 或 Git 不可用，但本地采集和阅读可继续。
-
-## 15. 测试与验收
-
-### 15.1 单元测试
-
-1. Markdown front matter 读写和未知字段保留。
-2. ID、slug、路径生成。
-3. URL 类型判断和内容 hash。
-4. 主题规则匹配。
-5. 混合搜索分数归一化。
-6. Git debounce 队列。
-7. 原生前端组件测试：Markdown CommonMark/GFM 安全渲染、Obsidian 双链、diff 展示、synthesis source link 去重和 outline helper。
-
-### 15.2 集成测试
-
-1. 文本采集到 Markdown 落盘。
-2. URL 抓取失败时保留原始笔记。
-3. `thought.captured` 驱动 refiner、search、git-sync。
-4. DuckDB 从 Markdown 全量重建。
-5. 专题重组失败不破坏旧 `index.md`。
-6. SSE 能收到任务状态并支持断线后查询补偿。
-7. 嵌入式前端资源通过 JS syntax gate、Node 组件测试和 Chrome desktop/mobile browser smoke 矩阵。
-
-### 15.3 验收标准
-
-MVP 完成标准：
-
-1. 可以启动单二进制本地服务。
-2. 可以提交文本和 URL，并生成 Markdown 原子笔记。
-3. 可以异步生成摘要、标签和 embedding。
-4. 可以进行关键词搜索和混合搜索，embedding 不可用时自动降级。
-5. 可以创建专题并按规则自动收录碎片。
-6. 可以查看专题大盘、搜索中心和专题详情工作台。
-7. 可以自动 Git commit Markdown 变更，并在失败时通过 UI 看到原因。
-8. 可以从搜索结果和专题内容回跳原子笔记。
-
-## 16. 里程碑建议
-
-### M1 本地采集闭环
-
-1. 单二进制启动。
-2. 工作区初始化。
-3. 文本/URL 原始 Markdown 落盘。
-4. 事件流和 SSE 基础能力。
-5. Git 本地自动 commit。
-
-### M2 LLM 加工与索引
-
-1. URL 正文抓取。
-2. LLM 摘要、标签和 embedding。
-3. DuckDB FTS 与索引重建。
-4. 搜索中心基础 UI。
-
-### M3 专题系统
-
-1. 专题规则管理。
-2. 自动命中判断。
-3. LLM 智能缝合。
-4. 专题详情工作台。
-
-### M4 体验与可靠性
-
-1. 即时合稿。
-2. 任务重试和失败恢复。
-3. Git 状态可视化。
-4. 性能、内存和隐私审计。
+1. **#97 scratchpad v2**：底层数据形状稳定后所有上层 UI/API 才能稳定。
+2. **#98 API 路径对齐**：与 #97 并行（前者是数据，后者是路由）。
+3. **#99 归档预览**：建立在 #97 字段之上。
+4. **#100 archive_strategy 路由**：建立在 #97 + #99 之上；包含 `ApplyDraftInternal` 复用 + 双向 backlink。
+5. **#101 reopen-session**：建立在 #97 + #100 之上。
+6. **#102 专题候选消费**：建立在 #97 之上；topic 模块订阅 scratchpad 事件。
+7. **#103 隐私提示**：UI 工作为主，可与 #104 并行。
+8. **#104 e2e 覆盖**：贯穿 #97–#103 的端到端验证，最后做。
