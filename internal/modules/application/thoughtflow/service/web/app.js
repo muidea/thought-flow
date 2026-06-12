@@ -2229,7 +2229,7 @@ async function previewThought(thoughtId, options = {}) {
   state.activeThoughtSnapshot = snapshot;
   const thought = snapshot.thought;
   const content = snapshot.content || {};
-  const html = renderMarkdown([
+  const sections = [
     `# ${thought.display_title || thought.user_title || thought.id}`,
     "",
     `status: ${thought.refine_status} / ${thought.index_status} / ${thought.topic_status}`,
@@ -2244,15 +2244,64 @@ async function previewThought(thoughtId, options = {}) {
     content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
     content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
     (snapshot.jobs || []).length > 0 ? `## ${t("thoughts.preview_jobs")}\n${(snapshot.jobs || []).map((job) => `- ${job.id} (${job.status})`).join("\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n"));
+  ];
+  // Post-refine expansion: surface 4 sub-sections written by the
+  // expander module. Each section is omitted when the corresponding
+  // field is empty so freshly-captured thoughts don't show skeleton
+  // placeholders before the pipeline finishes. A dedicated "pending"
+  // hint is shown only while the expansion is still running.
+  sections.push(appendExpansionSections(thought));
+  const html = renderMarkdown(sections.filter(Boolean).join("\n"));
   $("#thought-preview").innerHTML = html;
   const drawer = $("#thought-drawer-content");
   if (drawer) drawer.innerHTML = html;
   $("#drawer-add-synthesis").disabled = false;
   $("#retry-refine").disabled = false;
   if (options.drawer) openDrawer("thought-drawer");
+}
+
+// appendExpansionSections renders the post-refine expansion pipeline
+// output (related_thought_ids, suggested_topic_ids, url_followups,
+// expansion_plan) as a tail of the thought preview. Each section
+// stays out of the markdown when its field is empty, so the preview
+// collapses cleanly to the original/extracted content while the
+// expansion is still in flight. Expansion errors (recorded in
+// thought.errors) are surfaced as a small italic hint so the user
+// sees partial-failure feedback without blocking the rest of the
+// preview.
+function appendExpansionSections(thought) {
+  const relatedIDs = Array.isArray(thought.related_thought_ids) ? thought.related_thought_ids : [];
+  const suggestedTopicIDs = Array.isArray(thought.suggested_topic_ids) ? thought.suggested_topic_ids : [];
+  const urlFollowups = Array.isArray(thought.url_followups) ? thought.url_followups : [];
+  const expansionPlan = typeof thought.expansion_plan === "string" ? thought.expansion_plan.trim() : "";
+  const expandError = (thought.errors || []).find((e) => typeof e?.code === "string" && e.code.startsWith("thoughtflow.expand."));
+
+  const blocks = [];
+  if (relatedIDs.length > 0) {
+    blocks.push(`## ${t("thoughts.section_related")}\n${relatedIDs.map((id) => `- \`${id}\``).join("\n")}`);
+  } else if (suggestedTopicIDs.length === 0 && urlFollowups.length === 0 && !expansionPlan) {
+    // Show a pending hint only when ALL four sections are still empty —
+    // once any one of them lands we assume the pipeline is at least
+    // partially through and stop pestering the user.
+    blocks.push(`*${t("thoughts.expansion_pending")}*`);
+  }
+  if (suggestedTopicIDs.length > 0) {
+    blocks.push(`## ${t("thoughts.section_near_topics")}\n${suggestedTopicIDs.map((id) => `- \`${id}\``).join("\n")}`);
+  }
+  if (urlFollowups.length > 0) {
+    const lines = urlFollowups.map((item) => {
+      const title = item && typeof item.title === "string" && item.title.trim() ? item.title : item.url;
+      return `- [${title}](${item.url})`;
+    });
+    blocks.push(`## ${t("thoughts.section_url_followups")}\n${lines.join("\n")}`);
+  }
+  if (expansionPlan) {
+    blocks.push(`## ${t("thoughts.section_expansion_plan")}\n${expansionPlan}`);
+  }
+  if (expandError) {
+    blocks.push(`*${t("thoughts.expansion_failed")}*`);
+  }
+  return blocks.join("\n\n");
 }
 
 async function loadThoughtByID(event) {
@@ -2459,6 +2508,7 @@ function connectEvents() {
     "thought.refined",
     "thought.refine_failed",
     "thought.patched",
+    "thought.expanded",
     "search.index_updated",
     "topic.updated",
     "topic.matched",
@@ -2481,6 +2531,24 @@ function connectEvents() {
               appendCaptureMessage({ role: "system", text: t("capture.session.saved_path", { id: payload?.resource_id || "" }) });
             }
             refreshActiveCaptureThought();
+          }
+        } catch (_) { /* malformed event payload */ }
+      }
+      if (type === "thought.expanded") {
+        try {
+          const payload = JSON.parse(event.data);
+          const expandedID = payload?.resource_id;
+          if (!expandedID) return;
+          // Refresh the open thought preview if it matches — both the
+          // notes-page inline preview and the drawer-backed preview
+          // read the same `state.activeThoughtId`, so a single
+          // re-render covers both. The capture conversation owns its
+          // own copy of the snapshot and is refreshed by the thought
+          // .refined/.patched branch above; a thought.expanded after
+          // capture is also a no-op there because the conversation
+          // bubble list does not surface expansion sections.
+          if (state.activeThoughtId === expandedID) {
+            previewThought(expandedID).catch((error) => toast(error.message));
           }
         } catch (_) { /* malformed event payload */ }
       }

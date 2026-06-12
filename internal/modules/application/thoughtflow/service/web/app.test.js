@@ -122,6 +122,7 @@ function loadAppFunctionsWith(opts = {}) {
       appendCaptureMessage,
       formatBadgeCount,
       computeSidebarBadgeCounts,
+      appendExpansionSections,
       appState: state,
     });`,
     context,
@@ -642,4 +643,53 @@ test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
     synthesisDrafts: [],
   });
   assert.equal(JSON.stringify(zeros), JSON.stringify({ notes: "", topics: "", compose: "" }));
+});
+
+test("appendExpansionSections renders the 4 expansion fields when present", () => {
+  const app = loadAppFunctions();
+  const out = app.appendExpansionSections({
+    related_thought_ids: ["20260610-100000-rag", "20260610-110000-crawl"],
+    suggested_topic_ids: ["topic-pipelines"],
+    url_followups: [
+      { url: "https://example.com/a", title: "A primer", snippet: "intro" },
+      { url: "https://example.com/b", title: "" },
+    ],
+    expansion_plan: "## 背景\n...\n## 步骤\n1. ...",
+  });
+  // The function returns raw markdown, not HTML — the caller feeds it
+  // into renderMarkdown. The i18n stub is identity, so dotted keys
+  // appear as section headers.
+  assert.match(out, /## thoughts\.section_related/);
+  assert.match(out, /## thoughts\.section_near_topics/);
+  assert.match(out, /## thoughts\.section_url_followups/);
+  assert.match(out, /## thoughts\.section_expansion_plan/);
+  assert.match(out, /- `20260610-100000-rag`/);
+  assert.match(out, /- \[A primer\]\(https:\/\/example\.com\/a\)/);
+  // Empty title falls back to the URL so the link is still useful.
+  assert.match(out, /\[https:\/\/example\.com\/b\]\(https:\/\/example\.com\/b\)/);
+  // Plan is rendered as a multi-line block, not a single line.
+  assert.match(out, /## 步骤/);
+});
+
+test("appendExpansionSections emits pending hint when nothing has landed", () => {
+  const app = loadAppFunctions();
+  const out = app.appendExpansionSections({});
+  assert.match(out, /thoughts\.expansion_pending/);
+});
+
+test("appendExpansionSections stays silent once any field lands", () => {
+  const app = loadAppFunctions();
+  // A single related thought is enough to stop the pending hint; the
+  // user has at least one concrete piece of expansion to look at.
+  const out = app.appendExpansionSections({ related_thought_ids: ["x"] });
+  assert.doesNotMatch(out, /thoughts\.expansion_pending/);
+});
+
+test("appendExpansionSections surfaces partial-failure errors", () => {
+  const app = loadAppFunctions();
+  const out = app.appendExpansionSections({
+    related_thought_ids: ["x"],
+    errors: [{ code: "thoughtflow.expand.partial_failed", message: "search index offline" }],
+  });
+  assert.match(out, /thoughts\.expansion_failed/);
 });

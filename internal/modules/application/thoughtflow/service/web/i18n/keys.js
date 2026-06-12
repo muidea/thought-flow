@@ -105,6 +105,15 @@ export const Key = Object.freeze({
   ThoughtsPreviewLinks: "thoughts.preview_links",
   ThoughtsPreviewJobs: "thoughts.preview_jobs",
   ThoughtsPreviewSummary: "thoughts.preview_summary",
+  // Expansion sections surfaced by the post-refine expansion pipeline
+  // (EventThoughtExpanded → expander module).
+  ThoughtsSectionRelated: "thoughts.section_related",
+  ThoughtsSectionNearTopics: "thoughts.section_near_topics",
+  ThoughtsSectionUrlFollowups: "thoughts.section_url_followups",
+  ThoughtsSectionExpansionPlan: "thoughts.section_expansion_plan",
+  ThoughtsExpansionFailed: "thoughts.expansion_failed",
+  ThoughtsExpansionPending: "thoughts.expansion_pending",
+  ThoughtsNoRelated: "thoughts.no_related",
 
   // Search page
   SearchTitle: "search.title",

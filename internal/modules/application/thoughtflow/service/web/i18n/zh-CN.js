@@ -126,6 +126,13 @@ export const messages = {
   "thoughts.preview_links": "链接",
   "thoughts.preview_jobs": "任务",
   "thoughts.preview_summary": "摘要",
+  "thoughts.section_related": "相关笔记",
+  "thoughts.section_near_topics": "可能相关的专题",
+  "thoughts.section_url_followups": "延伸阅读",
+  "thoughts.section_expansion_plan": "处理思路与方案",
+  "thoughts.expansion_failed": "扩展建议生成失败",
+  "thoughts.expansion_pending": "正在生成扩展建议…",
+  "thoughts.no_related": "未找到相关笔记。",
 
   "search.title": "搜索",
   "search.description": "按关键词或语义找笔记",

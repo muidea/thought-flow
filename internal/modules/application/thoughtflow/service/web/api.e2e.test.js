@@ -221,10 +221,23 @@ test("API e2e", async (t) => {
     assert.equal(getRes.status, 200);
     assert.equal(envelope(getRes).data.thought.id, id);
 
-    const patch = await request(server.baseURL, `/api/thoughts/${id}`, "PATCH", {
-      body: { title: "e2e note renamed", ai_notes_append: "Renamed during e2e." },
-      headers: { "X-Session-Id": "e2e-session-1" },
-    });
+    // The expander pipeline (post-refine 4-way expansion) holds the
+    // thoughtlock with session id "expander" for the duration of the
+    // background job. The first PATCH attempt may race with that
+    // lock and surface 409. Retry briefly until the lock is released
+    // so the lifecycle assertion is deterministic; if the lock never
+    // clears we surface the original 409 for diagnosis.
+    const patchDeadline = Date.now() + 5000;
+    let patch;
+    for (;;) {
+      patch = await request(server.baseURL, `/api/thoughts/${id}`, "PATCH", {
+        body: { title: "e2e note renamed", ai_notes_append: "Renamed during e2e." },
+        headers: { "X-Session-Id": "e2e-session-1" },
+      });
+      if (patch.status !== 409) break;
+      if (Date.now() > patchDeadline) break;
+      await sleep(100);
+    }
     assert.equal(patch.status, 200, `patch status=${patch.status} body=${patch.text}`);
     const patched = envelope(patch).data;
     assert.equal(patched.thought.user_title, "e2e note renamed");
@@ -249,6 +262,54 @@ test("API e2e", async (t) => {
       headers: { "X-Session-Id": "e2e-session-1" },
     });
     assert.ok(unknown.status >= 400, `expected 4xx on unknown field, got ${unknown.status}`);
+  });
+
+  await t.test("post-refine expansion writes 4 fields to the thought", async () => {
+    // PR5b/Phase 10: after the refiner emits thought.refined, the
+    // expander module runs a 4-way pipeline (related thoughts, LLM
+    // plan, near-miss topics, URL followups) and persists the result
+    // as front-matter fields. The test env has [llm] configured =
+    // false, so the LLM stage uses the local provider which always
+    // returns a non-empty plan — that's the most reliable signal that
+    // the expander ran end-to-end.
+    const create = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "expansion e2e", content: "post-refine expansion coverage." },
+    });
+    assert.equal(create.status, 202, `create status=${create.status} body=${create.text}`);
+    const id = envelope(create).data.thought.id;
+
+    // The expansion runs in the background; poll GET until the local
+    // LLM plan lands or the deadline passes. The 4 fields may be empty
+    // arrays / empty strings for short thoughts, so we only assert that
+    // the keys are present in the snapshot — the field-level
+    // guarantees live in the Go unit tests for the expander.
+    const deadline = Date.now() + 8000;
+    let snapshot;
+    let planLanded = false;
+    for (;;) {
+      const res = await request(server.baseURL, `/api/thoughts/${id}`, "GET");
+      assert.equal(res.status, 200);
+      snapshot = envelope(res).data;
+      if (typeof snapshot.thought.expansion_plan === "string" && snapshot.thought.expansion_plan.length > 0) {
+        planLanded = true;
+        break;
+      }
+      if (Date.now() > deadline) break;
+      await sleep(150);
+    }
+    assert.ok(planLanded, `expansion_plan did not land within deadline; snapshot=${JSON.stringify(snapshot.thought).slice(0, 300)}`);
+    // The 4 expansion fields must all be present in some form on the
+    // snapshot so the frontend can render them. The Go model tags the
+    // slice / string fields with `omitempty`, so empty values surface
+    // as `undefined` in JSON (a missing key) — that is still a
+    // well-formed expansion result, the frontend treats it as "no
+    // items". The LLM plan however is non-empty once the local
+    // provider finishes, so `expansion_plan` is always a string here.
+    const isArrayOrMissing = (value) => Array.isArray(value) || value === undefined;
+    assert.ok(isArrayOrMissing(snapshot.thought.related_thought_ids), "related_thought_ids must be an array or omitted");
+    assert.ok(isArrayOrMissing(snapshot.thought.suggested_topic_ids), "suggested_topic_ids must be an array or omitted");
+    assert.ok(isArrayOrMissing(snapshot.thought.url_followups), "url_followups must be an array or omitted (text type has no followups)");
+    assert.equal(typeof snapshot.thought.expansion_plan, "string", "expansion_plan must be a string");
   });
 
   await t.test("capture session start returns a thought", async () => {

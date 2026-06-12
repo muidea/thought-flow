@@ -126,6 +126,13 @@ export const messages = {
   "thoughts.preview_links": "Links",
   "thoughts.preview_jobs": "Jobs",
   "thoughts.preview_summary": "Summary",
+  "thoughts.section_related": "Related thoughts",
+  "thoughts.section_near_topics": "Possible related topics",
+  "thoughts.section_url_followups": "Further reading",
+  "thoughts.section_expansion_plan": "Approach & next steps",
+  "thoughts.expansion_failed": "Failed to generate expansion",
+  "thoughts.expansion_pending": "Generating expansion…",
+  "thoughts.no_related": "No related notes found.",
 
   "search.title": "Search",
   "search.description": "Find thoughts by keyword or meaning",
