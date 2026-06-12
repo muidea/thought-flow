@@ -137,6 +137,21 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/thoughts/:id/suggest", engine.GET, s.handleThoughtSuggest)
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
 	s.registry.AddHandler("/api/thoughts/:id", "PATCH", s.handlePatchThought)
+	s.registry.AddHandler("/api/thoughts/:id/reopen-session", engine.POST, s.handleReopenSession)
+	// Capture-session resource (PRD §2.2). Old paths below are kept
+	// as deprecation shims — they log a warning and forward to the
+	// new handlers so existing front-ends and curl recipes keep
+	// working through the transition window.
+	s.registry.AddHandler("/api/capture/sessions", engine.POST, s.handleCreateSession)
+	s.registry.AddHandler("/api/capture/sessions", engine.GET, s.handleListSessions)
+	s.registry.AddHandler("/api/capture/sessions/active", engine.GET, s.handleGetActiveSession)
+	s.registry.AddHandler("/api/capture/sessions/:id", engine.GET, s.handleGetSession)
+	s.registry.AddHandler("/api/capture/sessions/:id", "DELETE", s.handleDeleteSession)
+	s.registry.AddHandler("/api/capture/sessions/:id/messages", engine.POST, s.handleSessionMessage)
+	s.registry.AddHandler("/api/capture/sessions/:id/context", engine.POST, s.handleSessionContext)
+	s.registry.AddHandler("/api/capture/sessions/:id/intent", engine.POST, s.handleSessionIntent)
+	s.registry.AddHandler("/api/capture/sessions/:id/strategy", engine.POST, s.handleSessionStrategy)
+	// Deprecation shims — old paths kept on purpose; see handleLegacyDeprecationLog.
 	s.registry.AddHandler("/api/capture/sessions/start", engine.POST, s.handleStartCaptureSession)
 	s.registry.AddHandler("/api/capture/scratchpad", engine.GET, s.handleGetScratchpad)
 	s.registry.AddHandler("/api/capture/scratchpad", "POST", s.handlePostScratchpad)
@@ -314,6 +329,7 @@ func (s *Service) classifyCaptureCommand(ctx context.Context, cmd models.Capture
 //     compatibility, but Thought / Jobs / Suggestion are zero-valued
 //     and Scratchpad carries the new state.
 func (s *Service) handleStartCaptureSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "POST /api/capture/sessions/start → POST /api/capture/sessions")
 	_ = ctx
 	if s.scratchpad == nil || s.scratchpadSvc == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -463,6 +479,7 @@ func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter
 //
 //	GET /api/capture/scratchpad?session_id=X
 func (s *Service) handleGetScratchpad(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "GET /api/capture/scratchpad → GET /api/capture/sessions/{id}")
 	_ = ctx
 	if s.scratchpad == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -489,6 +506,7 @@ func (s *Service) handleGetScratchpad(ctx context.Context, res http.ResponseWrit
 //	POST /api/capture/scratchpad
 //	body: Scratchpad (or partial — zero values mean "no change")
 func (s *Service) handlePostScratchpad(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "POST /api/capture/scratchpad → POST /api/capture/sessions")
 	_ = ctx
 	if s.scratchpad == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -525,6 +543,7 @@ func (s *Service) handlePostScratchpad(ctx context.Context, res http.ResponseWri
 //
 //	DELETE /api/capture/scratchpad?session_id=X
 func (s *Service) handleDeleteScratchpad(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "DELETE /api/capture/scratchpad → DELETE /api/capture/sessions/{id}")
 	_ = ctx
 	if s.scratchpad == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -552,6 +571,7 @@ func (s *Service) handleDeleteScratchpad(ctx context.Context, res http.ResponseW
 //	POST /api/capture/scratchpad/commit
 //	body: {session_id: string}
 func (s *Service) handleCommitScratchpad(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "POST /api/capture/scratchpad/commit → POST /api/capture/sessions/{id}/archive")
 	_ = ctx
 	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
 	if err != nil {
@@ -596,6 +616,7 @@ func (s *Service) handleCommitScratchpad(ctx context.Context, res http.ResponseW
 //
 //	GET /api/capture/scratchpad/list
 func (s *Service) handleListScratchpads(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "GET /api/capture/scratchpad/list → GET /api/capture/sessions")
 	_ = ctx
 	if s.scratchpad == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -625,6 +646,7 @@ func (s *Service) handleListScratchpads(ctx context.Context, res http.ResponseWr
 //	POST /api/capture/new-session
 //	body: {prev_session_id?: string}
 func (s *Service) handleNewCaptureSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	logDeprecation(req, "POST /api/capture/new-session → POST /api/capture/sessions (reuse_last=false)")
 	_ = ctx
 	if s.scratchpad == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
@@ -1728,4 +1750,382 @@ func splitCSV(value string) []string {
 		}
 	}
 	return items
+}
+
+// logDeprecation records a structured warning for old-path usage.
+// Front ends and curl recipes that still hit the previous generation
+// of capture routes get one line of context so the migration can be
+// measured from server logs alone — the response body is still the
+// same payload the legacy handler would have produced. The function
+// never returns an error and is safe to call from any handler.
+func logDeprecation(req *http.Request, hint string) {
+	ua := req.Header.Get("User-Agent")
+	rem := req.RemoteAddr
+	fmt.Fprintf(os.Stderr, "thoughtflow.deprecation %s ua=%q remote=%q\n", hint, ua, rem)
+}
+
+// handleCreateSession is the new "open or reuse a capture session"
+// entry point. Three shapes:
+//
+//	body.content is empty, body.reuse_last=true   →  return LastActive (or a fresh one)
+//	body.content is empty, body.reuse_last=false  →  mint a new session_id
+//	body.content is set, any reuse_last            →  AppendMessage (creates the
+//	                                                scratchpad if absent)
+//
+// The shape mirrors handleStartCaptureSession + handleNewCaptureSession
+// from the previous generation, collapsed into one POST so the front
+// end has a single obvious "open the capture page" verb.
+//
+//	POST /api/capture/sessions
+//	body: {content?, role?, reuse_last?, source_thought_id?, prev_session_id?}
+func (s *Service) handleCreateSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body struct {
+		Content       string `json:"content"`
+		Role          string `json:"role"`
+		ReuseLast     bool   `json:"reuse_last"`
+		SourceThought string `json:"source_thought_id"`
+		PrevSessionID string `json:"prev_session_id"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	if prev := strings.TrimSpace(body.PrevSessionID); prev != "" {
+		if err := s.scratchpad.Delete(prev); err != nil {
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+			return
+		}
+	}
+	role := strings.TrimSpace(body.Role)
+	if role == "" {
+		role = "user"
+	}
+	if content := strings.TrimSpace(body.Content); content != "" {
+		// Content path: a brand-new session id is fine — AppendMessage
+		// is upsert-style. The session id is required only as a
+		// client-supplied handle so the front end can keep the URL
+		// stable. If the caller did not supply one we mint it here.
+		sessionID := strings.TrimSpace(req.Header.Get("X-Session-Id"))
+		if sessionID == "" {
+			sessionID = models.NewEventID(time.Now().UTC())
+		}
+		sp, err := s.scratchpadSvc.AppendMessage(sessionID, role, content)
+		if err != nil {
+			if errors.Is(err, capturebiz.ErrScratchpadUnavailable) {
+				writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", err.Error())
+				return
+			}
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+			return
+		}
+		if st := strings.TrimSpace(body.SourceThought); st != "" && sp.SourceThoughtID == "" {
+			sp.SourceThoughtID = st
+			sp, err = s.scratchpad.Save(sp)
+			if err != nil {
+				writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+				return
+			}
+		}
+		writeJSON(res, req, http.StatusOK, sp)
+		return
+	}
+	if body.ReuseLast {
+		if last, ok := s.scratchpad.LastActive(); ok {
+			writeJSON(res, req, http.StatusOK, last)
+			return
+		}
+	}
+	newID := models.NewEventID(time.Now().UTC())
+	fresh := scratchpad.Scratchpad{SessionID: newID, WorkspaceID: s.workspace.ID}
+	if st := strings.TrimSpace(body.SourceThought); st != "" {
+		fresh.SourceThoughtID = st
+	}
+	saved, err := s.scratchpad.Save(fresh)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, saved)
+}
+
+// handleListSessions returns every scratchpad summary, with the
+// most-recently-active uncommitted session id surfaced separately
+// so the front-end boot path can rehydrate it.
+//
+//	GET /api/capture/sessions
+func (s *Service) handleListSessions(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	payload := map[string]any{
+		"summaries": s.scratchpad.List(),
+	}
+	if last, ok := s.scratchpad.LastActive(); ok {
+		payload["last_active_session_id"] = last.SessionID
+	}
+	writeJSON(res, req, http.StatusOK, payload)
+}
+
+// handleGetActiveSession returns the most recently active
+// uncommitted scratchpad, or an empty 200 body when none exists
+// (the front end uses that as "open an empty composer").
+//
+//	GET /api/capture/sessions/active
+func (s *Service) handleGetActiveSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	sp, ok := s.scratchpad.LastActive()
+	if !ok {
+		writeJSON(res, req, http.StatusOK, map[string]any{})
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleGetSession is the canonical scratchpad-by-id read.
+//
+//	GET /api/capture/sessions/{id}
+func (s *Service) handleGetSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	sp, err := s.scratchpad.Get(sessionID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleDeleteSession removes a scratchpad. Missing sessions are
+// not an error — the UI can issue DELETE on first send of a fresh
+// session without special-casing.
+//
+//	DELETE /api/capture/sessions/{id}
+func (s *Service) handleDeleteSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	if err := s.scratchpad.Delete(sessionID); err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// handleSessionMessage appends a chat message to a scratchpad.
+// The LLM tool surface hits this on every turn.
+//
+//	POST /api/capture/sessions/{id}/messages
+//	body: {role, text}
+func (s *Service) handleSessionMessage(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	// pathID strips the prefix; we need to also strip the trailing /messages
+	sessionID = strings.TrimSuffix(sessionID, "/messages")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body struct {
+		Role string `json:"role"`
+		Text string `json:"text"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "text is required")
+		return
+	}
+	sp, err := s.scratchpadSvc.AppendMessage(sessionID, body.Role, body.Text)
+	if err != nil {
+		if errors.Is(err, capturebiz.ErrScratchpadUnavailable) {
+			writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", err.Error())
+			return
+		}
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleSessionContext replaces the structured session_context
+// block. The whole block is replaced (not merged) per the
+// LLM-tool contract — see ScratchpadService.UpdateSessionContext.
+//
+//	POST /api/capture/sessions/{id}/context
+//	body: {session_context: {topic, goal, ...}}
+func (s *Service) handleSessionContext(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/context")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body scratchpad.SessionContext
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	sp, err := s.scratchpadSvc.UpdateSessionContext(sessionID, body)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleSessionIntent records WHO is driving the archive.
+//
+//	POST /api/capture/sessions/{id}/intent
+//	body: {intent: "none" | "menu" | "llm"}
+func (s *Service) handleSessionIntent(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/intent")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body struct {
+		Intent scratchpad.ArchiveIntent `json:"intent"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	sp, err := s.scratchpadSvc.SetArchiveIntent(sessionID, body.Intent)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleSessionStrategy records the commit routing decision.
+// thought_id is only required for "update_thought" / "supplement";
+// the service persists it on the scratchpad's SourceThoughtID so
+// the eventual commit can find it without the front end re-sending
+// it on every call.
+//
+//	POST /api/capture/sessions/{id}/strategy
+//	body: {strategy: "new" | "update_thought" | "supplement", thought_id?: string}
+func (s *Service) handleSessionStrategy(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/strategy")
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", err.Error())
+		return
+	}
+	var body struct {
+		Strategy scratchpad.ArchiveStrategy `json:"strategy"`
+		ThoughtID string                   `json:"thought_id"`
+	}
+	if len(rawBody) > 0 {
+		if err := json.Unmarshal(rawBody, &body); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+			return
+		}
+	}
+	sp, err := s.scratchpadSvc.SetArchiveStrategy(sessionID, body.Strategy, body.ThoughtID)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
+// handleReopenSession is the "从已归档 Thought 重新整理" entry
+// point (PRD §3.1.1). The full implementation lands in #101;
+// the current shape is a 501 stub so the route exists and the
+// front end can wire a "重新整理" button that surfaces a
+// "coming soon" message rather than a 404.
+//
+//	POST /api/thoughts/{id}/reopen-session
+func (s *Service) handleReopenSession(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	thoughtID := strings.TrimSpace(pathID(req.URL.Path, "/api/thoughts/"))
+	thoughtID = strings.TrimSuffix(thoughtID, "/reopen-session")
+	if thoughtID == "" || strings.Contains(thoughtID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "thought id is required")
+		return
+	}
+	writeError(res, req, http.StatusNotImplemented, "thoughtflow.capture.reopen_session.not_implemented", "reopen-session is wired in #101 (reopen-from-thought)")
 }

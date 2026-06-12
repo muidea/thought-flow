@@ -213,6 +213,109 @@ func (s *ScratchpadService) AppendDraft(sessionID string, draft scratchpad.Draft
 	return s.store.Save(sp)
 }
 
+// UpdateSessionContext replaces the session-context block on a
+// scratchpad with the supplied value. The whole block is replaced
+// (not merged) so callers can drop fields by simply omitting them —
+// this is the contract the LLM-side tool call wants, because the
+// model is reasoning about the whole context graph, not patch deltas.
+//
+// The function never errors on an "absent" session: a brand-new
+// scratchpad is created with the supplied context. This mirrors the
+// behaviour of AppendMessage so the LLM tool can fire before the
+// first user message lands.
+func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpad.SessionContext) (scratchpad.Scratchpad, error) {
+	if s == nil || s.store == nil {
+		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
+	}
+	sp, err := s.store.Get(sessionID)
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	sp.SessionContext = scratchpad.SessionContext{
+		Topic:             strings.TrimSpace(ctx.Topic),
+		Goal:              strings.TrimSpace(ctx.Goal),
+		ConfirmedFacts:    trimNonEmpty(ctx.ConfirmedFacts),
+		OpenQuestions:     trimNonEmpty(ctx.OpenQuestions),
+		Conflicts:         trimNonEmpty(ctx.Conflicts),
+		CandidateTitle:    strings.TrimSpace(ctx.CandidateTitle),
+		CandidateTags:     trimNonEmpty(ctx.CandidateTags),
+		CandidateSummary:  strings.TrimSpace(ctx.CandidateSummary),
+		CandidateBody:     ctx.CandidateBody,
+		SourceLinks:       trimNonEmpty(ctx.SourceLinks),
+		RelatedThoughtIDs: trimNonEmpty(ctx.RelatedThoughtIDs),
+		SuggestedTopicIDs: trimNonEmpty(ctx.SuggestedTopicIDs),
+	}
+	return s.store.Save(sp)
+}
+
+// SetArchiveIntent records WHO is driving the archive. The values
+// are constrained to the three legal states (none / menu / llm);
+// any other string is normalised to "none" so a typo from the LLM
+// tool does not poison the scratchpad. The function never errors on
+// an "absent" session for the same reason as UpdateSessionContext.
+func (s *ScratchpadService) SetArchiveIntent(sessionID string, intent scratchpad.ArchiveIntent) (scratchpad.Scratchpad, error) {
+	if s == nil || s.store == nil {
+		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
+	}
+	sp, err := s.store.Get(sessionID)
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	switch scratchpad.ArchiveIntent(strings.TrimSpace(string(intent))) {
+	case scratchpad.ArchiveIntentMenu, scratchpad.ArchiveIntentLLM:
+		sp.ArchiveIntent = intent
+	default:
+		sp.ArchiveIntent = scratchpad.ArchiveIntentNone
+	}
+	return s.store.Save(sp)
+}
+
+// SetArchiveStrategy records the routing decision the user (or, by
+// convention, the LLM-side suggestion) has made for the next commit.
+// Empty / unknown values default to "new" so a partially-saved
+// scratchpad never lands with no strategy.
+//
+// The "update_thought" strategy requires SourceThoughtID or
+// ThoughtID to be set on the scratchpad; the helper does not
+// enforce that here so callers can stage the strategy first and
+// the source thought second. BuildArchivePreview is the gate that
+// refuses to render a preview when the combination is invalid.
+func (s *ScratchpadService) SetArchiveStrategy(sessionID string, strategy scratchpad.ArchiveStrategy, thoughtID string) (scratchpad.Scratchpad, error) {
+	if s == nil || s.store == nil {
+		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
+	}
+	sp, err := s.store.Get(sessionID)
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	switch scratchpad.ArchiveStrategy(strings.TrimSpace(string(strategy))) {
+	case scratchpad.ArchiveStrategyUpdate, scratchpad.ArchiveStrategySupplement:
+		sp.ArchiveStrategy = strategy
+	default:
+		sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
+	}
+	if thoughtID = strings.TrimSpace(thoughtID); thoughtID != "" {
+		// The strategy decision may name a target thought (update
+		// or supplement). Persist it on SourceThoughtID so a
+		// subsequent BuildArchivePreview / Commit can find it
+		// without the HTTP layer re-sending it on every call.
+		sp.SourceThoughtID = thoughtID
+	}
+	return s.store.Save(sp)
+}
+
 // BuildCaptureCommand flattens a scratchpad into a CaptureCommand
 // ready for Service.Capture. The shape matches what the existing
 // handleCreateThought path sends:

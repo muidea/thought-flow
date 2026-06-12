@@ -319,6 +319,143 @@ func TestScratchpadServiceRejectsNilStore(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceUpdateSessionContextReplacesBlock(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	// Pre-stage: existing scratchpad with old context.
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			Topic: "old",
+		},
+	})
+	_, err := svc.UpdateSessionContext("s1", scratchpad.SessionContext{
+		Topic:             "new topic",
+		Goal:              "summarise",
+		ConfirmedFacts:    []string{"fact-1", "  ", "fact-2"},
+		OpenQuestions:     []string{"q1"},
+		Conflicts:         []string{},
+		CandidateTitle:    "  ", // whitespace-only → empty
+		CandidateTags:     []string{"ai", "", "draft"},
+		CandidateSummary:  "summary",
+		CandidateBody:     "body",
+		SourceLinks:       []string{"https://x", " "},
+		RelatedThoughtIDs: []string{"t-1"},
+		SuggestedTopicIDs: []string{"topic-1"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSessionContext: %v", err)
+	}
+	sp, _ := store.Get("s1")
+	if sp.SessionContext.Topic != "new topic" {
+		t.Fatalf("Topic = %q", sp.SessionContext.Topic)
+	}
+	if sp.SessionContext.Goal != "summarise" {
+		t.Fatalf("Goal = %q", sp.SessionContext.Goal)
+	}
+	if len(sp.SessionContext.ConfirmedFacts) != 2 || sp.SessionContext.ConfirmedFacts[0] != "fact-1" {
+		t.Fatalf("ConfirmedFacts = %+v (whitespace should be dropped)", sp.SessionContext.ConfirmedFacts)
+	}
+	if sp.SessionContext.CandidateTitle != "" {
+		t.Fatalf("CandidateTitle should be empty after trim, got %q", sp.SessionContext.CandidateTitle)
+	}
+	if len(sp.SessionContext.CandidateTags) != 2 {
+		t.Fatalf("CandidateTags = %+v", sp.SessionContext.CandidateTags)
+	}
+	if sp.SessionContext.CandidateBody != "body" {
+		t.Fatalf("CandidateBody not preserved (CandidateBody is NOT trimmed): %q", sp.SessionContext.CandidateBody)
+	}
+}
+
+func TestScratchpadServiceUpdateSessionContextCreatesAbsentSession(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp, err := svc.UpdateSessionContext("absent", scratchpad.SessionContext{Topic: "auto-created"})
+	if err != nil {
+		t.Fatalf("UpdateSessionContext: %v", err)
+	}
+	if sp.SessionID != "absent" {
+		t.Fatalf("SessionID = %q", sp.SessionID)
+	}
+	if sp.SessionContext.Topic != "auto-created" {
+		t.Fatalf("Topic = %q", sp.SessionContext.Topic)
+	}
+}
+
+func TestScratchpadServiceUpdateSessionContextRejectsEmptySessionID(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	if _, err := svc.UpdateSessionContext("", scratchpad.SessionContext{}); err == nil {
+		t.Fatalf("empty session id should error")
+	}
+}
+
+func TestScratchpadServiceSetArchiveIntentNormalisesUnknown(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	_, _ = store.Save(scratchpad.Scratchpad{SessionID: "s1"})
+	// menu → kept
+	sp, err := svc.SetArchiveIntent("s1", scratchpad.ArchiveIntentMenu)
+	if err != nil {
+		t.Fatalf("SetArchiveIntent menu: %v", err)
+	}
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentMenu {
+		t.Fatalf("ArchiveIntent = %q", sp.ArchiveIntent)
+	}
+	// llm → kept
+	sp, _ = svc.SetArchiveIntent("s1", scratchpad.ArchiveIntentLLM)
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentLLM {
+		t.Fatalf("ArchiveIntent = %q", sp.ArchiveIntent)
+	}
+	// unknown → none
+	sp, _ = svc.SetArchiveIntent("s1", scratchpad.ArchiveIntent("bogus"))
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentNone {
+		t.Fatalf("bogus intent should normalise to none, got %q", sp.ArchiveIntent)
+	}
+}
+
+func TestScratchpadServiceSetArchiveIntentRejectsEmptySessionID(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	if _, err := svc.SetArchiveIntent("", scratchpad.ArchiveIntentMenu); err == nil {
+		t.Fatalf("empty session id should error")
+	}
+}
+
+func TestScratchpadServiceSetArchiveStrategyPersistsSourceThoughtID(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	_, _ = store.Save(scratchpad.Scratchpad{SessionID: "s1"})
+	sp, err := svc.SetArchiveStrategy("s1", scratchpad.ArchiveStrategySupplement, "thought-parent")
+	if err != nil {
+		t.Fatalf("SetArchiveStrategy: %v", err)
+	}
+	if sp.ArchiveStrategy != scratchpad.ArchiveStrategySupplement {
+		t.Fatalf("ArchiveStrategy = %q", sp.ArchiveStrategy)
+	}
+	if sp.SourceThoughtID != "thought-parent" {
+		t.Fatalf("SourceThoughtID = %q (should be stamped)", sp.SourceThoughtID)
+	}
+}
+
+func TestScratchpadServiceSetArchiveStrategyDefaultsToNewOnUnknown(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	_, _ = store.Save(scratchpad.Scratchpad{SessionID: "s1"})
+	sp, _ := svc.SetArchiveStrategy("s1", scratchpad.ArchiveStrategy("what"), "")
+	if sp.ArchiveStrategy != scratchpad.ArchiveStrategyNew {
+		t.Fatalf("unknown strategy should default to new, got %q", sp.ArchiveStrategy)
+	}
+	if sp.SourceThoughtID != "" {
+		t.Fatalf("SourceThoughtID should remain empty, got %q", sp.SourceThoughtID)
+	}
+}
+
+func TestScratchpadServiceSetArchiveStrategyRejectsEmptySessionID(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	if _, err := svc.SetArchiveStrategy("", scratchpad.ArchiveStrategyNew, ""); err == nil {
+		t.Fatalf("empty session id should error")
+	}
+}
+
 func TestTrimNonEmpty(t *testing.T) {
 	got := trimNonEmpty([]string{"a", "  ", "b", "", "c"})
 	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
