@@ -398,9 +398,29 @@ func parseUnixSeconds(value string) (int64, error) {
 	return seconds, err
 }
 
+// ensureRepository makes sure the workspace path is its own git
+// work tree. A bare `rev-parse --is-inside-work-tree` returns success
+// when the workspace is nested inside any ancestor git repo (e.g. the
+// checkout of thought-flow itself), so the previous version of this
+// function happily reused the parent repo — only for the subsequent
+// `git add` to fail with "ignored by .gitignore" once the parent
+// repo's ignore rules covered the workspace directory. Verifying the
+// toplevel equals the workspace path catches that case and forces a
+// local `git init` so commits land in a dedicated repo.
 func (s *Service) ensureRepository(ctx context.Context) error {
-	if err := runGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--is-inside-work-tree"); err == nil {
-		return nil
+	toplevel, toplevelErr := outputGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--show-toplevel")
+	if toplevelErr == nil {
+		clean, err := filepath.EvalSymlinks(strings.TrimSpace(string(toplevel)))
+		if err != nil {
+			clean = strings.TrimSpace(string(toplevel))
+		}
+		root, err := filepath.EvalSymlinks(s.workspace.RootPath)
+		if err != nil {
+			root = s.workspace.RootPath
+		}
+		if filepath.Clean(clean) == filepath.Clean(root) {
+			return nil
+		}
 	}
 	return runGit(ctx, "-C", s.workspace.RootPath, "init")
 }

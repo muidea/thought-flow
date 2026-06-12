@@ -192,6 +192,60 @@ func TestRuntimeStatusReportsDisabledGit(t *testing.T) {
 	}
 }
 
+// TestEnsureRepositoryInitsLocalRepoWhenNestedUnderParentRepo locks
+// in the fix for the audit failure where the workspace sat inside an
+// ancestor git repo (the thought-flow checkout itself) whose
+// .gitignore covered the workspace path. `git add` would then reject
+// every thought with "ignored by .gitignore". ensureRepository must
+// detect that the work-tree toplevel differs from the workspace path
+// and run a dedicated `git init` inside the workspace.
+func TestEnsureRepositoryInitsLocalRepoWhenNestedUnderParentRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	parent := t.TempDir()
+	runGitForTest(t, parent, "init")
+	runGitForTest(t, parent, "config", "user.name", "Parent")
+	runGitForTest(t, parent, "config", "user.email", "parent@example.test")
+	// Mirror the project's .gitignore pattern: a subdirectory of the
+	// parent repo is excluded, so reusing the parent repo for the
+	// workspace would make `git add thoughts/...` fail.
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte("workspace/\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	service := NewService(&models.Workspace{ID: "local", RootPath: workspace}, nil, nil, nil, true, time.Hour)
+	if err := service.ensureRepository(context.Background()); err != nil {
+		t.Fatalf("ensureRepository() error = %v", err)
+	}
+
+	// The workspace should now be its own work tree (`.git` directly
+	// inside it), not just a subdir of the parent's repo.
+	dotGit := filepath.Join(workspace, ".git")
+	if _, err := os.Stat(dotGit); err != nil {
+		t.Fatalf("workspace .git not present: %v", err)
+	}
+	toplevelRaw, err := exec.Command("git", "-C", workspace, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --show-toplevel: %v", err)
+	}
+	gotToplevel, err := filepath.EvalSymlinks(strings.TrimSpace(string(toplevelRaw)))
+	if err != nil {
+		gotToplevel = strings.TrimSpace(string(toplevelRaw))
+	}
+	want, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		want = workspace
+	}
+	if filepath.Clean(gotToplevel) != filepath.Clean(want) {
+		t.Fatalf("workspace toplevel = %q, want %q", gotToplevel, want)
+	}
+}
+
 func runGitForTest(t *testing.T, root string, args ...string) {
 	t.Helper()
 	cmdArgs := append([]string{"-C", root}, args...)
