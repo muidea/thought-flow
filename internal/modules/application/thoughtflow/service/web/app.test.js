@@ -24,9 +24,8 @@ const stubTflow = {
 // inspect and mutate inputs between operations. Other selectors return null.
 function makeDomStub(initial = {}) {
   const store = { ...initial };
-  const controls = ["search-query", "search-mode", "search-topic-id", "search-tags",
-    "search-from", "search-to", "search-sort", "search-explain", "topic-filter",
-    "topic-auto-filter", "event-type-filter"];
+  const controls = ["search-query", "search-topic-id", "search-tags",
+    "topic-filter", "topic-auto-filter", "event-type-filter"];
   // Each control is a live proxy over the store: reads go to store, writes
   // (and `checked` toggles) flow back into the store so assertions can see them.
   const nodes = Object.fromEntries(controls.map((id) => {
@@ -230,38 +229,28 @@ test("runtime path display avoids leaking absolute workspace paths", () => {
 test("renderSearchResultItem exposes scores and action targets", () => {
   const app = loadAppFunctions();
 
+  // SearchResultView 投影不再下放 keyword/semantic/recency 拆分与 explain,
+  // Web 仅暴露 thought_id / title / snippet / score / tags / path 即可。
   const html = app.renderSearchResultItem({
     thought_id: "thought-1",
     title: "Search Result",
     snippet: "Snippet",
     score: 0.91,
-    keyword_score: 0.8,
-    semantic_score: 0.7,
-    recency_score: 0.6,
     tags: ["ui"],
     path: "thoughts/demo.md",
-    explain: {
-      mode: "hybrid",
-      sort: "score",
-      score_formula: "kw + sem + rec",
-      weights: { keyword: 1, semantic: 1, recency: 0.2 },
-      keyword_source: "fts",
-      semantic_source: "embedding",
-    },
   }, { selected: true, activeTopicId: "topic-1" });
 
   assert.match(html, /data-select-id="thought-1" checked/);
   assert.match(html, /search\.score_label/);
   assert.match(html, /0\.91/);
-  assert.match(html, /0\.80/);
-  assert.match(html, /0\.70/);
-  assert.match(html, /0\.60/);
+  // 拆分 score 字段不在主流程展示。
+  assert.doesNotMatch(html, /0\.80/);
+  assert.doesNotMatch(html, /0\.70/);
+  assert.doesNotMatch(html, /0\.60/);
   assert.match(html, /data-basket-id="thought-1"/);
   assert.match(html, /data-weave-id="thought-1"/);
   assert.match(html, /thoughts\/demo\.md/);
-  assert.match(html, /search\.explain\.summary/);
-  assert.match(html, /kw \+ sem \+ rec/);
-  assert.match(html, /embedding/);
+  assert.doesNotMatch(html, /tf-explain/);
 });
 
 test("compose basket helper deduplicates and clears sources", () => {
@@ -380,15 +369,16 @@ test("outline helpers preserve one title per line", () => {
 
 test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", () => {
   // The stub above returns the key itself, so the rendered HTML exposes
-  // dotted keys instead of literal English — assert that the keys are
-  // referenced for both the new (i18n) and the structural pieces.
+  // dotted keys instead of literal English — assert that the score and
+  // the action labels resolve through the i18n helper. The previous split
+  // keyword/semantic/recency labels are gone with the explain block.
   const app = loadAppFunctions();
   const html = app.renderSearchResultItem({ thought_id: "x", title: "t", score: 0.1 }, { selected: false, activeTopicId: "" });
   assert.match(html, /search\.score_label/);
-  assert.match(html, /search\.keyword_label/);
-  assert.match(html, /search\.semantic_label/);
-  assert.match(html, /search\.recency_label/);
   assert.match(html, /search\.result\.add_basket/);
+  assert.doesNotMatch(html, /search\.keyword_label/);
+  assert.doesNotMatch(html, /search\.semantic_label/);
+  assert.doesNotMatch(html, /search\.recency_label/);
 });
 
 test("buildRouteHash omits empty query fields and keeps the path clean", () => {
@@ -410,7 +400,7 @@ test("buildRouteHash omits empty query fields and keeps the path clean", () => {
 });
 
 test("PAGE_SERIALIZERS.search captures only the non-default state of inputs", () => {
-  const dom = makeDomStub({ "search-query": "rag", "search-mode": "semantic", "search-topic-id": "topic-1" });
+  const dom = makeDomStub({ "search-query": "rag", "search-topic-id": "topic-1" });
   const app = loadAppFunctionsWith({ dom, exposeState: true });
 
   // Seed the global Set used by the serializer.
@@ -418,9 +408,10 @@ test("PAGE_SERIALIZERS.search captures only the non-default state of inputs", ()
   const result = app.PAGE_SERIALIZERS.search();
 
   assert.equal(result.q, "rag");
-  assert.equal(result.mode, "semantic");
   assert.equal(result.topic_id, "topic-1");
   assert.equal(result.selected, "t-1,t-2");
+  // Search 主流程不再携带 mode/explain/from/to/sort 等可调参数。
+  assert.equal(result.mode, undefined);
   assert.equal(result.explain, undefined);
 });
 
@@ -441,9 +432,11 @@ test("restoreRoutePage populates search inputs from the query object", () => {
 
   app.restoreRoutePage("search", {
     q: "vector store",
-    mode: "keyword",
     topic_id: "t-1",
     tags: "rag,llm",
+    // Legacy keys are silently ignored — they no longer correspond to
+    // any input on the search page.
+    mode: "keyword",
     from: "2026-01-01",
     to: "2026-12-31",
     sort: "recency",
@@ -453,13 +446,10 @@ test("restoreRoutePage populates search inputs from the query object", () => {
   });
 
   assert.equal(dom.store["search-query"], "vector store");
-  assert.equal(dom.store["search-mode"], "keyword");
   assert.equal(dom.store["search-topic-id"], "t-1");
   assert.equal(dom.store["search-tags"], "rag,llm");
-  assert.equal(dom.store["search-from"], "2026-01-01");
-  assert.equal(dom.store["search-to"], "2026-12-31");
-  assert.equal(dom.store["search-sort"], "recency");
-  assert.equal(dom.store["search-explain_checked"], true);
+  assert.equal(dom.store["search-mode"] ?? "", "");
+  assert.equal(dom.store["search-explain_checked"] ?? false, false);
   assert.deepEqual(Array.from(app._state.selectedThoughts), ["thought-7", "thought-8"]);
 });
 

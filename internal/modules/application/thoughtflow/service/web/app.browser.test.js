@@ -142,10 +142,8 @@ async function runBrowserSmoke(browser, url) {
     const captureResult = document.querySelector("#capture-conversation")?.textContent || "";
 
     await settleRoute("#/search");
-    document.querySelector("#search-explain").checked = true;
     document.querySelector("#search-form").requestSubmit();
-    await waitUntil(() => document.querySelector(".tf-explain"));
-    const explainText = document.querySelector(".tf-explain")?.textContent || "";
+    await waitUntil(() => document.querySelector("#search-results").children.length > 0);
     document.querySelector("[data-preview-id='thought-1']")?.click();
     await waitUntil(() => document.querySelector("#thought-drawer")?.classList.contains("open"));
     const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
@@ -237,7 +235,6 @@ async function runBrowserSmoke(browser, url) {
       routeStates,
       captureResult,
       thoughtDrawerOpen,
-      explainText,
       thoughtDrawerText,
       basketTextAfterDrawer,
       composeActive,
@@ -285,7 +282,6 @@ async function runBrowserSmoke(browser, url) {
   ]);
   assert.match(state.captureResult, /Captured from browser smoke|Session context|Archive preview/);
   assert.equal(state.thoughtDrawerOpen, true);
-  assert.match(state.explainText, /Score details/);
   assert.match(state.thoughtDrawerText, /Browser Thought/);
   assert.match(state.basketTextAfterDrawer, /1 selected sources/);
   assert.equal(state.composeActive, true);
@@ -412,16 +408,14 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     // stripping the query from the fragment.
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/search?q=rag&mode=keyword&topic_id=demo&selected=thought-1"; });
+    await page.evaluate(() => { window.location.hash = "#/search?q=rag&topic_id=demo&selected=thought-1"; });
     await page.waitForExpression(() => document.querySelector("#page-search")?.classList.contains("active"));
     await page.waitForExpression(() => document.querySelector("#search-query")?.value === "rag");
     const restored = await page.evaluate(() => ({
       q: document.querySelector("#search-query")?.value,
-      mode: document.querySelector("#search-mode")?.value,
       topic: document.querySelector("#search-topic-id")?.value,
     }));
     assert.equal(restored.q, "rag");
-    assert.equal(restored.mode, "keyword");
     assert.equal(restored.topic, "demo");
 
     // Typing into the search box updates the hash via the debounced serializer.

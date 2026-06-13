@@ -147,17 +147,10 @@ const PAGE_SERIALIZERS = {
     const q = {};
     const v = $("#search-query")?.value.trim();
     if (v) q.q = v;
-    const m = $("#search-mode")?.value;
-    if (m && m !== "hybrid") q.mode = m;
     const tid = $("#search-topic-id")?.value.trim();
     if (tid) q.topic_id = tid;
     const tags = $("#search-tags")?.value.trim();
     if (tags) q.tags = tags;
-    if ($("#search-from")?.value) q.from = $("#search-from").value;
-    if ($("#search-to")?.value) q.to = $("#search-to").value;
-    const sort = $("#search-sort")?.value;
-    if (sort) q.sort = sort;
-    if ($("#search-explain")?.checked) q.explain = "true";
     if (state.selectedThoughts.size > 0) q.selected = Array.from(state.selectedThoughts).join(",");
     return q;
   },
@@ -189,13 +182,8 @@ function restoreRoutePage(page, query) {
   if (!query || typeof query !== "object") return;
   if (page === "search") {
     if (typeof query.q === "string") $("#search-query").value = query.q;
-    if (typeof query.mode === "string") $("#search-mode").value = query.mode;
     if (typeof query.topic_id === "string") $("#search-topic-id").value = query.topic_id;
     if (typeof query.tags === "string") $("#search-tags").value = query.tags;
-    if (typeof query.from === "string") $("#search-from").value = query.from;
-    if (typeof query.to === "string") $("#search-to").value = query.to;
-    if (typeof query.sort === "string") $("#search-sort").value = query.sort;
-    if (query.explain === "true") $("#search-explain").checked = true;
     if (typeof query.selected === "string" && query.selected) {
       state.selectedThoughts = new Set(query.selected.split(",").filter(Boolean));
     }
@@ -2616,19 +2604,14 @@ async function runSearch(event) {
   if (event) event.preventDefault();
   const query = new URLSearchParams();
   query.set("q", $("#search-query").value.trim());
-  query.set("mode", $("#search-mode").value);
   query.set("page", "1");
   query.set("page_size", "20");
   const topicID = $("#search-topic-id").value.trim() || state.activeTopicId;
   if (topicID) query.set("topic_id", topicID);
   const tags = csv($("#search-tags").value);
   if (tags.length > 0) query.set("tags", tags.join(","));
-  if ($("#search-from").value) query.set("from", $("#search-from").value);
-  if ($("#search-to").value) query.set("to", $("#search-to").value);
-  if ($("#search-sort").value) query.set("sort", $("#search-sort").value);
-  if ($("#search-explain").checked) query.set("explain", "true");
   const response = await api(`/api/search?${query.toString()}`);
-  state.lastResults = response.items || [];
+  state.lastResults = response.results || [];
   renderResults(response);
   // URL reflects the submitted query, not the typing-in-progress value.
   if (state.route?.page === "search") syncHash();
@@ -2637,21 +2620,18 @@ async function runSearch(event) {
 function resetSearchFilters() {
   $("#search-tags").value = "";
   $("#search-topic-id").value = "";
-  $("#search-from").value = "";
-  $("#search-to").value = "";
-  $("#search-sort").value = "";
-  $("#search-explain").checked = false;
   runSearch().catch((error) => toast(error.message));
 }
 
 function renderResults(response) {
   const list = $("#search-results");
-  if (!response.items || response.items.length === 0) {
+  const results = response.results || [];
+  if (results.length === 0) {
     list.innerHTML = `<div class="topic-meta">${escapeHTML(t("empty.no_matching"))}</div>`;
     updateSelectionControls();
     return;
   }
-  list.innerHTML = response.items
+  list.innerHTML = results
     .map((item) => renderSearchResultItem(item, { selected: state.selectedThoughts.has(item.thought_id), activeTopicId: state.activeTopicId }))
     .join("");
   list.querySelectorAll("[data-select-id]").forEach((input) => {
@@ -2688,18 +2668,8 @@ function renderSearchResultItem(item, options = {}) {
     .map((tag) => `<span class="pill">${escapeHTML(tag)}</span>`)
     .join("");
   const thoughtID = item.thought_id || item.id || "";
-  const explain = item.explain
-    ? `<details class="tf-explain"><summary>${escapeHTML(t("search.explain.summary"))}</summary>${renderDescription([
-        [t("search.explain.formula"), item.explain.score_formula || ""],
-        [t("search.explain.mode"), item.explain.mode || ""],
-        [t("search.explain.sort"), item.explain.sort || ""],
-        [t("search.explain.keyword_source"), item.explain.keyword_source || ""],
-        [t("search.explain.semantic_source"), item.explain.semantic_source || ""],
-        [t("search.explain.keyword_weight"), item.explain.weights?.keyword === undefined ? "" : String(item.explain.weights.keyword)],
-        [t("search.explain.semantic_weight"), item.explain.weights?.semantic === undefined ? "" : String(item.explain.weights.semantic)],
-        [t("search.explain.recency_weight"), item.explain.weights?.recency === undefined ? "" : String(item.explain.weights.recency)],
-      ])}</details>`
-    : "";
+  // SearchResultView 投影只暴露 thought_id / title / snippet / score / tags /
+  // topics / path,不再展示 explain 与 keyword/semantic/recency 拆分。
   return `
     <article class="result-item">
       <div class="result-row">
@@ -2708,10 +2678,7 @@ function renderSearchResultItem(item, options = {}) {
           <strong><button class="link-button" data-preview-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(item.title || thoughtID)}</button></strong>
           <div class="result-meta">${escapeHTML(item.snippet || "")}</div>
           <div class="score-line">
-            <span class="pill green">${t("search.score_label")} ${score(item.score)}</span>
-            <span class="pill">${t("search.keyword_label")} ${score(item.keyword_score)}</span>
-            <span class="pill">${t("search.semantic_label")} ${score(item.semantic_score)}</span>
-            <span class="pill">${t("search.recency_label")} ${score(item.recency_score)}</span>
+            ${item.score !== undefined ? `<span class="pill green">${t("search.score_label")} ${score(item.score)}</span>` : ""}
             ${tags}
           </div>
           <div class="tf-action-row">
@@ -2720,7 +2687,6 @@ function renderSearchResultItem(item, options = {}) {
             <button class="mini-button" data-weave-id="${escapeHTML(thoughtID)}" ${options.activeTopicId ? "" : "disabled"} type="button">${escapeHTML(t("search.result.review_weave"))}</button>
             ${item.path ? `<button class="mini-button" data-copy-path="${escapeHTML(item.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(item.path)}</code>` : ""}
           </div>
-          ${explain}
         </div>
       </div>
     </article>
@@ -2758,7 +2724,7 @@ function addToComposeBasket(thoughtIds) {
 
 function clearSearchSelection() {
   state.selectedThoughts.clear();
-  renderResults({ items: state.lastResults });
+  renderResults({ results: state.lastResults });
   persistRouteDebounced();
 }
 
@@ -3049,17 +3015,6 @@ async function refreshTopic() {
   state.activeJobId = job.id;
 }
 
-async function reindex() {
-  const confirmed = await confirmAction(t("settings.reindex_confirm_title"), t("settings.reindex_confirm_message"));
-  if (!confirmed) return;
-  const job = await api("/api/system/reindex", { method: "POST", body: "{}" });
-  toast(t("toast.reindex_queued", { id: job.id }));
-  // PR3: jobs page is gone. The job is still findable via its ID by anyone
-  // who has the link; for now the toast is the only acknowledgement. A
-  // follow-up could push the job onto the notes runtime card via SSE.
-  state.activeJobId = job.id;
-}
-
 function connectEvents() {
   // PR3: events flow into the settings drawer (full stream with filters)
   // and the dashboard summary. The notes runtime card reuses the same
@@ -3237,7 +3192,6 @@ function bind() {
   $("#topic-edit-form").addEventListener("submit", (event) => saveTopicRules(event).catch((error) => toast(error.message)));
   $("#search-form").addEventListener("submit", (event) => runSearch(event).catch((error) => toast(error.message)));
   $("#search-query").addEventListener("input", persistRouteDebounced);
-  $("#search-mode").addEventListener("change", persistRouteDebounced);
   $("#search-topic-id").addEventListener("input", persistRouteDebounced);
   $("#search-tags").addEventListener("input", persistRouteDebounced);
   $("#search-from").addEventListener("input", persistRouteDebounced);
@@ -3262,7 +3216,9 @@ function bind() {
   $("#topic-auto-filter").addEventListener("change", () => { renderTopics(); persistRouteDebounced(); });
   $("#reset-topic-filter").addEventListener("click", () => { resetTopicFilters(); persistRouteDebounced(); });
   $("#refresh-topic").addEventListener("click", () => refreshTopic().catch((error) => toast(error.message)));
-  $("#settings-drawer-reindex")?.addEventListener("click", () => reindex().catch((error) => toast(error.message)));
+  // Reindex entry removed — the search page no longer exposes a reindex
+  // button. /api/system/reindex stays available for ops use; the Web UI
+  // surfaces index health through the settings drawer instead.
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
   $("#open-compose-create").addEventListener("click", () => openDrawer("compose-create-drawer"));

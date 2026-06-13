@@ -235,27 +235,11 @@
             <section class="tf-card">
               <form id="search-form" class="search-form">
                 <input id="search-query" type="search" data-i18n-attr="search.query_placeholder" data-i18n-attr-target="placeholder" placeholder="Search thoughts">
-                <select id="search-mode" aria-label="Search mode">
-                  <option value="hybrid" data-i18n="search.mode.hybrid">Hybrid</option>
-                  <option value="keyword" data-i18n="search.mode.keyword">Keyword</option>
-                  <option value="semantic" data-i18n="search.mode.semantic">Semantic</option>
-                </select>
                 <input id="search-tags" type="text" data-i18n-attr="search.tags_placeholder" data-i18n-attr-target="placeholder" placeholder="filter tags">
-                <button class="tf-btn tf-btn-primary" type="submit" data-i18n="search.submit">Search</button>
-              </form>
-              <div class="tf-filter-grid">
                 <input id="search-topic-id" type="text" data-i18n-attr="search.topic_placeholder" data-i18n-attr-target="placeholder" placeholder="topic id">
-                <input id="search-from" type="date" data-i18n-attr="search.from_aria" data-i18n-attr-target="aria-label" aria-label="from date">
-                <input id="search-to" type="date" data-i18n-attr="search.to_aria" data-i18n-attr-target="aria-label" aria-label="to date">
-                <select id="search-sort" aria-label="sort">
-                  <option value="" data-i18n="search.sort.default">Default sort</option>
-                  <option value="score" data-i18n="search.sort.score">Score</option>
-                  <option value="recency" data-i18n="search.sort.recency">Recency</option>
-                  <option value="title" data-i18n="search.sort.title">Title</option>
-                </select>
-                <label class="toggle-row"><input id="search-explain" type="checkbox"> <span data-i18n="search.explain_switch">Explain score</span></label>
+                <button class="tf-btn tf-btn-primary" type="submit" data-i18n="search.submit">Search</button>
                 <button class="tf-btn" id="reset-search" type="button" data-i18n="search.reset_filters">Reset filters</button>
-              </div>
+              </form>
             </section>
             <section class="tf-card">
               <div class="tf-card-header">
@@ -397,13 +381,6 @@
             <div class="tf-segmented" id="settings-language">
               <button data-locale="zh-CN" type="button" aria-pressed="false">zh-CN</button>
               <button data-locale="en-US" type="button" aria-pressed="false">en-US</button>
-            </div>
-          </div>
-          <div class="tf-form-item">
-            <span class="tf-label" data-i18n="settings.reindex">Reindex</span>
-            <p class="tf-text-secondary" data-i18n="settings.reindex_confirm_message">This queues a workspace reindex job for the search database.</p>
-            <div class="tf-page-actions" style="margin-top: 8px;">
-              <button class="tf-btn" id="settings-drawer-reindex" type="button" data-i18n="settings.reindex">Reindex</button>
             </div>
           </div>
         </div>
