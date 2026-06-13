@@ -6,10 +6,9 @@ const (
 	ThoughtTypeText = "text"
 	ThoughtTypeURL  = "url"
 
-	ThoughtSourceManual    = "manual"
-	ThoughtSourceAPI       = "api"
-	ThoughtSourceSynthesis = "synthesis"
-	ThoughtSourceCompose   = "compose"
+	ThoughtSourceManual  = "manual"
+	ThoughtSourceAPI     = "api"
+	ThoughtSourceCompose = "compose"
 
 	ComposeSourceTypeThought        = "thought"
 	ComposeSourceTypeSearchResult   = "search_result"
