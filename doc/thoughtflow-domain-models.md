@@ -11,7 +11,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | 类型 | 说明 | 事实源 |
 | --- | --- | --- |
 | 知识资产模型 | 用户真正拥有和长期保留的内容 | `thoughts/`、`topics/` Markdown/YAML |
-| 派生分析模型 | AI、索引、匹配、合稿等可再生成结果 | Markdown 派生区 + DuckDB |
+| 派生分析模型 | AI、索引、匹配、整理草稿等可再生成结果 | Markdown 派生区 + DuckDB |
+| Web 交互模型 | 面向页面工作流的会话、结果投影和临时选择状态 | scratchpad、运行态响应、浏览器状态 |
 | 运行任务模型 | 后台任务、进度、错误和重试 | `runtime.state_dir/jobs` + DuckDB 可选缓存 |
 | 系统运维模型 | Git、配置、健康检查、事件游标 | `runtime.state_dir` + Git 仓库状态 |
 
@@ -30,16 +31,21 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `Workspace` | 本地知识库工作区 | application | 配置 + 目录 |
 | `Thought` | 原子笔记，最小知识碎片 | capture | `thoughts/{yyyy}/{mm}/{id}.md` |
 | `ThoughtContent` | 原文、抓取正文、AI 笔记分区 | capture/refiner | Thought Markdown body |
+| `CaptureSession` | 多轮采集会话和上下文 | capture | `.scratchpad/{session_id}.json` |
+| `SessionContext` | 会话内自动提取的结构化上下文 | capture/refiner/topic | scratchpad |
+| `ArchivePreview` | 显式归档前的预览和 diff | capture/application | 运行态响应 + scratchpad |
 | `ThoughtRefinement` | 摘要、标签、核心观点、错误 | refiner | Thought front matter + AI Notes |
 | `EmbeddingRecord` | 语义向量及模型信息 | refiner/search | DuckDB |
 | `Topic` | 专题定义和专题主文档 | topic | `topics/{slug}/topic.yaml` + `index.md` |
 | `TopicRule` | 专题匹配规则 | topic | `topic.yaml` |
 | `TopicOutline` | 专题大纲 | topic | `topic.yaml` + `index.md` |
 | `TopicMembership` | 碎片与专题的关系 | topic/search | `topics/{slug}/memberships/{thought_id}.yaml` + DuckDB 缓存 |
+| `TopicCandidateImpact` | 未确认来源对专题的建议影响 | topic/application | 运行态响应 + 候选缓存 |
 | `TopicWeaveProposal` | 专题文档候选变更和审批历史 | topic | `topics/{slug}/approvals/{proposal_id}.yaml` |
 | `SearchIndex` | 关键词和语义索引 | search | DuckDB |
-| `SearchResult` | 检索结果视图 | search | 运行态响应 |
-| `SynthesisDraft` | 即席合稿草稿和保存历史 | refiner/application | `synthesis/drafts/{draft_id}.yaml`，保存后转 Thought |
+| `SearchResultView` | Search 页面关键词结果投影 | search/application | 运行态响应 |
+| `ComposeBasket` | 整理来源篮和选择状态 | application | 浏览器状态 + 运行态响应 |
+| `ComposeDraft` | 整理草稿和保存历史 | refiner/application | `compose/drafts/{draft_id}.yaml`，保存后转 Thought |
 | `Job` | 后台任务及状态 | 所属任务运行单元 | `runtime.state_dir/jobs` + DuckDB |
 | `DomainEvent` | 运行单元协同事件 | application/EventHub | EventHub + 可选 offset |
 | `GitChangeSet` | 待提交文件集合 | git-sync | 运行态队列 |
@@ -48,9 +54,9 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 首批开发必须落地：`Workspace`、`Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitChangeSet`、`GitCommitRecord`。
 
-第二批落地：`ThoughtRefinement`、`EmbeddingRecord`、`SearchIndex`、`SearchResult`。
+第二批落地：`ThoughtRefinement`、`EmbeddingRecord`、`SearchIndex`、`SearchResultView`。
 
-第三批落地：`Topic`、`TopicRule`、`TopicOutline`、`TopicMembership`、`SynthesisDraft`。
+第三批落地：`Topic`、`TopicRule`、`TopicOutline`、`TopicMembership`、`TopicCandidateImpact`、`ComposeBasket`、`ComposeDraft`。
 
 ## 3. 知识资产模型
 
@@ -92,7 +98,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | --- | --- | --- | --- | --- |
 | `id` | string | 是 | 时间 + 短 hash 生成的稳定 ID | capture |
 | `type` | enum | 是 | `text`、`url`，后续可扩展 `file` | capture |
-| `source` | enum | 是 | `manual`、`api`、`synthesis`，后续可扩展 `browser` | capture |
+| `source` | enum | 是 | `manual`、`api`、`compose`，后续可扩展 `browser` | capture |
 | `user_title` | string | 否 | 用户显式标题 | capture |
 | `extracted_title` | string | 否 | 网页标题或 AI 建议标题 | refiner |
 | `display_title` | string | 否 | 对外展示标题，由 `user_title` 优先，否则取 `extracted_title` 或内容摘要 | 查询视图 |
@@ -152,7 +158,89 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 3. 对 owned 分区做幂等更新。
 4. 写入时保持 front matter 和正文格式稳定。
 
-### 3.4 Topic
+### 3.4 CaptureSession
+
+`CaptureSession` 是 Capture 页的默认交互对象。用户未明确归档时，输入只保存在当前会话；未明确创建新会话时，页面和服务重启后都恢复最后一个未归档会话。
+
+字段：
+
+| 字段 | 类型 | 说明 | Owner |
+| --- | --- | --- | --- |
+| `session_id` | string | 会话 ID | capture |
+| `workspace_id` | string | 工作区 | application |
+| `messages` | []ConversationMessage | 多轮对话消息 | capture |
+| `session_context` | SessionContext | 自动提取的结构化上下文 | capture/refiner |
+| `archive_intent` | enum | `none`、`menu`、`llm` | capture |
+| `archive_strategy` | enum | `new`、`update_thought`、`supplement` | capture |
+| `source_thought_id` | string | 从 Thought 重新发起会话时记录来源 | capture |
+| `archive_preview` | ArchivePreview | 最近一次归档预览 | capture |
+| `committed_thought_id` | string | 已归档 Thought ID | capture |
+| `created_at` | time | 创建时间 | capture |
+| `updated_at` | time | 最近活跃时间 | capture |
+
+功能定义：
+
+1. 进入 Capture 时恢复最后一个未归档会话。
+2. 追加用户输入、URL、补充说明和 LLM 回复。
+3. 每轮消息后刷新 `SessionContext`，支持先发散再收敛。
+4. 只有用户通过对话或菜单明确触发保存时才生成 `ArchivePreview`。
+5. 从已归档 Thought 重新发起补充会话。
+
+### 3.5 SessionContext
+
+`SessionContext` 是多轮对话中自动抽取的统一上下文，帮助 LLM 在信息一致时先扩展关联，再逐步收口成可归档知识。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `topic` | string | 当前讨论主题 |
+| `goal` | string | 用户意图或整理目标 |
+| `confirmed_facts` | []string | 已确认事实 |
+| `open_questions` | []string | 待澄清问题 |
+| `conflicts` | []string | 冲突或不一致信息 |
+| `candidate_title` | string | 候选标题 |
+| `candidate_tags` | []string | 候选标签 |
+| `candidate_summary` | string | 候选摘要 |
+| `candidate_body` | string | 候选正文 |
+| `source_links` | []string | 来源链接 |
+| `related_thought_ids` | []string | 相关 Thought |
+| `suggested_topic_ids` | []string | 建议关联专题 |
+| `archive_readiness` | enum | `diverging`、`converging`、`ready` |
+| `next_questions` | []string | 建议追问或补充方向 |
+
+功能定义：
+
+1. 自动吸收对话历史、来源链接、相关 Thought 和专题候选。
+2. 在信息不足或冲突时给出追问方向。
+3. 在信息稳定时生成可归档标题、摘要、标签和正文。
+4. 作为专题候选、Search 预览和 Compose 来源的统一上下文输入。
+
+### 3.6 ArchivePreview
+
+`ArchivePreview` 是归档前的确认视图，不等同于已保存 Thought。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `session_id` | string | 来源会话 |
+| `strategy` | enum | `new`、`update_thought`、`supplement` |
+| `thought_id` | string | 更新或补充目标 Thought |
+| `title` | string | 将写入的标题 |
+| `body` | string | 将写入的正文 |
+| `tags` | []string | 将写入的标签 |
+| `source_links` | []string | 来源链接 |
+| `related_topics` | []string | 关联专题 |
+| `diff` | ThoughtDiff | `update_thought` 时必填 |
+
+功能定义：
+
+1. 在对话流内以卡片形式展示归档内容。
+2. `update_thought` 必须展示 diff 并要求确认。
+3. 用户确认后才落地为 Thought 或 patch。
+
+### 3.7 Topic
 
 `Topic` 表示一个可自动增长的专题知识体系。
 
@@ -194,7 +282,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 1. 不把专题成员唯一事实只存在 DuckDB。
 2. 不在 AI 缝合失败时覆盖旧 `index.md`。
 
-### 3.5 TopicRule
+### 3.8 TopicRule
 
 `TopicRule` 定义专题命中条件。
 
@@ -217,7 +305,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 返回命中原因和各项分数。
 3. 支持规则变更后全量重算。
 
-### 3.6 TopicMembership
+### 3.9 TopicMembership
 
 `TopicMembership` 表示 Thought 与 Topic 的关系。
 
@@ -241,6 +329,32 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 3. 支持专题重组后重算。
 4. 为专题文档 source link 提供依据。
 5. 自动命中关系可从规则、Thought 和索引重建；用户手动接受、排除、固定包含必须写入 membership 事实文件，专题规则仍写入 `topic.yaml`。
+
+### 3.10 TopicCandidateImpact
+
+`TopicCandidateImpact` 表示未确认来源对专题正文的建议影响。它用于 Topics 页面候选区，不直接写入 `topics/{slug}/index.md`。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `topic_id` | string | 专题 ID |
+| `source_type` | enum | `capture_session`、`thought_reopen_session`、`thought`、`compose_draft` |
+| `source_id` | string | 来源 ID |
+| `title` | string | 候选标题 |
+| `summary` | string | 候选摘要 |
+| `reasons` | []string | 命中原因 |
+| `suggested_section` | string | 建议插入章节 |
+| `impact_preview` | string | 对专题正文的影响说明 |
+| `conflicts` | []string | 与现有专题内容的冲突 |
+| `status` | enum | `pending`、`confirmed`、`ignored` |
+| `updated_at` | time | 更新时间 |
+
+功能定义：
+
+1. 汇总未归档会话、Thought 重新整理会话、新 Thought 和 Compose 草稿的专题影响。
+2. 支持用户确认纳入、忽略、打开来源或生成 weave 预览。
+3. 规则刷新时自动重算候选影响，但不直接改写专题正文。
 
 ## 4. 派生分析模型
 
@@ -316,9 +430,9 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 全量重建索引。
 3. 检测 Markdown 与索引是否不一致。
 
-### 4.4 SearchResult
+### 4.4 SearchResultView
 
-`SearchResult` 是查询响应视图。
+`SearchResultView` 是 Search 页的关键词查询响应投影。后端可继续使用 FTS、Embedding 或重排提升召回，但 Web 主流程只暴露关键词输入和内容相关筛选。
 
 字段：
 
@@ -327,21 +441,20 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `thought_id` | string | 原子笔记 ID |
 | `title` | string | 标题 |
 | `snippet` | string | 命中片段 |
-| `score` | float | 综合分数 |
-| `keyword_score` | float | 关键词分 |
-| `semantic_score` | float | 语义分 |
-| `recency_score` | float | 时间分 |
-| `path` | string | Markdown 路径 |
-| `topics` | []string | 专题 |
 | `tags` | []string | 标签 |
+| `topics` | []string | 专题 |
+| `source` | enum | `thought`、`scratchpad_candidate`、`compose_draft` |
+| `source_id` | string | 来源对象 ID |
+| `path_hint` | string | 可复制的相对 Markdown path，默认折叠 |
+| `actions` | []string | `open_note`、`preview`、`add_to_compose`、`topic_impact` |
 
 功能定义：
 
 1. 关键词搜索。
-2. 语义搜索。
-3. 混合搜索。
-4. 分页、过滤、排序。
-5. 提供预览和回跳路径。
+2. 仅支持内容相关筛选，例如 tag、topic。
+3. 提供预览、打开 Notes、加入 Compose 和专题影响预览。
+4. 默认隐藏 `score`、`keyword_score`、`semantic_score`、`recency_score`、score explain、DuckDB 调试字段和绝对路径。
+5. 索引重建和运行状态放到 Settings，不在 Search 主页面展示。
 
 ### 4.5 TopicWeaveProposal
 
@@ -373,16 +486,47 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 3. 用户编辑候选文档时，将完整 `accepted_document` 写入 `index.md`，仍校验 source link。
 4. proposal 文件进入 Git，作为 topic weave 审批队列和历史。
 
-### 4.6 SynthesisDraft
+### 4.6 ComposeBasket
 
-`SynthesisDraft` 是用户基于搜索结果生成的本地合稿草稿。
+`ComposeBasket` 是 Compose 页的多来源整理篮，用于把 Notes、Search、Topics 和 Capture 候选统一成草稿输入。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `items` | []ComposeSource | 已选来源 |
+| `goal` | string | 整理目标 |
+| `default_format` | enum | `summary`、`outline`、`report` |
+| `updated_at` | time | 最近更新时间 |
+
+`ComposeSource` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `source_type` | enum | `thought`、`search_result`、`topic_section`、`capture_session` |
+| `source_id` | string | 来源 ID |
+| `title` | string | 展示标题 |
+| `snippet` | string | 来源片段 |
+| `source_link` | string | 回跳链接 |
+| `metadata` | map | 查询词、专题、标签等轻量信息 |
+
+功能定义：
+
+1. 从 Notes、Search、Topics、Capture 加入来源。
+2. 去重相同 Thought 或相同来源片段。
+3. 为 Compose 草稿生成提供结构化输入。
+4. 来源篮属于临时交互状态，不是知识资产事实源。
+
+### 4.7 ComposeDraft
+
+`ComposeDraft` 是用户基于整理篮生成的本地草稿。当前阶段不保留旧 synthesis 命名，接口与文件目录统一使用 Compose。
 
 字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | string | 草稿 ID |
-| `thought_ids` | []string | 输入碎片 |
+| `sources` | []ComposeSource | 输入来源 |
 | `goal` | string | 用户目标 |
 | `format` | enum | `summary`、`outline`、`report` |
 | `content` | string | AI 生成内容 |
@@ -390,17 +534,17 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `model` | string | 使用模型，未配置 AI 时为 `local-rule` |
 | `status` | enum | `draft`、`saved` |
 | `saved_thought_id` | string | 保存后生成的 Thought ID |
-| `history` | []SynthesisDraftHistory | 草稿创建和保存历史 |
+| `history` | []ComposeDraftHistory | 草稿创建和保存历史 |
 | `created_at` | time | 创建时间 |
 | `updated_at` | time | 更新时间 |
 | `saved_at` | time | 保存时间 |
 
 功能定义：
 
-1. 从选中 Thought 生成摘要或大纲。
-2. 配置 `llm.api_key` 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则合稿。
-3. 默认写入 `synthesis/drafts/{draft_id}.yaml`，作为独立草稿仓库。
-4. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `synthesis`，并保留来源 Thought 链接。
+1. 从整理篮来源生成摘要、大纲或报告。
+2. 配置 `llm.api_key` 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则整理。
+3. 默认写入 `compose/drafts/{draft_id}.yaml`，作为独立草稿仓库。
+4. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `compose`，并保留来源链接。
 5. 保存后将草稿状态标记为 `saved`，记录 `saved_thought_id`、`saved_at` 和历史事件。
 
 ## 5. 运行任务模型
@@ -554,12 +698,18 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | 命令 | 输入 | 输出 | 事件 |
 | --- | --- | --- | --- |
 | `CaptureThought` | type/content/url/title/tags/topic_hints | Thought 快照、Job 列表 | `thought.captured` |
+| `AppendCaptureMessage` | session_id/role/text | CaptureSession | `scratchpad.message_appended` |
+| `UpdateSessionContext` | session_id/context | CaptureSession | `scratchpad.context_updated` |
+| `BuildArchivePreview` | session_id/strategy | ArchivePreview | 无 |
+| `ArchiveSession` | session_id/strategy/confirmed | Thought 快照或 patch 结果 | `scratchpad.committed`、`thought.captured` 或 `thought.patched` |
+| `ReopenFromThought` | thought_id | CaptureSession | `scratchpad.reopened` |
 | `GetThought` | thought_id | Thought + ThoughtContent | 无 |
 
 查询：
 
 1. 按 ID 查询原子笔记。
 2. 按 content hash 查询疑似重复笔记。
+3. 查询最后一个未归档 CaptureSession。
 
 必须校验：
 
@@ -600,14 +750,15 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 | 查询 | 输入 | 输出 |
 | --- | --- | --- |
-| `SearchThoughts` | q/mode/filters/page | SearchResult 列表 |
+| `SearchThoughts` | keyword/tags?/topic?/page | SearchResultView 列表 |
 | `GetSearchPreview` | thought_id | 预览片段 |
 
 必须校验：
 
 1. DuckDB 缺失或损坏时允许全量重建。
-2. embedding 缺失时混合搜索降级。
+2. Web API 必须接受关键词查询；语义召回只能作为后端增强，不暴露为主流程模式开关。
 3. 搜索结果必须包含原子笔记回跳路径。
+4. 时间范围、运行状态和 score explain 不进入 Search 主接口投影。
 
 ### 7.4 topic
 
@@ -618,16 +769,18 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `CreateTopic` | name/description/rules/outline | Topic | `topic.created` |
 | `UpdateTopic` | topic_id/rules/outline/auto_weave | Topic | `topic.updated` |
 | `MatchThought` | thought_id | TopicMembership 列表 | `topic.matched` |
-| `RebuildTopic` | topic_id | Job | `topic.rebuild_started`、`topic.updated`、`topic.rebuild_failed` |
 | `PreviewWeave` | topic_id/thought_id | TopicWeaveProposal | 无写入事件 |
 | `AcceptWeave` | topic_id/thought_id/document | TopicDetail | `topic.updated` |
+| `RefreshTopic` | topic_id | Job | `topic.refresh_started`、`topic.updated`、`topic.refresh_failed` |
+| `ConfirmTopicCandidate` | topic_id/source_id/action | TopicCandidateImpact | `topic.candidate_confirmed` |
 
 查询：
 
 1. 查询专题列表和统计。
 2. 查询专题详情。
 3. 查询专题成员。
-4. 查询专题活动记录。
+4. 查询专题候选影响。
+5. 查询专题活动记录。
 
 必须校验：
 
@@ -636,7 +789,30 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 3. AI 缝合结果必须保留 source link。
 4. 写入 `index.md` 必须使用临时文件加原子替换。
 
-### 7.5 git-sync
+### 7.5 compose
+
+命令：
+
+| 命令 | 输入 | 输出 | 事件 |
+| --- | --- | --- | --- |
+| `AddToComposeBasket` | ComposeSource | ComposeBasket | 无 |
+| `RemoveFromComposeBasket` | source_type/source_id | ComposeBasket | 无 |
+| `CreateComposeDraft` | sources/goal/format/prompt? | ComposeDraft | `compose.draft_created` |
+| `SaveComposeDraft` | draft_id/content/title/tags | Thought 快照 | `thought.captured` |
+
+查询：
+
+1. 查询当前整理篮。
+2. 查询草稿列表和草稿详情。
+3. 查询来源预览和引用映射。
+
+必须校验：
+
+1. 来源必须能回跳到 Thought、Topic、Search 或 Capture 会话。
+2. 保存为 Thought 时必须保留来源链接。
+3. 草稿保存后不得覆盖来源 Thought。
+
+### 7.6 git-sync
 
 命令：
 
@@ -656,7 +832,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 默认不提交运行态数据目录和 DuckDB 文件。
 3. 用户身份缺失时返回可理解错误。
 
-### 7.6 application
+### 7.7 application
 
 命令与查询：
 
@@ -666,13 +842,15 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `GET /api/thoughts/{id}` | `GetThought` |
 | `POST /api/thoughts/{id}/retry-refine` | `RetryRefineThought` |
 | `GET /api/search` | `SearchThoughts` |
-| `POST /api/synthesis` | `CreateSynthesisDraft` |
-| `POST /api/synthesis/save` | `SaveSynthesisDraft` |
+| `POST /api/compose/drafts` | `CreateComposeDraft` |
+| `GET /api/compose/drafts` | `ListComposeDrafts` |
+| `GET /api/compose/drafts/{id}` | `GetComposeDraft` |
+| `POST /api/compose/drafts/{id}/save` | `SaveComposeDraft` |
 | `GET /api/topics` | `ListTopics` |
 | `POST /api/topics` | `CreateTopic` |
 | `GET /api/topics/{id}` | `GetTopic` |
 | `PUT /api/topics/{id}` | `UpdateTopic` |
-| `POST /api/topics/{id}/rebuild` | `RebuildTopic` |
+| `POST /api/topics/{id}/refresh` | `RefreshTopic` |
 | `POST /api/topics/{id}/weave-preview` | `PreviewWeave` |
 | `POST /api/topics/{id}/weave-accept` | `AcceptWeave` |
 | `GET /api/events` | SSE 事件流 |
@@ -699,7 +877,9 @@ Thought N -> N Topic through TopicMembership
 Topic 1 -> 1 TopicRule
 Topic 1 -> 1 TopicOutline
 SearchIndex rebuilds from Thought + Topic
-SynthesisDraft N -> N Thought
+CaptureSession 0..1 -> 1 Thought when archived
+ComposeBasket N -> N Thought/Topic/CaptureSession sources
+ComposeDraft N -> N Thought sources
 Job N -> 1 resource
 GitCommitRecord N -> N Thought/Topic paths
 DomainEvent N -> 1 resource
@@ -711,15 +891,15 @@ DomainEvent N -> 1 resource
 2. `TopicMembership` 可由规则生成，也可由用户手动固定。
 3. `EmbeddingRecord` 允许同一 Thought 存多模型版本，但搜索默认使用当前配置模型。
 4. `SearchIndex` 不能反向成为 Thought 或 Topic 的唯一来源。
-5. `SynthesisDraft` 保存后成为新的 Thought，并保留来源 Thought 链接。
+5. `ComposeDraft` 保存后成为新的 Thought，并保留来源链接。
 
 ## 9. 开发前确认结论
 
 已确认可进入开发的模型范围：
 
 1. M1 实现 `Workspace`、`Thought`、`ThoughtContent`、`Job`、`DomainEvent`、`GitChangeSet`、`GitCommitRecord`。
-2. M2 实现 `ThoughtRefinement`、`EmbeddingRecord`、`SearchIndex`、`SearchResult`。
-3. M3 实现 `Topic`、`TopicRule`、`TopicOutline`、`TopicMembership`、`SynthesisDraft`。
+2. M2 实现 `ThoughtRefinement`、`EmbeddingRecord`、`SearchIndex`、`SearchResultView`。
+3. M3 实现 `Topic`、`TopicRule`、`TopicOutline`、`TopicMembership`、`ComposeBasket`、`ComposeDraft`。
 
 需要在编码时固定的工程细节：
 

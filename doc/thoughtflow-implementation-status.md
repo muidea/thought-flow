@@ -410,3 +410,32 @@ make node-test-i18n                    # 5 个 i18n 测试通过
 make browser-test                      # 当前主机无浏览器，自动化用例 skipped；测试声明通过
 make e2e-test                          # 26 个 e2e 测试通过，含默认复用最后会话覆盖
 ```
+
+## 2026-06-13 目标设计刷新：Web 菜单、业务模型与接口
+
+本轮刷新的是目标设计文档，不代表对应实现已全部落地。已同步：
+
+- `doc/thoughtflow-web-ux-redesign.md`
+- `doc/thoughtflow-functional-design.md`
+- `doc/thoughtflow-domain-models.md`
+- `doc/thoughtflow-prd.md`
+- `doc/thoughtflow-web-ux-polish-v2.md`
+- `doc/thoughtflow-usage-config.md`
+
+**新的目标口径**：
+
+1. Web 主导航固定为 `Overview / Capture / Notes / Search / Topics / Compose`，Settings 为 Drawer。
+2. 当前阶段不考虑旧 hash/API 兼容；旧 `Dashboard / Thoughts / Synthesis / Jobs & Activity` 不再作为目标入口。
+3. Capture 以多轮对话为唯一主交互，默认恢复最后一个未归档会话，归档动作只能由菜单或对话意图显式触发。
+4. Search 主流程只暴露关键词搜索和内容相关筛选；时间范围、运行状态、score explain、semantic/hybrid mode 不进入主 UI。
+5. Topics 使用 `POST /api/topics/{id}/refresh` 作为专题刷新入口，候选影响以 `TopicCandidateImpact` 表达。
+6. Compose 使用正式接口 `/api/compose/drafts*` 和模型 `ComposeBasket` / `ComposeDraft`，不再使用 `/api/synthesis*` 作为目标 API。
+
+**实现待调整差异**：
+
+1. 当前实现状态中仍存在 `/api/synthesis*`、`synthesis/drafts/{draft_id}.yaml`、`source=synthesis` 等旧实现记录；后续实现需迁移到 `/api/compose/drafts*`、`compose/drafts/{draft_id}.yaml` 和 `source=compose`。
+2. 当前实现状态中仍记录 Search 支持 `mode=semantic` / `mode=hybrid`、score explain 和时间过滤；后续 Web 主流程需隐藏或移除这些入口，仅保留关键词和内容相关筛选。
+3. 当前实现状态中仍记录 `POST /api/topics/{id}/rebuild`；后续目标接口统一为 `POST /api/topics/{id}/refresh`。
+4. 当前实现状态中仍记录旧 Sidebar、旧 hash 和 Jobs 页面；后续 Web 实现需按 6 + Settings Drawer 收口。
+
+后续代码实现完成时，应在本文件追加新的实现状态段落，而不是回写旧 M2/M3/UI 基线记录。

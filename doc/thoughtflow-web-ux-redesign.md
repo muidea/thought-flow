@@ -4,11 +4,11 @@
 
 ## 1. 背景与目标
 
-当前 Web UI 将采集、搜索、专题、专题规则、缝合审批、合稿、活动流和预览集中在一个工作台页面中。这个布局适合早期验证，但随着功能扩展会产生以下问题：
+当前 Web UI 将采集、搜索、专题、专题规则、缝合审批、整理草稿、活动流和预览集中在一个工作台页面中。这个布局适合早期验证，但随着功能扩展会产生以下问题：
 
 1. 功能入口混杂，用户难以判断某个动作属于采集、搜索、专题还是系统治理。
 2. 右侧 rail 承载过多编辑表单，页面扫描成本高。
-3. 搜索、专题详情、合稿、审批等工作流互相挤压，导致状态和操作结果不够明确。
+3. 搜索、专题详情、整理草稿、审批等工作流互相挤压，导致状态和操作结果不够明确。
 4. UI 视觉语言与 Ant Design 的企业级操作台风格仍有差距。
 
 本次改造目标：
@@ -33,9 +33,9 @@
 
 1. 每个一级功能必须有独立导航入口。
 2. 页面主区域不再同时展示所有功能。
-3. 高风险或多步骤操作必须有确认或明确结果反馈，例如 reindex、topic rebuild、weave accept、save synthesis。
+3. 高风险或多步骤操作必须有确认或明确结果反馈，例如 reindex、topic refresh、weave accept、save compose。
 4. 长耗时操作返回 Job 后，应显示 Job ID、状态入口和活动追踪入口。
-5. 列表、详情、编辑、审批、合稿分别使用不同交互区域，避免在同一 panel 内混合。
+5. 列表、详情、编辑、审批、整理草稿分别使用不同交互区域，避免在同一 panel 内混合。
 
 ### 2.3 视觉约束
 
@@ -52,21 +52,19 @@
 ```text
 AppShell
 ├── Sidebar
-│   ├── Dashboard
+│   ├── Overview
 │   ├── Capture
-│   ├── Thoughts
+│   ├── Notes
 │   ├── Search
 │   ├── Topics
-│   ├── Synthesis
-│   ├── Jobs & Activity
-│   └── Settings
+│   └── Compose
 ├── Topbar
 │   ├── workspace/status summary
 │   ├── LLM/Embedding/Git/Search readiness badges
-│   └── quick action buttons
+│   └── quick action buttons + Settings gear
 ├── PageContainer
 │   └── active page
-├── GlobalDrawer
+├── SettingsDrawer / GlobalDrawer
 ├── GlobalModal
 └── Toast / Notification
 ```
@@ -75,18 +73,15 @@ AppShell
 
 | Route | 页面 | 主要职责 |
 | --- | --- | --- |
-| `#/dashboard` | Dashboard | 状态总览、最近活动、快捷入口 |
-| `#/capture` | Capture | 文本/URL 采集 |
-| `#/thoughts` | Thoughts | 笔记列表、筛选、详情预览、retry refine |
-| `#/search` | Search | 搜索、过滤、排序、结果预览、加入合稿 |
-| `#/topics` | Topics | 专题列表、创建专题 |
-| `#/topics/:id` | Topic Detail | 专题文档、成员、规则、活动 |
-| `#/topics/:id/review` | Weave Review | 专题缝合 proposal 队列和确认 |
-| `#/synthesis` | Synthesis | 合稿草稿列表、创建、编辑、保存 |
-| `#/jobs` | Jobs & Activity | Job 查询、SSE 活动、失败原因 |
-| `#/settings` | Settings | 系统状态、指标、reindex、配置说明入口 |
+| `#/overview` | Overview | 工作区状态、最近活动、快捷入口 |
+| `#/capture` | Capture | 多轮对话式采集与归档 |
+| `#/notes` | Notes | 已归档 Thought 阅读、状态查看、重新整理入口 |
+| `#/search` | Search | 内容关键词搜索、结果预览、分发到 Notes/Compose/Topics |
+| `#/topics` | Topics | 专题正文、候选影响确认、规则维护 |
+| `#/compose` | Compose | 多来源整理、草稿编辑、保存为 Thought |
+| Settings Drawer | Settings | 系统状态、外部能力、索引、Git、Jobs/Events 治理 |
 
-当前实现可先不做真实 URL 参数解析，内部 state 可以保存 `activePage`、`activeTopicID` 等；但页面结构和 DOM 应按上述 route 分区。
+当前阶段不保留旧 hash 兼容。Topic detail / weave review 作为 `#/topics` 内部 tab 或状态，不再作为一级 route。
 
 ## 4. AntD 风格设计 Token
 
@@ -132,7 +127,7 @@ CSS 变量建议：
 | Form | `.tf-form`、`.tf-form-item`、`.tf-label`、`.tf-help` | 采集、规则、配置 |
 | Input | `.tf-input`、`.tf-textarea`、`.tf-select` | 表单控件 |
 | Tabs | `.tf-tabs`、`.tf-tab`、`.tf-tab-panel` | 详情页内部切换 |
-| Table/List | `.tf-table`、`.tf-list` | Thoughts、Jobs、Topics |
+| Table/List | `.tf-table`、`.tf-list` | Notes、Topics、Settings events |
 | Card | `.tf-card` | 独立摘要块和详情块 |
 | Tag/Badge | `.tf-tag`、`.tf-badge`、状态色 modifier | 状态展示 |
 | Drawer | `.tf-drawer` | 右侧详情、预览、编辑 |
@@ -147,20 +142,18 @@ CSS 变量建议：
 
 Sidebar 固定显示一级导航：
 
-1. Dashboard
+1. Overview
 2. Capture
-3. Thoughts
+3. Notes
 4. Search
 5. Topics
-6. Synthesis
-7. Jobs & Activity
-8. Settings
+6. Compose
 
 每项包含：
 
 1. 图标占位，可先用文本符号或 CSS icon，后续如引入 icon 库再替换。
 2. 中文标题。
-3. 可选 badge，例如失败 Job 数、待审批 proposal 数。
+3. 可选 badge，例如待确认专题候选数、整理篮数量、失败 Job 数摘要。
 
 Sidebar 底部显示：
 
@@ -203,16 +196,16 @@ PageBody
 
 ## 6. 页面详细设计
 
-### 6.1 Dashboard
+### 6.1 Overview
 
-目标：用户进入后快速判断系统是否可用、最近发生了什么、下一步可以做什么。
+目标：工作区速览和快捷入口。Overview 不承载具体业务操作，只帮助用户判断系统是否健康、最近发生了什么，以及下一步该去哪个功能页。
 
 数据来源：
 
 1. `GET /api/system/status`
 2. `GET /api/system/metrics`
 3. SSE history / live stream via `GET /api/events`
-4. 需要 Job 数据时可按已有活动中的 Job ID 跳转到 Jobs 页面。
+4. 需要 Job 数据时按已有活动中的 Job ID 打开 Settings 事件区。
 
 展示模块：
 
@@ -224,109 +217,136 @@ PageBody
    - Search/DuckDB
    - Background
    - Events
-2. 指标卡片：
-   - capture total
-   - search query total
-   - topic weave total
-   - git commit total
-   - background jobs by status
+2. 快捷入口：
+   - 继续采集
+   - 搜索笔记
+   - 查看专题
+   - 打开整理篮
+   - 打开设置
 3. 最近活动：
    - `thought.captured`
    - `thought.refined`
    - `search.index_updated`
    - `topic.updated`
    - `git.commit_failed`
-4. 快捷入口：
-   - 采集新笔记
-   - 搜索笔记
-   - 创建专题
-   - 创建合稿
-   - 查看失败任务
+4. 轻量指标：
+   - capture total
+   - topic candidates / updates
+   - background failed count
+   - git commit failed count
 
 状态设计：
 
 1. ready 使用绿色 badge。
 2. degraded 使用橙色 badge，并提供“查看详情”跳转 Settings。
-3. failed/error 使用红色 badge，并跳转 Jobs 或 Settings。
+3. failed/error 使用红色 badge，并跳转 Settings 对应 tab。
 
 验收标准：
 
-1. Dashboard 不出现采集正文表单、专题规则编辑表单或合稿编辑器。
-2. 所有卡片点击后能跳转到对应功能页。
+1. Overview 不出现采集输入框、搜索结果列表、专题规则表单或 Compose 编辑器。
+2. 所有卡片点击后能跳转到对应功能页或 Settings tab。
 3. 系统状态刷新失败时展示 Alert，不阻塞页面其他内容。
+4. Overview 不展示全量 metrics、Prometheus 文本或全量事件流。
 
 ### 6.2 Capture
 
-目标：提供明确的文本/URL 采集入口。
+目标：提供多轮对话式采集工作台。Capture 不再是 Text / URL 表单提交页，而是把文本、URL、补充说明、整理指令和保存确认全部收敛在同一个会话流里。
 
 数据来源：
 
-1. `POST /api/thoughts`
-2. 提交后可通过返回的 Thought 和 Jobs 更新页面状态。
+1. `GET /api/capture/sessions/active`：进入页面时自动恢复最后一个未归档会话。
+2. `POST /api/capture/sessions`：无会话时创建/恢复会话并追加首轮消息。
+3. `POST /api/capture/sessions/{id}/messages`：追加多轮用户输入并刷新 `session_context`。
+4. `POST /api/capture/sessions/{id}/archive/preview`：在对话内生成归档预览卡片。
+5. `POST /api/capture/sessions/{id}/archive`：用户确认后归档为 Thought。
 
 页面结构：
 
 ```text
 PageHeader: 采集
-FormCard
-├── Capture Type segmented: Text / URL
-├── Title
-├── URL input, only URL type visible
-├── Content textarea
-├── Tags
-├── Topic hints
-└── Submit button
+├── 当前会话标题 / 状态
+├── 新建会话
+└── 历史会话 Drawer
 
-ResultPanel
-├── captured thought summary
-├── background jobs
-└── actions: 查看笔记 / 搜索相关 / 继续采集
+Conversation
+├── 用户消息（文本、URL、补充说明、整理指令）
+├── 系统整理消息
+├── 上下文更新卡片
+├── 待澄清 / 冲突卡片
+├── 归档预览卡片
+├── 保存策略卡片
+├── 归档结果卡片
+└── 错误 / 锁冲突卡片
+
+Composer
+├── 多行输入框
+└── 发送按钮
 ```
 
 交互规则：
 
-1. Text 类型必须填写 content。
-2. URL 类型必须填写 URL；content 作为可选补充说明。
-3. 提交成功后显示 `202 Accepted` 结果语义：笔记已受理，refine/index/topic/git 可能异步执行。
-4. 重复内容警告显示为 Warning Alert，但不阻塞用户继续操作。
-5. 提交按钮 loading 时禁用重复提交。
+1. 打开 Capture 时自动加载最后一个未归档会话的历史消息、`session_context`、候选归档稿和归档预览状态；没有会话时展示空白对话态。
+2. 所有信息输入都通过 Composer 完成，页面不提供独立标题、URL、标签、专题等常驻表单。
+3. 所有信息展示都进入 Conversation：结构化上下文、候选标题、标签、摘要、来源链接、冲突、待澄清问题、保存策略和归档结果都以消息或消息卡片呈现。
+4. 用户输入普通文本或 URL 后，系统追加“上下文更新卡片”，只更新会话草稿，不创建 Thought。
+5. 用户说“保存 / 归档 / 提交”或点击对话内保存操作后，系统追加“归档预览卡片”，确认前不得写入 Thought。
+6. 保存策略（新建 Thought / 更新原 Thought / 生成补充 Thought）在归档预览卡片或其后续策略卡片内选择，不作为页面常驻控件。
+7. 确认归档后追加“归档结果卡片”，提供查看 Notes、继续补充、新建会话等入口。
+8. `新建会话` 是显式动作；未触发新建时，后端和前端都必须继续使用最后一个未归档会话。
+9. 历史会话列表、完整上下文编辑、任务事件和模型调试信息只放 Drawer / 折叠区，不常驻主视图。
 
 验收标准：
 
-1. Capture 页面不显示搜索结果列表、专题文档和合稿编辑器。
-2. 成功后提供明确“查看笔记详情”入口。
-3. 错误响应展示 `request_id` 和错误 message。
+1. 进入 Capture 后能自动恢复最后一个未归档会话，并可直接继续输入。
+2. 页面主视图只有对话流和输入框；不存在独立采集表单。
+3. 每轮输入后，结构化上下文以对话卡片方式更新。
+4. 归档预览、策略选择、确认归档和归档结果都在对话流中完成。
+5. Capture 页面不显示搜索结果列表、专题文档、Compose 编辑器、系统配置或全量 Job 列表。
+6. 错误、锁冲突和重试入口以对话内系统卡片呈现。
 
-### 6.3 Thoughts
+### 6.3 Notes
 
-目标：作为原子笔记的浏览与详情入口。
+目标：作为已归档 Thought 的阅读、查看状态和重新整理入口。Notes 不负责采集新内容，也不承载复杂搜索；主任务是阅读已经沉淀的知识内容，并从内容出发进入补充整理或 Compose。
 
 当前 API 情况：
 
 1. 已有 `GET /api/thoughts/{id}`。
-2. 当前没有独立的 `GET /api/thoughts` 列表 API。
-3. 初期可通过 Search 页面结果跳转到详情；后续建议补充列表 API。
+2. 当前没有独立的 `GET /api/thoughts` 列表 API；初期列表可来自最近活动、Search 跳转或本地状态。
+3. `POST /api/thoughts/{id}/reopen-session` 可从当前 Thought 发起重新整理会话。
 
 页面结构：
 
 ```text
 PageHeader: 笔记
-Toolbar
-├── search box
-├── tag filter
-├── status filter
-└── refresh
+├── 最近笔记 / 当前笔记标题
+└── 主操作：重新整理 / 加入整理篮 / 编辑元信息
 
-Content
-├── Thought list/table
-└── Detail drawer
+ReadingLayout
+├── Thought 列表 / 最近笔记
+│   ├── 标题
+│   ├── 标签
+│   ├── 更新时间
+│   └── refine / index 简要状态
+└── Thought 详情
+    ├── 标题
+    ├── 正文 Markdown
+    ├── AI 摘要 / 关键点
+    ├── 标签 / 来源链接 / 所属专题
+    └── 主操作区
+
+SecondaryTabsOrDetails
+├── 状态
+├── 运行 Jobs
+├── Git
+└── Front matter / 原始字段
 ```
 
 初期实现策略：
 
-1. 页面提示“通过搜索或最近活动进入笔记详情”。
-2. 提供 Thought ID 输入框，可直接查询 `GET /api/thoughts/{id}`。
-3. Search 结果点击后打开 Thought detail drawer 或跳转 `#/thoughts?id=...`。
+1. 默认展示最近打开或从 Search / Topic / Capture 跳转进入的 Thought。
+2. 无当前 Thought 时展示轻量空状态，引导去 Search 查找或从 Capture 归档。
+3. 保留 Thought ID 直达能力作为次级入口，不作为主体验。
+4. Search 结果点击后跳转 `#/notes?id=...` 或打开 Notes 详情状态。
 
 后续 API 建议：
 
@@ -334,56 +354,55 @@ Content
 GET /api/thoughts?page=&page_size=&q=&tag=&status=
 ```
 
-详情展示：
+主视图详情展示：
 
-1. 基本信息：title、id、type、source、path、created_at、updated_at。
-2. 状态：capture/refine/index/topic。
-3. Tags：user tags、AI tags、topic IDs。
-4. 原文 Original。
-5. Extracted content。
-6. AI Notes。
-7. Links。
-8. Jobs。
-9. Git commits。
+1. 标题、正文 Markdown、AI 摘要、关键点。
+2. 用户标签、AI 标签、专题归属、来源链接。
+3. created_at / updated_at 等最小元信息。
+4. 相关 Thought 或关联专题作为正文后的辅助入口。
+
+次级展示：
+
+1. refine / index / expand / git 状态放入“状态”tab 或折叠区。
+2. 最近 jobs 放入“运行”tab，默认收起。
+3. Git commit 详情、原始 front matter、patch 历史放入高级详情。
 
 操作：
 
-1. `Retry refine`
-2. `加入合稿篮`
-3. `复制 Markdown path`
-4. `查看专题`
+1. `重新整理`：调用 reopen-session，并跳转 Capture 继续多轮补充。
+2. `编辑元信息`：修改标题、标签等轻量字段。
+3. `加入整理篮`：把当前 Thought 加入 Compose 来源篮。
+4. `复制 Markdown path`、`查看专题`、`Retry refine` 作为次级操作。
 
 验收标准：
 
-1. Thought 详情使用 Drawer 或详情页，不占用 Search 页面主列表空间。
-2. Retry refine 返回 Job 后跳转或链接到 Jobs 页面。
+1. Notes 首屏以 Thought 阅读内容为中心，不展示采集输入框、搜索高级筛选、专题规则或 Compose 编辑器。
+2. 当前 Thought 可以一键发起重新整理会话，并进入 Capture。
+3. 状态、Jobs、Git commit 和 front matter 默认不干扰正文阅读。
+4. 加入整理篮后能在 Compose 中看到来源。
+5. Retry refine 返回 Job 后在 Notes 的运行区或 Settings 事件区可追踪。
 
 ### 6.4 Search
 
-目标：独立搜索中心，支持搜索、过滤、排序、解释分数和预览。
+目标：提供基于内容关键词的轻量查找入口。Search 只围绕“内容是否相关”展开，不承载时间、运行状态、索引调试等与内容无关的筛选。
 
 数据来源：
 
 1. `GET /api/search`
 2. `GET /api/thoughts/{id}` 用于预览。
-3. `POST /api/system/reindex` 通过 Settings 或确认 Modal 触发。
+3. 索引维护、reindex 和搜索运行状态统一归 Settings。
 
 页面结构：
 
 ```text
 PageHeader: 搜索
 SearchBar
-├── query
-├── mode segmented: Hybrid / Keyword / Semantic
-└── search button
+├── keyword query
+└── 搜索按钮
 
-FilterBar
-├── topic_id
-├── tags
-├── from / to
-├── sort
-├── explain switch
-└── reset
+ContentFilters
+├── tags（可选）
+└── topic（可选）
 
 ResultLayout
 ├── Result table/list
@@ -391,7 +410,7 @@ ResultLayout
 
 SelectionBar
 ├── selected count
-├── 加入合稿
+├── 加入整理篮
 └── 清空选择
 ```
 
@@ -399,289 +418,182 @@ SelectionBar
 
 1. title / thought_id
 2. snippet
-3. score
-4. keyword_score
-5. semantic_score
-6. recency_score
-7. topics
-8. tags
-9. path
-10. actions
+3. tags
+4. topics
+5. source / path（次要展示，可折叠）
+6. actions
 
 结果操作：
 
-1. 预览笔记。
-2. 加入合稿篮。
-3. 如果已选 topic，则发起 weave preview。
-4. 复制 path。
+1. 打开 Notes 阅读。
+2. 预览笔记摘要。
+3. 加入整理篮。
+4. 生成专题候选 / 专题影响预览。
+5. 复制 Markdown path（次级操作）。
 
 交互规则：
 
 1. 搜索为空时显示 Empty，提供示例提示。
-2. semantic/hybrid 在 embedding 缺失时展示降级提示。
-3. explain 开启后，结果项展开显示 score formula 和 source。
-4. Reindex 不放在结果列表内，放到 Settings 或 PageHeader 次要按钮，并需要确认。
+2. 搜索框只表达关键词，不展示 Hybrid / Semantic / Keyword 模式切换。
+3. tags 和 topic 属于内容相关筛选，可以放在折叠筛选条；时间、状态、排序、score explain 不进入主流程。
+4. 结果默认不展示 keyword_score、semantic_score、recency_score、score formula、DuckDB 调试信息或绝对路径。
+5. Reindex 不放在 Search 页面，统一放到 Settings 并需要确认。
 
 验收标准：
 
-1. Search 页面不直接展示专题规则编辑和合稿正文编辑器。
-2. 搜索结果预览在 Drawer 中展示。
-3. 选择多个结果后跳转 Synthesis 页面创建草稿。
+1. Search 页面首屏只有关键词搜索、内容相关筛选和结果列表。
+2. Search 页面不出现时间范围、运行状态、score explain、系统 reindex 或全量调试字段。
+3. 搜索结果预览在 Drawer 中展示，深度阅读跳转 Notes。
+4. 选择多个结果后可加入 Compose 整理篮。
+5. Search 页面不直接展示专题规则编辑、采集输入框或 Compose 正文编辑器。
 
 ### 6.5 Topics
 
-目标：管理专题列表和创建入口。
+目标：围绕主题组织知识，维护一篇动态增长的专题文档。Topics 不只是规则配置页，主任务是阅读专题正文、查看候选影响，并确认哪些内容应该进入正式专题。
 
 数据来源：
 
 1. `GET /api/topics`
 2. `POST /api/topics`
+3. `GET /api/topics/{id}`
+4. `PUT /api/topics/{id}`
+5. `POST /api/topics/{id}/refresh`
+6. `GET /api/topics/{id}/candidates`
+7. `POST /api/topics/{id}/weave-preview`
+8. `POST /api/topics/{id}/weave-accept`
 
 页面结构：
 
 ```text
 PageHeader: 专题
-Primary action: 创建专题
-Toolbar
-├── keyword filter
-├── status / auto weave filter
-└── refresh
+├── 新建专题
+├── 刷新专题
+└── 编辑规则
 
-TopicList/Table
-├── name
-├── description
-├── member_count
-├── word_count
-├── updated_at
-└── actions
+TopicsLayout
+├── 专题列表
+│   ├── 名称
+│   ├── 摘要
+│   ├── 成员数
+│   └── 候选数
+└── 专题工作区
+    ├── 正式文档 Markdown
+    ├── 候选影响区
+    └── 主操作
 
-CreateTopicDrawer
+SecondaryTabsOrDrawers
+├── 规则
+├── 成员
+├── 缝合提案
+└── 活动记录
 ```
 
-创建专题 Drawer：
+专题工作区：
 
-1. name
-2. description
-3. keywords any/all/exclude
-4. tags any
-5. manual include/exclude
-6. semantic enabled
-7. threshold
-8. outline
-9. auto weave
+1. 正式文档渲染 `topics/{id}/index.md`，作为页面阅读中心。
+2. 候选影响区展示未归档会话、补充会话、新 Thought、整理草稿对专题的建议影响。
+3. 主操作只保留 `刷新专题`、`确认候选`、`编辑规则`、`新建专题`。
 
-操作：
+候选区：
 
-1. 打开详情。
-2. 编辑规则。
-3. Rebuild。
-4. 查看审批。
+1. 来自未归档 Capture 会话：显示会话摘要、候选正文、相关原因。
+2. 来自 Thought 重新整理会话：显示原 Thought、补充点、建议动作。
+3. 来自新归档 Thought：显示标题、摘要、标签、推荐插入位置。
+4. 来自 Compose 草稿：显示来源篮和建议归入专题的段落。
+5. 候选操作：`确认纳入`、`忽略`、`打开来源`、`发起重新整理`、`生成缝合预览`。
+
+规则维护：
+
+1. 规则不常驻专题主视图，放入 Drawer 或次级 tab。
+2. 字段包括 keywords any/all/exclude、tags、manual include/exclude、semantic enabled、threshold。
+3. 规则保存后刷新专题候选，不直接把候选写入正式文档。
+
+缝合提案：
+
+1. 缝合预览和审批作为专题内次级区域，不作为单独顶级导航。
+2. Accept 前显示确认，说明将写入 `topics/{slug}/index.md`。
+3. stale patch、source link 缺失或冲突时保留用户当前预览内容，并展示错误卡片。
 
 验收标准：
 
-1. 专题创建从明确按钮进入 Drawer，不常驻右侧 rail。
-2. Topic list 每一行有清晰动作，不依赖用户理解隐藏状态。
+1. Topics 首屏以专题列表、专题正文和候选影响为中心，不展示采集输入、Compose 编辑器、系统配置或全量 Jobs。
+2. 未确认候选不得直接混入专题正文。
+3. 用户能清楚区分“正式专题内容”和“待确认候选影响”。
+4. 规则编辑、成员表、缝合提案和活动记录不常驻主视图。
+5. 确认候选或接受缝合提案前必须展示即将写入的内容或 diff。
 
-### 6.6 Topic Detail
+### 6.6 Compose
 
-目标：展示某个专题的文档、成员、规则和活动。
-
-数据来源：
-
-1. `GET /api/topics/{id}`
-2. `PUT /api/topics/{id}`
-3. `POST /api/topics/{id}/rebuild`
-4. `GET /api/topics/{id}/weave-proposals`
-
-页面结构：
-
-```text
-PageHeader
-├── title
-├── status tags
-├── Rebuild
-├── Edit rules
-└── Review proposals
-
-Tabs
-├── Document
-├── Members
-├── Rules
-└── Activity
-```
-
-Document tab：
-
-1. Markdown render preview。
-2. source links 可点击打开 Thought detail。
-3. 文档为空时展示 Empty 和 rebuild 入口。
-
-Members tab：
-
-1. member table：thought_id、title、match_type、score、reasons、status。
-2. actions：打开笔记、加入合稿、预览 weave。
-
-Rules tab：
-
-1. 只读规则摘要。
-2. `Edit rules` 打开 Drawer。
-3. 保存后重新加载 topic detail。
-
-Activity tab：
-
-1. topic related events。
-2. rebuild/match/weave/update 历史。
-
-验收标准：
-
-1. 规则编辑不常驻在详情页主视图。
-2. rebuild 是明确按钮，并显示 Job 结果。
-3. proposal 入口跳转 `#/topics/:id/review`。
-
-### 6.7 Weave Review
-
-目标：独立处理专题文档缝合审批。
+目标：多来源整理工作台。Compose 负责把多个 Thought、搜索结果、专题片段或采集会话候选整理成一篇新的可保存文档；它不是搜索页、笔记详情页或长文写作 IDE。
 
 数据来源：
 
-1. `POST /api/topics/{id}/weave-preview`
-2. `GET /api/topics/{id}/weave-proposals`
-3. `GET /api/topics/{id}/weave-proposals/{proposal_id}`
-4. `POST /api/topics/{id}/weave-accept`
-
-页面结构：
-
-```text
-PageHeader: 专题审批
-ProposalLayout
-├── Proposal queue
-├── Proposal detail
-│   ├── metadata
-│   ├── diff
-│   ├── patch hunks
-│   └── proposed document editor
-└── Actions
-    ├── Accept
-    ├── Reset to proposed
-    └── Back to topic
-```
-
-交互规则：
-
-1. 没有 proposal 时展示 Empty，并提示从 Search 或 Topic Members 发起 weave preview。
-2. Accept 前显示确认 Modal，说明将写入 `topics/{slug}/index.md`。
-3. 如果服务端返回 stale patch 或 source link 缺失，显示 Error Alert，并保留用户编辑内容。
-4. Accept 成功后 proposal 状态更新为 accepted，并跳转或刷新 Topic Detail。
-
-验收标准：
-
-1. Weave 审批不再放在 Search 或 Topic 主 tab 中。
-2. 用户明确知道当前正在修改哪个 topic、哪个 thought 触发的 proposal。
-3. Diff 和 proposed document 都可查看。
-
-### 6.8 Synthesis
-
-目标：管理合稿草稿和保存为新 Thought。
-
-数据来源：
-
-1. `POST /api/synthesis`
-2. `GET /api/synthesis`
-3. `GET /api/synthesis/{draft_id}`
-4. `POST /api/synthesis/save`
+1. `POST /api/compose/drafts`
+2. `GET /api/compose/drafts`
+3. `GET /api/compose/drafts/{draft_id}`
+4. `POST /api/compose/drafts/{draft_id}/save`
 5. `GET /api/thoughts/{id}` 用于来源预览。
+6. Search / Notes / Topics / Capture 写入的来源篮状态。
 
 页面结构：
 
 ```text
-PageHeader: 合稿
-Toolbar
-├── Create draft
-├── refresh
-└── selected source count
+PageHeader: 整理
+├── 生成草稿
+├── 保存为 Thought
+└── 清空来源篮
 
-Layout
-├── Draft list
-└── Draft editor/detail
+ComposeLayout
+├── 来源篮
+│   ├── 已选 Thought
+│   ├── 已选专题片段
+│   ├── 已选搜索结果
+│   └── 已选采集会话候选
+└── 草稿编辑区
+    ├── 标题
+    ├── 正文
+    ├── 标签
+    ├── source links
+    └── 保存操作
+
+SecondaryTabsOrDrawers
+├── 历史草稿
+├── 模板
+├── 生成参数 / prompt
+└── 引用映射
 ```
 
-创建草稿 Drawer/Modal：
+来源篮：
 
-1. selected thought IDs。
-2. goal。
-3. format：summary / outline / report。
-4. create draft。
+1. Thought 来源展示标题、摘要、标签。
+2. Search result 来源展示查询词、命中片段、Thought。
+3. Topic 来源展示专题名、片段、候选影响。
+4. Capture session 来源展示会话摘要、候选稿。
+5. 每个来源支持打开、移除、查看摘要、标记重点。
 
-Draft editor：
+草稿编辑区：
 
-1. draft metadata。
-2. source links。
-3. content textarea。
-4. save as thought。
-5. saved state and saved_thought_id。
+1. 允许编辑标题、正文、标签、source links、保存类型。
+2. 草稿内容默认围绕来源生成，不提供复杂 Markdown IDE 能力。
+3. 保存前明确展示 source links；缺失时前端提示，服务端仍负责最终校验。
 
 跨页面联动：
 
-1. Search 和 Thoughts 页面可以把 Thought 加入 `synthesisBasket`。
-2. Synthesis 页面读取 basket，作为创建草稿默认来源。
-3. 保存成功后清空或保留 basket 由用户选择。
+1. Search、Notes、Topics、Capture 都可以把内容加入整理篮。
+2. Compose 读取 basket，作为创建草稿默认来源。
+3. 保存成功后展示新 Thought 入口，并允许清空或保留来源篮。
+4. 深度阅读来源跳转 Notes；继续补充来源跳转 Capture；专题归入跳转 Topics。
 
 验收标准：
 
-1. 合稿编辑器只出现在 Synthesis 页面。
-2. 保存为 Thought 成功后展示新 Thought 入口。
-3. source links 缺失时前端提示，服务端仍负责最终校验。
+1. Compose 主线是“选择来源 -> 生成草稿 -> 编辑草稿 -> 保存为 Thought”。
+2. Compose 不展示全量搜索筛选器、Capture 对话输入、专题规则、系统配置或全量 Jobs/Event 流。
+3. 保存为 Thought 成功后展示新 Thought 入口。
+4. 来源篮中的每个来源都可回溯。
 
-### 6.9 Jobs & Activity
+### 6.7 Settings
 
-目标：统一展示后台任务和事件流。
-
-数据来源：
-
-1. `GET /api/jobs/{id}`
-2. `GET /api/events`
-3. 从其他页面带入 job id。
-
-页面结构：
-
-```text
-PageHeader: 任务与活动
-Tabs
-├── Jobs
-└── Activity
-```
-
-Jobs tab 初期策略：
-
-1. 当前没有 `GET /api/jobs` 列表 API。
-2. 提供 Job ID 查询框。
-3. 其他页面创建 Job 后可跳转 `#/jobs?id=...`。
-4. 后续建议补充 Job list API。
-
-Activity tab：
-
-1. SSE live stream。
-2. event type filter。
-3. resource filter。
-4. 点击事件打开相关资源。
-
-状态：
-
-1. `queued` 灰色。
-2. `running` 蓝色。
-3. `retrying` 橙色。
-4. `succeeded` 绿色。
-5. `failed` 红色。
-6. `canceled` 灰色。
-
-验收标准：
-
-1. 所有页面触发 Job 后都能找到任务追踪入口。
-2. 失败 Job 展示 error code、message、retryable。
-
-### 6.10 Settings
-
-目标：系统运行态、配置说明和治理动作入口。
+目标：系统配置、健康修复和运行态治理入口。Settings 是右侧 Drawer，不作为日常知识处理页面；默认展示必要状态，高级指标、Prometheus 和事件详情折叠。
 
 数据来源：
 
@@ -689,58 +601,70 @@ Activity tab：
 2. `GET /api/system/metrics`
 3. `GET /metrics`
 4. `POST /api/system/reindex`
+5. `GET /api/system/privacy`
+6. `GET /api/jobs`
+7. `GET /api/events`
 
 页面结构：
 
 ```text
-PageHeader: 系统设置
-Tabs
-├── Status
-├── Metrics
-├── Index
-├── Git
-└── Configuration
+Settings Drawer
+├── 通用
+├── 模型
+├── 同步
+├── 索引
+└── 事件
 ```
 
-Status：
+通用：
 
 1. workspace。
-2. duckdb。
-3. LLM。
-4. Embedding。
-5. Git。
-6. background。
-7. events。
+2. runtime path。
+3. config docs。
+4. 语言和基础偏好。
 
-Metrics：
+模型：
 
-1. JSON metric cards。
-2. Prometheus text link/copy。
+1. LLM 状态。
+2. Embedding 状态。
+3. Reader / web fetch 状态。
+4. 外部请求配置说明和轻量隐私提示。
 
-Index：
+同步：
+
+1. Git repository。
+2. identity configured。
+3. dirty 状态。
+4. 最近提交和可解释错误。
+
+索引：
 
 1. DuckDB path。
 2. exists/status。
 3. reindex 按钮。
 4. reindex 确认 Modal。
 
-Git：
+事件：
 
-1. repository。
-2. identity configured。
-3. dirty。
-4. understandable error。
+1. Jobs 列表。
+2. SSE events。
+3. event type filter。
+4. resource filter。
+5. 失败事件详情。
 
-Configuration：
+治理动作：
 
-1. 当前配置文件路径说明。
-2. 链接 `doc/application.example.toml`。
-3. 配置字段说明入口。
+1. `重新索引` 必须确认。
+2. 未来的重新同步、清理/重建运行态数据、禁用外部请求必须明确状态反馈。
+3. 所有高风险动作完成后追加事件或 toast，并提供追踪入口。
 
 验收标准：
 
-1. reindex 是明确治理动作，不放在 Search 列表内。
-2. degraded 状态有可解释说明。
+1. Settings 不展示 Thought 阅读、Capture 对话、Search 查询、Topic 正文或 Compose 草稿编辑器。
+2. reindex 是明确治理动作，不放在 Search 页面。
+3. degraded / failed 状态有可解释说明和下一步操作。
+4. 高级 metrics、Prometheus、原始事件流默认折叠。
+5. 用户能在模型 tab 看清 LLM、Embedding、Reader 等外部请求能力是否启用。
 
 ## 7. 全局状态模型
 
@@ -749,27 +673,26 @@ Configuration：
 ```js
 const state = {
   route: {
-    page: "dashboard",
+    page: "overview",
     params: {},
     query: {},
   },
   status: null,
   metrics: null,
   topics: [],
-  activeTopicID: "",
+  activeTopicId: "",
   activeTopicDetail: null,
-  thoughts: {
+  notes: {
     activeID: "",
     activeSnapshot: null,
   },
   search: {
     query: "",
-    mode: "hybrid",
     filters: {},
     result: null,
     selectedThoughtIDs: new Set(),
   },
-  synthesis: {
+  compose: {
     basket: new Set(),
     drafts: [],
     activeDraftID: "",
@@ -811,11 +734,12 @@ window.addEventListener("hashchange", routeFromHash);
 
 解析规则：
 
-1. 空 hash 默认 `#/dashboard`。
-2. `#/topics/<id>` 设置 `page=topic-detail` 和 `activeTopicID`。
-3. `#/topics/<id>/review` 设置 `page=weave-review`。
-4. `#/thoughts?id=<id>` 打开 Thoughts 页面并加载详情。
-5. `#/jobs?id=<job_id>` 打开 Jobs 页面并加载 Job。
+1. 空 hash 默认 `#/overview`。
+2. `#/notes?id=<id>` 打开 Notes 页面并加载详情。
+3. `#/topics?topic=<id>&tab=detail|candidates|rules|proposals` 打开 Topics 内部状态。
+4. `#/compose?draft=<id>` 打开 Compose 草稿。
+5. `#/jobs?id=<job_id>` 重定向到 Overview 并打开 Settings Drawer 的事件 tab。
+6. `#/settings` 重定向到 Overview 并打开 Settings Drawer。
 
 导航验收：
 
@@ -832,7 +756,8 @@ window.addEventListener("hashchange", routeFromHash);
 1. Thought preview。
 2. Topic create/edit rules。
 3. Search result preview。
-4. Synthesis create draft。
+4. Compose create draft / source mapping。
+5. Settings。
 
 Drawer 要求：
 
@@ -846,9 +771,9 @@ Drawer 要求：
 适用：
 
 1. Reindex confirmation。
-2. Topic rebuild confirmation。
+2. Topic refresh confirmation。
 3. Weave accept confirmation。
-4. Save synthesis as thought confirmation。
+4. Save compose as thought confirmation。
 
 Modal 要求：
 
@@ -905,10 +830,10 @@ Browser smoke 需要继续覆盖：
 
 | 缺口 | 建议 API | 用途 |
 | --- | --- | --- |
-| Thought list | `GET /api/thoughts` | Thoughts 页面列表 |
-| Job list | `GET /api/jobs` | Jobs 页面列表 |
+| Thought list | `GET /api/thoughts` | Notes 页面列表 |
+| Jobs query/list | `GET /api/jobs` | Settings 事件 tab |
 | Search preview query | 已有 service 查询，若需要 HTTP 可补 `GET /api/search/preview/{thought_id}` | Search 轻量预览 |
-| Topic proposal create from member | 可复用 `weave-preview` | 从 Topic Members 发起审批 |
+| Topic proposal create from member | 可复用 `weave-preview` | 从 Topics 候选或成员发起预览 |
 | Current config view | `GET /api/system/config`，注意脱敏 | Settings 配置页 |
 
 第一阶段不要求新增 API，应优先使用现有接口重组页面。
@@ -926,61 +851,63 @@ Browser smoke 需要继续覆盖：
 
 验收：
 
-1. `#/dashboard`、`#/capture`、`#/search`、`#/topics`、`#/synthesis`、`#/settings` 可切换。
-2. 旧的一屏三栏布局不再作为主交互方式。
-3. Chrome desktop/mobile browser smoke 通过。
+1. `#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/compose` 可切换。
+2. Settings 通过顶栏齿轮或旧 hash 打开 Drawer。
+3. 旧的一屏三栏布局不再作为主交互方式。
+4. Chrome desktop/mobile browser smoke 通过。
 
-### Phase 2：Capture / Search / Thought Preview
+### Phase 2：Capture / Search / Notes
 
 目标：
 
-1. Capture 独立页面。
-2. Search 独立页面。
-3. Thought preview Drawer。
-4. Synthesis basket 初步可用。
+1. Capture 多轮对话式采集工作台。
+2. Search 关键词搜索页。
+3. Notes 阅读页。
+4. Compose basket 初步可用。
 
 验收：
 
-1. Capture 成功后显示 Thought 和 Job 入口。
-2. Search 结果可预览、选择、加入合稿。
-3. Search 页面不展示专题规则和合稿编辑器。
+1. Capture 自动恢复最后未归档会话，归档预览和确认在对话流中完成。
+2. Search 结果可预览、选择、加入整理篮。
+3. Notes 可阅读 Thought，并可发起重新整理会话。
+4. Search 页面不展示专题规则和 Compose 编辑器。
 
-### Phase 3：Topics / Topic Detail / Rules Drawer
+### Phase 3：Topics Workspace
 
 目标：
 
-1. Topics 列表页。
-2. Topic detail 页。
+1. Topics 专题列表和专题工作区。
+2. 候选影响区。
 3. Topic create/edit rules Drawer。
-4. Rebuild confirmation Modal。
+4. Refresh / candidate confirmation Modal。
 
 验收：
 
 1. 创建专题入口明确。
 2. 规则编辑不常驻右侧 rail。
-3. Topic detail tabs 展示 document、members、rules、activity。
+3. 专题正文和候选影响清晰区分，未确认候选不写入正式文档。
 
-### Phase 4：Weave Review / Synthesis
+### Phase 4：Compose / Topic Proposal
 
 目标：
 
-1. Weave Review 独立页面。
-2. Synthesis 独立页面。
-3. Proposal queue、diff、document editor、accept modal。
-4. Draft list、draft editor、save as thought。
+1. Compose 整理页。
+2. Topic proposal 作为 Topics 内部次级区。
+3. Draft list、source basket、draft editor、save as thought。
+4. Proposal diff、accept modal。
 
 验收：
 
-1. Weave 审批不再混在 Search/Topic 主页面。
-2. 合稿创建和保存为 Thought 有明确入口。
+1. 专题提案不再作为单独顶级页面。
+2. 整理创建和保存为 Thought 有明确入口。
 3. 保存或确认后有后续资源跳转。
 
-### Phase 5：Jobs / Settings / Polish
+### Phase 5：Settings / Polish
 
 目标：
 
-1. Jobs & Activity 页面。
-2. Settings 页面。
+1. Settings Drawer。
+2. Jobs & Activity 收敛到 Settings 事件 tab。
 3. 全局 notification。
 4. 视觉细节统一。
 5. Browser smoke 与 Node component tests 扩展。
@@ -999,7 +926,7 @@ Browser smoke 需要继续覆盖：
 
 1. Markdown 渲染安全性。
 2. Diff 渲染。
-3. Synthesis source link 去重。
+3. Compose source link 去重。
 4. Outline helper。
 
 新增覆盖：
@@ -1007,8 +934,8 @@ Browser smoke 需要继续覆盖：
 1. route parser。
 2. menu active state。
 3. status badge class mapping。
-4. score/explain rendering。
-5. synthesis basket helper。
+4. Search result item rendering。
+5. compose basket helper。
 
 ### 13.2 Browser Smoke
 
@@ -1024,9 +951,9 @@ Browser smoke 需要继续覆盖：
 1. Sidebar 页面切换。
 2. Capture 页面可达。
 3. Search 页面结果加载。
-4. Topics 页面详情跳转。
-5. Synthesis 页面可打开。
-6. Settings 状态卡片可见。
+4. Topics 工作区可打开。
+5. Compose 页面可打开。
+6. Settings Drawer 可打开。
 
 ### 13.3 现有测试文件调整清单
 
@@ -1039,40 +966,40 @@ Browser smoke 需要继续覆盖：
 1. `.topic-item`
 2. `.result-item`
 3. `#tab-review`
-4. `#tab-synthesis`
+4. `#tab-compose`
 5. `#capture-form`
 6. `.app-shell` 三栏布局宽度
 
 Phase 1 后应改为断言新信息架构：
 
 1. Sidebar 导航存在。
-2. 默认 `#/dashboard` 页面可加载。
+2. 默认 `#/overview` 页面可加载。
 3. 左侧导航 active 状态和 hash route 一致。
-4. 可切换到 `#/capture`，并看到采集表单。
+4. 可切换到 `#/capture`，并看到对话流和 Composer。
 5. 可切换到 `#/search`，mock API 返回结果后能看到结果列表。
-6. 可切换到 `#/topics`，并能进入 topic detail。
-7. 可切换到 `#/synthesis`，并看到草稿列表/空态。
-8. 可切换到 `#/settings`，并看到系统状态卡片。
+6. 可切换到 `#/topics`，并能进入专题工作区。
+7. 可切换到 `#/compose`，并看到来源篮和草稿空态。
+8. 顶栏齿轮可打开 Settings Drawer。
 9. Chrome desktop/mobile 均无水平溢出。
 10. Firefox/Safari 仍保留目标声明和环境 skip。
 
 Phase 2 后新增 browser smoke 覆盖：
 
-1. Capture 提交成功后出现 Thought/Job 结果入口。
-2. Search 结果可勾选并加入 synthesis basket。
-3. Thought preview Drawer 可打开和关闭。
+1. Capture 自动恢复最后未归档会话，对话输入后出现上下文更新卡。
+2. Search 结果可勾选并加入 compose basket。
+3. Notes 详情可打开，并能发起重新整理会话。
 
 Phase 3 后新增 browser smoke 覆盖：
 
 1. Topic create Drawer 可打开。
-2. Topic detail tabs 可切换。
+2. Topics 正式文档和候选影响区可切换/显示。
 3. Rules Drawer 可打开，保存按钮状态合理。
 
 Phase 4 后新增 browser smoke 覆盖：
 
-1. Weave Review proposal queue 可打开。
+1. Topic proposal queue 可在 Topics 内打开。
 2. Diff 和 proposed document 区域可见。
-3. Synthesis draft editor 可打开。
+3. Compose draft editor 可打开。
 
 #### 13.3.2 `app.test.js`
 
@@ -1082,30 +1009,30 @@ Phase 4 后新增 browser smoke 覆盖：
 2. 扩展 Markdown 结构渲染。
 3. CommonMark/GFM 解析。
 4. `renderDiff`。
-5. `renderSynthesisDraft` source link 去重。
+5. `renderComposeDraft` source link 去重。
 6. outline helper。
 
 改造时应新增纯函数或轻 DOM 测试：
 
 1. `parseRoute(hash)`：
-   - 空 hash -> dashboard。
-   - `#/topics/demo` -> topic detail。
-   - `#/topics/demo/review` -> weave review。
-   - `#/thoughts?id=abc` -> thoughts + active id。
-   - `#/jobs?id=job-1` -> jobs + active job id。
+   - 空 hash -> overview。
+   - `#/notes?id=abc` -> notes + active id。
+   - `#/topics?topic=demo&tab=proposals` -> topics 内部提案 tab。
+   - `#/compose?draft=draft-1` -> compose + active draft id。
+   - `#/jobs?id=job-1` -> overview + settings events drawer。
 2. `navItemClass(route, item)`：
    - 当前页面 active。
-   - topic detail/review 均归属 Topics 导航 active。
+   - topics 内部 tab 均归属 Topics 导航 active。
 3. `statusBadge(status)`：
    - ready -> success。
    - degraded -> warning。
    - failed/error -> error。
    - disabled/not_configured -> default。
 4. `renderSearchResultItem(result, options)`：
-   - score/explain 字段展示。
-   - path 可复制。
+   - 标题、片段、标签、专题展示。
+   - path 作为次级字段可复制。
    - selected 状态正确。
-5. `synthesisBasket` helper：
+5. `composeBasket` helper：
    - add/remove/toggle/clear。
    - 去重。
    - 与 search selected thought IDs 同步。

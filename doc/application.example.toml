@@ -46,8 +46,8 @@ debounce_seconds = 5
 [search]
 # Relative paths are resolved against runtime.state_dir.
 duckdb_path = "thoughtflow.duckdb"
-# Supported values: keyword, semantic, hybrid.
-default_mode = "hybrid"
+# Web search defaults to keyword. Backend retrieval may still use semantic signals internally.
+default_mode = "keyword"
 
 [topic]
 # Whether to enable automatic topic document weaving after topic matches.

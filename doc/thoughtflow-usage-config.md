@@ -137,7 +137,7 @@ debounce_seconds = 5
 
 [search]
 duckdb_path = "thoughtflow.duckdb"
-default_mode = "hybrid"
+default_mode = "keyword"
 
 [topic]
 auto_weave = true
@@ -164,7 +164,7 @@ timeout_seconds = 30
 
 1. `search.duckdb_path` 为相对路径时，会解析到 `runtime.state_dir` 下。
 2. 当前进程启动时显式设置服务名为 `thoughtflow`，因此模板不需要配置 `endpointName`。
-3. `llm.api_key` 为空时，摘要、专题缝合和合稿使用本地规则 provider。
+3. `llm.api_key` 为空时，摘要、专题缝合和 Compose 整理使用本地规则 provider。
 4. `embedding.api_key` 为空时，服务使用 deterministic local embedding，仍可完成本地采集、搜索和专题匹配。
 5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
 6. 配置目录和运行状态目录应保持物理分离。配置目录存放 `application.toml`，运行状态目录存放 jobs、logs、DuckDB 等运行态文件。
@@ -201,9 +201,9 @@ git-sync 会过滤运行态数据文件和 DuckDB 文件，只提交用户可读
 
 不配置 API Key 时：
 
-1. `llm.api_key` 为空时，摘要、专题缝合和合稿使用本地规则 provider。
+1. `llm.api_key` 为空时，摘要、专题缝合和 Compose 整理使用本地规则 provider。
 2. `embedding.api_key` 为空时，生成 deterministic local embedding。
-3. 本地采集、加工、搜索、专题匹配和合稿仍可运行。
+3. 本地采集、加工、搜索、专题匹配和 Compose 整理仍可运行。
 
 配置 OpenAI-compatible chat provider：
 
@@ -243,6 +243,16 @@ timeout_seconds = 30
 POST /api/thoughts
 GET  /api/thoughts/{id}
 POST /api/thoughts/{id}/retry-refine
+POST /api/thoughts/{id}/reopen-session
+
+POST /api/capture/sessions
+GET  /api/capture/sessions/active
+GET  /api/capture/sessions
+POST /api/capture/sessions/{id}/messages
+POST /api/capture/sessions/{id}/context
+GET  /api/capture/sessions/{id}/archive/preview
+POST /api/capture/sessions/{id}/archive
+
 GET  /api/search
 POST /api/system/reindex
 
@@ -250,17 +260,19 @@ GET  /api/topics
 POST /api/topics
 GET  /api/topics/{id}
 PUT  /api/topics/{id}
-POST /api/topics/{id}/rebuild
+POST /api/topics/{id}/refresh
+GET  /api/topics/{id}/candidates
 POST /api/topics/{id}/weave-preview
 GET  /api/topics/{id}/weave-proposals
 GET  /api/topics/{id}/weave-proposals/{proposal_id}
 POST /api/topics/{id}/weave-accept
 
-POST /api/synthesis
-GET  /api/synthesis
-GET  /api/synthesis/{draft_id}
-POST /api/synthesis/save
+POST /api/compose/drafts
+GET  /api/compose/drafts
+GET  /api/compose/drafts/{draft_id}
+POST /api/compose/drafts/{draft_id}/save
 
+GET  /api/jobs
 GET  /api/jobs/{id}
 GET  /api/events
 GET  /api/system/status

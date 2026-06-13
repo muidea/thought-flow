@@ -1,6 +1,6 @@
 # ThoughtFlow Web 菜单与页面布局收口方案（v2）
 
-> 本文是 ThoughtFlow Web 端在 v1 收口（参见 `thoughtflow-web-ux-redesign.md`）之后的第二轮菜单/文案/页面布局治理。目标是在不动业务后端、不破坏 AntD 风格、不引入构建链的前提下，让 sidebar 节奏更轻、双语文案视觉等宽、隐藏运维面板、消除冗余子页面。
+> 本文是 ThoughtFlow Web 端在 v1 收口（参见 `thoughtflow-web-ux-redesign.md`）之后的第二轮菜单/文案/页面布局治理。目标是在不破坏 AntD 风格、不引入构建链的前提下，让 sidebar 节奏更轻、双语文案视觉等宽、隐藏运维面板、消除冗余子页面，并同步目标接口命名。
 
 ## 1. 背景
 
@@ -22,7 +22,7 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 | 运维面板 | 移入设置抽屉，默认收起 |
 | 语言/暗色切换 | 移出顶栏，进设置抽屉 |
 | 落地节奏 | 4 个独立 PR（菜单/tab/裁剪/收口） |
-| hash alias | 保留旧路径 1 个版本，deprecation 通过 toast 提示 |
+| hash alias | 当前阶段不保留旧路径兼容，旧 hash 直接进入默认入口或 404 状态 |
 | 国际化 | 不变（zh-CN 默认 + en-US 回退） |
 
 ## 3. 导航结构
@@ -94,9 +94,9 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 | overview | 当前工作区状态与速记入口 | 工作区速览 | — | — |
 | capture | 从 URL、文本或片段创建新笔记 | 把想法变成笔记 | Capture a URL or text into a thought | Turn ideas into thoughts |
 | notes | 管理已保存的笔记和内容片段 | 查看、编辑、分享笔记 | Manage saved thoughts and snippets | View, edit, share thoughts |
-| search | 跨笔记全文和语义搜索 | 按关键词或语义找笔记 | Full-text and semantic search | Find thoughts by keyword or meaning |
+| search | 跨笔记全文和语义搜索 | 按关键词找笔记 | Full-text and semantic search | Find thoughts by keyword |
 | topics | 按主题组织笔记并自动归纳 | 把相关笔记归到同一专题 | Organize thoughts into topics | Group related thoughts |
-| compose | 把多条笔记合成新文档 | 把多条笔记拼成新文档 | Synthesize a document from many thoughts | Compose a document from many thoughts |
+| compose | 把多条笔记合成新文档 | 把多条笔记整理成新文档 | Synthesize a document from many thoughts | Compose a document from many thoughts |
 | settings | 配置索引、嵌入、Git 同步 | 调整工作区、模型、同步 | Configure index, embeddings, Git sync | Tune workspace, models, sync |
 
 **约束**：每条 description ≤ 12 字（zh-CN）/ ≤ 60 字符（en-US）。
@@ -111,7 +111,7 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 | notes | 全部 / All | 详情 / Detail | 状态 / Status | 运行 / Jobs | — |
 | search | 结果 / Results | 筛选 / Filters | — | — | — |
 | topics | 列表 / List | 详情 / Detail | 提案 / Proposals | 规则 / Rules | — |
-| compose | 草稿 / Drafts | 篮子 / Basket | 模板 / Templates | — | — |
+| compose | 草稿 / Drafts | 来源篮 / Basket | 模板 / Templates | — | — |
 | capture | — | — | — | — | — |
 | settings（抽屉） | 通用 / General | 模型 / Models | 同步 / Sync | 索引 / Index | 事件 / Events |
 
@@ -119,7 +119,7 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 
 - `topic-detail` 的状态（`topicID`、selectedTopic）从 `state.route` 移到 `state.topics.detail`
 - `topic-review` 的 `proposalID` 从 `state.route` 移到 `state.topics.review`
-- topic-detail / topic-review 的 hash query 改为 `tab=detail` / `tab=proposals`，沿用 `#/topics` 入口
+- topic-detail / topic-review 的 hash query 改为 `tab=detail` / `tab=proposals`，沿用 `#/topics` 入口；不再保留旧 `#/topics/{id}` 或 `#/topics/{id}/review` 入口。
 
 ### 5.3 notes 页内运行状态卡
 
@@ -143,7 +143,7 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 | 通用 / General | 语言切换（zh-CN / en-US）、暗色模式（若已实现）、workspace 路径只读 |
 | 模型 / Models | LLM provider、embedding model、温度、max_tokens |
 | 同步 / Sync | Git remote、auto-commit、SSH key 状态；"高级"区（hook、branch）默认收起 |
-| 索引 / Index | DuckDB 路径、reindex 按钮、状态指示；"高级"区（rebuild 策略）默认收起 |
+| 索引 / Index | DuckDB 路径、reindex 按钮、状态指示；"高级"区（refresh 策略）默认收起 |
 | 事件 / Events | EventStream 滚动列表（替代原 jobs 页的 activity tab），分页 50 条/页 |
 
 ### 6.3 移除项
@@ -241,13 +241,13 @@ settings.description: 收紧
 - sidebar 改 6 项 + 齿轮占位
 - `index.html` 数据驱动 `data-i18n` / `data-nav` 同步
 - 添加 16×16 图标（SVG inline 即可，不引图标库）
-- hash alias：`#/dashboard` 跳 `/overview`，`#/thoughts` 跳 `/notes`，`#/synthesis` 跳 `/compose`（deprecation toast 一次）
+- 不保留旧 hash alias；`#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/compose` 为唯一主导航入口。
 
 **验收**：
 - `node --test` 全过
 - `make i18n-check` 全绿
 - 浏览器 smoke 在 zh-CN + en-US 下 6 项菜单均可见，文案与表格一致
-- 旧 hash 跳转产生 deprecation toast
+- 旧 hash 不作为验收路径，测试仅覆盖正式入口。
 
 ### PR2: 页面 tab 化（topic/compose/notes）
 
@@ -327,35 +327,31 @@ PR4 完成后手动验收：
 #    - 同步：Git remote、auto-commit
 #    - 索引：DuckDB 路径、reindex
 #    - 事件：EventStream 滚动
-# 10. 旧 hash 跳转：
-#     - #/dashboard → 重定向 /overview + deprecation toast
-#     - #/thoughts → 重定向 /notes + deprecation toast
-#     - #/synthesis → 重定向 /compose + deprecation toast
-# 11. 切语言到 en-US → 全部文案变英文，且 6 项菜单仍等宽
+# 10. 切语言到 en-US → 全部文案变英文，且 6 项菜单仍等宽
 ```
 
 ## 10. 风险与缓解
 
 | 风险 | 缓解 |
 |---|---|
-| hash alias 跳转变多导致路由表膨胀 | 仅保留 1 个版本；下个版本移除 alias 路径 |
-| 移除 `#page-jobs` 后用户找不到运行状态 | notes 页"运行"折叠卡 + 设置抽屉"事件" tab 双入口；deprecation toast 提示 |
+| 旧 hash 失效导致历史书签不可用 | 当前阶段明确不考虑兼容；必要时在 Overview 显示一次性错误提示或默认回到 `#/overview` |
+| 移除 `#page-jobs` 后用户找不到运行状态 | notes 页"运行"折叠卡 + 设置抽屉"事件" tab 双入口 |
 | 6 项菜单加图标后 sidebar 高度增加 | 移动端折叠为汉堡菜单，沿用现有 drawer 机制 |
 | `Compose` / `整理` 词义对新用户模糊 | 页面 h1 写为 `整理草稿` / `Compose Drafts`；description 写明"把多条笔记拼成新文档" |
 | en-US `Notes` 与中文 `笔记` 字符差 1，视觉略偏 | 图标归一；极差 ≤ 3 字符在可接受范围 |
 | 运维面板隐藏后，bug 排查难度上升 | EventStream 仍在设置抽屉"事件" tab 可见；CLI / 调试模式不受影响 |
-| tab 化后浏览器后退栈语义变化 | topic-detail / topic-review 不再产生新历史条目；用 popstate 兼容 |
+| tab 化后浏览器后退栈语义变化 | topic-detail / topic-review 不再产生新历史条目；正式 hash 使用 query 表达内部 tab |
 | description 改写后丢失关键信息 | review 文案时核对每个 description 是否仍能传达页面的"做什么"和"为何用" |
 | i18n-check 强制失败后误报 | 误报 key 加 `// i18n-ignore` 注释（白名单机制） |
 
 ## 11. 决策溯源
 
-1. **6 顶级而非 5 顶级**：合并 `synthesis` / `thoughts` 会破坏 `state.synthesisBasket` 等独立状态机，权衡后保留 6 顶级。
+1. **6 顶级而非 5 顶级**：合并 `compose` / `notes` 会破坏整理来源篮、草稿编辑和笔记阅读的独立状态机，权衡后保留 6 顶级。
 2. **总览 / Overview 而非 Home**：Home 太短（4 字符）但语义不准；Overview 8 字符准确表达"汇总面板"。
 3. **2 字侧栏而非 4 字**：CJK 主流产品（微信/钉钉/VS Code）侧栏 2–3 字是事实标准；4 字显得啰嗦。
 4. **jobs 摘要进 notes 而非合并入 capture**：jobs 数据是 thoughts 的衍生状态，归属 notes 页更符合"操作笔记"主线。
 5. **EventStream 进设置抽屉而非完全隐藏**：可观测性是 ThoughtFlow 的核心优势，运维面板隐藏但仍可访问。
-6. **hash alias 保留 1 个版本**：用户书签和外部链接不会因重构失效；下版本移除。
+6. **不保留旧 hash alias**：当前阶段以目标信息架构为准，减少路由分支和测试负担。
 7. **i18n-check 强制失败而非 warn**：warn 在 CI 中易被忽略；强制失败后才能保证 key 完整性。
 8. **不引入图标库**：现有 16×16 inline SVG（lucide / feather 风格自绘）足够，避免 npm 依赖。
 
@@ -366,10 +362,10 @@ PR4 完成后手动验收：
 - 改 `service/web/i18n/zh-CN.js`（§7.1 删除 + §7.2 新增 + §7.3 改值）
 - 改 `service/web/i18n/en-US.js`（同上）
 - 改 `service/web/index.html`（sidebar 6 项 + 齿轮按钮 + icon inline SVG）
-- 改 `service/web/app.js`（sidebar 渲染、hash alias、齿轮入口）
+- 改 `service/web/app.js`（sidebar 渲染、正式 route、齿轮入口）
 - 改 `service/web/styles.css`（sidebar 节奏、齿轮按钮、icon 尺寸）
-- 改 `service/web/app.test.js`（i18n 改值、alias 跳转、key 完整性）
-- 改 `service/web/app.browser.test.js`（zh-CN / en-US 下 sidebar 文案 + alias）
+- 改 `service/web/app.test.js`（i18n 改值、正式 route、key 完整性）
+- 改 `service/web/app.browser.test.js`（zh-CN / en-US 下 sidebar 文案 + 正式 route）
 
 ### PR2
 
