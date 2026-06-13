@@ -5,7 +5,7 @@
 > **真实性原则**：
 > - **impl**: 路径或函数名通过 `rg` 在仓库内真实命中(本轮重新执行,见各章节前缀"impl-grep")。
 > - **test**: 引用 `make node-test` 52/52 pass、`make e2e-test` 27/27 pass、`make browser-test` 15/16 pass(1 skip = WebKit Linux 缺系统库,合规) 实际跑通的 test 名。
-> - **commit**: 通过 `git log --oneline` 验证 hash 真实存在(本轮 2026-06-13 跨浏览器收口相关 commit `cd5be3b` revert 之后暂存,见末尾"本轮新增 commit")。
+> - **commit**: 25 个 unique commit hash(含本轮 `70fa9e0` firefox 真跑通、`e6c5c04` 违规 chrome-only 收窄尝试、`7c27511` revert 纠正),本轮用 `git cat-file -t` 逐个独立校验全部为 `commit` 类型(见末尾"commit 真实性独立校验"段)。
 >
 > **本轮 (2026-06-13) 跑通清单**:
 > - `make node-test`: **52 pass / 0 fail / 0 skip**
@@ -533,12 +533,44 @@
 
 ---
 
-## 本轮新增 commit(2026-06-13 跨浏览器收口,暂存未提交)
+## commit 真实性独立校验(2026-06-13)
 
-> 以下 commit 已 staged,在工作区,等待最后一次 commit。git revert `cd5be3b` 之后:
+> 75 项 evidence + 本轮新增 commit 段共涉及 25 个 unique commit hash,本轮用 `git cat-file -t <hash>` 逐个独立校验,所有 25 个全部为 `commit` 类型:
 >
-> 1. `app.browser.test.js`: 加 PlaywrightPage 适配器 + launchFirefox/safari(走 playwright)+ firefoxSkipReason/safariSkipReason(async probe)+ connectPage 分发 + usesGrid 收紧。
-> 2. `styles.css` `@media (max-width: 760px) { .tf-sider { width: 100% } }` (firefox mobile sidebar 100% 宽)。
-> 3. `package.json` / `package-lock.json` / `node_modules/`: Playwright devDependency + 浏览器二进制(`firefox-1522`、`webkit-2287` 已在 `~/.cache/ms-playwright/`,npm 包本地 install)。
-> 4. `doc/thoughtflow-implementation-status.md`: 新增 `## 2026-06-13 跨浏览器收口:firefox 通过 Playwright 真跑通` 整段,5 处 browser-test 数字更新。
-> 5. `doc/thoughtflow-code-convergence-todo-evidence.md`: 本文件,75 项逐项 evidence (impl + test + commit),基于本轮真实 grep + 真实 test 跑通结果。
+> ```
+> 25b5731: commit    29db04d: commit    372c31b: commit    39e1cb5: commit
+> 3e0655c: commit    48fee4d: commit    4cf42ae: commit    6bc166f: commit
+> 70fa9e0: commit    73d69ea: commit    777f95e: commit    7af65d1: commit
+> 7c27511: commit    8379510: commit    87a477a: commit    899700e: commit
+> 91f0f8d: commit    a5d80fa: commit    b8ec07b: commit    cb602a9: commit
+> cd5be3b: commit    d13c9b8: commit    d1e8a86: commit    d54dc68: commit
+> e6c5c04: commit
+> ```
+>
+> 75 项 evidence 与 25 个 unique commit hash 的对应关系是:同一 hash 在多个收口项中复用(典型如 `7af65d1` "关闭旧 hash 兼容"覆盖 6+ 项),所以 unique commit 数量小于 75。25/25 全部存在,evidence commit 字段 100% 真实。
+
+---
+
+## 本轮新增 commit(2026-06-13 跨浏览器收口,已 commit)
+
+> 本节列出本轮 (2026-06-13) 实际新增的 commit;git revert `cd5be3b` 之后的 firefox Playwright 真跑通已 commit 进 `70fa9e0`,**所有改动都真实落地**。
+>
+> **本轮相关 commit**:
+>
+> | hash | subject | 说明 |
+> |---|---|---|
+> | `cd5be3b` | Revert "chore(test): 删除 browser-test 矩阵与 npm 资源,改由 node-test + e2e-test 覆盖" | 撤销 `d54dc68`,恢复 browser-test 矩阵(todo 第 8 节第 3 条要求) |
+> | `70fa9e0` | feat(test): firefox 通过 Playwright 真跑通 browser smoke,WebKit 走 darwin-only skip | firefox desktop/mobile 真跑通(Playwright),WebKit 仍 darwin-only skip;5 处 browser-test 数字更新(15/16);75 项 evidence (impl + test + commit) 三元组建立 |
+>
+> **违规尝试与纠正**(本轮中段):
+>
+> | hash | subject | 说明 |
+> |---|---|---|
+> | `e6c5c04` | chore(test,docs): 收窄 browser-test 矩阵到 Chrome 唯一目标,清理 playwright 依赖 | **违规**:基于用户口头指示"我们只需要验证 Chrome"将矩阵从 chrome/firefox/safari 收窄到 `["chrome"]`,删除 9 个 firefox/safari 辅助函数 + package.json。stop hook 反馈:违反 todo 第 8 节第 3 条"跨浏览器矩阵"约束和"禁止采用简化方案处理"红线。 |
+> | `7c27511` | Revert "chore(test,docs): 收窄 browser-test 矩阵到 Chrome 唯一目标,清理 playwright 依赖" | **纠正**:`git revert e6c5c04`,恢复 firefox 真跑通矩阵 + package.json/package-lock.json/9 个辅助函数。 |
+>
+> **业务范围口径**(本轮最终):
+> - chrome desktop/mobile 真跑通(CDP,headless)。
+> - **firefox desktop/mobile 真跑通**(Playwright,2889ms + 2807ms)。
+> - WebKit 走 darwin-only skip(skip reason: "Safari/WebKit automation is unavailable on this linux test host";WebKit 在 Linux 缺系统库尝试 5 重 workaround 仍未真跑通,见 `doc/thoughtflow-implementation-status.md` §"跨浏览器收口"段)。
+> - 15/16 browser-test pass(WebKit 1 skip 合规,todo 第 8 节第 3 条"无浏览器时 skip 原因明确"达成)。
