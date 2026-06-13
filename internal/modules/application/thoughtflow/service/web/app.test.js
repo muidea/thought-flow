@@ -172,45 +172,36 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
   assert.deepEqual(route("#/compose"), { page: "compose", nav: "compose", params: {}, query: {} });
-  // PR3: /jobs is no longer a live page — the redirect table at the top
-  // of parseRoute rewrites it to #/notes before we get here, so the
-  // assertion below just confirms the post-redirect resolution lands on
-  // the notes page.
+  // The bare /notes segment opens the notes list with no thought selected;
+  // ?id= selects a specific thought.
   assert.deepEqual(route("#/notes"), { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} });
 });
 
-test("parseRoute redirects deprecated hash paths to their new names", () => {
+test("parseRoute falls back to overview for unknown segments", () => {
   const app = loadAppFunctions();
-  // The redirect side-effect on window.location.hash is exercised by the
-  // browser smoke tests; here we just verify the route resolution matches
-  // the new segment so callers see the canonical page/nav pair. We
-  // JSON-clone the result to bridge the vm context's Object prototype
-  // into the test realm (see route() helper above).
   const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
+  // Any top-level segment that isn't in the live set (overview / capture /
+  // search / topics / notes / compose) falls through to overview. The
+  // query is preserved so legacy query params don't silently vanish.
   assert.deepEqual(
-    route("#/dashboard"),
+    route("#/legacy-dashboard"),
     { page: "dashboard", nav: "overview", params: {}, query: {} },
   );
   assert.deepEqual(
-    route("#/thoughts?id=abc"),
-    { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } },
+    route("#/legacy-thoughts?id=abc"),
+    { page: "dashboard", nav: "overview", params: {}, query: { id: "abc" } },
   );
   assert.deepEqual(
-    route("#/synthesis"),
-    // /synthesis redirects to /compose with the query string preserved.
-    { page: "compose", nav: "compose", params: {}, query: {} },
-  );
-  // PR3: /settings is gone (gear opens the settings drawer) and /jobs is
-  // gone (jobs are surfaced via the notes runtime card and the settings
-  // drawer event tab). Both segments now resolve to live pages after the
-  // redirect side-effect runs in parseRoute.
-  assert.deepEqual(
-    route("#/settings"),
+    route("#/legacy-synthesis"),
     { page: "dashboard", nav: "overview", params: {}, query: {} },
   );
   assert.deepEqual(
-    route("#/notes"),
-    { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} },
+    route("#/legacy-settings"),
+    { page: "dashboard", nav: "overview", params: {}, query: {} },
+  );
+  assert.deepEqual(
+    route("#/legacy-jobs?id=foo"),
+    { page: "dashboard", nav: "overview", params: {}, query: { id: "foo" } },
   );
 });
 
@@ -745,9 +736,9 @@ test("renderCaptureThoughtCardFromSnapshot renders the 4 expansion sections", ()
   assert.match(html, /thoughts\.section_near_topics/);
   assert.match(html, /thoughts\.section_url_followups/);
   assert.match(html, /thoughts\.section_expansion_plan/);
-  // Related section lists every id and links to the thoughts page.
-  assert.match(html, /href="#\/thoughts\?id=t2"/);
-  assert.match(html, /href="#\/thoughts\?id=t3"/);
+  // Related section lists every id and links to the notes page.
+  assert.match(html, /href="#\/notes\?id=t2"/);
+  assert.match(html, /href="#\/notes\?id=t3"/);
   // Plan is rendered through renderMarkdown so ## 步骤 becomes a heading.
   assert.match(html, /<h2[^>]*>步骤<\/h2>/);
 });

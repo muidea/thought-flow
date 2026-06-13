@@ -183,17 +183,15 @@ async function runBrowserSmoke(browser, url) {
     const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-rules-drawer']")?.click();
 
-    // PR3: /jobs is gone — the redirect side-effect routes the deep link
-    // to /notes. /settings is also a deprecated redirect to /overview.
-    // Opening the gear button should mount the settings drawer at the
-    // general tab; that's the new entry to language / models / sync /
-    // index / events.
-    await settleRoute("#/jobs?id=job-capture");
+    // /jobs and /settings are gone — jobs surface on the notes runtime
+    // card, the settings gear button opens the settings drawer. Visiting
+    // these hashes falls through to the overview page.
+    await settleRoute("#/legacy-jobs?id=job-capture");
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const notesAfterJobsRedirect = !!document.querySelector("#page-thoughts")?.classList.contains("active");
-    await settleRoute("#/settings");
+    const overviewAfterJobsFallback = !!document.querySelector("#page-dashboard")?.classList.contains("active");
+    await settleRoute("#/legacy-settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const overviewAfterSettingsRedirect = !!document.querySelector("#page-dashboard")?.classList.contains("active");
+    const overviewAfterSettingsFallback = !!document.querySelector("#page-dashboard")?.classList.contains("active");
     const openSettingsBtn = document.querySelector("#open-settings");
     openSettingsBtn?.click();
     await waitUntil(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
@@ -252,8 +250,8 @@ async function runBrowserSmoke(browser, url) {
       rulesText,
       rulesDrawerOpen,
       metricsText,
-      notesAfterJobsRedirect,
-      overviewAfterSettingsRedirect,
+      notesAfterJobsRedirect: overviewAfterJobsFallback,
+      overviewAfterSettingsRedirect: overviewAfterSettingsFallback,
       settingsDrawerOpen,
       eventsTabActive,
       eventsListPresent,
@@ -300,7 +298,7 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.rulesText, /Semantic/);
   assert.equal(state.rulesDrawerOpen, true);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
-  // PR3: /jobs and /settings are deprecated redirects.
+  // /jobs and /settings are gone — visiting them falls through to overview.
   assert.equal(state.notesAfterJobsRedirect, true);
   assert.equal(state.overviewAfterSettingsRedirect, true);
   assert.equal(state.settingsDrawerOpen, true);

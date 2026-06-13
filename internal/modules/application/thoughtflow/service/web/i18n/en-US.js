@@ -9,7 +9,6 @@ export const messages = {
   "nav.search": "Search",
   "nav.topics": "Topics",
   "nav.compose": "Compose",
-  "nav.settings": "Settings",
 
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
@@ -443,9 +442,7 @@ export const messages = {
   "toast.saved": "Saved {id}",
   "toast.refresh_queued": "Refresh queued: {id}",
   "toast.reindex_queued": "Reindex queued: {id}",
-  "toast.job_id_required": "Job ID is required",
   "toast.request_failed": "Request failed",
-  "toast.deprecated_route": "Route {old} moved to {new}. Please update your links.",
   "toast.basket_add": "{n} sources in compose basket",
   "toast.sse_reconnecting": "SSE reconnecting",
   "toast.unknown": "unknown",

@@ -5,14 +5,10 @@
 
 export const Key = Object.freeze({
   // Top-level nav
-  NavDashboard: "nav.dashboard",
   NavCapture: "nav.capture",
-  NavThoughts: "nav.thoughts",
   NavSearch: "nav.search",
   NavTopics: "nav.topics",
   NavCompose: "nav.compose",
-  NavJobs: "nav.jobs",
-  NavSettings: "nav.settings",
 
   // Shared / common
   CommonCancel: "common.cancel",
@@ -376,7 +372,6 @@ export const Key = Object.freeze({
   ToastSaved: "toast.saved",
   ToastRefreshQueued: "toast.refresh_queued",
   ToastReindexQueued: "toast.reindex_queued",
-  ToastJobIDRequired: "toast.job_id_required",
   ToastRequestFailed: "toast.request_failed",
   ToastBasketAdd: "toast.basket_add",
   ToastSSEReconnecting: "toast.sse_reconnecting",

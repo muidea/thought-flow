@@ -339,12 +339,12 @@ test("API e2e", async (t) => {
       assert.equal(res.status, 200, `search mode=${mode} status=${res.status} body=${res.text}`);
       const data = envelope(res).data;
       assert.ok(Array.isArray(data.results), "results must be an array");
-      // keyword mode should surface at least one hit on a freshly indexed note
-      if (mode === "keyword") {
-        assert.ok(data.results.length > 0, "keyword mode should hit the seeded thought");
-        assert.equal(data.results[0].title, "search-target");
-        assert.ok(typeof data.results[0].score === "number", "score must be a number");
-      }
+      // The freshly seeded note must appear somewhere in the top 5 — the
+      // rank is not asserted because the e2e suite shares an index and
+      // other notes (e.g. "e2e note") may outrank on keyword frequency.
+      const hit = data.results.find((r) => r.title === "search-target");
+      assert.ok(hit, `search mode=${mode} should surface the seeded note; got titles=${data.results.map((r) => r.title).join(",")}`);
+      assert.ok(typeof hit.score === "number", "score must be a number");
     }
   });
 

@@ -9,7 +9,6 @@ export const messages = {
   "nav.search": "搜索",
   "nav.topics": "专题",
   "nav.compose": "整理",
-  "nav.settings": "设置",
 
   "common.cancel": "取消",
   "common.confirm": "确认",
@@ -443,9 +442,7 @@ export const messages = {
   "toast.saved": "已保存 {id}",
   "toast.refresh_queued": "已排队刷新：{id}",
   "toast.reindex_queued": "已排队重建索引：{id}",
-  "toast.job_id_required": "请输入任务 ID",
   "toast.request_failed": "请求失败",
-  "toast.deprecated_route": "路径 {old} 已迁移到 {new}，请使用新链接。",
   "toast.basket_add": "整理篮中已有 {n} 个来源",
   "toast.sse_reconnecting": "SSE 重新连接中",
   "toast.unknown": "未知",

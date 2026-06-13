@@ -110,70 +110,13 @@ let markdownParser = null;
 
 const $ = (selector) => document.querySelector(selector);
 
-// Hash aliases for renamed pages. Each entry maps a deprecated top-level
-// segment to the new path the user should land on. The redirect is fired
-// once per (old, new) pair per session, so the toast is informational
-// without becoming noise on every page load.
-const DEPRECATED_HASH_REDIRECTS = {
-  dashboard: { next: "#/overview", newSegment: "overview" },
-  thoughts: { next: "#/notes", newSegment: "notes" },
-  synthesis: { next: "#/compose", newSegment: "compose" },
-  // PR3: /settings is gone — the gear button now opens the settings drawer.
-  // A direct hash to /settings lands on the overview page; the toast nudges
-  // the user to open the drawer for system status, models, sync, etc.
-  settings: { next: "#/overview", newSegment: "overview", dropQuery: true },
-  // PR3: /jobs is gone — jobs are surfaced via the notes runtime card and
-  // the settings drawer event tab. The id query (old job id) has no meaning
-  // on /notes, so drop it on redirect to avoid loading a non-existent thought.
-  jobs: { next: "#/notes", newSegment: "notes", dropQuery: true },
-};
-const deprecatedHashToastShown = new Set();
-
-function reportDeprecatedHash(oldSegment, newSegment) {
-  const key = `${oldSegment}->${newSegment}`;
-  if (deprecatedHashToastShown.has(key)) return;
-  deprecatedHashToastShown.add(key);
-  if (typeof t !== "function") return;
-  try {
-    const message = t("toast.deprecated_route", { old: `#/${oldSegment}`, new: `#/${newSegment}` });
-    if (typeof toast === "function") toast(message);
-  } catch (_error) {
-    // toast helper may not be loaded yet during early boot
-  }
-}
-
 function parseRoute(hash) {
   const raw = String(hash || "").replace(/^#\/?/, "");
   const [pathPart, queryPart = ""] = raw.split("?");
   const parts = pathPart.split("/").filter(Boolean);
   const query = Object.fromEntries(new URLSearchParams(queryPart).entries());
   if (parts.length === 0) return { page: "dashboard", nav: "overview", params: {}, query };
-  const deprecated = DEPRECATED_HASH_REDIRECTS[parts[0]];
-  if (deprecated) {
-    const queryString = queryPart && !deprecated.dropQuery ? `?${queryPart}` : "";
-    const nextHash = `${deprecated.next}${queryString}`;
-    reportDeprecatedHash(parts[0], deprecated.newSegment);
-    if (typeof window !== "undefined" && window.location.hash !== nextHash) {
-      // Use replaceState so the deprecated URL doesn't pollute history,
-      // then assign window.location.hash so test stubs (where replaceState
-      // is a no-op) observe the rewrite and a hashchange listener can pick
-      // it up.
-      try {
-        const url = new URL(window.location.href);
-        url.hash = nextHash;
-        if (window.history && typeof window.history.replaceState === "function") {
-          window.history.replaceState(null, "", url.toString());
-        }
-      } catch (_error) {
-        // ignore — href is unparseable
-      }
-      window.location.hash = nextHash;
-    }
-    return parseRoute(nextHash);
-  }
-  // PR2: topic detail and review are now tabs under #/topics. The
-  // /review segment is rewritten to ?tab=proposals so a single section
-  // hosts both views; ?tab=detail (the default) covers the workspace.
+  // /topics/{id}/review is folded into the topic detail tab ?tab=proposals.
   if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
     const detailQuery = { ...query, tab: "proposals" };
     return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
@@ -182,19 +125,15 @@ function parseRoute(hash) {
     const detailQuery = query.tab ? query : { ...query, tab: "detail" };
     return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
   }
-  if (parts[0] === "notes" || parts[0] === "thoughts") {
+  if (parts[0] === "notes") {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
   }
-  if (parts[0] === "compose" || parts[0] === "synthesis") {
+  if (parts[0] === "compose") {
     return { page: "compose", nav: "compose", params: {}, query };
   }
-  if (parts[0] === "overview" || parts[0] === "dashboard") {
+  if (parts[0] === "overview") {
     return { page: "dashboard", nav: "overview", params: {}, query };
   }
-  // PR3: settings and jobs are deprecated top-level routes. The redirect
-  // table at the top of this function turns them into a 1-shot toast and
-  // rewrites the hash to a live page; if we're past that, fall through to
-  // the dashboard so the parseRoute tests stay deterministic.
   const known = new Set(["capture", "search", "topics"]);
   if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
   return { page: "dashboard", nav: "overview", params: {}, query };
@@ -1534,7 +1473,7 @@ function renderCaptureResult(result) {
 function renderJobLinks(jobs) {
   if (!jobs || jobs.length === 0) return `<div class="tf-empty">${escapeHTML(t("capture.result.no_jobs"))}</div>`;
   return `<div class="tf-job-links">${jobs
-    .map((job) => `<a class="${statusBadge(job.status)}" href="#/jobs?id=${encodeURIComponent(job.id)}">${escapeHTML(job.type || "job")} · ${escapeHTML(job.status || "queued")}</a>`)
+    .map((job) => `<a class="${statusBadge(job.status)}" href="#/notes">${escapeHTML(job.type || "job")} · ${escapeHTML(job.status || "queued")}</a>`)
     .join("")}</div>`;
 }
 
@@ -2078,7 +2017,7 @@ function renderCaptureThoughtCardFromSnapshot(snapshot) {
     ${refineBlock}
     ${expansionSections}
     <div class="tf-action-row">
-      <a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(thought.id || "")}">${escapeHTML(t("capture.result.view_thought"))}</a>
+      <a class="tf-btn" href="#/notes?id=${encodeURIComponent(thought.id || "")}">${escapeHTML(t("capture.result.view_thought"))}</a>
       <a class="tf-btn" href="#/search">${escapeHTML(t("capture.result.search_related"))}</a>
     </div>
     ${renderJobLinks(jobs)}
@@ -2096,7 +2035,7 @@ function buildCaptureExpansionSections(thought, { relatedIDs, suggestedTopicIDs,
   if (relatedIDs.length > 0) {
     blocks.push(`<details class="tf-capture-expansion" open>
       <summary>${escapeHTML(t("thoughts.section_related"))} <span class="tf-capture-count">${relatedIDs.length}</span></summary>
-      <ul class="tf-capture-related">${relatedIDs.map((rid) => `<li><a href="#/thoughts?id=${encodeURIComponent(rid)}">${escapeHTML(rid)}</a></li>`).join("")}</ul>
+      <ul class="tf-capture-related">${relatedIDs.map((rid) => `<li><a href="#/notes?id=${encodeURIComponent(rid)}">${escapeHTML(rid)}</a></li>`).join("")}</ul>
     </details>`);
   }
   if (suggestedTopicIDs.length > 0) {
@@ -2727,7 +2666,7 @@ function renderResults(response) {
   });
   list.querySelectorAll("[data-open-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      window.location.hash = `#/thoughts?id=${encodeURIComponent(button.dataset.openId)}`;
+      window.location.hash = `#/notes?id=${encodeURIComponent(button.dataset.openId)}`;
     });
   });
   list.querySelectorAll("[data-basket-id]").forEach((button) => {
@@ -2938,7 +2877,7 @@ async function loadThoughtByID(event) {
     toast(t("toast.thought_id_required"));
     return;
   }
-  window.location.hash = `#/thoughts?id=${encodeURIComponent(thoughtID)}`;
+  window.location.hash = `#/notes?id=${encodeURIComponent(thoughtID)}`;
   await previewThought(thoughtID);
 }
 
@@ -3093,7 +3032,7 @@ async function saveComposeDraft() {
   state.selectedThoughts.clear();
   state.composeBasket.clear();
   renderComposeBasket();
-  $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
+  $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/notes?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
   $("#save-compose").disabled = true;
   state.composeDraft = null;
   await loadComposeDrafts();
@@ -3274,10 +3213,9 @@ async function applyRoute(hash = window.location.hash) {
     $("#thought-id").value = route.params.thoughtId;
     await previewThought(route.params.thoughtId);
   }
-  // PR3: settings page and jobs page are gone. DEPRECATED_HASH_REDIRECTS
-  // already rewrites those URLs to live pages, so the only routes that
-  // reach here are capture, search, topics (incl. detail), notes, and
-  // compose. Nothing else to load for the route itself.
+  // Live routes: capture, search, topics (incl. detail), notes, compose.
+  // settings and jobs are gone — the gear opens a drawer, jobs surface on
+  // the notes runtime card. No additional loader needed here.
 }
 
 function bind() {
