@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -438,43 +439,78 @@ func recentJobsByResource(store jobQueryReader, resourceID string, limit int) []
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	observability.IncrementSearchQuery()
 	query := req.URL.Query()
-	from, err := timeQuery(query.Get("from"), false)
-	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "from must be RFC3339 or YYYY-MM-DD")
-		return
-	}
-	to, err := timeQuery(query.Get("to"), true)
-	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "to must be RFC3339 or YYYY-MM-DD")
-		return
-	}
-	if !from.IsZero() && !to.IsZero() && from.After(to) {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.search.invalid_request", "from must be before to")
-		return
+	limit := intQuery(firstNonEmpty(query.Get("limit"), query.Get("page_size")), 20)
+	if limit <= 0 {
+		limit = 20
 	}
 	searchQuery := models.SearchQuery{
-		Query:    query.Get("q"),
-		Mode:     firstNonEmpty(query.Get("mode"), "hybrid"),
-		Sort:     query.Get("sort"),
-		TopicID:  query.Get("topic_id"),
-		Tags:     splitCSV(query.Get("tags")),
-		From:     from,
-		To:       to,
-		Page:     intQuery(query.Get("page"), 1),
-		PageSize: intQuery(query.Get("page_size"), 20),
-		Explain:  boolQuery(query.Get("explain")),
-		Weights: models.SearchWeights{
-			Keyword:  floatQuery(firstNonEmpty(query.Get("keyword_weight"), query.Get("weight_keyword")), 0),
-			Semantic: floatQuery(firstNonEmpty(query.Get("semantic_weight"), query.Get("weight_semantic")), 0),
-			Recency:  floatQuery(firstNonEmpty(query.Get("recency_weight"), query.Get("weight_recency")), 0),
-		},
+		Query:             query.Get("q"),
+		TopicID:           query.Get("topic_id"),
+		Tags:              splitCSV(query.Get("tags")),
+		Page:              intQuery(query.Get("page"), 1),
+		PageSize:          limit,
+		Limit:             limit,
+		IncludeCandidates: boolQuery(query.Get("include_candidates")),
 	}
 	result, err := s.searchService.Search(ctx, searchQuery)
 	if err != nil {
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.search.query_failed", err.Error())
 		return
 	}
-	writeJSON(res, req, http.StatusOK, result)
+	view := s.buildSearchResultView(ctx, searchQuery, result)
+	writeJSON(res, req, http.StatusOK, view)
+}
+
+// buildSearchResultView narrows the internal SearchResponse down to
+// the Web-facing SearchResultView: the per-thought summaries drop the
+// internal score components, and the candidates array is only filled
+// when SearchQuery.IncludeCandidates is set. The path is normalized
+// to a repo-relative form so the Web never sees a host-local
+// filesystem path; an empty workspace falls back to the path the
+// search store reported.
+func (s *Service) buildSearchResultView(ctx context.Context, query models.SearchQuery, response models.SearchResponse) models.SearchResultView {
+	summaries := make([]models.SearchResultSummary, 0, len(response.Items))
+	for _, item := range response.Items {
+		summaries = append(summaries, models.SearchResultSummary{
+			ThoughtID: item.ThoughtID,
+			Title:     item.Title,
+			Snippet:   item.Snippet,
+			Score:     item.Score,
+			Path:      s.normalizeRelativePath(item.Path),
+			Topics:    item.Topics,
+			Tags:      item.Tags,
+		})
+	}
+	view := models.SearchResultView{
+		Results:  summaries,
+		Page:     response.Page,
+		PageSize: response.PageSize,
+		Total:    response.Total,
+	}
+	if query.IncludeCandidates && s.topicService != nil {
+		view.Candidates = s.topicService.SearchCandidates(ctx, query.Query, query.Tags, query.TopicID, 5)
+	}
+	return view
+}
+
+// normalizeRelativePath converts a search-result path into a
+// repo-relative form: absolute paths are stripped of the workspace
+// root prefix, and backslashes are normalized to forward slashes so
+// the Web can use the string as a stable key. An empty workspace
+// or unrelated absolute path falls back to the input verbatim.
+func (s *Service) normalizeRelativePath(path string) string {
+	cleaned := filepath.ToSlash(strings.TrimSpace(path))
+	if cleaned == "" {
+		return ""
+	}
+	if s.workspace == nil || strings.TrimSpace(s.workspace.RootPath) == "" {
+		return strings.TrimPrefix(cleaned, "/")
+	}
+	root := filepath.ToSlash(s.workspace.RootPath) + "/"
+	if strings.HasPrefix(cleaned, root) {
+		return strings.TrimPrefix(cleaned, root)
+	}
+	return strings.TrimPrefix(cleaned, "/")
 }
 
 func (s *Service) handleCreateComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {

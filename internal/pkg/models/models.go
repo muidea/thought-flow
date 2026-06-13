@@ -428,19 +428,21 @@ type EventsRuntimeStatus struct {
 }
 
 type SearchQuery struct {
-	Query          string        `json:"q"`
-	Mode           string        `json:"mode"`
-	Sort           string        `json:"sort,omitempty"`
-	TopicID        string        `json:"topic_id,omitempty"`
-	Tags           []string      `json:"tags,omitempty"`
-	From           time.Time     `json:"from,omitempty"`
-	To             time.Time     `json:"to,omitempty"`
-	Page           int           `json:"page"`
-	PageSize       int           `json:"page_size"`
-	Explain        bool          `json:"explain,omitempty"`
-	Weights        SearchWeights `json:"weights,omitempty"`
-	QueryVector    []float64     `json:"-"`
-	EmbeddingModel string        `json:"-"`
+	Query              string        `json:"q"`
+	Mode               string        `json:"mode"`
+	Sort               string        `json:"sort,omitempty"`
+	TopicID            string        `json:"topic_id,omitempty"`
+	Tags               []string      `json:"tags,omitempty"`
+	From               time.Time     `json:"from,omitempty"`
+	To                 time.Time     `json:"to,omitempty"`
+	Page               int           `json:"page"`
+	PageSize           int           `json:"page_size"`
+	Limit              int           `json:"limit,omitempty"`
+	IncludeCandidates  bool          `json:"include_candidates,omitempty"`
+	Explain            bool          `json:"explain,omitempty"`
+	Weights            SearchWeights `json:"weights,omitempty"`
+	QueryVector        []float64     `json:"-"`
+	EmbeddingModel     string        `json:"-"`
 }
 
 type SearchWeights struct {
@@ -478,6 +480,49 @@ type SearchResponse struct {
 	Page     int            `json:"page"`
 	PageSize int            `json:"page_size"`
 	Total    int            `json:"total"`
+}
+
+// SearchResultView is the Web-facing search response. Internal score
+// components (KeywordScore/SemanticScore/RecencyScore) and the
+// DuckDB debug fields are intentionally omitted: the single
+// SearchResultSummary.Score is the only numeric signal exposed to
+// the UI. SearchResultView.Candidates is only populated when the
+// caller asked for it via SearchQuery.IncludeCandidates; the field
+// stays out of the JSON when no candidates were produced so clients
+// do not have to special-case empty slices.
+type SearchResultView struct {
+	Results    []SearchResultSummary  `json:"results"`
+	Candidates []SearchResultCandidate `json:"candidates,omitempty"`
+	Page       int                    `json:"page"`
+	PageSize   int                    `json:"page_size"`
+	Total      int                    `json:"total"`
+}
+
+// SearchResultSummary is the per-thought projection embedded in
+// SearchResultView. Path is repo-relative (no absolute filesystem
+// location) so the Web never accidentally renders a host-local
+// path that the user has no way to dereference.
+type SearchResultSummary struct {
+	ThoughtID string   `json:"thought_id"`
+	Title     string   `json:"title"`
+	Snippet   string   `json:"snippet"`
+	Score     float64  `json:"score"`
+	Path      string   `json:"path"`
+	Topics    []string `json:"topics,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+}
+
+// SearchResultCandidate is a topic-level candidate surfaced
+// alongside the per-thought results when SearchQuery.IncludeCandidates
+// is set. MatchType mirrors the values used by TopicMembership
+// (tag_hint | keyword | semantic).
+type SearchResultCandidate struct {
+	TopicID      string  `json:"topic_id"`
+	TopicName    string  `json:"topic_name"`
+	Slug         string  `json:"slug"`
+	MatchType    string  `json:"match_type"`
+	Score        float64 `json:"score"`
+	MatchedCount int     `json:"matched_count"`
 }
 
 type Topic struct {

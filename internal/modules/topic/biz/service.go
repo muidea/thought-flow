@@ -124,6 +124,114 @@ func (s *Service) ListTopics(ctx context.Context) ([]models.Topic, error) {
 	return s.store.List(ctx)
 }
 
+// SearchCandidates surfaces up to limit topics whose name, description
+// or rules match the user's query/tags. The match_type is one of
+// "tag_hint" | "keyword"; matched_count is the size of the topic's
+// existing member set (a populated topic is more likely to be the
+// user's intent than an empty one with the right words).
+func (s *Service) SearchCandidates(ctx context.Context, query string, tags []string, topicID string, limit int) []models.SearchResultCandidate {
+	if limit <= 0 {
+		limit = 5
+	}
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return nil
+	}
+	needle := strings.ToLower(strings.TrimSpace(query))
+	wantedTags := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag != "" {
+			wantedTags = append(wantedTags, tag)
+		}
+	}
+	scores := make([]models.SearchResultCandidate, 0, len(topics))
+	for _, topic := range topics {
+		if topicID != "" && topic.ID != topicID {
+			continue
+		}
+		score, matchType := scoreTopicCandidate(topic, needle, wantedTags)
+		if score <= 0 {
+			continue
+		}
+		scores = append(scores, models.SearchResultCandidate{
+			TopicID:      topic.ID,
+			TopicName:    topic.Name,
+			Slug:         topic.Slug,
+			MatchType:    matchType,
+			Score:        score,
+			MatchedCount: len(topic.Members),
+		})
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i].Score > scores[j].Score })
+	if len(scores) > limit {
+		scores = scores[:limit]
+	}
+	return scores
+}
+
+// scoreTopicCandidate returns a non-negative score for a topic
+// against the user's needle/tags. Keyword hits on name and
+// description beat tag-hint matches; an exact name match wins.
+func scoreTopicCandidate(topic models.Topic, needle string, wantedTags []string) (float64, string) {
+	name := strings.ToLower(strings.TrimSpace(topic.Name))
+	description := strings.ToLower(strings.TrimSpace(topic.Description))
+	rulesKeywords := topicKeywordCorpus(topic)
+	if needle != "" {
+		switch {
+		case name == needle:
+			return 1.0, "keyword"
+		case strings.Contains(name, needle):
+			return 0.85, "keyword"
+		case strings.Contains(description, needle):
+			return 0.6, "keyword"
+		case rulesKeywords != "" && strings.Contains(rulesKeywords, needle):
+			return 0.5, "keyword"
+		}
+	}
+	if len(wantedTags) > 0 {
+		ruleTags := topicRuleTags(topic)
+		for _, want := range wantedTags {
+			for _, ruleTag := range ruleTags {
+				if ruleTag == want {
+					return 0.4, "tag_hint"
+				}
+			}
+		}
+	}
+	return 0, ""
+}
+
+func topicKeywordCorpus(topic models.Topic) string {
+	parts := []string{}
+	if kws := topic.Rules.Keywords.All; len(kws) > 0 {
+		for _, k := range kws {
+			parts = append(parts, k)
+		}
+	}
+	if kws := topic.Rules.Keywords.Any; len(kws) > 0 {
+		for _, k := range kws {
+			parts = append(parts, k)
+		}
+	}
+	if kws := topic.Rules.Keywords.Exclude; len(kws) > 0 {
+		for _, k := range kws {
+			parts = append(parts, k)
+		}
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func topicRuleTags(topic models.Topic) []string {
+	out := []string{}
+	for _, tag := range topic.Rules.Tags.Any {
+		if tag = strings.ToLower(strings.TrimSpace(tag)); tag != "" {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
 func (s *Service) GetTopic(ctx context.Context, id string) (models.TopicDetail, error) {
 	return s.store.Detail(ctx, id)
 }
