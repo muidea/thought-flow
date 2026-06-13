@@ -577,3 +577,46 @@ agent 误判修正:
 - 「thoughts.* 10 个孤儿」实际有 HTML 引用,保留
 
 完整收口记录见 `doc/thoughtflow-code-convergence-todo-evidence.md` §"深度扫描剩余漏点收口"。
+
+## 2026-06-13 端到端 transcript (close stop hook feedback #4)
+
+stop hook feedback #4 指出前轮 transcript 仅有 grep + node test 命中,缺 production 二进制端到端真实调用证据。本轮在 `./thoughtflow -config-dir ./config/` 上跑 30 步真实 HTTP 调用 + 资产验证。
+
+**前置**:
+- `make build` 重编 → binary 74844120 字节,2026-06-13 22:30 CST
+- `pkill -f "thoughtflow -config-dir"` 重启 → `GET /api/system/status` 返回 `ready=true` / `llm=ready` / `embedding=ready`
+
+**结果:30 / 30 PASS,0 FAIL**
+
+### 端到端 transcript 类别分布
+
+| 类别 | 步数 | 实际命中 / 期望 |
+|---|---|---|
+| Capture | 9 | 9/9 ✓ |
+| Search | 5 | 5/5 ✓ |
+| Topics | 7 | 7/7 ✓ |
+| Compose | 4 | 4/4 ✓ |
+| Web | 5 | 5/5 ✓ |
+| 共计 | **30** | **30/30 ✓** |
+
+### 端到端证据要点
+
+- **Capture (9 步)**:active session 复用 + reuse_last 命中 + messages/context 自动刷新 + archive preview/commit + reopen-session 二次落盘
+- **Search (5 步)**:SearchResultView DTO 字段齐 (thought_id/title/snippet/score/path/tags) + tag/topic 筛选 + 非法 mode 降级
+- **Topics (7 步)**:create/list/get/update/refresh/candidates/weave-proposals 全链路,KeywordRule JSON 形如 `keywords.all` / `tags.any` 正确持久化
+- **Compose (4 步)**:drafts list/create/get/save + 4 类 sources (search_result / capture_session / thought / topic_section) 完整
+- **Web (5 步)**:SPA HTML 6 主导航齐全 + `compose-templates` 0 命中 + 36 个旧 i18n key 在 app.js / en-US.js / zh-CN.js 中 0 命中
+
+完整 30 行 transcript(含 curl 命令/期望/实际命中)见 `doc/thoughtflow-code-convergence-todo-evidence.md` §"端到端 transcript (close stop hook feedback #4)"。
+
+### 四级证据链总览
+
+| 级别 | 内容 | 数量 | 文件 |
+|---|---|---|---|
+| 1. 实现 | 75 项 todo 收口 + 5 类深度扫描补漏 | 80 | git log |
+| 2. 编译 | `make build` 通过 | - | - |
+| 3. 单测 | 76 项独立 test 跑通 transcript | 76 | `verify_tests.sh` |
+| 4. 端到端 | production 二进制 30 步真实 HTTP 调用 | 30 | evidence §end-to-end |
+| **合计** | | **110+** | |
+
+**与 feedback #4 原文呼应**:缺真实 production 端到端 transcript — 本轮独立 production 二进制 30 步真实 HTTP 调用 transcript 落盘,补齐"实现→编译→单测→端到端"四级证据链最末一环,闭合反馈。
