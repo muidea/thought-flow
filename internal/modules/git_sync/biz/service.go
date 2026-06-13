@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -270,22 +271,48 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 	if s.workspace == nil {
 		return models.GitCommitRecord{}, errors.New("workspace is nil")
 	}
+	// Drop paths that don't exist on disk before running `git add`.
+	// Callers (e.g. topic) declare a topic's full intended layout
+	// (topic.yaml / index.md / memberships / approvals) up front;
+	// until the weave-accept path actually writes approvals the
+	// file is absent, and `git add -- <missing>` aborts the entire
+	// add with exit 128. The actual commit still picks up the
+	// files that do exist, and once approvals lands later it will
+	// be tracked normally because git now knows the directory.
+	existing := paths[:0:0]
 	for _, path := range paths {
 		targetPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(path))
 		if err := workspace.EnsureInside(s.workspace.RootPath, targetPath); err != nil {
 			return models.GitCommitRecord{}, err
 		}
+		if _, err := os.Stat(targetPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return models.GitCommitRecord{}, fmt.Errorf("stat %s: %w", targetPath, err)
+		}
+		existing = append(existing, path)
 	}
 	if err := s.ensureRepository(ctx); err != nil {
 		return models.GitCommitRecord{}, err
 	}
-	args := append([]string{"-C", s.workspace.RootPath, "add", "--"}, paths...)
-	if err := runGit(ctx, args...); err != nil {
-		return models.GitCommitRecord{}, err
-	}
 	message := commitMessage(resourceIDs)
-	if err := runGit(ctx, "-C", s.workspace.RootPath, "commit", "-m", message); err != nil {
-		return models.GitCommitRecord{}, err
+	if len(existing) == 0 {
+		// Nothing to add — but the caller may still want a commit
+		// record (e.g. "no-op" autosave). We fall through to the
+		// commit step with --allow-empty so the marker still lands
+		// in the git log.
+		if err := runGit(ctx, "-C", s.workspace.RootPath, "commit", "--allow-empty", "-m", message+" (no-op)"); err != nil {
+			return models.GitCommitRecord{}, err
+		}
+	} else {
+		args := append([]string{"-C", s.workspace.RootPath, "add", "--"}, existing...)
+		if err := runGit(ctx, args...); err != nil {
+			return models.GitCommitRecord{}, err
+		}
+		if err := runGit(ctx, "-C", s.workspace.RootPath, "commit", "-m", message); err != nil {
+			return models.GitCommitRecord{}, err
+		}
 	}
 	hashBytes, err := outputGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--short", "HEAD")
 	if err != nil {
