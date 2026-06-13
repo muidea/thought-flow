@@ -1108,14 +1108,14 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 
 	// And seed two thoughts that should appear as thought impacts.
 	thoughtA := models.Thought{
-		ID:       "20260101-100000-aaaa",
+		ID:        "20260101-100000-aaaa",
 		UserTitle: "Vector search primer",
-		Path:     "thoughts/2026/01/20260101-100000-aaaa.md",
+		Path:      "thoughts/2026/01/20260101-100000-aaaa.md",
 	}
 	thoughtB := models.Thought{
-		ID:       "20260101-100000-bbbb",
+		ID:        "20260101-100000-bbbb",
 		UserTitle: "Vector scratchpad follow-up",
-		Path:     "thoughts/2026/01/20260101-100000-bbbb.md",
+		Path:      "thoughts/2026/01/20260101-100000-bbbb.md",
 	}
 	// AddMembership is on the store, not the service: it expects the
 	// caller to feed the freshly-returned topic back in, otherwise

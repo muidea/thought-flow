@@ -459,8 +459,10 @@ test("compose basket persists across reloads via localStorage", async (t) => {
     const page = await connectPage(browser);
     await page.send("Page.enable");
     // Seed localStorage *before* the page boots so restoreBasket sees it.
+    // Basket envelope is the post-PR #122 Map shape; legacy `ids` payloads
+    // are intentionally rejected by restoreBasket.
     await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: "window.localStorage.setItem('tflow.basket', JSON.stringify({ ids: ['thought-1', 'thought-2'], updated_at: 'seed' }));",
+      source: "window.localStorage.setItem('tflow.basket', JSON.stringify({ sources: [{ source_type: 'thought', source_id: 'thought-1', title: 'Browser Thought' }, { source_type: 'thought', source_id: 'thought-2', title: 'Another Thought' }], updated_at: 'seed' }));",
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
@@ -526,7 +528,7 @@ test("capture composer starts a new session, persists a thought, and shows the c
     });
     assert.match(cardHTML, /data-status="refine-pending"/, "rich card should expose refine status chip");
     assert.match(cardHTML, /data-status="capture-captured"/, "rich card should expose capture status chip");
-    assert.match(cardHTML, /href="#\/thoughts\?id=thought-capture"/, "rich card should keep the view-thought link");
+    assert.match(cardHTML, /href="#\/notes\?id=thought-capture"/, "rich card should keep the view-thought link");
     assert.match(cardHTML, /href="#\/search"/, "rich card should keep the search-related link");
     const sessionsRaw = await page.evaluate(() => window.localStorage.getItem("tflow.capture.sessions"));
     assert.ok(sessionsRaw, "capture sessions should be persisted to localStorage");
@@ -1007,6 +1009,20 @@ function startFixtureServer(options = {}) {
           members: [{ thought_id: "thought-1", title: "Browser Thought", match_type: "keyword", score: 0.9 }],
         }));
       case "/api/topics/demo/weave-proposals":
+        return json(res, api({ proposals: [] }));
+      case "/api/topics/demo/candidates":
+        return json(res, api({
+          candidates: [{
+            source: "thought",
+            candidate_id: "thought-1",
+            thought_id: "thought-1",
+            title: "Browser Thought",
+            match_type: "keyword",
+            score: 0.9,
+            reasons: ["keyword hit: browser"],
+            updated_at: "2026-06-10T00:00:00Z",
+          }],
+        }));
       case "/api/compose/drafts":
         return json(res, api([
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
@@ -1146,7 +1162,7 @@ function startFixtureServer(options = {}) {
         }));
       case "/api/search":
         return json(res, api({
-          items: [{
+          results: [{
             thought_id: "thought-1",
             title: "Browser Thought",
             snippet: "Smoke result",

@@ -49,14 +49,14 @@ type CaptureSink interface {
 }
 
 type Service struct {
-	workspace    *models.Workspace
-	draftStore   *composedraft.Store
-	jobs         *jobstore.Store
-	eventHub     event.Hub
-	synthesis    ai.SynthesisProvider
-	capture      CaptureSink
-	now          func() time.Time
-	model        string
+	workspace  *models.Workspace
+	draftStore *composedraft.Store
+	jobs       *jobstore.Store
+	eventHub   event.Hub
+	synthesis  ai.SynthesisProvider
+	capture    CaptureSink
+	now        func() time.Time
+	model      string
 }
 
 func NewService(

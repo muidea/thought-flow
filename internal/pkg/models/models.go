@@ -427,21 +427,21 @@ type EventsRuntimeStatus struct {
 }
 
 type SearchQuery struct {
-	Query              string        `json:"q"`
-	Mode               string        `json:"mode"`
-	Sort               string        `json:"sort,omitempty"`
-	TopicID            string        `json:"topic_id,omitempty"`
-	Tags               []string      `json:"tags,omitempty"`
-	From               time.Time     `json:"from,omitempty"`
-	To                 time.Time     `json:"to,omitempty"`
-	Page               int           `json:"page"`
-	PageSize           int           `json:"page_size"`
-	Limit              int           `json:"limit,omitempty"`
-	IncludeCandidates  bool          `json:"include_candidates,omitempty"`
-	Explain            bool          `json:"explain,omitempty"`
-	Weights            SearchWeights `json:"weights,omitempty"`
-	QueryVector        []float64     `json:"-"`
-	EmbeddingModel     string        `json:"-"`
+	Query             string        `json:"q"`
+	Mode              string        `json:"mode"`
+	Sort              string        `json:"sort,omitempty"`
+	TopicID           string        `json:"topic_id,omitempty"`
+	Tags              []string      `json:"tags,omitempty"`
+	From              time.Time     `json:"from,omitempty"`
+	To                time.Time     `json:"to,omitempty"`
+	Page              int           `json:"page"`
+	PageSize          int           `json:"page_size"`
+	Limit             int           `json:"limit,omitempty"`
+	IncludeCandidates bool          `json:"include_candidates,omitempty"`
+	Explain           bool          `json:"explain,omitempty"`
+	Weights           SearchWeights `json:"weights,omitempty"`
+	QueryVector       []float64     `json:"-"`
+	EmbeddingModel    string        `json:"-"`
 }
 
 type SearchWeights struct {
@@ -490,11 +490,11 @@ type SearchResponse struct {
 // stays out of the JSON when no candidates were produced so clients
 // do not have to special-case empty slices.
 type SearchResultView struct {
-	Results    []SearchResultSummary  `json:"results"`
+	Results    []SearchResultSummary   `json:"results"`
 	Candidates []SearchResultCandidate `json:"candidates,omitempty"`
-	Page       int                    `json:"page"`
-	PageSize   int                    `json:"page_size"`
-	Total      int                    `json:"total"`
+	Page       int                     `json:"page"`
+	PageSize   int                     `json:"page_size"`
+	Total      int                     `json:"total"`
 }
 
 // SearchResultSummary is the per-thought projection embedded in
@@ -691,10 +691,10 @@ type TopicSessionCandidate struct {
 type TopicCandidateImpactSource string
 
 const (
-	TopicCandidateSourceCaptureSession     TopicCandidateImpactSource = "capture_session"
-	TopicCandidateSourceThoughtReopen      TopicCandidateImpactSource = "thought_reopen_session"
-	TopicCandidateSourceThought            TopicCandidateImpactSource = "thought"
-	TopicCandidateSourceComposeDraft       TopicCandidateImpactSource = "compose_draft"
+	TopicCandidateSourceCaptureSession TopicCandidateImpactSource = "capture_session"
+	TopicCandidateSourceThoughtReopen  TopicCandidateImpactSource = "thought_reopen_session"
+	TopicCandidateSourceThought        TopicCandidateImpactSource = "thought"
+	TopicCandidateSourceComposeDraft   TopicCandidateImpactSource = "compose_draft"
 )
 
 // TopicCandidateImpact is the Web-facing list shape for
@@ -724,17 +724,17 @@ type TopicCandidateImpact struct {
 // so the LLM provider boundary can evolve without breaking the
 // application/persistence DTO.
 type SynthesisDraft struct {
-	ID          string                 `json:"id" yaml:"id"`
-	ThoughtIDs  []string               `json:"thought_ids" yaml:"thought_ids"`
-	Goal        string                 `json:"goal" yaml:"goal"`
-	Format      string                 `json:"format" yaml:"format"`
-	Content     string                 `json:"content" yaml:"content"`
-	SourceLinks []string               `json:"source_links" yaml:"source_links"`
-	Model       string                 `json:"model" yaml:"model"`
-	Status      string                 `json:"status" yaml:"status"`
+	ID          string                  `json:"id" yaml:"id"`
+	ThoughtIDs  []string                `json:"thought_ids" yaml:"thought_ids"`
+	Goal        string                  `json:"goal" yaml:"goal"`
+	Format      string                  `json:"format" yaml:"format"`
+	Content     string                  `json:"content" yaml:"content"`
+	SourceLinks []string                `json:"source_links" yaml:"source_links"`
+	Model       string                  `json:"model" yaml:"model"`
+	Status      string                  `json:"status" yaml:"status"`
 	History     []SynthesisDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
-	CreatedAt   time.Time              `json:"created_at" yaml:"created_at"`
-	UpdatedAt   time.Time              `json:"updated_at" yaml:"updated_at"`
+	CreatedAt   time.Time               `json:"created_at" yaml:"created_at"`
+	UpdatedAt   time.Time               `json:"updated_at" yaml:"updated_at"`
 }
 
 type SynthesisDraftHistory struct {

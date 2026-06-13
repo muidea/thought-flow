@@ -3343,10 +3343,6 @@ function bind() {
   $("#search-query").addEventListener("input", persistRouteDebounced);
   $("#search-topic-id").addEventListener("input", persistRouteDebounced);
   $("#search-tags").addEventListener("input", persistRouteDebounced);
-  $("#search-from").addEventListener("input", persistRouteDebounced);
-  $("#search-to").addEventListener("input", persistRouteDebounced);
-  $("#search-sort").addEventListener("change", persistRouteDebounced);
-  $("#search-explain").addEventListener("change", persistRouteDebounced);
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
   $("#thought-id").addEventListener("input", persistRouteDebounced);
@@ -3554,4 +3550,4 @@ async function boot() {
   connectEvents();
 }
 
-boot().catch((error) => toast(error.message));
+boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));
