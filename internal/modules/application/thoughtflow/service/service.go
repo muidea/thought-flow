@@ -157,7 +157,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/compose/drafts/:id/save", engine.POST, s.handleSaveComposeDraft)
 	s.registry.AddHandler("/api/topics", engine.GET, s.handleListTopics)
 	s.registry.AddHandler("/api/topics", engine.POST, s.handleCreateTopic)
-	s.registry.AddHandler("/api/topics/:id/rebuild", engine.POST, s.handleRebuildTopic)
+	s.registry.AddHandler("/api/topics/:id/refresh", engine.POST, s.handleRefreshTopic)
 	s.registry.AddHandler("/api/topics/:id/weave-preview", engine.POST, s.handlePreviewWeave)
 	s.registry.AddHandler("/api/topics/:id/weave-accept", engine.POST, s.handleAcceptWeave)
 	s.registry.AddHandler("/api/topics/:id/weave-proposals/:proposal_id", engine.GET, s.handleGetWeaveProposal)
@@ -681,16 +681,16 @@ func (s *Service) handleUpdateTopic(ctx context.Context, res http.ResponseWriter
 	writeJSON(res, req, http.StatusOK, topic)
 }
 
-func (s *Service) handleRebuildTopic(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+func (s *Service) handleRefreshTopic(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	_ = ctx
-	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/rebuild")
+	topicID := strings.TrimSuffix(pathID(req.URL.Path, "/api/topics/"), "/refresh")
 	if topicID == "" {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
 		return
 	}
-	job, err := s.topicService.RebuildTopic(req.Context(), topicID)
+	job, err := s.topicService.RefreshTopic(req.Context(), topicID)
 	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.rebuild_failed", err.Error())
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.refresh_failed", err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, job)

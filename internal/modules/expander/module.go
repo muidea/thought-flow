@@ -59,7 +59,7 @@ func (m *Module) ID() string {
 
 // Weight sits between refiner (150) and topic (400) so the expander
 // subscribes to `thought.refined` after refiner has finished writing
-// the refinement and before topic.rebuild can re-evaluate the
+// the refinement and before topic.refresh can re-evaluate the
 // (now-expanded) thought.
 func (m *Module) Weight() int {
 	return 250

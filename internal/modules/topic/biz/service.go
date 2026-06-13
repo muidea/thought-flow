@@ -611,18 +611,18 @@ func extractSessionID(payload any) string {
 	return ""
 }
 
-func (s *Service) RebuildTopic(ctx context.Context, id string) (models.Job, error) {
+func (s *Service) RefreshTopic(ctx context.Context, id string) (models.Job, error) {
 	if strings.TrimSpace(id) == "" {
 		return models.Job{}, errors.New("topic id is required")
 	}
-	job, err := s.jobs.Create(models.JobTypeTopicWeave, models.ResourceTypeTopic, id, "topic rebuild queued")
+	job, err := s.jobs.Create(models.JobTypeTopicWeave, models.ResourceTypeTopic, id, "topic refresh queued")
 	if err != nil {
 		return models.Job{}, err
 	}
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildStarted, s.workspace.ID, models.ResourceTypeTopic, id, job))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicRefreshStarted, s.workspace.ID, models.ResourceTypeTopic, id, job))
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	run := func() {
-		s.rebuildTopicJob(job)
+		s.refreshTopicJob(job)
 	}
 	if s.background != nil {
 		if err := s.background.AsyncFunction(run); err == nil {
@@ -641,7 +641,7 @@ func (s *Service) matchThoughtJob(job models.Job) {
 		errRef := models.NewErrorRef("thoughtflow.topic.match_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, models.ResourceTypeThought, job.ResourceID, errRef))
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRefreshFailed, s.workspace.ID, models.ResourceTypeThought, job.ResourceID, errRef))
 		return
 	}
 	job, _ = s.jobs.MarkSucceeded(job, "topic match succeeded")
@@ -723,21 +723,21 @@ func (s *Service) NearMissTopics(ctx context.Context, thoughtID string, topK int
 	return suggestions, nil
 }
 
-func (s *Service) rebuildTopicJob(job models.Job) {
+func (s *Service) refreshTopicJob(job models.Job) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	topic, count, changedThoughtPaths, err := s.store.RebuildWithMatcher(context.Background(), job.ResourceID, func(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+	topic, count, changedThoughtPaths, err := s.store.RefreshWithMatcher(context.Background(), job.ResourceID, func(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
 		return s.matchTopic(ctx, topic, thought, content, 0)
 	})
 	if err != nil {
-		errRef := models.NewErrorRef("thoughtflow.topic.rebuild_failed", err.Error(), true)
+		errRef := models.NewErrorRef("thoughtflow.topic.refresh_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRebuildFailed, s.workspace.ID, models.ResourceTypeTopic, job.ResourceID, errRef))
+		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRefreshFailed, s.workspace.ID, models.ResourceTypeTopic, job.ResourceID, errRef))
 		return
 	}
-	job.Message = "topic rebuilt"
-	job, _ = s.jobs.MarkSucceeded(job, "topic rebuilt")
+	job.Message = "topic refreshed"
+	job, _ = s.jobs.MarkSucceeded(job, "topic refreshed")
 	observability.AddTopicWeave(uint64(count))
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, map[string]any{"topic": topic, "matched_count": count}))

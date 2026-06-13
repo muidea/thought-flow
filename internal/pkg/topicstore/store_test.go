@@ -160,7 +160,7 @@ func TestStoreRejectsInvalidSemanticThreshold(t *testing.T) {
 	}
 }
 
-func TestStoreRebuildRemovesStaleMembershipFacts(t *testing.T) {
+func TestStoreRefreshRemovesStaleMembershipFacts(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
 	ctx := context.Background()
@@ -192,17 +192,17 @@ func TestStoreRebuildRemovesStaleMembershipFacts(t *testing.T) {
 	}
 	membershipPath := filepath.Join(root, "topics", updated.Slug, "memberships", thought.ID+".yaml")
 	if _, err := os.Stat(membershipPath); err != nil {
-		t.Fatalf("expected membership fact before rebuild, stat error = %v", err)
+		t.Fatalf("expected membership fact before refresh, stat error = %v", err)
 	}
 
-	rebuilt, count, _, err := store.RebuildWithMatcher(ctx, updated.ID, func(context.Context, models.Topic, models.Thought, models.ThoughtContent) (models.TopicMembership, bool) {
+	rebuilt, count, _, err := store.RefreshWithMatcher(ctx, updated.ID, func(context.Context, models.Topic, models.Thought, models.ThoughtContent) (models.TopicMembership, bool) {
 		return models.TopicMembership{}, false
 	})
 	if err != nil {
-		t.Fatalf("RebuildWithMatcher() error = %v", err)
+		t.Fatalf("RefreshWithMatcher() error = %v", err)
 	}
 	if count != 0 || rebuilt.MemberCount != 0 || len(rebuilt.Members) != 0 {
-		t.Fatalf("unexpected rebuild result: topic=%#v count=%d", rebuilt, count)
+		t.Fatalf("unexpected refresh result: topic=%#v count=%d", rebuilt, count)
 	}
 	if _, err := os.Stat(membershipPath); !os.IsNotExist(err) {
 		t.Fatalf("expected stale membership fact to be removed, stat error = %v", err)

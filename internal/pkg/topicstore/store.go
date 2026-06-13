@@ -625,13 +625,13 @@ func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic,
 	return topic, memberChanged || documentChanged || membershipChanged || linkChanged, nil
 }
 
-func (s *Store) Rebuild(ctx context.Context, id string) (models.Topic, int, []string, error) {
-	return s.RebuildWithMatcher(ctx, id, func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
+func (s *Store) Refresh(ctx context.Context, id string) (models.Topic, int, []string, error) {
+	return s.RefreshWithMatcher(ctx, id, func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
 		return s.MatchThought(topic, thought, content)
 	})
 }
 
-func (s *Store) RebuildWithMatcher(ctx context.Context, id string, matcher MatchFunc) (models.Topic, int, []string, error) {
+func (s *Store) RefreshWithMatcher(ctx context.Context, id string, matcher MatchFunc) (models.Topic, int, []string, error) {
 	topic, err := s.Get(ctx, id)
 	if err != nil {
 		return models.Topic{}, 0, nil, err
