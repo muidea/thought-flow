@@ -105,6 +105,8 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
+      renderTopicCandidateImpact,
+      renderTopicCandidates,
       createComposeBasket,
       displayWorkspace,
       displayRuntimePath,
@@ -356,6 +358,46 @@ test("renderComposeDraft appends only missing source links", () => {
   assert.equal((content.match(/\[\[thoughts\/one\.md\]\]/g) || []).length, 1);
   assert.match(content, /\[\[thoughts\/two\.md\]\]/);
   assert.match(content, /### Sources/);
+});
+
+test("renderTopicCandidateImpact surfaces source discriminator and metadata", () => {
+  const app = loadAppFunctions();
+  const html = app.renderTopicCandidateImpact({
+    source: "compose_draft",
+    candidate_id: "cand-1",
+    draft_id: "draft-1",
+    title: "Compose draft 1",
+    match_type: "keyword",
+    score: 0.82,
+    status: "pending",
+    reasons: ["shares keyword: DuckDB", "shares thought: thought-9"],
+  });
+  assert.match(html, /data-candidate-source="compose_draft"/);
+  assert.match(html, /data-candidate-id="cand-1"/);
+  assert.match(html, /data-candidate-ref="draft-1"/);
+  assert.match(html, /Compose draft 1/);
+  assert.match(html, /topics\.candidate_source\.compose_draft/);
+  assert.match(html, /topics\.score_label|search\.score_label/);
+  assert.match(html, /keyword/);
+  // reasons are joined with " · " so users can scan why this candidate landed
+  assert.match(html, /shares keyword: DuckDB/);
+  assert.match(html, /shares thought: thought-9/);
+});
+
+test("renderTopicCandidates lists every item and falls back to empty state", () => {
+  const app = loadAppFunctions();
+  const htmlEmpty = app.renderTopicCandidates([]);
+  assert.match(htmlEmpty, /topics\.candidates_empty/);
+
+  const html = app.renderTopicCandidates([
+    { source: "thought", candidate_id: "c1", thought_id: "t1", title: "T1", score: 0.5 },
+    { source: "capture_session", candidate_id: "c2", session_id: "s1", title: "S1", score: 0.4 },
+  ]);
+  assert.match(html, /topics\.candidates_title/);
+  assert.match(html, /data-candidate-source="thought"/);
+  assert.match(html, /data-candidate-source="capture_session"/);
+  assert.match(html, /data-candidate-ref="t1"/);
+  assert.match(html, /data-candidate-ref="s1"/);
 });
 
 test("outline helpers preserve one title per line", () => {

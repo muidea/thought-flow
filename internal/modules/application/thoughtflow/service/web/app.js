@@ -1264,6 +1264,74 @@ async function openTopic(topicId) {
   renderTopicRules(detail.topic);
   renderTopics();
   await loadWeaveProposals(topicId);
+  await loadTopicCandidates(topicId);
+}
+
+async function loadTopicCandidates(topicId = state.activeTopicId) {
+  if (!topicId) return [];
+  try {
+    const candidates = await api(`/api/topics/${encodeURIComponent(topicId)}/candidates`);
+    renderTopicCandidatesInto(candidates || []);
+    return candidates || [];
+  } catch (error) {
+    // The candidate list is best-effort observability — a transient
+    // failure should not break the topic detail view. Surface the
+    // error in the candidate panel so the user can retry.
+    const node = $("#topic-candidates");
+    if (node) node.innerHTML = `<div class="tf-empty">${escapeHTML(t("toast.request_failed"))}: ${escapeHTML(error.message)}</div>`;
+    return [];
+  }
+}
+
+function renderTopicCandidates(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return `<div class="tf-empty">${escapeHTML(t("topics.candidates_empty"))}</div>`;
+  }
+  // 候选影响区只读展示 in-flight 影响,任何接受 / 合并动作都走 Weave Proposals
+  // tab 并先展示 diff,符合 todo 第 4.4 节「确认候选或接受 weave 前必须
+  // 展示写入内容或 diff」。
+  const items = candidates.map(renderTopicCandidateImpact).join("");
+  const header = `<div class="tf-card-header"><h3>${escapeHTML(t("topics.candidates_title"))}</h3><span class="tf-text-secondary">${escapeHTML(t("topics.candidates_hint"))}</span></div>`;
+  return `${header}<div class="approval-list">${items}</div>`;
+}
+
+function renderTopicCandidatesInto(candidates) {
+  const node = $("#topic-candidates");
+  if (!node) return;
+  node.innerHTML = renderTopicCandidates(candidates);
+  // Clicking a candidate jumps to the Weave Proposals tab where the diff
+  // / written content is shown before the user can accept.
+  node.querySelectorAll("[data-candidate-source]").forEach((el) => {
+    el.addEventListener("click", () => {
+      activateTab("topics-proposals", $("#page-topics"));
+      loadWeaveProposals(state.activeTopicId).catch((error) => toast(error.message));
+    });
+  });
+}
+
+function renderTopicCandidateImpact(candidate) {
+  const sourceLabel = t(`topics.candidate_source.${candidate.source}`) || candidate.source;
+  const status = candidate.status ? `<span class="pill">${escapeHTML(candidate.status)}</span>` : "";
+  const reasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
+    ? `<div class="topic-meta">${candidate.reasons.map((reason) => escapeHTML(reason)).join(" · ")}</div>`
+    : "";
+  const referenceID = candidate.thought_id || candidate.draft_id || candidate.session_id || candidate.candidate_id || "";
+  return `
+    <article class="result-item" data-candidate-source="${escapeHTML(candidate.source)}" data-candidate-id="${escapeHTML(candidate.candidate_id)}" data-candidate-ref="${escapeHTML(referenceID)}" style="cursor: pointer;">
+      <div class="result-row">
+        <div>
+          <strong>${escapeHTML(candidate.title || candidate.candidate_id || t("topics.candidates_empty"))}</strong>
+          <div class="topic-meta">
+            <span class="pill">${escapeHTML(sourceLabel)}</span>
+            ${candidate.match_type ? `<span class="pill">${escapeHTML(candidate.match_type)}</span>` : ""}
+            ${status}
+            ${typeof candidate.score === "number" ? `<span class="pill green">${t("search.score_label")} ${score(candidate.score)}</span>` : ""}
+          </div>
+          ${reasons}
+        </div>
+      </div>
+    </article>
+  `;
 }
 
 function renderTopicMembers(members) {
