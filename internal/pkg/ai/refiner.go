@@ -325,8 +325,8 @@ func (p *LocalRefineProvider) Expand(ctx context.Context, req ExpandRequest) (Ex
 // *openai.Client; the previous hand-rolled http.Client + JSON marshal
 // + retry loop is gone.
 type OpenAICompatibleProvider struct {
-	client           *openai.Client
-	chatModel        string
+	client            *openai.Client
+	chatModel         string
 	embeddingProvider EmbeddingProvider
 }
 

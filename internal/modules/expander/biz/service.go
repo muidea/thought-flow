@@ -70,6 +70,7 @@ const expanderSessionID = "expander"
 
 const expandTopKRelated = 3
 const expandTopKNearTopics = 3
+
 // expandTimeout bounds the 4-way parallel pipeline. The previous hard
 // 30s limit frequently starved the LLM Expand call when the chat
 // provider was a remote model: the system prompt asks for a 400-800

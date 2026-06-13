@@ -31,11 +31,11 @@ func TestStoreBasicGetSaveDelete(t *testing.T) {
 	now := time.Date(2026, 6, 12, 9, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	in := Scratchpad{
-		SessionID: "session-A",
+		SessionID:   "session-A",
 		WorkspaceID: "local",
-		Title:   "draft title",
-		Content: "hello world",
-		Tags:    []string{"ai", "draft"},
+		Title:       "draft title",
+		Content:     "hello world",
+		Tags:        []string{"ai", "draft"},
 		Messages: []Message{
 			{Role: "user", Text: "hi", At: now},
 		},
@@ -342,10 +342,10 @@ func TestStoreRuntimeStatusReportsDisabledForEmptyRoot(t *testing.T) {
 
 func TestStoreCloneIsDeepCopy(t *testing.T) {
 	original := Scratchpad{
-		SessionID:  "deep",
-		Tags:       []string{"a", "b"},
-		Messages:   []Message{{Role: "user", Text: "x"}},
-		Draft:      Draft{NotesAppended: []string{"n"}},
+		SessionID:   "deep",
+		Tags:        []string{"a", "b"},
+		Messages:    []Message{{Role: "user", Text: "x"}},
+		Draft:       Draft{NotesAppended: []string{"n"}},
 		CommittedAt: func() *time.Time { t := time.Now().UTC(); return &t }(),
 	}
 	clone := cloneScratchpad(original)
@@ -505,8 +505,8 @@ func TestStoreMigratesV1FilesToV2OnLoad(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)
 	old := struct {
-		Version     int            `json:"version"`
-		Scratchpad  v1Scratchpad   `json:"scratchpad"`
+		Version    int          `json:"version"`
+		Scratchpad v1Scratchpad `json:"scratchpad"`
 	}{
 		Version: 1,
 		Scratchpad: v1Scratchpad{
@@ -580,10 +580,10 @@ func TestStorePersistsV2Fields(t *testing.T) {
 	store := New(root)
 	now := time.Date(2026, 6, 12, 9, 0, 0, 0, time.UTC)
 	sp := Scratchpad{
-		SessionID:          "v2-fields",
-		SourceThoughtID:    "thought-source",
-		ArchiveIntent:      ArchiveIntentMenu,
-		ArchiveStrategy:    ArchiveStrategySupplement,
+		SessionID:       "v2-fields",
+		SourceThoughtID: "thought-source",
+		ArchiveIntent:   ArchiveIntentMenu,
+		ArchiveStrategy: ArchiveStrategySupplement,
 		ArchivePreview: &ArchivePreview{
 			Title:         "preview title",
 			Body:          "preview body",
