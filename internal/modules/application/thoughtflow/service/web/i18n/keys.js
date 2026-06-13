@@ -45,8 +45,6 @@ export const Key = Object.freeze({
   TopbarLanguage: "topbar.language",
 
   // Dashboard page
-  DashboardTitle: "dashboard.title",
-  DashboardDescription: "dashboard.description",
   DashboardCardWorkspace: "dashboard.card.workspace",
   DashboardCardLLM: "dashboard.card.llm",
   DashboardCardEmbedding: "dashboard.card.embedding",
@@ -99,8 +97,6 @@ export const Key = Object.freeze({
   CaptureSessionExpanded: "capture.session.expanded",
 
   // Thoughts page
-  ThoughtsTitle: "thoughts.title",
-  ThoughtsDescription: "thoughts.description",
   ThoughtsIDPlaceholder: "thoughts.id_placeholder",
   ThoughtsLoadButton: "thoughts.load_button",
   ThoughtsPreviewEmpty: "thoughts.preview_empty",
@@ -279,8 +275,6 @@ export const Key = Object.freeze({
   ComposeSourceTypeCaptureSession: "compose.source_type.capture_session",
 
   // Jobs page
-  JobsTitle: "jobs.title",
-  JobsDescription: "jobs.description",
   JobsIDPlaceholder: "jobs.id_placeholder",
   JobsLoadButton: "jobs.load_button",
   JobsEmpty: "jobs.empty",

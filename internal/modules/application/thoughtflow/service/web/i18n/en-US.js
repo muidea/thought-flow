@@ -323,7 +323,6 @@ export const messages = {
   "compose.source_type.topic_section": "Topic section",
   "compose.source_type.capture_session": "Capture session",
 
-  "jobs.title": "Jobs & Activity",
   "jobs.description": "Track background work and live domain events.",
   "jobs.id_placeholder": "Job ID",
   "jobs.load_button": "Load job",

@@ -323,7 +323,6 @@ export const messages = {
   "compose.source_type.topic_section": "专题段落",
   "compose.source_type.capture_session": "采集会话",
 
-  "jobs.title": "任务与活动",
   "jobs.description": "追踪后台任务与实时事件流。",
   "jobs.id_placeholder": "任务 ID",
   "jobs.load_button": "加载任务",
