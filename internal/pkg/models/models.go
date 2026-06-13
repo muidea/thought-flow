@@ -683,6 +683,41 @@ type TopicSessionCandidate struct {
 	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
+// TopicCandidateImpactSource is the enumerated origin of a
+// TopicCandidateImpact. The values are the Web-facing wire names and
+// also drive the routing inside topic biz: capture_session and
+// thought_reopen_session both come from the same scratchpad candidate
+// file, thought impacts come from a topic's membership list, and
+// compose_draft impacts come from the compose module's draft index.
+type TopicCandidateImpactSource string
+
+const (
+	TopicCandidateSourceCaptureSession     TopicCandidateImpactSource = "capture_session"
+	TopicCandidateSourceThoughtReopen      TopicCandidateImpactSource = "thought_reopen_session"
+	TopicCandidateSourceThought            TopicCandidateImpactSource = "thought"
+	TopicCandidateSourceComposeDraft       TopicCandidateImpactSource = "compose_draft"
+)
+
+// TopicCandidateImpact is the Web-facing list shape for
+// GET /api/topics/{id}/candidates. Each entry is one piece of
+// in-flight state that may shift the topic's membership without
+// having been confirmed yet. Source is the discriminator and
+// decides which of CandidateID / SessionID / ThoughtID / DraftID
+// is populated for the entry.
+type TopicCandidateImpact struct {
+	Source      TopicCandidateImpactSource `json:"source"`
+	CandidateID string                     `json:"candidate_id"`
+	SessionID   string                     `json:"session_id,omitempty"`
+	ThoughtID   string                     `json:"thought_id,omitempty"`
+	DraftID     string                     `json:"draft_id,omitempty"`
+	Title       string                     `json:"title"`
+	MatchType   string                     `json:"match_type,omitempty"`
+	Score       float64                    `json:"score"`
+	Status      string                     `json:"status,omitempty"`
+	Reasons     []string                   `json:"reasons,omitempty"`
+	UpdatedAt   time.Time                  `json:"updated_at"`
+}
+
 // SynthesisDraft is the LLM-side wire shape returned by
 // ai.SynthesisProvider. The HTTP-facing type is ComposeDraft; the
 // compose service translates SynthesisDraft into ComposeDraft on the

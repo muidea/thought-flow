@@ -1071,3 +1071,128 @@ func topicTestWorkspace(root string) *models.Workspace {
 		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
 	}
 }
+
+func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
+		Name: "Vector Notes",
+		Rules: models.TopicRule{
+			Keywords: models.KeywordRule{Any: []string{"vector"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	// Seed a scratchpad session, then run the synchronous matcher so
+	// the topic picks up a candidate entry we can render through
+	// the new TopicCandidateImpact DTO. Goal contains the topic's
+	// keyword so the matcher scores it as a keyword hit.
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID: "sp-cand",
+		Title:     "Vector scratchpad",
+		UpdatedAt: time.Now().UTC(),
+		SessionContext: scratchpad.SessionContext{
+			Goal: "Investigate vector search scaling patterns.",
+		},
+	})
+	if _, err := service.matchScratchpad(ctx, "sp-cand"); err != nil {
+		t.Fatalf("matchScratchpad() error = %v", err)
+	}
+
+	// And seed two thoughts that should appear as thought impacts.
+	thoughtA := models.Thought{
+		ID:       "20260101-100000-aaaa",
+		UserTitle: "Vector search primer",
+		Path:     "thoughts/2026/01/20260101-100000-aaaa.md",
+	}
+	thoughtB := models.Thought{
+		ID:       "20260101-100000-bbbb",
+		UserTitle: "Vector scratchpad follow-up",
+		Path:     "thoughts/2026/01/20260101-100000-bbbb.md",
+	}
+	// AddMembership is on the store, not the service: it expects the
+	// caller to feed the freshly-returned topic back in, otherwise
+	// the second call overwrites the first because it started from
+	// the still-empty Members list we got from CreateTopic.
+	current := topic
+	for _, thought := range []models.Thought{thoughtA, thoughtB} {
+		updated, _, err := service.store.AddMembership(ctx, current, thought, models.ThoughtContent{}, models.TopicMembership{Score: 0.9, MatchType: "keyword"})
+		if err != nil {
+			t.Fatalf("AddMembership() error = %v", err)
+		}
+		current = updated
+	}
+
+	impacts, err := service.ListCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListCandidates() error = %v", err)
+	}
+
+	sourceCount := map[models.TopicCandidateImpactSource]int{}
+	for _, impact := range impacts {
+		sourceCount[impact.Source]++
+	}
+	if sourceCount[models.TopicCandidateSourceCaptureSession] != 1 {
+		t.Fatalf("capture_session count = %d, want 1", sourceCount[models.TopicCandidateSourceCaptureSession])
+	}
+	if sourceCount[models.TopicCandidateSourceThoughtReopen] != 1 {
+		t.Fatalf("thought_reopen_session count = %d, want 1", sourceCount[models.TopicCandidateSourceThoughtReopen])
+	}
+	if sourceCount[models.TopicCandidateSourceThought] != 2 {
+		t.Fatalf("thought count = %d, want 2", sourceCount[models.TopicCandidateSourceThought])
+	}
+	if sourceCount[models.TopicCandidateSourceComposeDraft] != 0 {
+		t.Fatalf("compose_draft count = %d, want 0", sourceCount[models.TopicCandidateSourceComposeDraft])
+	}
+
+	// capture_session and thought_reopen_session come from the same
+	// session data; their IDs must match.
+	var capture, reopen models.TopicCandidateImpact
+	for _, impact := range impacts {
+		switch impact.Source {
+		case models.TopicCandidateSourceCaptureSession:
+			capture = impact
+		case models.TopicCandidateSourceThoughtReopen:
+			reopen = impact
+		}
+	}
+	if capture.SessionID != "sp-cand" || reopen.SessionID != "sp-cand" {
+		t.Fatalf("session IDs = (%q, %q), want (sp-cand, sp-cand)", capture.SessionID, reopen.SessionID)
+	}
+
+	// Highest score first.
+	if impacts[0].Score < impacts[len(impacts)-1].Score {
+		t.Fatalf("impacts not sorted by score desc: %+v", impacts)
+	}
+}
+
+func TestServiceListCandidatesRequiresTopicID(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, newStubScratchpadProvider())
+
+	_, err := service.ListCandidates(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "topic id is required") {
+		t.Fatalf("err = %v, want required", err)
+	}
+}
+
+func TestServiceListCandidatesPropagatesStoreError(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, newStubScratchpadProvider())
+
+	_, err := service.ListCandidates(context.Background(), "missing-topic-id")
+	if err == nil {
+		t.Fatalf("expected error for missing topic")
+	}
+}

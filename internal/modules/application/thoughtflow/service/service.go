@@ -804,7 +804,7 @@ func (s *Service) handleListSessionCandidates(ctx context.Context, res http.Resp
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", "topic id is required")
 		return
 	}
-	candidates, err := s.topicService.ListSessionCandidates(ctx, topicID)
+	candidates, err := s.topicService.ListCandidates(ctx, topicID)
 	if err != nil {
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.list_candidates_failed", err.Error())
 		return

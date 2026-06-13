@@ -295,6 +295,82 @@ func (s *Service) ListSessionCandidates(ctx context.Context, topicID string) ([]
 	return candidates, nil
 }
 
+// ListCandidates returns the Web-facing candidate impact list for a
+// topic. It fuses four sources:
+//
+//   - capture_session: the unarchived scratchpad sessions that
+//     currently match the topic (the same data as
+//     ListSessionCandidates, exposed under the new DTO shape).
+//   - thought_reopen_session: scratchpad sessions flagged as
+//     "reopen"; today there is no separate reopen state, so the
+//     same candidate list is rendered with the reopen source label
+//     and the candidate's status field is left to the caller.
+//   - thought: each member of the topic, in topic.Members order,
+//     is exposed as an impact so the Web can show a "currently
+//     associated thoughts" panel.
+//   - compose_draft: this source is reserved for compose-module
+//     integration; the biz layer returns no entries until the
+//     compose side wires its draft index through.
+//
+// The result is sorted by Score descending then by UpdatedAt
+// descending so the most-prominent candidates surface first.
+func (s *Service) ListCandidates(ctx context.Context, topicID string) ([]models.TopicCandidateImpact, error) {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return nil, errors.New("topic id is required")
+	}
+	topic, err := s.store.Get(ctx, topicID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]models.TopicCandidateImpact, 0)
+	if sessions, err := s.store.ListSessionCandidates(ctx, topicID); err == nil {
+		for _, session := range sessions {
+			candidates = append(candidates, models.TopicCandidateImpact{
+				Source:      models.TopicCandidateSourceCaptureSession,
+				CandidateID: session.SessionID,
+				SessionID:   session.SessionID,
+				Title:       session.Title,
+				MatchType:   session.MatchType,
+				Score:       session.Score,
+				Status:      session.Status,
+				Reasons:     append([]string{}, session.Reasons...),
+				UpdatedAt:   session.UpdatedAt,
+			})
+			candidates = append(candidates, models.TopicCandidateImpact{
+				Source:      models.TopicCandidateSourceThoughtReopen,
+				CandidateID: session.SessionID,
+				SessionID:   session.SessionID,
+				Title:       session.Title,
+				MatchType:   session.MatchType,
+				Score:       session.Score,
+				Status:      session.Status,
+				Reasons:     append([]string{}, session.Reasons...),
+				UpdatedAt:   session.UpdatedAt,
+			})
+		}
+	}
+	for _, thoughtID := range topic.Members {
+		candidates = append(candidates, models.TopicCandidateImpact{
+			Source:      models.TopicCandidateSourceThought,
+			CandidateID: thoughtID,
+			ThoughtID:   thoughtID,
+			Title:       thoughtID,
+			MatchType:   "member",
+			Score:       1,
+			Status:      "member",
+			UpdatedAt:   topic.UpdatedAt,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+	})
+	return candidates, nil
+}
+
 func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
 	var proposal models.TopicWeaveProposal
 	usePatch := false
