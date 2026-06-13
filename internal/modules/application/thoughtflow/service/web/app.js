@@ -17,10 +17,10 @@ const state = {
   topics: [],
   activeTopicId: "",
   selectedThoughts: new Set(),
-  synthesisBasket: new Set(),
+  composeBasket: new Set(),
   lastResults: [],
-  synthesisDraft: null,
-  synthesisDrafts: [],
+  composeDraft: null,
+  composeDrafts: [],
   activeThoughtId: "",
   activeThoughtSnapshot: null,
   activeTopicDetail: null,
@@ -43,7 +43,7 @@ const state = {
 };
 
 // Cross-tab bus built on BroadcastChannel where supported, falling back
-// to a localStorage 'storage' event listener. Used to keep the synthesis
+// to a localStorage 'storage' event listener. Used to keep the compose
 // basket and (Phase 9) session locks in sync across tabs.
 let tflowBus = null;
 function initTflowBus() {
@@ -102,7 +102,7 @@ function initTflowBus() {
 // Wire basket updates onto the bus so other tabs see add/remove/clear.
 function broadcastBasketChange() {
   if (tflowBus) {
-    tflowBus.post({ kind: "basket:changed", ids: Array.from(state.synthesisBasket) });
+    tflowBus.post({ kind: "basket:changed", ids: Array.from(state.composeBasket) });
   }
 }
 
@@ -271,7 +271,7 @@ function restoreRoutePage(page, query) {
     if (typeof query.id === "string") $("#thought-id").value = query.id;
     if (typeof query.tab === "string") activateTab(query.tab, $("#page-thoughts"));
   }
-  // topic-review, synthesis handled by their loaders (proposal / draft IDs
+  // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
 }
 
@@ -361,7 +361,7 @@ const BASKET_STORAGE_KEY = "tflow.basket";
 
 function persistBasket() {
   saveToStorage(BASKET_STORAGE_KEY, {
-    ids: Array.from(state.synthesisBasket),
+    ids: Array.from(state.composeBasket),
     updated_at: new Date().toISOString(),
   });
 }
@@ -369,7 +369,7 @@ function persistBasket() {
 function restoreBasket() {
   const stored = loadFromStorage(BASKET_STORAGE_KEY, null);
   if (stored && Array.isArray(stored.ids)) {
-    state.synthesisBasket = new Set(stored.ids.filter(Boolean));
+    state.composeBasket = new Set(stored.ids.filter(Boolean));
   }
 }
 
@@ -620,7 +620,7 @@ function displayRuntimePath(value, workspaceRoot = "") {
   return path;
 }
 
-function createSynthesisBasket(initial = []) {
+function createComposeBasket(initial = []) {
   const values = new Set(initial.filter(Boolean));
   return {
     add(id) {
@@ -1022,31 +1022,31 @@ function renderWeaveProposals() {
   });
 }
 
-function renderSynthesisDrafts() {
-  const list = $("#synthesis-drafts");
+function renderComposeDrafts() {
+  const list = $("#compose-drafts");
   if (!list) return;
-  if (!state.synthesisDrafts || state.synthesisDrafts.length === 0) {
-    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("synthesis.drafts_empty"))}</div>`;
+  if (!state.composeDrafts || state.composeDrafts.length === 0) {
+    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("compose.drafts_empty"))}</div>`;
     return;
   }
-  list.innerHTML = state.synthesisDrafts
+  list.innerHTML = state.composeDrafts
     .map((draft) => {
-      const active = state.synthesisDraft?.id === draft.id ? " active" : "";
+      const active = state.composeDraft?.id === draft.id ? " active" : "";
       const status = draft.status || "draft";
       return `
-        <article class="approval-item${active}" data-synthesis-id="${escapeHTML(draft.id)}">
+        <article class="approval-item${active}" data-compose-id="${escapeHTML(draft.id)}">
           <strong>${escapeHTML(draft.goal || draft.id)}</strong>
           <div class="topic-meta">
             <span class="pill">${escapeHTML(status)}</span>
-            <span>${escapeHTML(draft.format || t("synthesis.format.summary"))}</span>
+            <span>${escapeHTML(draft.format || t("compose.format.summary"))}</span>
             <span>${escapeHTML(fmtDate(draft.updated_at || draft.created_at))}</span>
           </div>
         </article>
       `;
     })
     .join("");
-  list.querySelectorAll("[data-synthesis-id]").forEach((item) => {
-    item.addEventListener("click", () => loadSynthesisDraft(item.dataset.synthesisId).catch((error) => toast(error.message)));
+  list.querySelectorAll("[data-compose-id]").forEach((item) => {
+    item.addEventListener("click", () => loadComposeDraft(item.dataset.composeId).catch((error) => toast(error.message)));
   });
 }
 
@@ -1108,7 +1108,7 @@ function computeSidebarBadgeCounts(snapshot) {
   return {
     notes: formatBadgeCount(state.metrics?.values?.thoughtflow_capture_total),
     topics: formatBadgeCount(state.topics?.length),
-    compose: formatBadgeCount(state.synthesisDrafts?.length),
+    compose: formatBadgeCount(state.composeDrafts?.length),
   };
 }
 
@@ -1261,7 +1261,7 @@ function renderTopics() {
     state.activeTopicDetail = null;
     populateTopicEditor(null);
     $("#topic-document").innerHTML = renderMarkdown(t("topics.document_empty"));
-    $("#rebuild-topic").disabled = true;
+    $("#refresh-topic").disabled = true;
     $("#open-topic-rules").disabled = true;
     $("#topic-members").innerHTML = `<div class="tf-empty">${escapeHTML(t("empty.no_topic"))}</div>`;
     $("#topic-rules-summary").innerHTML = escapeHTML(t("empty.no_topic"));
@@ -1330,7 +1330,7 @@ async function openTopic(topicId) {
     if (el) el.disabled = false;
   });
   $("#topic-document").innerHTML = renderMarkdown(detail.document || t("topics.document_empty"));
-  $("#rebuild-topic").disabled = false;
+  $("#refresh-topic").disabled = false;
   $("#open-topic-rules").disabled = false;
   populateTopicEditor(detail.topic);
   renderTopicMembers(detail.members || []);
@@ -1366,7 +1366,7 @@ function renderTopicMembers(members) {
     button.addEventListener("click", () => previewThought(button.dataset.previewId, { drawer: true }).catch((error) => toast(error.message)));
   });
   node.querySelectorAll("[data-basket-id]").forEach((button) => {
-    button.addEventListener("click", () => addToSynthesisBasket([button.dataset.basketId]));
+    button.addEventListener("click", () => addToComposeBasket([button.dataset.basketId]));
   });
 }
 
@@ -2731,7 +2731,7 @@ function renderResults(response) {
     });
   });
   list.querySelectorAll("[data-basket-id]").forEach((button) => {
-    button.addEventListener("click", () => addToSynthesisBasket([button.dataset.basketId]));
+    button.addEventListener("click", () => addToComposeBasket([button.dataset.basketId]));
   });
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
     button.addEventListener("click", () => copyPath(button.dataset.copyPath));
@@ -2801,20 +2801,20 @@ function updateSelectionControls() {
   const count = state.selectedThoughts.size;
   const selectedCount = $("#selected-count");
   if (selectedCount) selectedCount.textContent = t("search.selected_count", { n: count });
-  const add = $("#add-selected-synthesis");
+  const add = $("#add-selected-compose");
   const clear = $("#clear-selected");
   if (add) add.disabled = count === 0;
   if (clear) clear.disabled = count === 0;
 }
 
-function addToSynthesisBasket(thoughtIds) {
+function addToComposeBasket(thoughtIds) {
   for (const thoughtId of thoughtIds || []) {
-    if (thoughtId) state.synthesisBasket.add(thoughtId);
+    if (thoughtId) state.composeBasket.add(thoughtId);
   }
   persistBasket();
   broadcastBasketChange();
-  renderSynthesisBasket();
-  toast(t("toast.basket_add", { n: state.synthesisBasket.size }));
+  renderComposeBasket();
+  toast(t("toast.basket_add", { n: state.composeBasket.size }));
 }
 
 function clearSearchSelection() {
@@ -2823,20 +2823,20 @@ function clearSearchSelection() {
   persistRouteDebounced();
 }
 
-function clearSynthesisBasket() {
-  state.synthesisBasket.clear();
+function clearComposeBasket() {
+  state.composeBasket.clear();
   persistBasket();
   broadcastBasketChange();
-  renderSynthesisBasket();
+  renderComposeBasket();
 }
 
-function renderSynthesisBasket() {
-  const ids = Array.from(state.synthesisBasket);
-  const count = $("#synthesis-source-count");
-  const list = $("#synthesis-source-list");
-  const clear = $("#clear-synthesis-basket");
+function renderComposeBasket() {
+  const ids = Array.from(state.composeBasket);
+  const count = $("#compose-source-count");
+  const list = $("#compose-source-list");
+  const clear = $("#clear-compose-basket");
   if (count) {
-    const rendered = t("synthesis.source_count", { n: ids.length });
+    const rendered = t("compose.source_count", { n: ids.length });
     // Keep the data-n attribute in sync so a later tApply() doesn't reset
     // the count back to the static value baked into the HTML.
     count.setAttribute("data-n", String(ids.length));
@@ -2845,7 +2845,7 @@ function renderSynthesisBasket() {
   if (clear) clear.disabled = ids.length === 0;
   if (list) {
     list.innerHTML = ids.length === 0
-      ? escapeHTML(t("synthesis.empty_sources"))
+      ? escapeHTML(t("compose.empty_sources"))
       : ids.map((id) => `<span class="pill">${escapeHTML(id)}</span>`).join("");
   }
 }
@@ -2863,7 +2863,7 @@ async function previewThought(thoughtId, options = {}) {
     `path: ${thought.path}`,
     "",
     `## ${t("thoughts.preview_summary")}`,
-    thought.summary || t("synthesis.empty"),
+    thought.summary || t("compose.empty"),
     "",
     `## ${t("thoughts.preview_original")}`,
     content.original || "",
@@ -2882,7 +2882,7 @@ async function previewThought(thoughtId, options = {}) {
   $("#thought-preview").innerHTML = html;
   const drawer = $("#thought-drawer-content");
   if (drawer) drawer.innerHTML = html;
-  $("#drawer-add-synthesis").disabled = false;
+  $("#drawer-add-compose").disabled = false;
   $("#retry-refine").disabled = false;
   if (options.drawer) openDrawer("thought-drawer");
 }
@@ -2956,47 +2956,53 @@ async function retryRefine() {
   state.activeJobId = job.id;
 }
 
-async function createSynthesis(event) {
+async function createComposeDraft(event) {
   event.preventDefault();
-  const thoughtIds = Array.from(state.synthesisBasket);
+  const thoughtIds = Array.from(state.composeBasket);
   if (thoughtIds.length === 0) {
     toast(t("toast.add_sources_first"));
     return;
   }
-  const draft = await api("/api/synthesis", {
+  const sources = thoughtIds.map((id) => ({ source_type: "thought", source_id: id }));
+  const draft = await api("/api/compose/drafts", {
     method: "POST",
     body: JSON.stringify({
-      thought_ids: thoughtIds,
-      goal: $("#synthesis-goal").value.trim(),
-      format: $("#synthesis-format").value,
+      sources,
+      selected_thought_ids: thoughtIds,
+      goal: $("#compose-goal").value.trim(),
+      format: $("#compose-format").value,
     }),
   });
-  state.synthesisDraft = draft;
-  $("#synthesis-output").value = renderSynthesisDraft(draft);
-  $("#save-synthesis").disabled = (draft.status || "draft") !== "draft";
-  closeDrawer("synthesis-create-drawer");
-  await loadSynthesisDrafts();
-  window.location.hash = "#/synthesis";
+  state.composeDraft = draft;
+  $("#compose-output").value = renderComposeDraft(draft);
+  $("#save-compose").disabled = (draft.status || "draft") !== "draft";
+  closeDrawer("compose-create-drawer");
+  await loadComposeDrafts();
+  window.location.hash = "#/compose";
 }
 
-async function loadSynthesisDrafts() {
-  state.synthesisDrafts = await api("/api/synthesis");
-  renderSynthesisDrafts();
+async function loadComposeDrafts() {
+  state.composeDrafts = await api("/api/compose/drafts");
+  renderComposeDrafts();
   renderSidebarBadges();
 }
 
-async function loadSynthesisDraft(draftId) {
+async function loadComposeDraft(draftId) {
   if (!draftId) return;
-  const draft = await api(`/api/synthesis/${encodeURIComponent(draftId)}`);
-  state.synthesisDraft = draft;
-  for (const thoughtId of draft.thought_ids || []) state.synthesisBasket.add(thoughtId);
+  const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
+  state.composeDraft = draft;
+  for (const source of draft.sources || []) {
+    if (source && source.source_type === "thought" && source.source_id) {
+      state.composeBasket.add(source.source_id);
+    }
+  }
   persistBasket();
-  renderSynthesisBasket();
-  $("#synthesis-goal").value = draft.goal || "";
-  $("#synthesis-format").value = draft.format || t("synthesis.format.summary");
-  $("#synthesis-output").value = renderSynthesisDraft(draft);
-  $("#save-synthesis").disabled = (draft.status || "draft") !== "draft";
-  renderSynthesisDrafts();
+  renderComposeBasket();
+  $("#compose-goal").value = draft.goal || "";
+  $("#compose-format").value = draft.format || t("compose.format.summary");
+  $("#compose-output").value = renderComposeDraft(draft);
+  $("#save-compose").disabled = (draft.status || "draft") !== "draft";
+  renderComposeDrafts();
 }
 
 async function previewWeave(thoughtId) {
@@ -3059,7 +3065,7 @@ async function acceptWeave() {
   navigateTopic(detail.topic.id);
 }
 
-function renderSynthesisDraft(draft) {
+function renderComposeDraft(draft) {
   const links = (draft.source_links || []).filter(Boolean);
   let content = draft.content || "";
   const missing = links.filter((link) => !content.includes(link));
@@ -3067,46 +3073,39 @@ function renderSynthesisDraft(draft) {
   return `${content}\n\n### Sources\n\n${missing.map((link) => `- [[${link}]]`).join("\n")}`;
 }
 
-async function saveSynthesis() {
-  if (!state.synthesisDraft) {
+async function saveComposeDraft() {
+  if (!state.composeDraft) {
     toast(t("toast.create_draft_first"));
     return;
   }
-  const confirmed = await confirmAction(t("synthesis.confirm_title"), t("synthesis.confirm_message"));
+  const confirmed = await confirmAction(t("compose.confirm_title"), t("compose.confirm_message"));
   if (!confirmed) return;
-  const content = $("#synthesis-output").value.trim();
-  if (!content) {
-    toast(t("toast.draft_content_required"));
-    return;
-  }
-  const result = await api("/api/synthesis/save", {
+  const content = $("#compose-output").value.trim();
+  const result = await api(`/api/compose/drafts/${encodeURIComponent(state.composeDraft.id)}/save`, {
     method: "POST",
     body: JSON.stringify({
-      draft_id: state.synthesisDraft.id,
-      thought_ids: state.synthesisDraft.thought_ids || [],
-      goal: state.synthesisDraft.goal || $("#synthesis-goal").value.trim(),
-      format: state.synthesisDraft.format || $("#synthesis-format").value,
       content,
-      source_links: state.synthesisDraft.source_links || [],
+      title: state.composeDraft.goal || $("#compose-goal").value.trim(),
+      tags: [],
     }),
   });
   toast(t("toast.saved", { id: result.thought.id }));
   state.selectedThoughts.clear();
-  state.synthesisBasket.clear();
-  renderSynthesisBasket();
-  $("#synthesis-save-result").innerHTML = `<a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("synthesis.view_saved"))}</a>`;
-  $("#save-synthesis").disabled = true;
-  state.synthesisDraft = null;
-  await loadSynthesisDrafts();
+  state.composeBasket.clear();
+  renderComposeBasket();
+  $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/thoughts?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
+  $("#save-compose").disabled = true;
+  state.composeDraft = null;
+  await loadComposeDrafts();
   window.setTimeout(() => runSearch().catch((error) => toast(error.message)), 1000);
 }
 
-async function rebuildTopic() {
+async function refreshTopic() {
   if (!state.activeTopicId) return;
-  const confirmed = await confirmAction(t("topics.rebuild"), t("topics.rebuild") + ".");
+  const confirmed = await confirmAction(t("topics.refresh"), t("topics.refresh") + ".");
   if (!confirmed) return;
-  const job = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/rebuild`, { method: "POST", body: "{}" });
-  toast(t("toast.rebuild_queued", { id: job.id }));
+  const job = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/refresh`, { method: "POST", body: "{}" });
+  toast(t("toast.refresh_queued", { id: job.id }));
   // PR3: jobs page is gone; the toast is the only acknowledgement.
   state.activeJobId = job.id;
 }
@@ -3310,7 +3309,7 @@ function bind() {
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
   $("#thought-id").addEventListener("input", persistRouteDebounced);
-  $("#synthesis-form").addEventListener("submit", (event) => createSynthesis(event).catch((error) => toast(error.message)));
+  $("#compose-form").addEventListener("submit", (event) => createComposeDraft(event).catch((error) => toast(error.message)));
   $("#settings-drawer-event-type")?.addEventListener("input", () => applyEventFilter());
   $("#settings-drawer-event-resource")?.addEventListener("input", () => applyEventFilter());
   $("#settings-drawer-reset-event-filter")?.addEventListener("click", () => resetEventFilter());
@@ -3318,25 +3317,25 @@ function bind() {
   $("#open-events-from-dashboard")?.addEventListener("click", () => {
     openSettingsDrawer("settings-drawer-events");
   });
-  $("#save-synthesis").addEventListener("click", () => saveSynthesis().catch((error) => toast(error.message)));
+  $("#save-compose").addEventListener("click", () => saveComposeDraft().catch((error) => toast(error.message)));
   $("#accept-weave").addEventListener("click", () => acceptWeave().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
   $("#topic-filter").addEventListener("input", () => { renderTopics(); persistRouteDebounced(); });
   $("#topic-auto-filter").addEventListener("change", () => { renderTopics(); persistRouteDebounced(); });
   $("#reset-topic-filter").addEventListener("click", () => { resetTopicFilters(); persistRouteDebounced(); });
-  $("#rebuild-topic").addEventListener("click", () => rebuildTopic().catch((error) => toast(error.message)));
+  $("#refresh-topic").addEventListener("click", () => refreshTopic().catch((error) => toast(error.message)));
   $("#settings-drawer-reindex")?.addEventListener("click", () => reindex().catch((error) => toast(error.message)));
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
-  $("#open-synthesis-create").addEventListener("click", () => openDrawer("synthesis-create-drawer"));
-  $("#refresh-synthesis").addEventListener("click", () => loadSynthesisDrafts().catch((error) => toast(error.message)));
-  $("#add-selected-synthesis").addEventListener("click", () => {
-    addToSynthesisBasket(Array.from(state.selectedThoughts));
+  $("#open-compose-create").addEventListener("click", () => openDrawer("compose-create-drawer"));
+  $("#refresh-compose").addEventListener("click", () => loadComposeDrafts().catch((error) => toast(error.message)));
+  $("#add-selected-compose").addEventListener("click", () => {
+    addToComposeBasket(Array.from(state.selectedThoughts));
     window.location.hash = "#/compose";
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
-  $("#clear-synthesis-basket").addEventListener("click", clearSynthesisBasket);
-  $("#drawer-add-synthesis").addEventListener("click", () => addToSynthesisBasket([state.activeThoughtId]));
+  $("#clear-compose-basket").addEventListener("click", clearComposeBasket);
+  $("#drawer-add-compose").addEventListener("click", () => addToComposeBasket([state.activeThoughtId]));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));
   $("#confirm-ok").addEventListener("click", () => closeConfirm(true));
@@ -3426,7 +3425,7 @@ function rerenderForLocale() {
   tApply(document);
   // re-render dynamic content that holds its own text
   try { renderTopics(); } catch (_) {}
-  try { renderSynthesisBasket(); } catch (_) {}
+  try { renderComposeBasket(); } catch (_) {}
   try { updateSelectionControls(); } catch (_) {}
   if (state.status) {
     try { renderTopbarStatus(state.status); } catch (_) {}
@@ -3435,8 +3434,8 @@ function rerenderForLocale() {
   if (state.weaveProposals || !state.activeTopicId) {
     try { renderWeaveProposals(); } catch (_) {}
   }
-  if (state.synthesisDrafts) {
-    try { renderSynthesisDrafts(); } catch (_) {}
+  if (state.composeDrafts) {
+    try { renderComposeDrafts(); } catch (_) {}
   }
 }
 
@@ -3457,11 +3456,11 @@ async function boot() {
         // Another tab updated the basket — adopt the new ids and re-render
         // if they differ from what we have. Avoids an infinite ping-pong
         // because addTo/clear do not fire on the receiving side.
-        const current = Array.from(state.synthesisBasket).sort();
+        const current = Array.from(state.composeBasket).sort();
         const incoming = Array.from(message.ids).sort();
         if (current.length === incoming.length && current.every((id, i) => id === incoming[i])) return;
-        state.synthesisBasket = new Set(message.ids.filter(Boolean));
-        renderSynthesisBasket();
+        state.composeBasket = new Set(message.ids.filter(Boolean));
+        renderComposeBasket();
       }
     });
   }
@@ -3478,9 +3477,9 @@ async function boot() {
   }
   bind();
   // Render the basket counter once the page is reachable. Done here so the
-  // rehydrated count shows even before the user opens the synthesis page.
-  if (typeof renderSynthesisBasket === "function") {
-    try { renderSynthesisBasket(); } catch (_error) { /* noop before render */ }
+  // rehydrated count shows even before the user opens the compose page.
+  if (typeof renderComposeBasket === "function") {
+    try { renderComposeBasket(); } catch (_error) { /* noop before render */ }
   }
   if (typeof renderCaptureConversation === "function") {
     try { renderCaptureConversation(); } catch (_error) { /* noop before render */ }
@@ -3490,7 +3489,7 @@ async function boot() {
   renderRoute();
   await loadStatus();
   await loadTopics();
-  await loadSynthesisDrafts();
+  await loadComposeDrafts();
   await loadMetrics();
   await runSearch();
   await applyRoute();

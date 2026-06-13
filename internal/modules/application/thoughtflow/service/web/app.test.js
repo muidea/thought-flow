@@ -98,7 +98,7 @@ function loadAppFunctionsWith(opts = {}) {
       escapeHTML,
       renderMarkdown,
       renderDiff,
-      renderSynthesisDraft,
+      renderComposeDraft,
       outlineFromText,
       outlineText,
       parseRoute,
@@ -106,7 +106,7 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
-      createSynthesisBasket,
+      createComposeBasket,
       displayWorkspace,
       displayRuntimePath,
       buildRouteHash,
@@ -273,9 +273,9 @@ test("renderSearchResultItem exposes scores and action targets", () => {
   assert.match(html, /embedding/);
 });
 
-test("synthesis basket helper deduplicates and clears sources", () => {
+test("compose basket helper deduplicates and clears sources", () => {
   const app = loadAppFunctions();
-  const basket = app.createSynthesisBasket(["one", "one"]);
+  const basket = app.createComposeBasket(["one", "one"]);
   const values = (result) => JSON.parse(JSON.stringify(result));
 
   assert.deepEqual(values(basket.values()), ["one"]);
@@ -365,10 +365,10 @@ test("renderDiff marks added and removed lines", () => {
   assert.match(html, />\+<\/span><code>new<\/code>/);
 });
 
-test("renderSynthesisDraft appends only missing source links", () => {
+test("renderComposeDraft appends only missing source links", () => {
   const app = loadAppFunctions();
 
-  const content = app.renderSynthesisDraft({
+  const content = app.renderComposeDraft({
     content: "# Draft\n\nAlready cites [[thoughts/one.md]].",
     source_links: ["thoughts/one.md", "thoughts/two.md"],
   });
@@ -502,7 +502,7 @@ test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => 
   const storage = makeStorageStub();
   const app = loadAppFunctionsWith({ storage, exposeState: true });
 
-  app._state.synthesisBasket = new Set(["t-1", "t-2", "t-3"]);
+  app._state.composeBasket = new Set(["t-1", "t-2", "t-3"]);
   app.persistBasket();
   const raw = storage.data["tflow.basket"];
   assert.ok(raw, "basket should be persisted to localStorage");
@@ -512,29 +512,29 @@ test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => 
 
   // Simulate a reload: the new module instance has an empty Set, then we
   // hydrate from storage.
-  app._state.synthesisBasket = new Set();
+  app._state.composeBasket = new Set();
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.synthesisBasket), ["t-1", "t-2", "t-3"]);
+  assert.deepEqual(Array.from(app._state.composeBasket), ["t-1", "t-2", "t-3"]);
 });
 
 test("restoreBasket is tolerant of missing or corrupt payloads", () => {
   const storage = makeStorageStub();
   const app = loadAppFunctionsWith({ storage, exposeState: true });
 
-  app._state.synthesisBasket = new Set(["keep"]);
+  app._state.composeBasket = new Set(["keep"]);
   // No payload at all.
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
 
   // Garbage payload — set stays at its current value.
   storage.data["tflow.basket"] = "not-json";
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
 
   // Payload missing the ids array.
   storage.data["tflow.basket"] = JSON.stringify({ updated_at: "now" });
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.synthesisBasket), ["keep"]);
+  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
 });
 
 test("navItemAriaCurrent marks the active page and clears others", () => {
@@ -631,7 +631,7 @@ test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
   const counts = app.computeSidebarBadgeCounts({
     metrics: { values: { thoughtflow_capture_total: 42 } },
     topics: [{ id: "a" }, { id: "b" }, { id: "c" }],
-    synthesisDrafts: [{ id: "d1" }],
+    composeDrafts: [{ id: "d1" }],
   });
   // The returned object comes from a different vm context, so we compare
   // via JSON to avoid prototype/reference-equality false negatives.
@@ -645,7 +645,7 @@ test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
   const zeros = app.computeSidebarBadgeCounts({
     metrics: { values: { thoughtflow_capture_total: 0 } },
     topics: [],
-    synthesisDrafts: [],
+    composeDrafts: [],
   });
   assert.equal(JSON.stringify(zeros), JSON.stringify({ notes: "", topics: "", compose: "" }));
 });

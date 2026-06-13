@@ -338,16 +338,17 @@ test("API e2e", async (t) => {
       );
       assert.equal(res.status, 200, `search mode=${mode} status=${res.status} body=${res.text}`);
       const data = envelope(res).data;
-      assert.ok(Array.isArray(data.items), "items must be an array");
+      assert.ok(Array.isArray(data.results), "results must be an array");
       // keyword mode should surface at least one hit on a freshly indexed note
       if (mode === "keyword") {
-        assert.ok(data.items.length > 0, "keyword mode should hit the seeded thought");
-        assert.equal(data.items[0].explain.keyword_source, "duckdb_fts");
+        assert.ok(data.results.length > 0, "keyword mode should hit the seeded thought");
+        assert.equal(data.results[0].title, "search-target");
+        assert.ok(typeof data.results[0].score === "number", "score must be a number");
       }
     }
   });
 
-  await t.test("topics CRUD: create, get, update, rebuild, weave-proposals", async () => {
+  await t.test("topics CRUD: create, get, update, refresh, weave-proposals", async () => {
     const create = await request(server.baseURL, "/api/topics", "POST", {
       body: {
         name: "e2e topic",
@@ -377,8 +378,8 @@ test("API e2e", async (t) => {
     });
     assert.equal(update.status, 200, `topic update status=${update.status} body=${update.text}`);
 
-    const rebuild = await request(server.baseURL, `/api/topics/${topicId}/rebuild`, "POST", {});
-    assert.ok([200, 202].includes(rebuild.status), `rebuild status=${rebuild.status}`);
+    const refresh = await request(server.baseURL, `/api/topics/${topicId}/refresh`, "POST", {});
+    assert.ok([200, 202].includes(refresh.status), `refresh status=${refresh.status}`);
 
     const proposals = await request(server.baseURL, `/api/topics/${topicId}/weave-proposals`, "GET");
     assert.equal(proposals.status, 200);
@@ -407,31 +408,36 @@ test("API e2e", async (t) => {
     assert.ok([200, 400, 404, 409].includes(accept.status), `weave-accept status=${accept.status}`);
   });
 
-  await t.test("synthesis draft list/create/save", async () => {
-    const list = await request(server.baseURL, "/api/synthesis", "GET");
+  await t.test("compose draft list/create/save", async () => {
+    const list = await request(server.baseURL, "/api/compose/drafts", "GET");
     assert.equal(list.status, 200);
     assert.ok(Array.isArray(envelope(list).data));
 
     // Create a real thought to feed the synthesizer.
     const thoughtRes = await request(server.baseURL, "/api/thoughts", "POST", {
-      body: { type: "text", title: "synthesis source", content: "Sourced for synthesis." },
+      body: { type: "text", title: "compose source", content: "Sourced for compose." },
     });
     const thoughtId = envelope(thoughtRes).data.thought.id;
 
-    const create = await request(server.baseURL, "/api/synthesis", "POST", {
-      body: { thought_ids: [thoughtId], goal: "compose from e2e", format: "summary" },
+    const create = await request(server.baseURL, "/api/compose/drafts", "POST", {
+      body: {
+        sources: [{ source_type: "thought", source_id: thoughtId }],
+        selected_thought_ids: [thoughtId],
+        goal: "compose from e2e",
+        format: "summary",
+      },
     });
-    assert.equal(create.status, 200, `synthesis create status=${create.status} body=${create.text}`);
+    assert.equal(create.status, 200, `compose create status=${create.status} body=${create.text}`);
     const draftId = envelope(create).data.id;
     assert.ok(draftId);
 
-    const get = await request(server.baseURL, `/api/synthesis/${draftId}`, "GET");
+    const get = await request(server.baseURL, `/api/compose/drafts/${draftId}`, "GET");
     assert.equal(get.status, 200);
 
-    const save = await request(server.baseURL, "/api/synthesis/save", "POST", {
-      body: { draft_id: draftId, content: "E2E saved synthesis", format: "summary" },
+    const save = await request(server.baseURL, `/api/compose/drafts/${draftId}/save`, "POST", {
+      body: { content: "E2E saved compose", title: "compose from e2e" },
     });
-    assert.ok([200, 202, 400].includes(save.status), `synthesis save status=${save.status}`);
+    assert.ok([200, 202, 400].includes(save.status), `compose save status=${save.status}`);
   });
 
   await t.test("capture session recovery round-trips through active and reuse_last", async () => {

@@ -260,11 +260,11 @@
             <section class="tf-card">
               <div class="tf-card-header">
                 <h3 data-i18n="search.results_title">Results</h3>
-                <span class="tf-text-secondary" data-i18n="search.results_hint">Select thoughts for synthesis or topic weaving.</span>
+                <span class="tf-text-secondary" data-i18n="search.results_hint">Select thoughts for compose or topic weaving.</span>
               </div>
               <div class="tf-selection-bar">
                 <span id="selected-count" data-i18n-template="search.selected_count" data-n="0">0 selected</span>
-                <button class="tf-btn" id="add-selected-synthesis" type="button" disabled data-i18n="search.add_selected">Add to synthesis</button>
+                <button class="tf-btn" id="add-selected-compose" type="button" disabled data-i18n="search.add_selected">Add to compose</button>
                 <button class="tf-btn" id="clear-selected" type="button" disabled data-i18n="search.clear_selected">Clear</button>
               </div>
               <div id="search-results" class="results-list"></div>
@@ -299,7 +299,7 @@
               </div>
               <div id="tab-topics-detail" class="tab-panel">
                 <div class="tf-page-actions" style="margin-bottom: 12px;">
-                  <button class="tf-btn" id="rebuild-topic" disabled data-i18n="topics.rebuild">Rebuild</button>
+                  <button class="tf-btn" id="refresh-topic" disabled data-i18n="topics.refresh">Refresh</button>
                   <button class="tf-btn" id="open-topic-rules" type="button" disabled data-i18n="topics.edit_rules">Edit rules</button>
                 </div>
                 <div id="topic-document" class="markdown-preview markdown-rendered" data-i18n-template="topics.document_empty" data-empty="true">Select a topic from the list.</div>
@@ -327,11 +327,11 @@
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="compose.title">Compose Drafts</h2>
-                <p data-i18n="synthesis.description">Compose a document from many thoughts</p>
+                <p data-i18n="compose.description">Compose a document from many thoughts</p>
               </div>
               <div class="tf-page-actions">
-                <button class="tf-btn tf-btn-primary" id="open-synthesis-create" type="button" data-i18n="synthesis.create">Create draft</button>
-                <button class="tf-btn" id="refresh-synthesis" type="button" data-i18n="common.refresh">Refresh</button>
+                <button class="tf-btn tf-btn-primary" id="open-compose-create" type="button" data-i18n="compose.create">Create draft</button>
+                <button class="tf-btn" id="refresh-compose" type="button" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
             <div class="tf-tabs" role="tablist" id="compose-tablist">
@@ -344,30 +344,30 @@
                 <div class="tf-two-column">
                   <div>
                     <div class="tf-selection-bar">
-                      <span id="synthesis-source-count" data-i18n-template="synthesis.source_count" data-n="0">0 selected sources</span>
-                      <button class="tf-btn" id="clear-synthesis-basket" type="button" disabled data-i18n="synthesis.clear_basket">Clear basket</button>
+                      <span id="compose-source-count" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
+                      <button class="tf-btn" id="clear-compose-basket" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
                     </div>
-                    <div id="synthesis-drafts" class="approval-list" data-i18n-template="synthesis.drafts_empty" data-empty="true">No synthesis drafts.</div>
+                    <div id="compose-drafts" class="approval-list" data-i18n-template="compose.drafts_empty" data-empty="true">No compose drafts.</div>
                   </div>
                   <div>
                     <div class="tf-card-header">
-                      <h3 data-i18n="synthesis.editor_title">Draft Editor</h3>
-                      <button class="tf-btn" type="button" id="save-synthesis" disabled data-i18n="synthesis.save">Save as thought</button>
+                      <h3 data-i18n="compose.editor_title">Draft Editor</h3>
+                      <button class="tf-btn" type="button" id="save-compose" disabled data-i18n="compose.save">Save as thought</button>
                     </div>
-                    <textarea id="synthesis-output" class="markdown-preview" spellcheck="false" data-i18n-template="synthesis.empty" data-empty="true">Select search results, then create a draft.</textarea>
-                    <div id="synthesis-save-result" class="tf-empty" data-i18n="synthesis.empty">No saved thought yet.</div>
+                    <textarea id="compose-output" class="markdown-preview" spellcheck="false" data-i18n-template="compose.empty" data-empty="true">Select search results, then create a draft.</textarea>
+                    <div id="compose-save-result" class="tf-empty" data-i18n="compose.empty">No saved thought yet.</div>
                   </div>
                 </div>
               </div>
               <div id="tab-compose-basket" class="tab-panel">
                 <div class="tf-selection-bar">
-                  <span id="synthesis-source-count-basket" data-i18n-template="synthesis.source_count" data-n="0">0 selected sources</span>
-                  <button class="tf-btn" id="clear-synthesis-basket-tab" type="button" disabled data-i18n="synthesis.clear_basket">Clear basket</button>
+                  <span id="compose-source-count-basket" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
+                  <button class="tf-btn" id="clear-compose-basket-tab" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
                 </div>
-                <div id="synthesis-basket-list" class="approval-list" data-i18n-template="synthesis.empty_sources" data-empty="true">No sources selected.</div>
+                <div id="compose-basket-list" class="approval-list" data-i18n-template="compose.empty_sources" data-empty="true">No sources selected.</div>
               </div>
               <div id="tab-compose-templates" class="tab-panel">
-                <div id="compose-templates" class="tf-description-list" data-i18n-template="synthesis.empty_sources" data-empty="true">Templates appear here once you save a draft.</div>
+                <div id="compose-templates" class="tf-description-list" data-i18n-template="compose.empty_sources" data-empty="true">Templates appear here once you save a draft.</div>
               </div>
             </section>
           </section>
@@ -465,7 +465,7 @@
         </div>
         <div id="thought-drawer-content" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
         <div class="tf-drawer-footer">
-          <button class="tf-btn" id="drawer-add-synthesis" type="button" disabled data-i18n="thoughts.drawer_add_synthesis">Add to synthesis</button>
+          <button class="tf-btn" id="drawer-add-compose" type="button" disabled data-i18n="thoughts.drawer_add_compose">Add to compose</button>
           <button class="tf-btn" id="retry-refine" type="button" disabled data-i18n="thoughts.drawer_retry_refine">Retry refine</button>
         </div>
       </div>
@@ -546,27 +546,27 @@ Open Questions</textarea>
       </div>
     </aside>
 
-    <aside class="tf-drawer" id="synthesis-create-drawer" aria-hidden="true">
+    <aside class="tf-drawer" id="compose-create-drawer" aria-hidden="true">
       <div class="tf-drawer-panel">
         <div class="tf-drawer-header">
-          <h2 data-i18n="synthesis.create_drawer_title">Create Draft</h2>
-          <button class="tf-btn tf-drawer-close" data-close-drawer="synthesis-create-drawer" type="button" data-i18n="synthesis.create_close">Close</button>
+          <h2 data-i18n="compose.create_drawer_title">Create Draft</h2>
+          <button class="tf-btn tf-drawer-close" data-close-drawer="compose-create-drawer" type="button" data-i18n="compose.create_close">Close</button>
         </div>
-        <form id="synthesis-form" class="tf-form stack-form">
-          <div id="synthesis-source-list" class="tf-empty" data-i18n="synthesis.empty_sources">No sources selected.</div>
+        <form id="compose-form" class="tf-form stack-form">
+          <div id="compose-source-list" class="tf-empty" data-i18n="compose.empty_sources">No sources selected.</div>
           <label class="tf-form-item">
-            <span class="tf-label" data-i18n="synthesis.goal_label">Goal</span>
-            <input id="synthesis-goal" type="text" data-i18n-attr="synthesis.goal_placeholder" data-i18n-attr-target="placeholder" placeholder="Goal">
+            <span class="tf-label" data-i18n="compose.goal_label">Goal</span>
+            <input id="compose-goal" type="text" data-i18n-attr="compose.goal_placeholder" data-i18n-attr-target="placeholder" placeholder="Goal">
           </label>
           <label class="tf-form-item">
-            <span class="tf-label" data-i18n="synthesis.format_label">Format</span>
-            <select id="synthesis-format">
-              <option value="summary" data-i18n="synthesis.format.summary">Summary</option>
-              <option value="outline" data-i18n="synthesis.format.outline">Outline</option>
-              <option value="report" data-i18n="synthesis.format.report">Report</option>
+            <span class="tf-label" data-i18n="compose.format_label">Format</span>
+            <select id="compose-format">
+              <option value="summary" data-i18n="compose.format.summary">Summary</option>
+              <option value="outline" data-i18n="compose.format.outline">Outline</option>
+              <option value="report" data-i18n="compose.format.report">Report</option>
             </select>
           </label>
-          <button class="tf-btn tf-btn-primary" type="submit" data-i18n="synthesis.create_submit">Create draft</button>
+          <button class="tf-btn tf-btn-primary" type="submit" data-i18n="compose.create_submit">Create draft</button>
         </form>
       </div>
     </aside>

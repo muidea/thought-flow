@@ -77,7 +77,7 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
   await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
   // PR5: sidebar count badges surface notes / topics / compose totals.
-  // Topics and synthesis loaders populate the badges on boot; the
+  // Topics and compose loaders populate the badges on boot; the
   // capture (notes) counter comes from the metrics endpoint.
   await page.waitForExpression(() => {
     const notes = document.querySelector('.tf-menu-badge[data-badge="notes"]');
@@ -104,7 +104,7 @@ async function runBrowserSmoke(browser, url) {
       ["notes", "#/notes", "#page-thoughts", "#thought-form"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
-      ["compose", "#/compose", "#page-compose", "#synthesis-drafts"],
+      ["compose", "#/compose", "#page-compose", "#compose-drafts"],
     ];
     // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
     // entry and no dedicated page section, so it isn't in the routes
@@ -150,18 +150,18 @@ async function runBrowserSmoke(browser, url) {
     await waitUntil(() => document.querySelector("#thought-drawer")?.classList.contains("open"));
     const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
     const thoughtDrawerText = document.querySelector("#thought-drawer-content")?.textContent || "";
-    document.querySelector("#drawer-add-synthesis")?.click();
-    const basketTextAfterDrawer = document.querySelector("#synthesis-source-count")?.textContent || "";
+    document.querySelector("#drawer-add-compose")?.click();
+    const basketTextAfterDrawer = document.querySelector("#compose-source-count")?.textContent || "";
     document.querySelector("[data-close-drawer='thought-drawer']")?.click();
     document.querySelector("[data-select-id='thought-1']").checked = true;
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
-    document.querySelector("#add-selected-synthesis").click();
+    document.querySelector("#add-selected-compose").click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const synthesisActive = document.querySelector("#page-compose")?.classList.contains("active");
-    const basketText = document.querySelector("#synthesis-source-count")?.textContent || "";
-    document.querySelector("#open-synthesis-create").click();
-    const synthesisDrawerOpen = document.querySelector("#synthesis-create-drawer")?.classList.contains("open");
-    document.querySelector("[data-close-drawer='synthesis-create-drawer']")?.click();
+    const composeActive = document.querySelector("#page-compose")?.classList.contains("active");
+    const basketText = document.querySelector("#compose-source-count")?.textContent || "";
+    document.querySelector("#open-compose-create").click();
+    const composeDrawerOpen = document.querySelector("#compose-create-drawer")?.classList.contains("open");
+    document.querySelector("[data-close-drawer='compose-create-drawer']")?.click();
 
     await settleRoute("#/topics");
     document.querySelector("#open-create-topic").click();
@@ -242,9 +242,9 @@ async function runBrowserSmoke(browser, url) {
       explainText,
       thoughtDrawerText,
       basketTextAfterDrawer,
-      synthesisActive,
+      composeActive,
       basketText,
-      synthesisDrawerOpen,
+      composeDrawerOpen,
       createTopicDrawerOpen,
       topicRouteActive,
       topicsNavActive,
@@ -290,9 +290,9 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.explainText, /Score details/);
   assert.match(state.thoughtDrawerText, /Browser Thought/);
   assert.match(state.basketTextAfterDrawer, /1 selected sources/);
-  assert.equal(state.synthesisActive, true);
+  assert.equal(state.composeActive, true);
   assert.match(state.basketText, /1 selected sources/);
-  assert.equal(state.synthesisDrawerOpen, true);
+  assert.equal(state.composeDrawerOpen, true);
   assert.equal(state.createTopicDrawerOpen, true);
   assert.equal(state.topicRouteActive, true);
   assert.equal(state.topicsNavActive, true);
@@ -453,7 +453,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
   }
 });
 
-test("synthesis basket persists across reloads via localStorage", async (t) => {
+test("compose basket persists across reloads via localStorage", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
@@ -472,12 +472,12 @@ test("synthesis basket persists across reloads via localStorage", async (t) => {
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/synthesis"; });
+    await page.evaluate(() => { window.location.hash = "#/compose"; });
     await page.waitForExpression(() => {
-      const el = document.querySelector("#synthesis-source-count");
+      const el = document.querySelector("#compose-source-count");
       return el && /2/.test(el.textContent || "");
     });
-    const count = await page.evaluate(() => document.querySelector("#synthesis-source-count")?.textContent || "");
+    const count = await page.evaluate(() => document.querySelector("#compose-source-count")?.textContent || "");
     assert.match(count, /2/);
   } finally {
     await browser.close();
@@ -1015,7 +1015,7 @@ function startFixtureServer(options = {}) {
           members: [{ thought_id: "thought-1", title: "Browser Thought", match_type: "keyword", score: 0.9 }],
         }));
       case "/api/topics/demo/weave-proposals":
-      case "/api/synthesis":
+      case "/api/compose/drafts":
         return json(res, api([
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
         ]));
