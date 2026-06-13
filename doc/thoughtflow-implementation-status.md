@@ -561,3 +561,19 @@ stop hook feedback #3 指出前轮 transcript 只到 75 项 grep 通过 + §8 5 
 - 旧版 Web hash 路径：`#/dashboard`、`#/thoughts`、`#/synthesis`、`#/jobs`、`#/settings`。
 - 旧版 i18n key：`NavDashboard` / `NavThoughts` / `NavJobs` / `NavSettings` / `ToastJobIDRequired` / `ToastDeprecatedRoute`。
 - 旧版 Web 元素 ID（前缀）：`#search-from` / `#search-to` / `#search-sort` / `#search-explain`（在 #120 Search UI 收口中删除）。
+
+## 2026-06-13 深度扫描收口(第二轮)
+
+在 stop hook feedback #3 闭环后,运行 `Explore` agent 对仓库做深度扫描,定位 22 个漏点 + 7 个观察。本轮收口 5 类(修正 agent 误判后):
+
+1. **i18n 36 个孤儿 key 清理**:`jobs.*` 21 / `capture.form.*` 10 / `topics.review[_proposals]` 2 / `topics.candidate_source.compose_draft` 1 / `toast.never` 1 / `compose.tab.templates` 1(后者绑定的 tab 同步删除)。`en-US.js` / `zh-CN.js` 各 -36 行。
+2. **compose templates 空 tab 删除**:`index.html` 的 `compose-templates` tab 按钮 + 空 `tab-panel` 整段删除,绑定的 i18n key 同步删除。
+3. **handleReindex nil 指针修复**:`searchService == nil` 直接 panic,改为 503 + `search.unavailable` 错误码。
+4. **6 个 handler 单测补齐**:`handleListTopics` / `handleCreateTopic` / `handleUpdateTopic` / `handleSessionContext` / `handleSessionIntent` / `handleReindex` 各 1 个,共 +234 行测试。
+5. **`config/application.toml` 收口**:`search.default_mode` 从 `hybrid` 改回 `keyword`,与 `appconfig.Search.DefaultMode` 默认值 + todo §2.2.5 收口目标一致(本地用户配置,gitignored)。
+
+agent 误判修正:
+- 「双重 push session 候选 bug」实际是设计(测试显式断言 count(CaptureSession)=count(ThoughtReopen)=1)
+- 「thoughts.* 10 个孤儿」实际有 HTML 引用,保留
+
+完整收口记录见 `doc/thoughtflow-code-convergence-todo-evidence.md` §"深度扫描剩余漏点收口"。

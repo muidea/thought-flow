@@ -811,3 +811,61 @@
 - 真正逐项跑测试的 59 项(29 e2e + 29 node + 1 i18n)每项均 `pass == 1 && fail == 0`,transcript 行号一一对应 todo §x.y.z。
 
 至此 stop hook feedback #3 的两个不满足条件(无逐项 commit 落地 / 无逐项 test 跑通证据)均已闭合。
+
+---
+
+## 深度扫描剩余漏点收口 (2026-06-13 第二轮收口)
+
+### 扫描源
+
+`Explore` agent 在 `internal/{pkg,modules}/**` + `internal/modules/application/thoughtflow/service/web/**` 全量扫描,定位 22 个 `[类别]` 漏点 + 7 个观察。**经人工核查修正 agent 误判后**,本轮实际收口 5 类:
+
+### 收口动作
+
+1. **i18n 36 个孤儿 key 清理**(ag 报告 43 个,经核查 thoughts.* 7 个 key 实际有 HTML 引用保留,10 个 capture.form.* + 21 个 jobs.* + 2 个 topics.review + 1 个 topics.candidate_source.compose_draft + 1 个 toast.never + 1 个 compose.tab.templates = **36 真孤儿**)
+   - `internal/modules/application/thoughtflow/service/web/i18n/en-US.js`:-36 行
+   - `internal/modules/application/thoughtflow/service/web/i18n/zh-CN.js`:-36 行
+   - 验证: `rg "^\s*\"(jobs\.|capture\.form\.|topics\.(review|review_proposals|candidate_source\.compose_draft)|toast\.never|compose\.tab\.templates)\"" i18n/en-US.js i18n/zh-CN.js` 0 命中
+
+2. **compose templates 空 tab 删除**(`index.html` 中 `compose-templates` tab 按钮 + 空 panel 整段删除,绑定的 i18n key `compose.tab.templates` 一并删除)
+   - `internal/modules/application/thoughtflow/service/web/index.html`:-4 行
+   - 验证: `rg "compose-templates" internal/` 0 命中(原 5 命中)
+
+3. **handleReindex nil 指针修复**(`s.searchService == nil` 直接 panic,改为返回 503 + `search.unavailable` 错误码,与 handleSessionContext / handleSessionIntent 对齐)
+   - `internal/modules/application/thoughtflow/service/service.go`:+4 行
+   - 新单测 `TestHandleReindexReportsUnavailableOnUnsetSearchService` 锁住 503 契约
+
+4. **6 个 handler 单测补齐**(`handleListTopics` / `handleCreateTopic` / `handleUpdateTopic` / `handleSessionContext` / `handleSessionIntent` 之前 0 单元测试覆盖;`handleReindex` 改为 503 路径后补 1 个)
+   - `internal/modules/application/thoughtflow/service/service_test.go`:+234 行
+   - 覆盖契约:
+     - `ListTopics`:200 + 空数组(初始 workspace)
+     - `CreateTopic`:201 + rules 持久化 + 400 + 空名拒绝
+     - `UpdateTopic`:200 + rules 持久化 + 400 + 坏 JSON 拒绝
+     - `Reindex`:503 + search.unavailable(nil service)
+     - `SessionContext`:503 + scratchpad.unavailable(nil service)
+     - `SessionIntent`:503 + scratchpad.unavailable(nil service)
+
+5. **config/application.toml 收口**:`search.default_mode` 由 `hybrid` 改回 `keyword`,与 `internal/pkg/appconfig/config.go:208` 默认值 + todo §2.2.5 / §5.1 收口目标一致
+   - 本地用户配置文件,`.gitignore` 覆盖(`.gitignore:31 /config/`),不进 commit 库
+
+### agent 误判修正
+
+- **「双重 push session 候选 bug」实际是设计**:`topic/biz/service.go:340-350` 同 session 在 candidates 中同时产生 `Source: CaptureSession` 与 `Source: ThoughtReopen` 两条;`TestServiceListCandidates` 显式断言 `count(CaptureSession)=1 && count(ThoughtReopen)=1`,确认是设计而非 bug,跳过修复。
+- **「thoughts.* 10 个孤儿」实际有 HTML 引用**:`thoughts.{description,id_placeholder,load_button,drawer_title,drawer_close,drawer_add_compose,drawer_retry_refine}` 在 `index.html` 的 drawer + Notes 页面有 `data-i18n` / `data-i18n-attr` 引用,保留。
+
+### 验证
+
+```
+make test         → ok (22/22 包过,新 6 handler 测试含内)
+make node-check   → pass
+make node-test    → 52/52 pass
+make node-test-i18n → pass
+make e2e-test     → 27/27 pass
+git diff --check  → 0 warning
+```
+
+### 不在收口范围的发现(留作下轮)
+
+- `GetSearchPreview` / `Store.Delete` / `handleLive` 等低严重性 dead code / 已部分覆盖 handler
+- `parseRoute` 缺 URL decode 处理(目前是低位风险)
+- `app.test.js:222` `#/legacy-synthesis` 等回退测试**有意保留**(测试 parseRoute 的 fall-through 行为)
