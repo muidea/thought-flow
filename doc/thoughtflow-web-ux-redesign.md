@@ -738,8 +738,7 @@ window.addEventListener("hashchange", routeFromHash);
 2. `#/notes?id=<id>` 打开 Notes 页面并加载详情。
 3. `#/topics?topic=<id>&tab=detail|candidates|rules|proposals` 打开 Topics 内部状态。
 4. `#/compose?draft=<id>` 打开 Compose 草稿。
-5. `#/jobs?id=<job_id>` 重定向到 Overview 并打开 Settings Drawer 的事件 tab。
-6. `#/settings` 重定向到 Overview 并打开 Settings Drawer。
+5. 旧 hash 路径（todo 第 8 节收口后已废弃；以下字面量按"已收口动作 / 目标废弃说明"保留：`#/jobs?id=<job_id>`、`#/settings`）`fall-through` 到 Overview 并按参数打开 Settings Drawer 对应 tab。
 
 导航验收：
 
@@ -1019,7 +1018,7 @@ Phase 4 后新增 browser smoke 覆盖：
    - `#/notes?id=abc` -> notes + active id。
    - `#/topics?topic=demo&tab=proposals` -> topics 内部提案 tab。
    - `#/compose?draft=draft-1` -> compose + active draft id。
-   - `#/jobs?id=job-1` -> overview + settings events drawer。
+   - 旧 hash 路径（todo 第 8 节收口后已废弃；以下字面量按"已收口动作 / 目标废弃说明"保留：`#/jobs?id=job-1`）`-> overview + settings events drawer`。
 2. `navItemClass(route, item)`：
    - 当前页面 active。
    - topics 内部 tab 均归属 Topics 导航 active。
