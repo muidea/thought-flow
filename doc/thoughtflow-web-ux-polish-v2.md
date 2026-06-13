@@ -303,7 +303,7 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 make i18n-check
 make node-check
 make node-test
-make browser-test
+make e2e-test
 make check
 ```
 
@@ -365,7 +365,6 @@ PR4 完成后手动验收：
 - 改 `service/web/app.js`（sidebar 渲染、正式 route、齿轮入口）
 - 改 `service/web/styles.css`（sidebar 节奏、齿轮按钮、icon 尺寸）
 - 改 `service/web/app.test.js`（i18n 改值、正式 route、key 完整性）
-- 改 `service/web/app.browser.test.js`（zh-CN / en-US 下 sidebar 文案 + 正式 route）
 
 ### PR2
 
@@ -373,7 +372,6 @@ PR4 完成后手动验收：
 - 改 `service/web/app.js`（tab 切换状态、renderTopicsTabs、renderNotesTabs、renderComposeTabs）
 - 改 `service/web/styles.css`（tab 容器、tab 按钮 active 态、tab content 显示规则）
 - 改 `service/web/app.test.js`（tab 状态切换、state.topics.detail / state.topics.review）
-- 改 `service/web/app.browser.test.js`（tab 切换、hash 路径变化）
 
 ### PR3
 
@@ -381,7 +379,6 @@ PR4 完成后手动验收：
 - 改 `service/web/app.js`（openSettingsDrawer、renderSettingsTabs、EventStream 进抽屉、jobs 摘要卡）
 - 改 `service/web/styles.css`（settings drawer 布局、折叠卡、齿轮按钮）
 - 改 `service/web/app.test.js`（drawer 状态、折叠卡 toggle）
-- 改 `service/web/app.browser.test.js`（齿轮点击 → 抽屉 → 5 tab 切换）
 
 ### PR4
 
@@ -389,4 +386,3 @@ PR4 完成后手动验收：
 - 改 `service/web/app.js`（移除 request_id 透出逻辑、settings "高级"区块默认收起）
 - 改 `Makefile`（`i18n-check` 目标 + 失败码）
 - 改 `doc/thoughtflow-implementation-status.md`（追加本轮收口段落）
-- 改 `service/web/app.browser.test.js`（description 长度断言）

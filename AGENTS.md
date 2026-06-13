@@ -15,7 +15,6 @@ Embedded web assets and browser-facing tests are in `internal/modules/applicatio
 - `make build`: build `./thoughtflow` from `./cmd/thoughtflow`.
 - `make node-check`: syntax-check embedded UI JavaScript.
 - `make node-test`: run Node component tests.
-- `make browser-test`: run embedded UI browser smoke tests.
 - `make e2e-test`: run API and SSE end-to-end tests.
 - `make check`: run the full local validation matrix used by CI.
 

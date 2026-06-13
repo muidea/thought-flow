@@ -7,10 +7,9 @@
 本地开发和验证建议准备：
 
 1. Go `1.24.x`。
-2. Node.js `22.x`，用于嵌入式前端语法检查、组件测试和浏览器 smoke 测试。
+2. Node.js `22.x`，用于嵌入式前端语法检查、组件测试和 API/SSE 端到端测试。
 3. Git，用于自动提交 Markdown 变更。
-4. Google Chrome 或 Chromium，用于 `make browser-test`。
-5. C++ 链接环境，用于 `duckdb` build tag 测试。
+4. C++ 链接环境，用于 `duckdb` build tag 测试。
 
 默认构建使用 fallback search store，可以不依赖 DuckDB CGO 链接环境。需要验证 DuckDB 实现时运行 `make test-duckdb` 或 `make check`。
 
@@ -312,4 +311,4 @@ CI 会安装 Go `1.24.x`、Node `22.x` 和 `build-essential`，并检查 Chrome/
 
 ## 12. 当前验证限制
 
-嵌入式 UI browser smoke 矩阵声明 Chrome、Firefox、Safari 三类目标。当前 Linux 环境实际执行 Chrome desktop/mobile；Firefox 未安装或 Safari/WebKit 不可用时，对应 subtest 会以明确原因 skip。
+Web 端关键路径覆盖由 Node 组件测试（`make node-test`）和 API/SSE 端到端测试（`make e2e-test`）承担；浏览器 smoke 矩阵（`make browser-test`）在 2026-06-13 收口中删除。
