@@ -39,7 +39,7 @@ make test-duckdb   # duckdb build tag 测试
 make build         # 构建 ./thoughtflow
 make node-check    # 前端 JS 语法检查
 make node-test     # 前端 Node 组件测试
-make e2e-test      # 端到端 API + SSE 测试
+make browser-test  # 嵌入式 UI Chrome smoke 测试
 make check         # 完整验证矩阵
 ```
 

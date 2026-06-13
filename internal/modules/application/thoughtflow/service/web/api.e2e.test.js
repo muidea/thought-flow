@@ -5,7 +5,8 @@
 // running instance or its workspace. Every API endpoint registered
 // in internal/modules/application/thoughtflow/service/service.go is
 // exercised at least once, with assertions on the response envelope
-// (request_id, data, error).
+// (request_id, data, error) and the routing behaviour the smoke
+// tests in app.browser.test.js do not cover.
 //
 // SSE-only endpoints live in events.e2e.test.js so this file can run
 // fast and stay focused on request/response semantics.

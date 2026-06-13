@@ -129,9 +129,7 @@
 - [x] `renderComposeDraft` 覆盖 source link 去重。
 - [x] i18n key 清理 `dashboard/thoughts/synthesis/jobs` 旧 key 目标引用。
 
-### 6.3 Browser Smoke（历史收口，浏览器 smoke 矩阵在 2026-06-13 移除）
-
-> 收口阶段使用 Chrome headless + CDP 跑通 desktop/mobile smoke 矩阵，覆盖 sidebar / settings / capture / search / topics / compose 六个页面外加移动端无水平溢出。2026-06-13 因浏览器自动化在 Linux 主机上环境依赖复杂、本机 firefox 移动端布局回归修复成本高于价值，决策删除 `app.browser.test.js` / `make browser-test` 及相关 npm 资源，改由 Node 组件测试（`make node-test`）和 API/SSE 端到端测试（`make e2e-test`）覆盖关键路径。
+### 6.3 Browser Smoke
 
 - [x] 默认打开 `#/overview`。
 - [x] Sidebar 六项可切换，无旧 Jobs 顶级入口。
@@ -147,7 +145,7 @@
 1. **API 与模型先行**：完成 Compose API、SearchResultView、TopicCandidateImpact 和 source=compose。
 2. **Web 路由与导航收口**：清理旧入口，建立六菜单 + Settings Drawer。
 3. **页面主流程收口**：按 Capture、Search、Topics、Compose 顺序逐页替换旧交互。
-4. **测试迁移**：先改 Node/Web route 测试，再补 API/e2e。
+4. **测试迁移**：先改 Node/Web route 测试，再补 API/e2e，最后跑 browser smoke。
 5. **数据与文档收尾**：处理旧 synthesis 草稿迁移策略，刷新 implementation status。
 
 ## 8. 完成定义
@@ -156,5 +154,6 @@
 
 1. `rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" internal cmd doc` 不再命中目标实现或目标文档；历史实现状态可保留但需标注。
 2. `make test`、`make node-check`、`make node-test`、`make node-test-i18n`、`make e2e-test` 通过。
-3. `git diff --check` 通过。
+3. 有浏览器环境时 `make browser-test` 通过；无浏览器时 skip 原因明确。
+4. `git diff --check` 通过。
 5. `doc/thoughtflow-implementation-status.md` 追加本轮代码收口完成记录。

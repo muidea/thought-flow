@@ -853,7 +853,7 @@ Browser smoke 需要继续覆盖：
 1. `#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/compose` 可切换。
 2. Settings 通过顶栏齿轮或旧 hash 打开 Drawer。
 3. 旧的一屏三栏布局不再作为主交互方式。
-4. Node 组件测试 + API/SSE 端到端测试覆盖 Web 端关键路径。
+4. Chrome desktop/mobile browser smoke 通过。
 
 ### Phase 2：Capture / Search / Notes
 
@@ -958,9 +958,9 @@ Browser smoke 需要继续覆盖：
 
 进入 Web 改造代码阶段时，必须同步调整现有测试，否则 CI 会继续按旧的一屏三栏 DOM 结构断言。
 
-#### 13.3.1 `app.test.js`（旧 `app.browser.test.js` 在 2026-06-13 收口移除）
+#### 13.3.1 `app.browser.test.js`
 
-原 browser smoke 矩阵断言旧结构（已被移除，仅留作历史记录）：
+当前 browser smoke 断言旧结构：
 
 1. `.topic-item`
 2. `.result-item`
@@ -969,7 +969,7 @@ Browser smoke 需要继续覆盖：
 5. `#capture-form`
 6. `.app-shell` 三栏布局宽度
 
-Phase 1 后 Node 组件测试断言新信息架构：
+Phase 1 后应改为断言新信息架构：
 
 1. Sidebar 导航存在。
 2. 默认 `#/overview` 页面可加载。
@@ -979,21 +979,22 @@ Phase 1 后 Node 组件测试断言新信息架构：
 6. 可切换到 `#/topics`，并能进入专题工作区。
 7. 可切换到 `#/compose`，并看到来源篮和草稿空态。
 8. 顶栏齿轮可打开 Settings Drawer。
-9. 移动端无水平溢出。
+9. Chrome desktop/mobile 均无水平溢出。
+10. Firefox/Safari 仍保留目标声明和环境 skip。
 
-Phase 2 后新增 Node 组件测试覆盖：
+Phase 2 后新增 browser smoke 覆盖：
 
 1. Capture 自动恢复最后未归档会话，对话输入后出现上下文更新卡。
 2. Search 结果可勾选并加入 compose basket。
 3. Notes 详情可打开，并能发起重新整理会话。
 
-Phase 3 后新增 Node 组件测试覆盖：
+Phase 3 后新增 browser smoke 覆盖：
 
 1. Topic create Drawer 可打开。
 2. Topics 正式文档和候选影响区可切换/显示。
 3. Rules Drawer 可打开，保存按钮状态合理。
 
-Phase 4 后新增 Node 组件测试覆盖：
+Phase 4 后新增 browser smoke 覆盖：
 
 1. Topic proposal queue 可在 Topics 内打开。
 2. Diff 和 proposed document 区域可见。
@@ -1056,7 +1057,7 @@ Phase 4 后新增 Node 组件测试覆盖：
 
 1. `make node-check`
 2. `make node-test`
-3. `make e2e-test`
+3. `make browser-test`
 4. `make check`
 
 仅在新增测试文件或静态资源检查命令时调整 Makefile。CI 应继续调用 `make check`，避免本地和远端验证入口分叉。
@@ -1067,7 +1068,7 @@ Phase 4 后新增 Node 组件测试覆盖：
 
 1. 先调整或新增对应测试，明确新 DOM/route 行为。
 2. 再实现 UI 代码。
-3. 跑 `make node-check && make node-test && make e2e-test`。
+3. 跑 `make node-check && make node-test && make browser-test`。
 4. 若改动影响后端静态资源服务，追加 `go test ./internal/modules/application/thoughtflow/service`。
 5. 提交时说明完成的 Phase 和对应测试覆盖。
 
@@ -1077,7 +1078,7 @@ Phase 4 后新增 Node 组件测试覆盖：
 
 1. `make node-check`
 2. `make node-test`
-3. `make e2e-test`
+3. `make browser-test`
 4. `go test ./internal/modules/application/thoughtflow/service`
 5. 页面无水平滚动。
 6. 所有主要按钮 loading/disabled 状态合理。
@@ -1094,7 +1095,7 @@ Phase 4 后新增 Node 组件测试覆盖：
 5. 复杂编辑放 Drawer/Modal/独立页面。
 6. 空态、加载态、错误态齐全。
 7. 移动端无水平溢出。
-8. Node 组件测试 + API/SSE 端到端测试覆盖关键路径。
+8. Node 和 browser smoke 覆盖关键路径。
 9. README 或实现状态文档同步更新。
 
 ## 15. 非目标
