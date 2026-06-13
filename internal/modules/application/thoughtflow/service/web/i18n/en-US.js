@@ -318,6 +318,11 @@ export const messages = {
   "compose.confirm_message": "This creates a new thought with the current draft content and source links.",
   "compose.format_label": "Format",
 
+  "compose.source_type.thought": "Thought",
+  "compose.source_type.search_result": "Search result",
+  "compose.source_type.topic_section": "Topic section",
+  "compose.source_type.capture_session": "Capture session",
+
   "jobs.title": "Jobs & Activity",
   "jobs.description": "Track background work and live domain events.",
   "jobs.id_placeholder": "Job ID",

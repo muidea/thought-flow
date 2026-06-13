@@ -270,6 +270,13 @@ export const Key = Object.freeze({
   ComposeConfirmTitle: "compose.confirm_title",
   ComposeConfirmMessage: "compose.confirm_message",
   ComposeFormatLabel: "compose.format_label",
+  // Source-type pills shown next to each basket entry. The key is dynamic
+  // (compose.source_type.${source_type}); the four literals below are the
+  // only legal values and must stay in sync with the backend's source enum.
+  ComposeSourceTypeThought: "compose.source_type.thought",
+  ComposeSourceTypeSearchResult: "compose.source_type.search_result",
+  ComposeSourceTypeTopicSection: "compose.source_type.topic_section",
+  ComposeSourceTypeCaptureSession: "compose.source_type.capture_session",
 
   // Jobs page
   JobsTitle: "jobs.title",

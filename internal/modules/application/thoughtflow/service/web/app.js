@@ -17,7 +17,7 @@ const state = {
   topics: [],
   activeTopicId: "",
   selectedThoughts: new Set(),
-  composeBasket: new Set(),
+  composeBasket: new Map(),
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
@@ -102,7 +102,7 @@ function initTflowBus() {
 // Wire basket updates onto the bus so other tabs see add/remove/clear.
 function broadcastBasketChange() {
   if (tflowBus) {
-    tflowBus.post({ kind: "basket:changed", ids: Array.from(state.composeBasket) });
+    tflowBus.post({ kind: "basket:changed", sources: Array.from(state.composeBasket.values()) });
   }
 }
 
@@ -288,15 +288,24 @@ const BASKET_STORAGE_KEY = "tflow.basket";
 
 function persistBasket() {
   saveToStorage(BASKET_STORAGE_KEY, {
-    ids: Array.from(state.composeBasket),
+    sources: Array.from(state.composeBasket.values()),
     updated_at: new Date().toISOString(),
   });
 }
 
 function restoreBasket() {
   const stored = loadFromStorage(BASKET_STORAGE_KEY, null);
-  if (stored && Array.isArray(stored.ids)) {
-    state.composeBasket = new Set(stored.ids.filter(Boolean));
+  if (stored && Array.isArray(stored.sources)) {
+    const next = new Map();
+    for (const source of stored.sources) {
+      if (!source || !source.source_type || !source.source_id) continue;
+      next.set(`${source.source_type}::${source.source_id}`, {
+        source_type: String(source.source_type),
+        source_id: String(source.source_id),
+        title: source.title ? String(source.title) : "",
+      });
+    }
+    state.composeBasket = next;
   }
 }
 
@@ -548,22 +557,47 @@ function displayRuntimePath(value, workspaceRoot = "") {
 }
 
 function createComposeBasket(initial = []) {
-  const values = new Set(initial.filter(Boolean));
+  // 篮内每个条目是 {source_type, source_id[, title?]} 复合源;
+  // 去重以 (source_type, source_id) 联合键为基准,同一 thought 既可作为
+  // thought 来源又可作为 search_result 来源重复入篮,互不影响。
+  const map = new Map();
+  for (const source of initial || []) addSource(source);
+  function keyOf(source) {
+    return `${source.source_type}::${source.source_id}`;
+  }
+  function addSource(source) {
+    if (!source || !source.source_type || !source.source_id) return false;
+    const key = keyOf(source);
+    if (map.has(key)) return false;
+    map.set(key, {
+      source_type: String(source.source_type),
+      source_id: String(source.source_id),
+      title: source.title ? String(source.title) : "",
+    });
+    return true;
+  }
   return {
-    add(id) {
-      if (id) values.add(id);
-      return Array.from(values);
+    add(source) {
+      addSource(source);
+      return Array.from(map.values());
     },
-    addMany(ids) {
-      for (const id of ids || []) if (id) values.add(id);
-      return Array.from(values);
+    addMany(sources) {
+      for (const source of sources || []) addSource(source);
+      return Array.from(map.values());
     },
     clear() {
-      values.clear();
+      map.clear();
       return [];
     },
     values() {
-      return Array.from(values);
+      return Array.from(map.values());
+    },
+    size() {
+      return map.size;
+    },
+    has(source) {
+      if (!source || !source.source_type || !source.source_id) return false;
+      return map.has(keyOf(source));
     },
   };
 }
@@ -2780,9 +2814,24 @@ function updateSelectionControls() {
   if (clear) clear.disabled = count === 0;
 }
 
-function addToComposeBasket(thoughtIds) {
-  for (const thoughtId of thoughtIds || []) {
-    if (thoughtId) state.composeBasket.add(thoughtId);
+function addToComposeBasket(sources, sourceType = "thought") {
+  const normalised = (sources || [])
+    .filter(Boolean)
+    .map((entry) => {
+      if (typeof entry === "string") return { source_type: sourceType, source_id: entry };
+      return { source_type: entry.source_type || sourceType, source_id: entry.source_id, title: entry.title };
+    })
+    .filter((entry) => entry.source_id);
+  if (normalised.length === 0) return;
+  state.composeBasket = new Map(state.composeBasket);
+  for (const source of normalised) {
+    const key = `${source.source_type}::${source.source_id}`;
+    if (state.composeBasket.has(key)) continue;
+    state.composeBasket.set(key, {
+      source_type: source.source_type,
+      source_id: source.source_id,
+      title: source.title || "",
+    });
   }
   persistBasket();
   broadcastBasketChange();
@@ -2804,22 +2853,52 @@ function clearComposeBasket() {
 }
 
 function renderComposeBasket() {
-  const ids = Array.from(state.composeBasket);
+  const sources = Array.from(state.composeBasket.values());
+  const ids = sources.map((s) => s.source_id);
   const count = $("#compose-source-count");
   const list = $("#compose-source-list");
   const clear = $("#clear-compose-basket");
   if (count) {
-    const rendered = t("compose.source_count", { n: ids.length });
+    const rendered = t("compose.source_count", { n: sources.length });
     // Keep the data-n attribute in sync so a later tApply() doesn't reset
     // the count back to the static value baked into the HTML.
-    count.setAttribute("data-n", String(ids.length));
+    count.setAttribute("data-n", String(sources.length));
     count.textContent = rendered;
   }
-  if (clear) clear.disabled = ids.length === 0;
+  if (clear) clear.disabled = sources.length === 0;
   if (list) {
-    list.innerHTML = ids.length === 0
-      ? escapeHTML(t("compose.empty_sources"))
-      : ids.map((id) => `<span class="pill">${escapeHTML(id)}</span>`).join("");
+    if (sources.length === 0) {
+      list.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty_sources"))}</div>`;
+    } else {
+      list.innerHTML = sources
+        .map((source) => {
+          const sourceTypeLabel = t(`compose.source_type.${source.source_type}`) || source.source_type;
+          return `<span class="pill" data-source-type="${escapeHTML(source.source_type)}" data-source-id="${escapeHTML(source.source_id)}" title="${escapeHTML(sourceTypeLabel)}">${escapeHTML(source.title || source.source_id)}</span>`;
+        })
+        .join("");
+    }
+  }
+  // /compose-basket-list 在 Compose 页面 basket tab 单独展示一份,
+  // 复用同源数据 + 同样的 source_type 标签,避免两份内容漂移。
+  const tabList = $("#compose-basket-list");
+  const tabCount = $("#compose-source-count-basket");
+  const tabClear = $("#clear-compose-basket-tab");
+  if (tabCount) {
+    tabCount.setAttribute("data-n", String(sources.length));
+    tabCount.textContent = t("compose.source_count", { n: sources.length });
+  }
+  if (tabClear) tabClear.disabled = sources.length === 0;
+  if (tabList) {
+    if (sources.length === 0) {
+      tabList.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty_sources"))}</div>`;
+    } else {
+      tabList.innerHTML = sources
+        .map((source) => {
+          const sourceTypeLabel = t(`compose.source_type.${source.source_type}`) || source.source_type;
+          return `<article class="result-item" data-source-type="${escapeHTML(source.source_type)}" data-source-id="${escapeHTML(source.source_id)}"><div class="result-row"><div><strong>${escapeHTML(source.title || source.source_id)}</strong><div class="topic-meta"><span class="pill">${escapeHTML(sourceTypeLabel)}</span></div></div></div></article>`;
+        })
+        .join("");
+    }
   }
 }
 
@@ -2931,17 +3010,19 @@ async function retryRefine() {
 
 async function createComposeDraft(event) {
   event.preventDefault();
-  const thoughtIds = Array.from(state.composeBasket);
-  if (thoughtIds.length === 0) {
+  const sources = Array.from(state.composeBasket.values());
+  if (sources.length === 0) {
     toast(t("toast.add_sources_first"));
     return;
   }
-  const sources = thoughtIds.map((id) => ({ source_type: "thought", source_id: id }));
+  const selectedThoughtIds = sources
+    .filter((source) => source.source_type === "thought")
+    .map((source) => source.source_id);
   const draft = await api("/api/compose/drafts", {
     method: "POST",
     body: JSON.stringify({
       sources,
-      selected_thought_ids: thoughtIds,
+      selected_thought_ids: selectedThoughtIds,
       goal: $("#compose-goal").value.trim(),
       format: $("#compose-format").value,
     }),
@@ -2965,8 +3046,8 @@ async function loadComposeDraft(draftId) {
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
   state.composeDraft = draft;
   for (const source of draft.sources || []) {
-    if (source && source.source_type === "thought" && source.source_id) {
-      state.composeBasket.add(source.source_id);
+    if (source && source.source_type && source.source_id) {
+      addToComposeBasket([source]);
     }
   }
   persistBasket();
@@ -3414,14 +3495,23 @@ async function boot() {
   if (tflowBus) {
     tflowBus.on((message) => {
       if (!message || typeof message !== "object") return;
-      if (message.kind === "basket:changed" && Array.isArray(message.ids)) {
-        // Another tab updated the basket — adopt the new ids and re-render
-        // if they differ from what we have. Avoids an infinite ping-pong
-        // because addTo/clear do not fire on the receiving side.
-        const current = Array.from(state.composeBasket).sort();
-        const incoming = Array.from(message.ids).sort();
-        if (current.length === incoming.length && current.every((id, i) => id === incoming[i])) return;
-        state.composeBasket = new Set(message.ids.filter(Boolean));
+      if (message.kind === "basket:changed" && Array.isArray(message.sources)) {
+        // Another tab updated the basket — adopt the new sources and
+        // re-render if they differ from what we have. Avoids an infinite
+        // ping-pong because addTo/clear do not fire on the receiving side.
+        const current = JSON.stringify(Array.from(state.composeBasket.values()).map((s) => `${s.source_type}::${s.source_id}`).sort());
+        const incoming = JSON.stringify(message.sources.map((s) => `${s.source_type}::${s.source_id}`).sort());
+        if (current === incoming) return;
+        const next = new Map();
+        for (const source of message.sources) {
+          if (!source || !source.source_type || !source.source_id) continue;
+          next.set(`${source.source_type}::${source.source_id}`, {
+            source_type: String(source.source_type),
+            source_id: String(source.source_id),
+            title: source.title ? String(source.title) : "",
+          });
+        }
+        state.composeBasket = next;
         renderComposeBasket();
       }
     });

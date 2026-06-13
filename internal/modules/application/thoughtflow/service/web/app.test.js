@@ -257,12 +257,36 @@ test("renderSearchResultItem exposes scores and action targets", () => {
 
 test("compose basket helper deduplicates and clears sources", () => {
   const app = loadAppFunctions();
-  const basket = app.createComposeBasket(["one", "one"]);
+  // Initial entries are full source objects keyed by (source_type, source_id).
+  const basket = app.createComposeBasket([
+    { source_type: "thought", source_id: "one", title: "One" },
+    { source_type: "thought", source_id: "one", title: "duplicate" },
+  ]);
   const values = (result) => JSON.parse(JSON.stringify(result));
 
-  assert.deepEqual(values(basket.values()), ["one"]);
-  assert.deepEqual(values(basket.add("two")), ["one", "two"]);
-  assert.deepEqual(values(basket.addMany(["two", "three"])), ["one", "two", "three"]);
+  assert.deepEqual(values(basket.values()), [
+    { source_type: "thought", source_id: "one", title: "One" },
+  ]);
+  // add() of a new (type, id) extends the basket.
+  assert.deepEqual(values(basket.add({ source_type: "search_result", source_id: "two" })), [
+    { source_type: "thought", source_id: "one", title: "One" },
+    { source_type: "search_result", source_id: "two", title: "" },
+  ]);
+  // add() of a duplicate is a no-op (no error, no double entry).
+  assert.deepEqual(values(basket.add({ source_type: "thought", source_id: "one", title: "ignored" })), [
+    { source_type: "thought", source_id: "one", title: "One" },
+    { source_type: "search_result", source_id: "two", title: "" },
+  ]);
+  // addMany() iterates and deduplicates.
+  assert.deepEqual(values(basket.addMany([
+    { source_type: "search_result", source_id: "two" },
+    { source_type: "topic_section", source_id: "three", title: "Three" },
+  ])), [
+    { source_type: "thought", source_id: "one", title: "One" },
+    { source_type: "search_result", source_id: "two", title: "" },
+    { source_type: "topic_section", source_id: "three", title: "Three" },
+  ]);
+  // clear() empties the basket.
   assert.deepEqual(values(basket.clear()), []);
   assert.deepEqual(values(basket.values()), []);
 });
@@ -525,39 +549,121 @@ test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => 
   const storage = makeStorageStub();
   const app = loadAppFunctionsWith({ storage, exposeState: true });
 
-  app._state.composeBasket = new Set(["t-1", "t-2", "t-3"]);
+  // Basket is keyed by `${source_type}::${source_id}`; the persisted envelope
+  // carries the source list so the next session can rebuild it.
+  app._state.composeBasket = new Map([
+    ["thought::t-1", { source_type: "thought", source_id: "t-1", title: "T1" }],
+    ["search_result::t-2", { source_type: "search_result", source_id: "t-2", title: "T2" }],
+  ]);
   app.persistBasket();
   const raw = storage.data["tflow.basket"];
   assert.ok(raw, "basket should be persisted to localStorage");
   const envelope = JSON.parse(raw);
-  assert.deepEqual(envelope.ids, ["t-1", "t-2", "t-3"]);
+  assert.ok(envelope.sources, "envelope should carry sources array");
+  assert.deepEqual(envelope.sources, [
+    { source_type: "thought", source_id: "t-1", title: "T1" },
+    { source_type: "search_result", source_id: "t-2", title: "T2" },
+  ]);
   assert.ok(envelope.updated_at, "envelope should carry a timestamp");
+  assert.equal(Array.isArray(envelope.ids), false, "legacy ids field is gone");
 
-  // Simulate a reload: the new module instance has an empty Set, then we
-  // hydrate from storage.
-  app._state.composeBasket = new Set();
+  // Simulate a reload: the new module instance has an empty Map, then we
+  // hydrate from storage. JSON round-trip flattens cross-realm Object
+  // prototypes so deepEqual can compare against literals defined here.
+  app._state.composeBasket = new Map();
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.composeBasket), ["t-1", "t-2", "t-3"]);
+  const restored = JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
+  assert.deepEqual(restored, [
+    { source_type: "thought", source_id: "t-1", title: "T1" },
+    { source_type: "search_result", source_id: "t-2", title: "T2" },
+  ]);
 });
 
 test("restoreBasket is tolerant of missing or corrupt payloads", () => {
   const storage = makeStorageStub();
   const app = loadAppFunctionsWith({ storage, exposeState: true });
 
-  app._state.composeBasket = new Set(["keep"]);
-  // No payload at all.
-  app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
+  const expected = [
+    { source_type: "thought", source_id: "keep", title: "" },
+  ];
+  const flatten = () => JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
 
-  // Garbage payload — set stays at its current value.
+  app._state.composeBasket = new Map([
+    ["thought::keep", expected[0]],
+  ]);
+  // No payload at all — basket keeps its current value.
+  app.restoreBasket();
+  assert.deepEqual(flatten(), expected);
+
+  // Garbage payload — basket stays at its current value.
   storage.data["tflow.basket"] = "not-json";
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
+  assert.deepEqual(flatten(), expected);
 
-  // Payload missing the ids array.
+  // Payload missing the sources array — basket stays at its current value.
   storage.data["tflow.basket"] = JSON.stringify({ updated_at: "now" });
   app.restoreBasket();
-  assert.deepEqual(Array.from(app._state.composeBasket), ["keep"]);
+  assert.deepEqual(flatten(), expected);
+
+  // Legacy ids-only payload is ignored (no backward compat).
+  storage.data["tflow.basket"] = JSON.stringify({
+    ids: ["legacy-1", "legacy-2"],
+    updated_at: "now",
+  });
+  app.restoreBasket();
+  assert.deepEqual(flatten(), expected);
+});
+
+test("createComposeBasket deduplicates by source_type+source_id and supports clear", () => {
+  const app = loadAppFunctions();
+  // basket.values() returns objects created in the vm context, so flatten via
+  // JSON before comparing against literals defined in this test realm.
+  const flat = (arr) => JSON.parse(JSON.stringify(arr));
+
+  const basket = app.createComposeBasket();
+  assert.equal(basket.size(), 0);
+  assert.deepEqual(flat(basket.values()), []);
+
+  // New entries appear in insertion order. add() returns the full values list.
+  assert.deepEqual(flat(basket.add({ source_type: "thought", source_id: "a", title: "A" })), [
+    { source_type: "thought", source_id: "a", title: "A" },
+  ]);
+  assert.deepEqual(flat(basket.add({ source_type: "search_result", source_id: "b" })), [
+    { source_type: "thought", source_id: "a", title: "A" },
+    { source_type: "search_result", source_id: "b", title: "" },
+  ]);
+  assert.equal(basket.size(), 2);
+
+  // Same (source_type, source_id) twice — kept only once. The returned values
+  // list reflects the unchanged state.
+  assert.deepEqual(flat(basket.add({ source_type: "thought", source_id: "a", title: "ignored" })), [
+    { source_type: "thought", source_id: "a", title: "A" },
+    { source_type: "search_result", source_id: "b", title: "" },
+  ]);
+  assert.equal(basket.size(), 2);
+
+  // Same source_id under a different source_type is a distinct source.
+  assert.deepEqual(flat(basket.add({ source_type: "search_result", source_id: "a", title: "" })), [
+    { source_type: "thought", source_id: "a", title: "A" },
+    { source_type: "search_result", source_id: "b", title: "" },
+    { source_type: "search_result", source_id: "a", title: "" },
+  ]);
+  assert.equal(basket.size(), 3);
+
+  // addMany iterates all sources; malformed entries are silently dropped.
+  basket.addMany([
+    null,
+    { source_type: "thought" },
+    { source_id: "no-type" },
+    { source_type: "topic_section", source_id: "t-1", title: "T" },
+  ]);
+  assert.equal(basket.size(), 4);
+  assert.equal(basket.has({ source_type: "topic_section", source_id: "t-1" }), true);
+
+  // clear empties the basket.
+  basket.clear();
+  assert.equal(basket.size(), 0);
+  assert.deepEqual(flat(basket.values()), []);
 });
 
 test("navItemAriaCurrent marks the active page and clears others", () => {

@@ -318,6 +318,11 @@ export const messages = {
   "compose.confirm_message": "这会用当前草稿与来源链接创建一条新笔记。",
   "compose.format_label": "格式",
 
+  "compose.source_type.thought": "笔记",
+  "compose.source_type.search_result": "搜索结果",
+  "compose.source_type.topic_section": "专题段落",
+  "compose.source_type.capture_session": "采集会话",
+
   "jobs.title": "任务与活动",
   "jobs.description": "追踪后台任务与实时事件流。",
   "jobs.id_placeholder": "任务 ID",
