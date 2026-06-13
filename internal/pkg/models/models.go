@@ -1,10 +1,6 @@
 package models
 
-import (
-	"time"
-
-	"thoughtflow/internal/pkg/scratchpad"
-)
+import "time"
 
 const (
 	ThoughtTypeText = "text"
@@ -52,27 +48,27 @@ const (
 	ResourceTypeTopic     = "topic"
 	ResourceTypeSession   = "scratchpad_session"
 
-	EventThoughtCaptured       = "thought.captured"
-	EventThoughtRefineStarted  = "thought.refine_started"
-	EventThoughtRefined        = "thought.refined"
-	EventThoughtRefineFailed   = "thought.refine_failed"
-	EventSearchIndexUpdated    = "search.index_updated"
-	EventSearchIndexFailed     = "search.index_failed"
-	EventSearchReindexStarted  = "search.reindex_started"
-	EventSearchReindexFinished = "search.reindex_finished"
-	EventTopicCreated          = "topic.created"
-	EventTopicMatched          = "topic.matched"
-	EventTopicUpdated          = "topic.updated"
-	EventTopicRebuildStarted   = "topic.rebuild_started"
-	EventTopicRebuildFailed    = "topic.rebuild_failed"
+	EventThoughtCaptured          = "thought.captured"
+	EventThoughtRefineStarted     = "thought.refine_started"
+	EventThoughtRefined           = "thought.refined"
+	EventThoughtRefineFailed      = "thought.refine_failed"
+	EventSearchIndexUpdated       = "search.index_updated"
+	EventSearchIndexFailed        = "search.index_failed"
+	EventSearchReindexStarted     = "search.reindex_started"
+	EventSearchReindexFinished    = "search.reindex_finished"
+	EventTopicCreated             = "topic.created"
+	EventTopicMatched             = "topic.matched"
+	EventTopicUpdated             = "topic.updated"
+	EventTopicRebuildStarted      = "topic.rebuild_started"
+	EventTopicRebuildFailed       = "topic.rebuild_failed"
 	EventScratchpadContextUpdated = "scratchpad.context_updated"
 	EventScratchpadCommitted      = "scratchpad.committed"
-	EventGitCommitRequested    = "git.commit_requested"
-	EventGitCommitSucceeded    = "git.commit_succeeded"
-	EventGitCommitFailed       = "git.commit_failed"
-	EventJobUpdated            = "job.updated"
-	EventThoughtPatched        = "thought.patched"
-	EventThoughtExpanded       = "thought.expanded"
+	EventGitCommitRequested       = "git.commit_requested"
+	EventGitCommitSucceeded       = "git.commit_succeeded"
+	EventGitCommitFailed          = "git.commit_failed"
+	EventJobUpdated               = "job.updated"
+	EventThoughtPatched           = "thought.patched"
+	EventThoughtExpanded          = "thought.expanded"
 )
 
 type Workspace struct {
@@ -202,29 +198,6 @@ type ThoughtSuggestion struct {
 	Model     string   `json:"model"`
 }
 
-// CaptureSessionStart is the response body of
-// POST /api/capture/sessions/start. The session_id is the caller's
-// conversation id (echoed back unchanged); the suggestion is best-effort
-// and may be empty if the refiner is not configured.
-//
-// In the scratchpad-based capture flow, Thought / Jobs / Suggestion
-// stay zero-valued at the start of a session: the user has not yet
-// committed the scratchpad to a real thought. The Scratchpad field
-// carries the freshly-staged session state, and the frontend can
-// read /api/capture/scratchpad afterwards to keep the chat in sync.
-type CaptureSessionStart struct {
-	SessionID  string            `json:"session_id"`
-	Thought    Thought           `json:"thought"`
-	Jobs       []Job             `json:"jobs"`
-	Suggestion ThoughtSuggestion `json:"suggestion"`
-	Scratchpad ScratchpadEnvelope `json:"scratchpad"`
-}
-
-// ScratchpadEnvelope is the response body for the scratchpad-aware
-// endpoints. The actual scratchpad.Scratchpad lives under "data" so
-// the response matches the standard API envelope shape.
-type ScratchpadEnvelope = scratchpad.Scratchpad
-
 type CaptureResult struct {
 	Thought Thought `json:"thought"`
 	Jobs    []Job   `json:"jobs"`
@@ -325,11 +298,11 @@ type ReaderRuntimeStatus struct {
 // on the server so the i18n / wording lives in one place rather
 // than being duplicated in every UI surface.
 type PrivacyReport struct {
-	GeneratedAt time.Time          `json:"generated_at"`
-	LLM         ExternalSurface    `json:"llm"`
-	Embedding   ExternalSurface    `json:"embedding"`
-	Reader      ExternalSurface    `json:"reader"`
-	Actions     []ExternalAction   `json:"actions"`
+	GeneratedAt time.Time        `json:"generated_at"`
+	LLM         ExternalSurface  `json:"llm"`
+	Embedding   ExternalSurface  `json:"embedding"`
+	Reader      ExternalSurface  `json:"reader"`
+	Actions     []ExternalAction `json:"actions"`
 }
 
 type ExternalSurface struct {

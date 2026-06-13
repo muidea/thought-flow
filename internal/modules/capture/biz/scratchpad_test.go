@@ -104,6 +104,47 @@ func TestScratchpadServiceAppendMessageAccumulatesContent(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceAppendMessageRefreshesSessionContext(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+
+	if _, err := svc.AppendMessage("s1", "user", "RAG pipeline design #ai https://example.com"); err != nil {
+		t.Fatalf("AppendMessage first: %v", err)
+	}
+	if _, err := svc.AppendMessage("s1", "user", "但是 chunk strategy 还有冲突？"); err != nil {
+		t.Fatalf("AppendMessage second: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	ctx := sp.SessionContext
+	if ctx.CandidateTitle != "RAG pipeline design #ai https://example.com" {
+		t.Fatalf("CandidateTitle = %q", ctx.CandidateTitle)
+	}
+	if !strings.Contains(ctx.CandidateBody, "chunk strategy") {
+		t.Fatalf("CandidateBody = %q", ctx.CandidateBody)
+	}
+	if len(ctx.CandidateTags) != 1 || ctx.CandidateTags[0] != "ai" {
+		t.Fatalf("CandidateTags = %v", ctx.CandidateTags)
+	}
+	if len(ctx.SourceLinks) != 1 || ctx.SourceLinks[0] != "https://example.com" {
+		t.Fatalf("SourceLinks = %v", ctx.SourceLinks)
+	}
+	if len(ctx.OpenQuestions) != 1 {
+		t.Fatalf("OpenQuestions = %v", ctx.OpenQuestions)
+	}
+	if len(ctx.Conflicts) != 1 {
+		t.Fatalf("Conflicts = %v", ctx.Conflicts)
+	}
+	if ctx.ArchiveIntent != scratchpad.ArchiveIntentNone {
+		t.Fatalf("ArchiveIntent = %q", ctx.ArchiveIntent)
+	}
+	if ctx.ArchiveStrategy != scratchpad.ArchiveStrategyNew {
+		t.Fatalf("ArchiveStrategy = %q", ctx.ArchiveStrategy)
+	}
+}
+
 func TestScratchpadServiceAppendMessageRejectsEmptyFields(t *testing.T) {
 	svc := NewScratchpadService(newMemoryScratchpad())
 	if _, err := svc.AppendMessage("", "user", "hi"); err == nil {
@@ -119,9 +160,9 @@ func TestScratchpadServiceAppendDraftMergesAndProjects(t *testing.T) {
 	svc := NewScratchpadService(store)
 
 	_, err := svc.AppendDraft("s1", scratchpad.Draft{
-		TitleSet:    "renamed",
-		TagsAdded:   []string{"ai", "draft"},
-		TopicIDs:    []string{"topic-1"},
+		TitleSet:        "renamed",
+		TagsAdded:       []string{"ai", "draft"},
+		TopicIDs:        []string{"topic-1"},
 		RefineRequested: true,
 	})
 	if err != nil {
@@ -499,13 +540,13 @@ func TestScratchpadServiceBuildArchivePreviewFallsBackToScratchpadState(t *testi
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
 	sp := scratchpad.Scratchpad{
-		SessionID:   "s1",
-		Content:     "scratchpad body",
-		Title:       "scratchpad title",
-		Tags:        []string{"a", "b"},
-		URL:         "https://y",
-		TopicHints:  []string{"topic-1"},
-		Draft:       scratchpad.Draft{TitleSet: "renamed"},
+		SessionID:  "s1",
+		Content:    "scratchpad body",
+		Title:      "scratchpad title",
+		Tags:       []string{"a", "b"},
+		URL:        "https://y",
+		TopicHints: []string{"topic-1"},
+		Draft:      scratchpad.Draft{TitleSet: "renamed"},
 		// no SessionContext
 		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
 	}
@@ -723,23 +764,23 @@ func TestSubtractStringsRemovesAllOccurrences(t *testing.T) {
 // the async refiner / expander don't see "thought is locked" and
 // skip the thought forever.
 type stubCapture struct {
-	captureCalls      int
-	patchCalls        int
-	applyCalls        int
-	getCalls          int
-	patchReq          models.ThoughtPatchRequest
-	applyReq          models.ThoughtPatchRequest
-	captureResult     models.CaptureResult
-	patchResult       models.ThoughtSnapshot
-	applyResult       models.ThoughtSnapshot
-	getThoughtResult  models.ThoughtSnapshot
-	patchErr          error
-	applyErr          error
-	captureErr        error
-	getThoughtErr     error
-	lastPatchRaw      []byte
-	lastApplyRaw      []byte
-	lastSessionID     string
+	captureCalls       int
+	patchCalls         int
+	applyCalls         int
+	getCalls           int
+	patchReq           models.ThoughtPatchRequest
+	applyReq           models.ThoughtPatchRequest
+	captureResult      models.CaptureResult
+	patchResult        models.ThoughtSnapshot
+	applyResult        models.ThoughtSnapshot
+	getThoughtResult   models.ThoughtSnapshot
+	patchErr           error
+	applyErr           error
+	captureErr         error
+	getThoughtErr      error
+	lastPatchRaw       []byte
+	lastApplyRaw       []byte
+	lastSessionID      string
 	lastApplySessionID string
 }
 
@@ -842,8 +883,8 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 		SessionID: "s1",
 		Content:   "first round\n\nmore thoughts",
 		Draft: scratchpad.Draft{
-			TitleSet:    "renamed",
-			TagsAdded:   []string{"new-tag"},
+			TitleSet:  "renamed",
+			TagsAdded: []string{"new-tag"},
 		},
 		CommittedThoughtID: "thought-1",
 		CommittedAt:        ptrTime(),

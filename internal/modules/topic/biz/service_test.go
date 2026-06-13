@@ -755,11 +755,12 @@ func TestServiceMatchScratchpadAsyncWritesCandidates(t *testing.T) {
 	ws := topicTestWorkspace(root)
 	store := topicstore.New(root)
 	scratchpads := newStubScratchpadProvider()
-	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	background := &captureBackground{}
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, background, nil, nil, scratchpads)
 	ctx := context.Background()
 
 	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{
-		Name: "Engineering Search",
+		Name:  "Engineering Search",
 		Rules: models.TopicRule{Keywords: models.KeywordRule{Any: []string{"duckdb"}}},
 	})
 	if err != nil {
@@ -809,7 +810,8 @@ func TestServiceMatchScratchpadAsyncJobMetadata(t *testing.T) {
 	ws := topicTestWorkspace(root)
 	store := topicstore.New(root)
 	scratchpads := newStubScratchpadProvider()
-	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	background := &captureBackground{}
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, background, nil, nil, scratchpads)
 
 	scratchpads.put(scratchpad.Scratchpad{
 		SessionID: "sp-job",
@@ -982,7 +984,8 @@ func TestServiceNotifyDispatchesScratchpadContextUpdated(t *testing.T) {
 	ws := topicTestWorkspace(root)
 	store := topicstore.New(root)
 	scratchpads := newStubScratchpadProvider()
-	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	background := &captureBackground{}
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, background, nil, nil, scratchpads)
 	ctx := context.Background()
 
 	if _, err := service.CreateTopic(ctx, models.TopicCreateRequest{
@@ -1008,17 +1011,25 @@ func TestServiceNotifyDispatchesScratchpadContextUpdated(t *testing.T) {
 		Payload:      map[string]any{"session_id": "sp-5"},
 	})
 	result := event.NewResult(models.EventScratchpadContextUpdated, "capture", "#")
-	// Notify should not error or panic; the actual match runs in
-	// the background goroutine. The test only asserts the dispatch
-	// path runs end-to-end without panicking.
+	// Notify should queue the match through BackgroundRoutine; run
+	// it synchronously so TempDir cleanup cannot race with the
+	// candidate file write.
 	service.Notify(ev, result)
+	if background.last == nil {
+		t.Fatalf("Notify did not queue scratchpad match")
+	}
+	background.last()
+	candidates, err := service.ListSessionCandidates(ctx, "engineering-search")
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(candidates))
+	}
 }
 
 // captureBackground records the most recent async function passed
 // to it so tests can assert that an event handler queued a job.
-// Kept here for future tests that need to drive the BackgroundRoutine
-// path explicitly; the current Notify test uses a nil background
-// because the topic service falls back to a goroutine in that case.
 type captureBackground struct {
 	last func()
 }

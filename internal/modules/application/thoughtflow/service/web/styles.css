@@ -1051,6 +1051,7 @@ textarea.markdown-preview {
   .app-shell,
   .main-grid,
   .capture-form,
+  .tf-capture-workbench,
   .search-form {
     grid-template-columns: 1fr;
   }
@@ -1485,6 +1486,67 @@ textarea:focus-visible {
   border: 1px solid var(--tf-color-border, #e5e5e5);
   border-radius: var(--tf-radius-md, 6px);
   padding: var(--tf-space-3, 0.75rem);
+}
+
+.tf-capture-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 12px;
+}
+
+.tf-capture-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--tf-color-border, #e5e5e5);
+  border-radius: var(--tf-border-radius, 6px);
+  background: var(--tf-color-bg-container, #fff);
+  padding: 12px;
+}
+
+.tf-capture-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-capture-panel-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.tf-capture-context,
+.tf-capture-preview {
+  display: grid;
+  gap: 8px;
+  min-height: 96px;
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-capture-context > div {
+  display: grid;
+  gap: 4px;
+}
+
+.tf-capture-context span {
+  color: var(--tf-color-text-tertiary);
+  font-size: 12px;
+}
+
+.tf-capture-context strong,
+.tf-capture-context p,
+.tf-capture-context ul {
+  margin: 0;
+  color: var(--tf-color-text);
+  font-weight: 500;
+}
+
+.tf-capture-preview-body {
+  display: grid;
+  gap: 8px;
+  color: var(--tf-color-text);
 }
 
 .tf-msg {

@@ -53,10 +53,22 @@ function pickFreePort() {
   });
 }
 
-async function startServer() {
-  const configDir = await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-cfg-"));
-  const contentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-content-"));
-  const stateDir = await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-state-"));
+async function createServerFixture() {
+  return {
+    configDir: await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-cfg-")),
+    contentDir: await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-content-")),
+    stateDir: await fsp.mkdtemp(path.join(os.tmpdir(), "tf-e2e-state-")),
+    async cleanup() {
+      await fsp.rm(this.configDir, { recursive: true, force: true });
+      await fsp.rm(this.contentDir, { recursive: true, force: true });
+      await fsp.rm(this.stateDir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function startServer(fixture = null) {
+  const ownedFixture = fixture || await createServerFixture();
+  const { configDir, contentDir, stateDir } = ownedFixture;
   const port = await pickFreePort();
 
   const config = [
@@ -96,6 +108,7 @@ async function startServer() {
     configDir,
     contentDir,
     stateDir,
+    fixture: ownedFixture,
     async stop() {
       proc.kill("SIGTERM");
       await new Promise((resolve) => {
@@ -108,9 +121,9 @@ async function startServer() {
           resolve();
         });
       });
-      await fsp.rm(configDir, { recursive: true, force: true });
-      await fsp.rm(contentDir, { recursive: true, force: true });
-      await fsp.rm(stateDir, { recursive: true, force: true });
+      if (!fixture) {
+        await ownedFixture.cleanup();
+      }
       if (proc.exitCode !== 0 && proc.exitCode !== null) {
         const stderr = Buffer.concat(stderrChunks).toString("utf8");
         if (stderr) {
@@ -312,23 +325,6 @@ test("API e2e", async (t) => {
     assert.equal(typeof snapshot.thought.expansion_plan, "string", "expansion_plan must be a string");
   });
 
-  await t.test("capture session start returns a scratchpad", async () => {
-    // /api/capture/sessions/start is the deprecated (but still
-    // accepted) entry point after the path-alignment PR (#98). It
-    // now materialises a scratchpad rather than a thought, mirroring
-    // the new /api/capture/sessions contract. We keep this assertion
-    // to guard the deprecation path against accidental breakage.
-    const res = await request(server.baseURL, "/api/capture/sessions/start", "POST", {
-      body: { content: "Captured via e2e", session_id: "e2e-capture-1" },
-      headers: { "X-Session-Id": "e2e-capture-1" },
-    });
-    assert.ok([200, 202].includes(res.status), `start session status=${res.status} body=${res.text}`);
-    const data = envelope(res).data;
-    assert.ok(data.session_id, "session_id must be echoed back");
-    assert.equal(data.session_id, "e2e-capture-1");
-    assert.ok(data.scratchpad && data.scratchpad.session_id === "e2e-capture-1", "scratchpad.session_id must echo the request id");
-  });
-
   await t.test("search responds in keyword, semantic and hybrid modes", async () => {
     await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "search-target", content: "alpha beta gamma DuckDB keyword search test" },
@@ -439,10 +435,9 @@ test("API e2e", async (t) => {
   });
 
   await t.test("capture session recovery round-trips through active and reuse_last", async () => {
-    // Open a brand-new session via the new POST /api/capture/sessions
-    // contract: content + X-Session-Id both required to materialise
-    // the scratchpad. This mirrors the UI's first turn on the
-    // capture page.
+    // Open a brand-new session through the canonical capture session
+    // endpoint. X-Session-Id is optional, but using it here makes the
+    // session id deterministic for the round-trip assertions below.
     const sessionID = `e2e-recover-${Date.now()}`;
     const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
       body: { content: "Recovery seed message" },
@@ -470,6 +465,49 @@ test("API e2e", async (t) => {
     const reuseData = envelope(reuse).data;
     assert.equal(reuseData.session_id, sessionID, "reuse_last must round-trip the active session id");
     assert.ok(Array.isArray(reuseData.messages), "scratchpad must include the message log");
+
+  });
+
+  await t.test("capture session survives service restart with session_context", async () => {
+    const fixture = await createServerFixture();
+    let first = null;
+    let second = null;
+    try {
+      first = await startServer(fixture);
+      const sessionID = `e2e-restart-${Date.now()}`;
+      const start = await request(first.baseURL, "/api/capture/sessions", "POST", {
+        body: { content: "Restart recovery #prd https://example.com/restart" },
+        headers: { "X-Session-Id": sessionID },
+      });
+      assert.equal(start.status, 200, `restart start status=${start.status} body=${start.text}`);
+      const started = envelope(start).data;
+      assert.equal(started.session_id, sessionID);
+      assert.equal(started.session_context.candidate_tags[0], "prd");
+      assert.equal(started.session_context.source_links[0], "https://example.com/restart");
+
+      await first.stop();
+      first = null;
+      second = await startServer(fixture);
+      const active = await request(second.baseURL, "/api/capture/sessions/active", "GET");
+      assert.equal(active.status, 200, `active after restart status=${active.status} body=${active.text}`);
+      const data = envelope(active).data;
+      assert.equal(data.session_id, sessionID, "restart must restore the last unarchived session");
+      assert.equal(data.session_context.candidate_tags[0], "prd");
+      assert.equal(data.session_context.source_links[0], "https://example.com/restart");
+      assert.match(data.session_context.candidate_body, /Restart recovery/);
+
+      const appendDefault = await request(second.baseURL, "/api/capture/sessions", "POST", {
+        body: { content: "Default append after restart without explicit session id" },
+      });
+      assert.equal(appendDefault.status, 200, `appendDefault status=${appendDefault.status} body=${appendDefault.text}`);
+      const appended = envelope(appendDefault).data;
+      assert.equal(appended.session_id, sessionID, "content without X-Session-Id must append to the restored last active session");
+      assert.match(appended.content, /Default append after restart without explicit session id/);
+    } finally {
+      if (first) await first.stop();
+      if (second) await second.stop();
+      await fixture.cleanup();
+    }
   });
 
   await t.test("session_context update persists structured fields and survives a follow-up read", async () => {
@@ -508,6 +546,27 @@ test("API e2e", async (t) => {
     assert.equal(reloaded.session_context.topic, "e2e context topic");
   });
 
+  await t.test("session messages auto-refresh context without explicit context call", async () => {
+    const sessionID = `e2e-auto-context-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "Auto context seed #autocontext https://example.com/auto" },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200, `auto context start status=${start.status} body=${start.text}`);
+
+    const followup = await request(server.baseURL, `/api/capture/sessions/${sessionID}/messages`, "POST", {
+      body: { role: "user", text: "但是这个自动上下文还有冲突？" },
+    });
+    assert.equal(followup.status, 200, `auto context followup status=${followup.status} body=${followup.text}`);
+    const data = envelope(followup).data;
+    assert.equal(data.session_context.candidate_tags[0], "autocontext");
+    assert.equal(data.session_context.source_links[0], "https://example.com/auto");
+    assert.match(data.session_context.candidate_body, /自动上下文/);
+    assert.ok(data.session_context.open_questions.length >= 1, "question turn must be tracked");
+    assert.ok(data.session_context.conflicts.length >= 1, "conflict turn must be tracked");
+    assert.equal(data.session_context.archive_strategy, "new");
+  });
+
   await t.test("archive preview then commit (new strategy) lands a thought", async () => {
     const sessionID = `e2e-archive-${Date.now()}`;
     const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
@@ -537,6 +596,56 @@ test("API e2e", async (t) => {
     const commitData = envelope(commit).data;
     assert.ok(commitData.thought && commitData.thought.id, "commit must return thought.id");
     assert.ok(Array.isArray(commitData.jobs), "commit must include jobs array");
+  });
+
+  await t.test("update_thought preview exposes diff before confirmed update", async () => {
+    const create = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "update source", content: "Original body for update protection." },
+    });
+    assert.equal(create.status, 202, `create update source status=${create.status} body=${create.text}`);
+    const sourceID = envelope(create).data.thought.id;
+
+    const reopen = await request(server.baseURL, `/api/thoughts/${sourceID}/reopen-session`, "POST", {
+      body: {},
+    });
+    assert.equal(reopen.status, 200, `reopen update status=${reopen.status} body=${reopen.text}`);
+    const sessionID = envelope(reopen).data.session_id;
+
+    const context = await request(server.baseURL, `/api/capture/sessions/${sessionID}/context`, "POST", {
+      body: {
+        candidate_title: "update source revised",
+        candidate_tags: ["updated", "protected"],
+        candidate_body: "Updated body from protected update flow.",
+      },
+    });
+    assert.equal(context.status, 200, `context update status=${context.status} body=${context.text}`);
+
+    const strategy = await request(server.baseURL, `/api/capture/sessions/${sessionID}/strategy`, "POST", {
+      body: { strategy: "update_thought", thought_id: sourceID },
+    });
+    assert.equal(strategy.status, 200, `strategy update status=${strategy.status} body=${strategy.text}`);
+
+    const preview = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
+    assert.equal(preview.status, 200, `update preview status=${preview.status} body=${preview.text}`);
+    const previewData = envelope(preview).data.preview;
+    assert.equal(previewData.strategy, "update_thought");
+    assert.equal(previewData.thought_id, sourceID);
+    assert.ok(previewData.diff, "update preview must include a diff");
+    assert.ok(previewData.diff.changed_fields.includes("body"), "diff must include changed body");
+    assert.ok(previewData.diff.changed_fields.includes("tags"), "diff must include changed tags");
+
+    const commitDeadline = Date.now() + 5000;
+    let commit;
+    for (;;) {
+      commit = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive`, "POST", {
+        body: { strategy: "update_thought", thought_id: sourceID, confirmed: true },
+      });
+      if (commit.status !== 409) break;
+      if (Date.now() > commitDeadline) break;
+      await sleep(100);
+    }
+    assert.equal(commit.status, 200, `update commit status=${commit.status} body=${commit.text}`);
+    assert.equal(envelope(commit).data.thought.id, sourceID, "update strategy must return the original thought id");
   });
 
   await t.test("reopen-session seeds supplement strategy and commit lands a sibling thought", async () => {
@@ -604,21 +713,13 @@ test("API e2e", async (t) => {
     });
     assert.equal(start.status, 200);
 
-    // MatchScratchpadAsync fires from the scratchpad.context_updated
-    // event. Touching the session context is the easiest way to
-    // publish that event deterministically from the e2e harness.
-    // sessionKeywordScore only reads SessionContext.* fields
-    // (Topic / CandidateTitle / CandidateBody / ...), not the
-    // scratchpad message log, so we have to populate the keyword
-    // into the context block, not the message content.
-    const ctx = await request(server.baseURL, `/api/capture/sessions/${sessionID}/context`, "POST", {
-      body: {
-        topic: "zooglefloof deep-dive",
-        candidate_title: "zooglefloof indexing field notes",
-        candidate_body: "Working out how zooglefloof ingestion should land in the topic candidate list.",
-      },
+    // AppendMessage now refreshes SessionContext and publishes the
+    // scratchpad.context_updated event automatically. No explicit
+    // /context call is needed for topic candidate refresh.
+    const followup = await request(server.baseURL, `/api/capture/sessions/${sessionID}/messages`, "POST", {
+      body: { role: "user", text: "zooglefloof candidate details #topic" },
     });
-    assert.equal(ctx.status, 200);
+    assert.equal(followup.status, 200);
 
     // The matching job is dispatched on the background routine; a
     // short poll covers the dispatcher latency on a fresh boot.

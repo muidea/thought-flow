@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,11 +40,11 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
-	store      ScratchpadStore
-	capture    CaptureCommitter
-	eventHub   eventHub
-	sessionID  string
-	now        func() time.Time
+	store     ScratchpadStore
+	capture   CaptureCommitter
+	eventHub  eventHub
+	sessionID string
+	now       func() time.Time
 }
 
 // ScratchpadStore is the subset of scratchpad.Store this package
@@ -153,8 +154,16 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 			sp.Content += "\n\n"
 		}
 		sp.Content += text
+		sp.SessionContext = mergeAutoSessionContext(sp, text)
 	}
-	return s.store.Save(sp)
+	saved, err := s.store.Save(sp)
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	if role == "user" {
+		s.publishContextUpdatedEvent(sessionID)
+	}
+	return saved, nil
 }
 
 // AppendDraft merges a partial Draft into the scratchpad's draft
@@ -249,6 +258,14 @@ func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpa
 		SourceLinks:       trimNonEmpty(ctx.SourceLinks),
 		RelatedThoughtIDs: trimNonEmpty(ctx.RelatedThoughtIDs),
 		SuggestedTopicIDs: trimNonEmpty(ctx.SuggestedTopicIDs),
+		ArchiveIntent:     normalizeArchiveIntent(ctx.ArchiveIntent),
+		ArchiveStrategy:   normalizeArchiveStrategy(ctx.ArchiveStrategy),
+	}
+	if sp.SessionContext.ArchiveIntent == scratchpad.ArchiveIntentNone {
+		sp.SessionContext.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
+	}
+	if sp.SessionContext.ArchiveStrategy == scratchpad.ArchiveStrategyNew {
+		sp.SessionContext.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
 	}
 	saved, err := s.store.Save(sp)
 	if err != nil {
@@ -281,6 +298,7 @@ func (s *ScratchpadService) SetArchiveIntent(sessionID string, intent scratchpad
 	default:
 		sp.ArchiveIntent = scratchpad.ArchiveIntentNone
 	}
+	sp.SessionContext.ArchiveIntent = sp.ArchiveIntent
 	return s.store.Save(sp)
 }
 
@@ -312,6 +330,7 @@ func (s *ScratchpadService) SetArchiveStrategy(sessionID string, strategy scratc
 	default:
 		sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
 	}
+	sp.SessionContext.ArchiveStrategy = sp.ArchiveStrategy
 	if thoughtID = strings.TrimSpace(thoughtID); thoughtID != "" {
 		// The strategy decision may name a target thought (update
 		// or supplement). Persist it on SourceThoughtID so a
@@ -896,6 +915,8 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 			CandidateBody:     body,
 			SourceLinks:       sourceLinks,
 			RelatedThoughtIDs: related,
+			ArchiveIntent:     scratchpad.ArchiveIntentMenu,
+			ArchiveStrategy:   scratchpad.ArchiveStrategySupplement,
 		},
 		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
 		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
@@ -1114,6 +1135,177 @@ func (s *ScratchpadService) publishContextUpdatedEvent(sessionID string) {
 	eventutil.Post(s.eventHub, ev)
 }
 
+var tagTokenPattern = regexp.MustCompile(`[#＃]([[:alnum:]_\-\p{Han}]+)`)
+
+// mergeAutoSessionContext keeps a usable local session_context after
+// every user turn. It is intentionally deterministic: LLM tooling can
+// still replace the whole block through UpdateSessionContext, but a
+// plain local deployment always has topic, draft body, source links,
+// open questions, conflicts and archive intent for the UI/topic paths.
+func mergeAutoSessionContext(sp scratchpad.Scratchpad, latestUserText string) scratchpad.SessionContext {
+	ctx := sp.SessionContext
+	content := strings.TrimSpace(sp.Content)
+	latest := strings.TrimSpace(latestUserText)
+	if ctx.CandidateBody == "" || strings.Contains(ctx.CandidateBody, latest) || len(content) > len(ctx.CandidateBody) {
+		ctx.CandidateBody = content
+	}
+	if ctx.CandidateTitle == "" {
+		ctx.CandidateTitle = deriveCandidateTitle(content)
+	}
+	if ctx.CandidateSummary == "" || strings.Contains(ctx.CandidateSummary, "…") {
+		ctx.CandidateSummary = summarizeText(content, 180)
+	}
+	if ctx.Topic == "" {
+		ctx.Topic = deriveTopic(ctx.CandidateTitle, content)
+	}
+	if ctx.Goal == "" {
+		ctx.Goal = deriveGoal(latest)
+	}
+	ctx.CandidateTags = uniqueStrings(append(ctx.CandidateTags, extractTags(latest)...))
+	ctx.SourceLinks = uniqueStrings(append(ctx.SourceLinks, extractURLs(latest)...))
+	if question := deriveOpenQuestion(latest); question != "" {
+		ctx.OpenQuestions = uniqueStrings(append(ctx.OpenQuestions, question))
+	}
+	if conflict := deriveConflict(latest); conflict != "" {
+		ctx.Conflicts = uniqueStrings(append(ctx.Conflicts, conflict))
+	}
+	if fact := deriveConfirmedFact(latest); fact != "" {
+		ctx.ConfirmedFacts = uniqueStrings(append(ctx.ConfirmedFacts, fact))
+	}
+	ctx.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
+	ctx.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
+	return ctx
+}
+
+func deriveCandidateTitle(content string) string {
+	line := firstNonEmptyLine(content)
+	line = strings.TrimPrefix(line, "#")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if len([]rune(line)) > 48 {
+		return string([]rune(line)[:48])
+	}
+	return line
+}
+
+func summarizeText(content string, maxRunes int) string {
+	content = strings.Join(strings.Fields(content), " ")
+	if content == "" {
+		return ""
+	}
+	runes := []rune(content)
+	if len(runes) <= maxRunes {
+		return content
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
+func deriveTopic(title, content string) string {
+	if title != "" {
+		return title
+	}
+	return deriveCandidateTitle(content)
+}
+
+func deriveGoal(latest string) string {
+	lower := strings.ToLower(latest)
+	switch {
+	case strings.Contains(lower, "整理") || strings.Contains(lower, "归档") || strings.Contains(lower, "总结") || strings.Contains(lower, "save") || strings.Contains(lower, "archive"):
+		return "整理当前会话并形成可归档内容"
+	case strings.Contains(lower, "补充") || strings.Contains(lower, "完善"):
+		return "补充并完善已有信息"
+	default:
+		return "持续收集并澄清当前主题"
+	}
+}
+
+func deriveOpenQuestion(text string) string {
+	if strings.ContainsAny(text, "?？") {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func deriveConflict(text string) string {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "但是") || strings.Contains(lower, "冲突") || strings.Contains(lower, "contradict") || strings.Contains(lower, "conflict") {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func deriveConfirmedFact(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || deriveOpenQuestion(trimmed) != "" || deriveConflict(trimmed) != "" {
+		return ""
+	}
+	if len([]rune(trimmed)) > 160 {
+		return ""
+	}
+	return trimmed
+}
+
+func extractTags(text string) []string {
+	matches := tagTokenPattern.FindAllStringSubmatch(text, -1)
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			out = append(out, strings.TrimSpace(match[1]))
+		}
+	}
+	return trimNonEmpty(out)
+}
+
+func extractURLs(text string) []string {
+	out := []string{}
+	remaining := text
+	for {
+		url := extractURL(remaining)
+		if url == "" {
+			break
+		}
+		out = append(out, strings.TrimRight(url, ".,;，。；)）]】"))
+		idx := strings.Index(remaining, url)
+		if idx < 0 {
+			break
+		}
+		remaining = remaining[idx+len(url):]
+	}
+	return trimNonEmpty(out)
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func normalizeArchiveIntent(intent scratchpad.ArchiveIntent) scratchpad.ArchiveIntent {
+	switch scratchpad.ArchiveIntent(strings.TrimSpace(string(intent))) {
+	case scratchpad.ArchiveIntentMenu:
+		return scratchpad.ArchiveIntentMenu
+	case scratchpad.ArchiveIntentLLM:
+		return scratchpad.ArchiveIntentLLM
+	default:
+		return scratchpad.ArchiveIntentNone
+	}
+}
+
+func normalizeArchiveStrategy(strategy scratchpad.ArchiveStrategy) scratchpad.ArchiveStrategy {
+	switch scratchpad.ArchiveStrategy(strings.TrimSpace(string(strategy))) {
+	case scratchpad.ArchiveStrategyUpdate:
+		return scratchpad.ArchiveStrategyUpdate
+	case scratchpad.ArchiveStrategySupplement:
+		return scratchpad.ArchiveStrategySupplement
+	default:
+		return scratchpad.ArchiveStrategyNew
+	}
+}
 
 // ErrAlreadyCommitted is returned by BuildCaptureCommand when the
 // scratchpad has already been committed once. The commit flow turns

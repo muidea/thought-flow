@@ -139,6 +139,21 @@
                 <button class="tf-btn" id="capture-lock-takeover" type="button" data-i18n="capture.session.takeover">Take over</button>
               </div>
               <ol id="capture-conversation" class="tf-capture-conversation" aria-live="polite"></ol>
+              <div class="tf-capture-workbench">
+                <section class="tf-capture-panel" aria-labelledby="capture-context-title">
+                  <div class="tf-capture-panel-header">
+                    <h4 id="capture-context-title" data-i18n="capture.context.title">Session context</h4>
+                  </div>
+                  <div id="capture-context-panel" class="tf-capture-context" data-i18n="capture.context.empty">No context extracted yet.</div>
+                </section>
+                <section class="tf-capture-panel" aria-labelledby="capture-preview-title">
+                  <div class="tf-capture-panel-header">
+                    <h4 id="capture-preview-title" data-i18n="capture.archive.preview_title">Archive preview</h4>
+                    <button class="tf-btn" id="capture-refresh-preview" type="button" data-i18n="capture.archive.preview_action" disabled>Preview</button>
+                  </div>
+                  <div id="capture-archive-preview" class="tf-capture-preview" data-i18n="capture.archive.preview_empty">Preview appears before saving.</div>
+                </section>
+              </div>
               <form id="capture-composer" class="tf-capture-composer" autocomplete="off">
                 <label class="tf-capture-composer-label" for="capture-composer-input" data-i18n="capture.composer.label">Composer</label>
                 <textarea id="capture-composer-input" rows="2" data-i18n-attr="capture.composer.placeholder" data-i18n-attr-target="placeholder" placeholder="Type a thought, URL, or command (e.g. rename to X)"></textarea>

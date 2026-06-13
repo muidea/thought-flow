@@ -64,18 +64,20 @@ type Draft struct {
 // "absent" — so the JSON contract has zero-value defaults the
 // service can rely on.
 type SessionContext struct {
-	Topic             string   `json:"topic"`
-	Goal              string   `json:"goal"`
-	ConfirmedFacts    []string `json:"confirmed_facts"`
-	OpenQuestions     []string `json:"open_questions"`
-	Conflicts         []string `json:"conflicts"`
-	CandidateTitle    string   `json:"candidate_title"`
-	CandidateTags     []string `json:"candidate_tags"`
-	CandidateSummary  string   `json:"candidate_summary"`
-	CandidateBody     string   `json:"candidate_body"`
-	SourceLinks       []string `json:"source_links"`
-	RelatedThoughtIDs []string `json:"related_thought_ids"`
-	SuggestedTopicIDs []string `json:"suggested_topic_ids"`
+	Topic             string          `json:"topic"`
+	Goal              string          `json:"goal"`
+	ConfirmedFacts    []string        `json:"confirmed_facts"`
+	OpenQuestions     []string        `json:"open_questions"`
+	Conflicts         []string        `json:"conflicts"`
+	CandidateTitle    string          `json:"candidate_title"`
+	CandidateTags     []string        `json:"candidate_tags"`
+	CandidateSummary  string          `json:"candidate_summary"`
+	CandidateBody     string          `json:"candidate_body"`
+	SourceLinks       []string        `json:"source_links"`
+	RelatedThoughtIDs []string        `json:"related_thought_ids"`
+	SuggestedTopicIDs []string        `json:"suggested_topic_ids"`
+	ArchiveIntent     ArchiveIntent   `json:"archive_intent"`
+	ArchiveStrategy   ArchiveStrategy `json:"archive_strategy"`
 }
 
 // ArchiveIntent captures WHO is driving the archive — the user via a
@@ -98,8 +100,8 @@ type ArchiveStrategy string
 
 const (
 	ArchiveStrategyNew        ArchiveStrategy = "new"
-	ArchiveStrategyUpdate      ArchiveStrategy = "update_thought"
-	ArchiveStrategySupplement  ArchiveStrategy = "supplement"
+	ArchiveStrategyUpdate     ArchiveStrategy = "update_thought"
+	ArchiveStrategySupplement ArchiveStrategy = "supplement"
 )
 
 // ThoughtDiff is the safe-update diff attached to an ArchivePreview
@@ -139,38 +141,38 @@ type ArchivePreview struct {
 // §3.1.1. The v1 → v2 migration is implemented in loadFromDisk —
 // old files are read as-is and the new fields are zero-valued.
 type Scratchpad struct {
-	SessionID          string         `json:"session_id"`
-	WorkspaceID        string         `json:"workspace_id"`
-	Title              string         `json:"title"`
-	Tags               []string       `json:"tags"`
-	TopicHints         []string       `json:"topic_hints"`
-	URL                string         `json:"url,omitempty"`
-	Content            string         `json:"content"`
-	Messages           []Message      `json:"messages"`
-	Draft              Draft          `json:"draft"`
-	SessionContext     SessionContext `json:"session_context"`
-	ArchiveIntent      ArchiveIntent  `json:"archive_intent"`
+	SessionID          string          `json:"session_id"`
+	WorkspaceID        string          `json:"workspace_id"`
+	Title              string          `json:"title"`
+	Tags               []string        `json:"tags"`
+	TopicHints         []string        `json:"topic_hints"`
+	URL                string          `json:"url,omitempty"`
+	Content            string          `json:"content"`
+	Messages           []Message       `json:"messages"`
+	Draft              Draft           `json:"draft"`
+	SessionContext     SessionContext  `json:"session_context"`
+	ArchiveIntent      ArchiveIntent   `json:"archive_intent"`
 	ArchiveStrategy    ArchiveStrategy `json:"archive_strategy"`
 	ArchivePreview     *ArchivePreview `json:"archive_preview,omitempty"`
-	SourceThoughtID    string         `json:"source_thought_id,omitempty"`
-	CommittedThoughtID string         `json:"committed_thought_id,omitempty"`
-	CommittedAt        *time.Time     `json:"committed_at,omitempty"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
+	SourceThoughtID    string          `json:"source_thought_id,omitempty"`
+	CommittedThoughtID string          `json:"committed_thought_id,omitempty"`
+	CommittedAt        *time.Time      `json:"committed_at,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 // Summary is the diagnostic / drawer view: it strips Messages and
 // Content so the UI can list every scratchpad in a few KB even when
 // the conversations are long.
 type Summary struct {
-	SessionID          string    `json:"session_id"`
-	Title              string    `json:"title"`
-	CommittedThoughtID string    `json:"committed_thought_id,omitempty"`
-	SourceThoughtID    string    `json:"source_thought_id,omitempty"`
+	SessionID          string          `json:"session_id"`
+	Title              string          `json:"title"`
+	CommittedThoughtID string          `json:"committed_thought_id,omitempty"`
+	SourceThoughtID    string          `json:"source_thought_id,omitempty"`
 	ArchiveStrategy    ArchiveStrategy `json:"archive_strategy,omitempty"`
-	MessageCount       int       `json:"message_count"`
-	ContentLength      int       `json:"content_length"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	MessageCount       int             `json:"message_count"`
+	ContentLength      int             `json:"content_length"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 // formatVersion is stamped on every persisted file. Bump it whenever
@@ -189,8 +191,8 @@ const formatVersion = 2
 // persistedFile is the disk layout. We wrap Scratchpad with a
 // version field so future migrations have a hook.
 type persistedFile struct {
-	Version     int        `json:"version"`
-	Scratchpad  Scratchpad `json:"scratchpad"`
+	Version    int        `json:"version"`
+	Scratchpad Scratchpad `json:"scratchpad"`
 }
 
 // Store is the package-level entry point. It is safe for concurrent

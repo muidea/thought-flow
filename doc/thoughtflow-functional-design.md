@@ -438,16 +438,16 @@ EventThoughtCaptured
 
 | Method | Path | Body | 200 Response | 错误 |
 |---|---|---|---|---|
-| `POST` | `/api/capture/sessions` | `{content?, source_thought_id?, reuse_last?:true}` | `{session_id, scratchpad}` | 400 invalid |
-| `GET` | `/api/capture/sessions/active` | — | `{scratchpad}` 或 204 | — |
-| `GET` | `/api/capture/sessions` | — | `[{session_id, title, ...summary}]` | — |
+| `POST` | `/api/capture/sessions` | `{content?, source_thought_id?, reuse_last?:true, prev_session_id?}` + optional `X-Session-Id` | `Scratchpad` | 400 invalid |
+| `GET` | `/api/capture/sessions/active` | — | `Scratchpad` 或 `{}` | — |
+| `GET` | `/api/capture/sessions` | — | `{summaries, last_active_session_id?}` | — |
 | `POST` | `/api/capture/sessions/{id}/messages` | `{role, text}` | `{scratchpad}` | 400 invalid_session |
 | `POST` | `/api/capture/sessions/{id}/context` | `SessionContext` | `{scratchpad}` | 400 invalid |
 | `POST` | `/api/capture/sessions/{id}/intent` | `{intent: none|menu|llm}` | `{scratchpad}` | — |
 | `POST` | `/api/capture/sessions/{id}/strategy` | `{strategy: new\|update_thought\|supplement, thought_id?}` | `{scratchpad}` | 400 strategy_required |
 | `GET` | `/api/capture/sessions/{id}/archive/preview` | — | `ArchivePreview` | 400 empty_content |
 | `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed?:true}` | `CaptureResult` | 409 locked, 400 diff_required |
-| `DELETE` | `/api/capture/sessions/{id}` | — | `{deleted:true}` | 404 not_found |
+| `DELETE` | `/api/capture/sessions/{id}` | — | `{deleted:true}` | — |
 
 ### 5.2 Thought
 
@@ -498,15 +498,13 @@ EventThoughtCaptured
 | `GET` | `/health/live` | 进程存活 |
 | `GET` | `/health/ready` | 依赖就绪 |
 
-### 5.6 路径兼容与废弃
+### 5.6 正式路径与旧路径移除
 
-旧路径保留 1 个版本过渡期并打印弃用日志：
+当前阶段不保留采集旧接口兼容。正式采集入口只暴露 `/api/capture/sessions*` 与 `POST /api/thoughts/{id}/reopen-session`：
 
-- `POST /api/capture/sessions/start` → 新 `POST /api/capture/sessions`。
-- `POST /api/capture/scratchpad/commit` → 新 `POST /api/capture/sessions/{id}/archive`。
-- `POST /api/capture/new-session` → 新 `POST /api/capture/sessions`（带 `reuse_last:false`）。
-- `GET/POST/DELETE /api/capture/scratchpad[?session_id=X]` → 新 `/api/capture/sessions/{id}` 系列。
-- `GET /api/capture/scratchpad/list` → 新 `GET /api/capture/sessions`。
+- 未显式触发新会话时，`POST /api/capture/sessions` 优先复用 `LastActive()`；无最后未归档会话时才创建新会话。
+- 显式新会话通过 `POST /api/capture/sessions` 且不传 `reuse_last`，可携带 `prev_session_id` 清理前一草稿。
+- 旧 `POST /api/capture/sessions/start`、`/api/capture/scratchpad*`、`POST /api/capture/new-session` 不再注册路由。
 
 ---
 
@@ -580,22 +578,21 @@ PRD §5 要求显式标识外部请求并允许禁用。约束：
 
 ### 8.1 已确定
 
-- scratchpad 升级到 v2 时保留 v1 兼容读路径，迁移失败文件日志后跳过。
 - `archive_strategy` 路由必须以 UI 显式选择或 reopen 会话默认 `supplement` 为准，LLM 不能直接 override。
 - `update_thought` 走 `thoughtlock`；`new` / `supplement` 走 `ApplyDraftInternal`（与现有 refiner/expander 兼容）。
 - 专题候选仅展示在候选区，不写专题主文档；用户在 UI 上"确认"后走对应 scratchpad 的 commit 流程。
-- Web 入口保留旧路径 1 个版本过渡期（详见 §5.6）。
+- Web 采集入口不再调用旧 scratchpad 路径（详见 §5.6）。
 
 ### 8.2 遗留与 backlog
 
 | # | 项 | 来源 | 状态 |
 |---|---|---|---|
-| #97 | scratchpad v2 字段扩展 + v1→v2 迁移 | PRD §3.1 | 待办 |
-| #98 | API 路径对齐 PRD §2.2 + 旧路径过渡 | PRD §2.2 / §5.6 | 待办 |
-| #99 | 归档预览 `GET /api/capture/sessions/{id}/archive/preview` + UI 渲染 | PRD §3.1 / §4.4 | 待办 |
-| #100 | `archive_strategy` 路由（new / update_thought / supplement）+ diff | PRD §3.1 | 待办 |
-| #101 | `POST /api/thoughts/{id}/reopen-session` + UI 入口 | PRD §3.1.1 | 待办 |
-| #102 | 专题消费 scratchpad 候选 | PRD §3.3 | 待办 |
+| #97 | scratchpad 会话字段扩展到 `session_context` / `archive_intent` / `archive_strategy` | PRD §3.1 | 已完成 |
+| #98 | API 路径对齐 PRD §2.2，并移除旧采集路径 | PRD §2.2 / §5.6 | 已完成 |
+| #99 | 归档预览 `GET /api/capture/sessions/{id}/archive/preview` + UI 渲染 | PRD §3.1 / §4.4 | 已完成 |
+| #100 | `archive_strategy` 路由（new / update_thought / supplement）+ diff | PRD §3.1 | 已完成 |
+| #101 | `POST /api/thoughts/{id}/reopen-session` + UI 入口 | PRD §3.1.1 | 已完成 |
+| #102 | 专题消费 scratchpad 候选 | PRD §3.3 | 已完成 |
 | #103 | 隐私提示 UI 标识 + 设置页"外部请求" | PRD §5 | 待办 |
 | #104 | e2e 覆盖（含会话恢复、归档预览、归档策略、reopen、专题候选、隐私提示） | PRD §7 #12 / §8 | 待办 |
 | — | `POST /api/system/external/disable` 运行时禁用接口 | PRD §5 | 可选，留 backlog |

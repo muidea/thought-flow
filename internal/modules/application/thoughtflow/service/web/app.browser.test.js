@@ -285,7 +285,7 @@ async function runBrowserSmoke(browser, url) {
     { name: "compose", active: true, visible: true, navActive: true },
     { name: "settings", active: true, visible: false, navActive: true },
   ]);
-  assert.match(state.captureResult, /thought-capture|Browser capture|Captured from browser smoke/);
+  assert.match(state.captureResult, /Captured from browser smoke|Session context|Archive preview/);
   assert.equal(state.thoughtDrawerOpen, true);
   assert.match(state.explainText, /Score details/);
   assert.match(state.thoughtDrawerText, /Browser Thought/);
@@ -575,29 +575,28 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await page.evaluate(() => { window.location.hash = "#/capture"; });
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
-    // Start a session and wait for the initial AI bubble.
+    // Start a session and wait for the extracted context panel.
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "Multi-turn browser smoke";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    await page.waitForExpression(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai")).length >= 1);
-    // Issue a rename command; the PATCH fixture returns a refined
-    // snapshot with summary / key_points / ai_tags / expansion fields,
-    // so the AI bubble should re-render in place with the new data.
+    await page.waitForExpression(() => /Multi-turn browser smoke/.test(document.querySelector("#capture-context-panel")?.textContent || ""));
+    // Issue a rename command; in the current capture flow it updates
+    // session_context.CandidateTitle rather than PATCHing a Thought.
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "rename to Renamed in browser";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    // Poll for the rename to land in the rich card; if it doesn't,
-    // dump the conversation for diagnosis.
+    // Poll for the rename to land in the context and for the preview
+    // action to produce a before-save archive preview.
     let renamed = false;
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       renamed = await page.evaluate(() => {
-        const bubble = document.querySelector("#capture-conversation .tf-msg-ai");
-        return bubble && /Renamed in browser/.test(bubble.textContent || "");
+        const context = document.querySelector("#capture-context-panel");
+        return context && /Renamed in browser/.test(context.textContent || "");
       });
       if (renamed) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -609,25 +608,18 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       }));
       console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
     }
-    assert.ok(renamed, "rename command should re-render the AI bubble with the new title");
+    assert.ok(renamed, "rename command should update the session context title");
+    await page.evaluate(() => document.querySelector("#capture-refresh-preview").click());
+    await page.waitForExpression(() => /Renamed in browser/.test(document.querySelector("#capture-archive-preview")?.textContent || ""));
     const rendered = await page.evaluate(() => {
-      const bubble = document.querySelector("#capture-conversation .tf-msg-ai");
-      return bubble ? bubble.outerHTML : "";
+      return {
+        context: document.querySelector("#capture-context-panel")?.textContent || "",
+        preview: document.querySelector("#capture-archive-preview")?.textContent || "",
+      };
     });
-    // The thoughtId-bound bubble must re-render with refine / index /
-    // topic chips from the post-PATCH snapshot, plus the new title.
-    assert.match(rendered, /Renamed in browser/);
-    assert.match(rendered, /data-status="refine-refined"/);
-    assert.match(rendered, /data-status="index-indexed"/);
-    assert.match(rendered, /data-status="topic-matched"/);
-    // Per-command feedback: a separate AI bubble acknowledges the rename.
-    // The feedback bubble is plain text (not bound to the active thought
-    // snapshot) so it carries the per-command message verbatim.
-    const feedback = await page.evaluate(() => {
-      const bubbles = Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai"));
-      return bubbles.find((el) => /Renamed to/.test(el.textContent || ""))?.textContent || "";
-    });
-    assert.match(feedback, /Renamed to/, "rename command should produce a dedicated feedback bubble");
+    assert.match(rendered.context, /Renamed in browser/);
+    assert.match(rendered.preview, /Renamed in browser/);
+    assert.match(rendered.preview, /Strategy|new/);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -853,11 +845,106 @@ function startFixtureServer() {
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
   // Per-thought PATCH state. The GET response reflects the most recent
-  // PATCH so the AI bubble stays consistent after refreshActiveCaptureThought
-  // re-fetches; the unit tests cover the full PATCH contract.
+  // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
+  const captureSessions = new Map();
+  const makeScratchpad = (id, text = "Captured from browser smoke") => ({
+    session_id: id,
+    workspace_id: "browser",
+    title: "",
+    tags: [],
+    topic_hints: [],
+    content: text,
+    messages: text ? [{ role: "user", text, at: "2026-06-13T00:00:00Z" }] : [],
+    draft: {},
+    session_context: {
+      topic: text,
+      goal: "Keep collecting this topic",
+      confirmed_facts: [text],
+      open_questions: [],
+      conflicts: [],
+      candidate_title: text,
+      candidate_tags: ["browser"],
+      candidate_summary: text,
+      candidate_body: text,
+      source_links: [],
+      related_thought_ids: [],
+      suggested_topic_ids: [],
+      archive_intent: "none",
+      archive_strategy: "new",
+    },
+    archive_intent: "none",
+    archive_strategy: "new",
+    archive_preview: null,
+    source_thought_id: "",
+    committed_thought_id: "",
+    created_at: "2026-06-13T00:00:00Z",
+    updated_at: "2026-06-13T00:00:00Z",
+  });
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    if (url.pathname.startsWith("/api/capture/sessions/")) {
+      const suffix = url.pathname.slice("/api/capture/sessions/".length);
+      const [sessionID] = suffix.split("/");
+      const sp = captureSessions.get(sessionID) || makeScratchpad(sessionID, "");
+      if (suffix === `${sessionID}` && req.method === "GET") {
+        captureSessions.set(sessionID, sp);
+        return json(res, api(sp));
+      }
+      if (suffix === `${sessionID}/messages` && req.method === "POST") {
+        const body = (await readJson(req)) || {};
+        const text = body.text || "";
+        sp.messages.push({ role: body.role || "user", text, at: "2026-06-13T00:00:00Z" });
+        sp.content = [sp.content, text].filter(Boolean).join("\n\n");
+        sp.session_context.candidate_body = sp.content;
+        sp.session_context.candidate_summary = sp.content;
+        if (!sp.session_context.candidate_title) sp.session_context.candidate_title = text;
+        captureSessions.set(sessionID, sp);
+        return json(res, api(sp));
+      }
+      if (suffix === `${sessionID}/context` && req.method === "POST") {
+        const body = (await readJson(req)) || {};
+        sp.session_context = { ...sp.session_context, ...body };
+        sp.title = sp.session_context.candidate_title || sp.title;
+        captureSessions.set(sessionID, sp);
+        return json(res, api(sp));
+      }
+      if (suffix === `${sessionID}/intent` && req.method === "POST") {
+        const body = (await readJson(req)) || {};
+        sp.archive_intent = body.intent || "none";
+        sp.session_context.archive_intent = sp.archive_intent;
+        captureSessions.set(sessionID, sp);
+        return json(res, api(sp));
+      }
+      if (suffix === `${sessionID}/archive/preview` && req.method === "GET") {
+        sp.archive_preview = {
+          title: sp.session_context.candidate_title || "Browser capture",
+          body: sp.session_context.candidate_body || sp.content,
+          tags: sp.session_context.candidate_tags || ["browser"],
+          source_links: sp.session_context.source_links || [],
+          related_topics: sp.session_context.suggested_topic_ids || [],
+          strategy: sp.archive_strategy || "new",
+          generated_at: "2026-06-13T00:00:00Z",
+        };
+        captureSessions.set(sessionID, sp);
+        return json(res, api({ preview: sp.archive_preview, persisted: true }));
+      }
+      if (suffix === `${sessionID}/archive` && req.method === "POST") {
+        sp.committed_thought_id = "thought-capture";
+        sp.archive_preview = null;
+        captureSessions.set(sessionID, sp);
+        return json(res, api({
+          thought: {
+            id: "thought-capture",
+            display_title: sp.session_context.candidate_title || "Browser capture",
+            user_title: sp.session_context.candidate_title || "Browser capture",
+            capture_status: "captured",
+            path: "thoughts/browser-capture.md",
+          },
+          jobs: [{ id: "job-capture", type: "refine", status: "queued" }],
+        }));
+      }
+    }
     switch (url.pathname) {
       case "/":
       case "/index.html":
@@ -932,28 +1019,33 @@ function startFixtureServer() {
           }), 202);
         }
         break;
-      case "/api/capture/sessions/start":
-        if (req.method === "POST") {
+      case "/api/capture/sessions":
+        if (req.method === "GET") {
+          const summaries = Array.from(captureSessions.values()).map((sp) => ({
+            session_id: sp.session_id,
+            title: sp.session_context?.candidate_title || sp.session_id,
+            committed_thought_id: sp.committed_thought_id || "",
+            source_thought_id: sp.source_thought_id || "",
+            archive_strategy: sp.archive_strategy || "new",
+            message_count: sp.messages.length,
+            content_length: sp.content.length,
+            updated_at: sp.updated_at,
+          }));
           return json(res, api({
-            session_id: "browser-session",
-            thought: {
-              id: "thought-capture",
-              title: "Browser capture",
-              type: "text",
-              display_title: "Browser capture",
-              user_title: "Browser capture",
-              capture_status: "captured",
-              status: "captured",
-              path: "thoughts/browser-capture.md",
-            },
-            jobs: [{ id: "job-capture", type: "refine", status: "queued" }],
-            suggestion: {
-              thought_id: "thought-capture",
-              title: "Suggested title",
-              tags: ["browser", "smoke"],
-              model: "extracted",
-            },
-          }), 202);
+            summaries,
+            last_active_session_id: summaries[0]?.session_id || "",
+          }));
+        }
+        if (req.method === "POST") {
+          const body = (await readJson(req)) || {};
+          if (body.reuse_last) {
+            const latest = Array.from(captureSessions.values())[0] || {};
+            return json(res, api(latest));
+          }
+          const id = req.headers["x-session-id"] || "browser-session";
+          const sp = makeScratchpad(id, body.content || "");
+          captureSessions.set(id, sp);
+          return json(res, api(sp));
         }
         break;
       case "/api/thoughts/thought-1":

@@ -34,6 +34,7 @@ const state = {
     activeThoughtId: "",
     activeSnapshot: null,
     activeScratchpad: null,
+    archivePreview: null,
     messages: [],
     sessions: [],
     suggestion: null,
@@ -1603,8 +1604,67 @@ function renderCaptureConversation() {
   }
   list.scrollTop = list.scrollHeight;
   const finish = $("#capture-finish");
-  if (finish) finish.disabled = !state.capture.activeThoughtId;
+  if (finish) finish.disabled = !state.capture.sessionId;
+  const previewButton = $("#capture-refresh-preview");
+  if (previewButton) previewButton.disabled = !state.capture.sessionId;
+  renderCaptureContextPanel();
+  renderArchivePreviewPanel();
   renderCaptureLockIndicator();
+}
+
+function renderCaptureContextPanel() {
+  const node = $("#capture-context-panel");
+  if (!node) return;
+  const sp = state.capture.activeScratchpad || {};
+  const ctx = sp.session_context || sp.SessionContext || {};
+  const rows = [];
+  if (ctx.topic) rows.push(`<div><span>${escapeHTML(t("capture.context.topic"))}</span><strong>${escapeHTML(ctx.topic)}</strong></div>`);
+  if (ctx.goal) rows.push(`<div><span>${escapeHTML(t("capture.context.goal"))}</span><strong>${escapeHTML(ctx.goal)}</strong></div>`);
+  if (ctx.candidate_title) rows.push(`<div><span>${escapeHTML(t("capture.context.candidate_title"))}</span><strong>${escapeHTML(ctx.candidate_title)}</strong></div>`);
+  if (Array.isArray(ctx.candidate_tags) && ctx.candidate_tags.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.tags"))}</span><strong>${ctx.candidate_tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join(" ")}</strong></div>`);
+  }
+  if (ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.summary"))}</span><p>${escapeHTML(ctx.candidate_summary)}</p></div>`);
+  if (Array.isArray(ctx.open_questions) && ctx.open_questions.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.questions"))}</span><ul>${ctx.open_questions.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
+  }
+  if (Array.isArray(ctx.conflicts) && ctx.conflicts.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.conflicts"))}</span><ul>${ctx.conflicts.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
+  }
+  node.innerHTML = rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"));
+}
+
+function renderArchivePreviewPanel() {
+  const node = $("#capture-archive-preview");
+  if (!node) return;
+  const preview = state.capture.archivePreview;
+  if (!preview) {
+    node.innerHTML = escapeHTML(t("capture.archive.preview_empty"));
+    return;
+  }
+  const tags = Array.isArray(preview.tags) && preview.tags.length
+    ? `<div class="tf-capture-tags">${preview.tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join("")}</div>`
+    : "";
+  const links = Array.isArray(preview.source_links) && preview.source_links.length
+    ? `<ul>${preview.source_links.map((link) => `<li><a href="${escapeHTML(link)}" target="_blank" rel="noreferrer">${escapeHTML(link)}</a></li>`).join("")}</ul>`
+    : "";
+  const diff = preview.diff
+    ? `<details class="tf-capture-expansion" open>
+        <summary>${escapeHTML(t("capture.archive.diff"))}</summary>
+        <div class="tf-description-list">
+          <div><span>${escapeHTML(t("capture.archive.changed_fields"))}</span><strong>${escapeHTML((preview.diff.changed_fields || []).join(", ") || "-")}</strong></div>
+        </div>
+        ${renderDiff(preview.diff.before || "", preview.diff.after || "")}
+      </details>`
+    : "";
+  node.innerHTML = `<div class="tf-capture-preview-body">
+    <strong>${escapeHTML(preview.title || t("capture.archive.untitled"))}</strong>
+    <div class="topic-meta">${escapeHTML(t("capture.archive.strategy"))}: ${escapeHTML(preview.strategy || "new")}</div>
+    ${tags}
+    <div class="markdown-rendered">${renderMarkdown(preview.body || "")}</div>
+    ${links ? `<div class="tf-capture-section"><div class="tf-capture-section-title">${escapeHTML(t("capture.archive.source_links"))}</div>${links}</div>` : ""}
+    ${diff}
+  </div>`;
 }
 
 function renderCaptureLockIndicator() {
@@ -1697,7 +1757,7 @@ function renderCaptureSessionsDrawer() {
 async function refreshCaptureSessionsFromServer() {
   let response;
   try {
-    response = await api("/api/capture/scratchpad/list", { method: "GET" });
+    response = await api("/api/capture/sessions", { method: "GET" });
   } catch (_) {
     return null;
   }
@@ -1754,7 +1814,7 @@ async function rehydrateActiveScratchpad() {
   if (!lastActiveID) return;
   let detail;
   try {
-    detail = await api(`/api/capture/scratchpad?session_id=${encodeURIComponent(lastActiveID)}`);
+    detail = await api(`/api/capture/sessions/${encodeURIComponent(lastActiveID)}`);
   } catch (_) {
     return;
   }
@@ -1764,6 +1824,7 @@ async function rehydrateActiveScratchpad() {
   // bubble the user can't chat into.
   if ((detail.committed_thought_id || "").trim() !== "") return;
   state.capture.activeScratchpad = detail;
+  state.capture.archivePreview = detail.archive_preview || null;
   state.capture.sessionId = detail.session_id;
   // Restore the chat history verbatim so the user sees the same
   // composer state they had when they refreshed.
@@ -1825,6 +1886,14 @@ function switchCaptureSession(sessionId) {
   state.capture.sessionId = session.sessionId;
   state.capture.activeThoughtId = session.thoughtId || "";
   state.capture.messages = Array.isArray(session.messages) ? session.messages.slice() : [];
+  api(`/api/capture/sessions/${encodeURIComponent(session.sessionId)}`)
+    .then((detail) => {
+      state.capture.activeScratchpad = detail;
+      state.capture.archivePreview = detail.archive_preview || null;
+      state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : state.capture.messages;
+      renderCaptureConversation();
+    })
+    .catch(() => {});
   closeCaptureSessionsDrawer();
   // Re-acquire the lock for the new active thought in this session.
   if (state.capture.activeThoughtId && window.tflowSessionLock) {
@@ -1863,18 +1932,10 @@ async function submitCaptureComposer(event) {
     toast(t("toast.capture_content_required"));
     return;
   }
-  if (!state.capture.sessionId) {
-    state.capture.sessionId = newCaptureSessionId();
-  }
   appendCaptureMessage({ role: "user", text });
   input.value = "";
   setButtonLoading(send, true, t("capture.composer.sending"));
   try {
-    // In the scratchpad flow, the first user turn stages the
-    // scratchpad (no thought is created). The first turn is the
-    // bootstrap; subsequent turns route to the scratchpad PATCH
-    // helper or, if the scratchpad is already anchored to a
-    // thought, to the PATCH-thought path.
     await stageScratchpadTurn(text);
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
@@ -1884,63 +1945,47 @@ async function submitCaptureComposer(event) {
   }
 }
 
-// stageScratchpadTurn routes a single user message into the
-// scratchpad layer:
-//
-//   - If the scratchpad has not been committed yet (activeThoughtId
-//     is empty), the first turn bootstraps the scratchpad. We POST
-//     /api/capture/sessions/start which appends the message to the
-//     scratchpad and returns the freshly-staged state.
-//   - If the scratchpad has already been committed, subsequent
-//     turns are routed through dispatchCaptureCommand (which
-//     already handles rename / add_tag / append_note for an
-//     existing thought). See stageScratchpadTurn below for the
-//     detail of how the routing decides.
+// stageScratchpadTurn routes a user turn into the current capture
+// session. Plain text is appended through /api/capture/sessions*;
+// recognized commands update context, open a new session, or build
+// an archive preview.
 async function stageScratchpadTurn(text) {
-  if (!state.capture.activeThoughtId) {
-    await bootstrapScratchpad(text);
+  const parsed = parseCaptureCommand(text);
+  if (parsed) {
+    await dispatchCaptureCommand(text);
     return;
   }
-  // Scratchpad already anchored to a thought: subsequent text
-  // turns PATCH the thought directly. The command-recognition
-  // path (rename / add_tag / etc.) is implemented in
-  // dispatchCaptureCommand.
-  await dispatchCaptureCommand(text);
+  await appendSessionMessage(text);
 }
 
-// bootstrapScratchpad stages the first user turn in the scratchpad
-// and updates state.capture with the freshly-returned session. No
-// thought is created yet — the user must explicitly say "归档" /
-// "commit" to push the scratchpad into the real capture pipeline.
-//
-// This replaces the old startCaptureThought that called
-// /api/capture/sessions/start and immediately wrote a thought file.
-async function bootstrapScratchpad(text) {
-  const result = await api("/api/capture/sessions/start", {
-    method: "POST",
-    body: JSON.stringify({
-      content: text,
-      session_id: state.capture.sessionId,
-    }),
-  });
-  const scratchpad = result.scratchpad || result.Scratchpad;
-  if (!scratchpad || !scratchpad.session_id) {
-    appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
-    return;
+async function appendSessionMessage(text) {
+  let scratchpad;
+  if (!state.capture.activeScratchpad || !state.capture.activeScratchpad.session_id) {
+    const headers = state.capture.sessionId ? { "X-Session-Id": state.capture.sessionId } : {};
+    scratchpad = await api("/api/capture/sessions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ content: text }),
+    });
+  } else {
+    scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ role: "user", text }),
+    });
   }
+  if (!scratchpad || !scratchpad.session_id) throw new Error(t("toast.request_failed"));
   state.capture.activeScratchpad = scratchpad;
   state.capture.sessionId = scratchpad.session_id;
-  // activeThoughtId stays empty until the user commits. The UI
-  // should hide / defer the "view thought" actions until then.
-  state.capture.activeThoughtId = "";
+  state.capture.archivePreview = scratchpad.archive_preview || null;
+  state.capture.activeThoughtId = scratchpad.committed_thought_id || "";
   rememberCaptureSession({
     sessionId: scratchpad.session_id,
-    thoughtId: "",
-    title: scratchpad.title || scratchpad.session_id,
+    thoughtId: scratchpad.committed_thought_id || "",
+    title: scratchpad.session_context?.candidate_title || scratchpad.title || scratchpad.session_id,
     messages: state.capture.messages,
   });
-  toast(t("toast.captured", { id: scratchpad.session_id }));
-  refreshActiveCaptureThought();
+  appendCaptureMessage({ role: "system", text: t("capture.command.noted") });
+  renderCaptureConversation();
 }
 
 function renderCaptureThoughtCard(thought, jobs) {
@@ -2129,9 +2174,8 @@ const CAPTURE_COMMANDS = [
   {
     name: "new_session",
     // "新会话" / "重开" / "清空" / "new session" / "reset" — same
-    // single-line anchor as commit. The match hands off to
-    // /api/capture/new-session which deletes the previous scratchpad
-    // and mints a fresh session id.
+    // single-line anchor as commit. The match opens an explicit
+    // fresh /api/capture/sessions resource.
     match: (text) => (/^(新会话|重开|清空|new session|reset)\s*$/i.test(text)
       ? { kind: "new_session" }
       : null),
@@ -2180,7 +2224,7 @@ async function dispatchCaptureCommand(text) {
 // into Title / Tags so the chat UI can render them immediately.
 async function dispatchScratchpadCommand(parsed, text) {
   if (parsed.kind === "commit") {
-    await commitScratchpad();
+    await previewArchive({ intent: "llm" });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -2256,11 +2300,7 @@ async function dispatchThoughtCommand(parsed) {
     return;
   }
   if (parsed.kind === "commit") {
-    // Repeat commit on an already-committed scratchpad: the
-    // backend's commit endpoint handles "继续追加" semantics
-    // automatically (PATCH the existing thought with the new
-    // content / draft deltas).
-    await commitScratchpad();
+    await previewArchive({ intent: "llm" });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -2270,60 +2310,57 @@ async function dispatchThoughtCommand(parsed) {
   appendCaptureMessage({ role: "system", text: t("capture.command.unknown", { text }) });
 }
 
-// patchScratchpad pushes a Draft delta onto the current scratchpad.
-// The backend returns the freshly-updated scratchpad; we mirror
-// that into state so the UI re-renders with the latest title /
-// tags without needing a separate GET.
+// patchScratchpad projects chat-time commands into session_context.
+// The new capture API treats context as the editable draft surface:
+// archive preview reads CandidateTitle / CandidateTags /
+// CandidateBody directly, so there is no separate scratchpad PATCH
+// endpoint in the current PRD flow.
 async function patchScratchpad(draft) {
   const sp = state.capture.activeScratchpad;
   if (!sp) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
   }
-  const merged = mergeScratchpadDraft(sp, draft);
-  const next = await api("/api/capture/scratchpad", {
+  const ctx = mergeSessionContextDraft(sp.session_context || {}, draft, sp);
+  const next = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/context`, {
     method: "POST",
-    body: JSON.stringify(merged),
+    body: JSON.stringify(ctx),
   });
   state.capture.activeScratchpad = next;
+  state.capture.archivePreview = next.archive_preview || null;
   appendCaptureMessage({
     role: "ai",
     text: formatScratchpadFeedback(draft),
   });
-  refreshActiveCaptureThought();
+  renderCaptureConversation();
 }
 
-// mergeScratchpadDraft unions a fresh Draft delta onto the
-// existing scratchpad's Draft + Title / Tags / TopicHints. The
-// server would do the same on its AppendDraft path, but the
-// frontend mirrors it locally so the response is enough to
-// re-render without a round-trip.
-function mergeScratchpadDraft(sp, draft) {
+function mergeSessionContextDraft(ctx, draft, sp) {
   const next = {
-    session_id: sp.session_id || sp.SessionID,
-    workspace_id: sp.workspace_id || sp.WorkspaceID,
-    title: sp.title || sp.Title || "",
-    tags: Array.from(new Set([...(sp.tags || sp.Tags || []), ...(draft.tags_added || [])])),
-    topic_hints: Array.from(new Set([...(sp.topic_hints || sp.TopicHints || []), ...(draft.topic_ids || [])])),
-    url: sp.url || sp.URL || "",
-    content: sp.content || sp.Content || "",
-    messages: sp.messages || sp.Messages || [],
-    draft: {
-      title_set: draft.title_set || sp.draft?.title_set || sp.Draft?.TitleSet || "",
-      tags_added: Array.from(new Set([...(sp.draft?.tags_added || sp.Draft?.TagsAdded || []), ...(draft.tags_added || [])])),
-      tags_removed: Array.from(new Set([...(sp.draft?.tags_removed || sp.Draft?.TagsRemoved || []), ...(draft.tags_removed || [])])),
-      notes_appended: [...(sp.draft?.notes_appended || sp.Draft?.NotesAppended || []), ...(draft.notes_appended || [])],
-      topic_ids: Array.from(new Set([...(sp.draft?.topic_ids || sp.Draft?.TopicIDs || []), ...(draft.topic_ids || [])])),
-      refine_requested: (sp.draft?.refine_requested || sp.Draft?.RefineRequested) || draft.refine_requested,
-    },
-    committed_thought_id: sp.committed_thought_id || sp.CommittedThoughtID || "",
-    committed_at: sp.committed_at || sp.CommittedAt || null,
-    created_at: sp.created_at || sp.CreatedAt || "",
-    updated_at: sp.updated_at || sp.UpdatedAt || "",
+    topic: ctx.topic || "",
+    goal: ctx.goal || "",
+    confirmed_facts: Array.isArray(ctx.confirmed_facts) ? ctx.confirmed_facts.slice() : [],
+    open_questions: Array.isArray(ctx.open_questions) ? ctx.open_questions.slice() : [],
+    conflicts: Array.isArray(ctx.conflicts) ? ctx.conflicts.slice() : [],
+    candidate_title: ctx.candidate_title || sp.title || "",
+    candidate_tags: Array.isArray(ctx.candidate_tags) ? ctx.candidate_tags.slice() : [],
+    candidate_summary: ctx.candidate_summary || "",
+    candidate_body: ctx.candidate_body || sp.content || "",
+    source_links: Array.isArray(ctx.source_links) ? ctx.source_links.slice() : [],
+    related_thought_ids: Array.isArray(ctx.related_thought_ids) ? ctx.related_thought_ids.slice() : [],
+    suggested_topic_ids: Array.isArray(ctx.suggested_topic_ids) ? ctx.suggested_topic_ids.slice() : [],
+    archive_intent: ctx.archive_intent || sp.archive_intent || "none",
+    archive_strategy: ctx.archive_strategy || sp.archive_strategy || "new",
   };
-  if (draft.title_set) {
-    next.title = draft.title_set;
-    next.draft.title_set = draft.title_set;
+  if (draft.title_set) next.candidate_title = draft.title_set;
+  if (Array.isArray(draft.tags_added) && draft.tags_added.length) {
+    next.candidate_tags = Array.from(new Set([...next.candidate_tags, ...draft.tags_added]));
+  }
+  if (Array.isArray(draft.notes_appended) && draft.notes_appended.length) {
+    next.candidate_body = [next.candidate_body, ...draft.notes_appended].filter(Boolean).join("\n\n");
+  }
+  if (Array.isArray(draft.topic_ids) && draft.topic_ids.length) {
+    next.suggested_topic_ids = Array.from(new Set([...next.suggested_topic_ids, ...draft.topic_ids]));
   }
   return next;
 }
@@ -2354,11 +2391,33 @@ async function resolveScratchpadTopic(topicRef) {
     null;
 }
 
-// commitScratchpad fires POST /api/capture/scratchpad/commit, which
-// runs the full capture pipeline (refine / expand / index / topic /
-// git_commit) on the staged content. On success, the response
-// carries the new thought id; we mirror that into state so
-// subsequent commands route through dispatchThoughtCommand.
+async function previewArchive({ intent = "menu", strategy = "" } = {}) {
+  if (!state.capture.sessionId) {
+    appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
+    return;
+  }
+  try {
+    await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/intent`, {
+      method: "POST",
+      body: JSON.stringify({ intent }),
+    });
+    const suffix = strategy ? `?strategy=${encodeURIComponent(strategy)}` : "";
+    const result = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/archive/preview${suffix}`, {
+      method: "GET",
+    });
+    state.capture.archivePreview = result.preview || null;
+    if (state.capture.activeScratchpad) {
+      state.capture.activeScratchpad.archive_preview = state.capture.archivePreview;
+    }
+    appendCaptureMessage({ role: "ai", text: t("capture.archive.preview_ready") });
+    renderCaptureConversation();
+    const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
+    if (ok) await commitScratchpad();
+  } catch (error) {
+    appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
+  }
+}
+
 async function commitScratchpad() {
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
@@ -2366,9 +2425,10 @@ async function commitScratchpad() {
   }
   let result;
   try {
-    result = await api("/api/capture/scratchpad/commit", {
+    const preview = state.capture.archivePreview || {};
+    result = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/archive`, {
       method: "POST",
-      body: JSON.stringify({ session_id: state.capture.sessionId }),
+      body: JSON.stringify({ strategy: preview.strategy || "new", thought_id: preview.thought_id || "", confirmed: true }),
     });
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
@@ -2384,10 +2444,11 @@ async function commitScratchpad() {
   } else {
     appendCaptureMessage({ role: "ai", text: t("capture.command.committed_no_id") });
   }
-  // The scratchpad itself has been reset on the server; clear
-  // the local copy so the next "新会话" / "归档" cycle starts
-  // from a known state.
-  state.capture.activeScratchpad = null;
+  state.capture.archivePreview = null;
+  if (state.capture.activeScratchpad) {
+    state.capture.activeScratchpad.committed_thought_id = thoughtId;
+    state.capture.activeScratchpad.archive_preview = null;
+  }
   rememberCaptureSession({
     sessionId: state.capture.sessionId,
     thoughtId,
@@ -2397,14 +2458,13 @@ async function commitScratchpad() {
   refreshActiveCaptureThought();
 }
 
-// openNewCaptureSession POSTs /api/capture/new-session, which
-// mints a fresh session id and (optionally) deletes the previous
-// scratchpad. The local state is reset to match the new scratchpad
-// so the chat composer is in sync.
+// openNewCaptureSession mints a fresh capture session and optionally
+// deletes the previous draft. The local state is reset to match the
+// new session so the chat composer is in sync.
 async function openNewCaptureSession() {
   let next;
   try {
-    next = await api("/api/capture/new-session", {
+    next = await api("/api/capture/sessions", {
       method: "POST",
       body: JSON.stringify({ prev_session_id: state.capture.sessionId }),
     });
@@ -2416,6 +2476,7 @@ async function openNewCaptureSession() {
   state.capture.activeThoughtId = "";
   state.capture.activeSnapshot = null;
   state.capture.activeScratchpad = next || null;
+  state.capture.archivePreview = null;
   state.capture.suggestion = null;
   state.capture.messages = [];
   if (window.tflowSessionLock && state.capture.activeThoughtId) {
@@ -2530,6 +2591,8 @@ function newCaptureSession() {
   state.capture.sessionId = newCaptureSessionId();
   state.capture.activeThoughtId = "";
   state.capture.activeSnapshot = null;
+  state.capture.activeScratchpad = null;
+  state.capture.archivePreview = null;
   state.capture.messages = [];
   state.capture.suggestion = null;
   renderCaptureConversation();
@@ -2539,13 +2602,14 @@ function newCaptureSession() {
 
 function finishCaptureSession() {
   const thoughtId = state.capture.activeThoughtId;
-  if (!thoughtId) return;
   if (window.tflowSessionLock) {
     window.tflowSessionLock.release(thoughtId, state.capture.sessionId);
   }
   state.capture.sessionId = "";
   state.capture.activeThoughtId = "";
   state.capture.activeSnapshot = null;
+  state.capture.activeScratchpad = null;
+  state.capture.archivePreview = null;
   state.capture.messages = [];
   appendCaptureMessage({ role: "system", text: t("capture.session.closed") });
   renderCaptureConversation();
@@ -3210,6 +3274,7 @@ function bind() {
   $("#capture-composer")?.addEventListener("submit", (event) => submitCaptureComposer(event).catch((error) => toast(error.message)));
   $("#capture-new-session")?.addEventListener("click", () => newCaptureSession());
   $("#capture-finish")?.addEventListener("click", () => finishCaptureSession());
+  $("#capture-refresh-preview")?.addEventListener("click", () => previewArchive({ intent: "menu" }));
   $("#capture-sessions-toggle")?.addEventListener("click", () => {
     const drawer = $("#capture-sessions-drawer");
     if (!drawer) return;
