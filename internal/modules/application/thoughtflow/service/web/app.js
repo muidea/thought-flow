@@ -1974,17 +1974,29 @@ async function appendSessionMessage(text) {
     });
   }
   if (!scratchpad || !scratchpad.session_id) throw new Error(t("toast.request_failed"));
+  const previousThoughtId = state.capture.activeThoughtId || "";
   state.capture.activeScratchpad = scratchpad;
   state.capture.sessionId = scratchpad.session_id;
   state.capture.archivePreview = scratchpad.archive_preview || null;
-  state.capture.activeThoughtId = scratchpad.committed_thought_id || "";
+  const linkedThoughtId = scratchpad.committed_thought_id || "";
+  state.capture.activeThoughtId = linkedThoughtId;
   rememberCaptureSession({
     sessionId: scratchpad.session_id,
-    thoughtId: scratchpad.committed_thought_id || "",
+    thoughtId: linkedThoughtId,
     title: scratchpad.session_context?.candidate_title || scratchpad.title || scratchpad.session_id,
     messages: state.capture.messages,
   });
   appendCaptureMessage({ role: "system", text: t("capture.command.noted") });
+  // When the scratchpad transitions from "no committed thought" to
+  // "anchored to thought-X" (e.g. reopening a previously-archived
+  // session and then dropping another message, or the legacy
+  // composer-immediately-commits flow), surface the thought anchor
+  // bubble + a fresh snapshot so the chat picks up the
+  // refine/index/topic chips in place.
+  if (linkedThoughtId && previousThoughtId !== linkedThoughtId) {
+    appendCaptureMessage({ role: "ai", thoughtId: linkedThoughtId, text: t("capture.command.committed", { id: linkedThoughtId }) });
+    refreshActiveCaptureThought();
+  }
   renderCaptureConversation();
 }
 

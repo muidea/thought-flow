@@ -485,7 +485,7 @@ test("synthesis basket persists across reloads via localStorage", async (t) => {
 });
 
 test("capture composer starts a new session, persists a thought, and shows the conversation", async (t) => {
-  const server = await startFixtureServer();
+  const server = await startFixtureServer({ autoCommit: true });
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
@@ -841,7 +841,8 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
   }
 });
 
-function startFixtureServer() {
+function startFixtureServer(options = {}) {
+  const { autoCommit = false } = options;
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
   // Per-thought PATCH state. The GET response reflects the most recent
@@ -899,6 +900,18 @@ function startFixtureServer() {
         sp.session_context.candidate_body = sp.content;
         sp.session_context.candidate_summary = sp.content;
         if (!sp.session_context.candidate_title) sp.session_context.candidate_title = text;
+        if (autoCommit && !sp.committed_thought_id) {
+          // Mock-only: bypass the two-step "preview → archive" flow
+          // so the composer→AI-bubble happy path can be exercised
+          // end-to-end. The real backend only sets
+          // committed_thought_id on /archive; the front-end surfaces
+          // the rich status chip whenever a scratchpad transitions
+          // from "no anchor" to "anchored to thought-X", so the test
+          // can assert the same rendering it would see after a
+          // genuine archive round-trip.
+          sp.committed_thought_id = "thought-capture";
+          sp.archive_preview = null;
+        }
         captureSessions.set(sessionID, sp);
         return json(res, api(sp));
       }
@@ -1044,6 +1057,10 @@ function startFixtureServer() {
           }
           const id = req.headers["x-session-id"] || "browser-session";
           const sp = makeScratchpad(id, body.content || "");
+          if (autoCommit) {
+            // Mock-only: see the note in the /messages handler.
+            sp.committed_thought_id = "thought-capture";
+          }
           captureSessions.set(id, sp);
           return json(res, api(sp));
         }
