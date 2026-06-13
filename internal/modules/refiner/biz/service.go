@@ -14,21 +14,18 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
-	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/webfetch"
 )
 
 type Service struct {
-	workspace         *models.Workspace
-	jobs              *jobstore.Store
-	eventHub          event.Hub
-	background        task.BackgroundRoutine
-	provider          ai.RefineProvider
-	fetcher           *webfetch.Fetcher
-	synthesisProvider ai.SynthesisProvider
-	synthesisStore    *synthesisstore.Store
-	locker            *thoughtlock.Locker
+	workspace  *models.Workspace
+	jobs       *jobstore.Store
+	eventHub   event.Hub
+	background task.BackgroundRoutine
+	provider   ai.RefineProvider
+	fetcher    *webfetch.Fetcher
+	locker     *thoughtlock.Locker
 }
 
 const refineMaxAttempts = 3
@@ -43,21 +40,6 @@ var refinerSessionID = thoughtlock.RefinerSessionID
 
 type retryableRefineError struct {
 	err error
-}
-
-type SynthesisDraftStoreError struct {
-	Err error
-}
-
-func (e SynthesisDraftStoreError) Error() string {
-	if e.Err == nil {
-		return "synthesis draft store failed"
-	}
-	return e.Err.Error()
-}
-
-func (e SynthesisDraftStoreError) Unwrap() error {
-	return e.Err
 }
 
 func (e retryableRefineError) Error() string {
@@ -92,11 +74,6 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub even
 		option(service)
 	}
 	return service
-}
-
-func (s *Service) ConfigureSynthesis(provider ai.SynthesisProvider, store *synthesisstore.Store) {
-	s.synthesisProvider = provider
-	s.synthesisStore = store
 }
 
 func (s *Service) ID() string {
@@ -192,58 +169,6 @@ func (s *Service) refineNow(ctx context.Context, thoughtID string, force bool) (
 		return models.ThoughtRefinement{}, err
 	}
 	return s.refine(ctx, thought, content, force)
-}
-
-func (s *Service) CreateSynthesisDraft(ctx context.Context, request models.SynthesisRequest, snapshots []models.ThoughtSnapshot, sourceLinks []string) (models.SynthesisDraft, error) {
-	if s == nil || s.synthesisProvider == nil {
-		return models.SynthesisDraft{}, errors.New("synthesis provider is not ready")
-	}
-	if s.synthesisStore == nil {
-		return models.SynthesisDraft{}, errors.New("synthesis draft store is unavailable")
-	}
-	if len(snapshots) == 0 {
-		return models.SynthesisDraft{}, errors.New("synthesis snapshots are required")
-	}
-	thoughtIDs := make([]string, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		thoughtIDs = append(thoughtIDs, snapshot.Thought.ID)
-	}
-	draft, err := s.synthesisProvider.Synthesize(ctx, ai.SynthesisRequest{
-		ThoughtIDs:  thoughtIDs,
-		Goal:        request.Goal,
-		Format:      request.Format,
-		Snapshots:   snapshots,
-		SourceLinks: sourceLinks,
-	})
-	if err != nil {
-		return models.SynthesisDraft{}, err
-	}
-	draft, err = s.synthesisStore.SaveDraft(ctx, draft)
-	if err != nil {
-		return models.SynthesisDraft{}, SynthesisDraftStoreError{Err: err}
-	}
-	return draft, nil
-}
-
-func (s *Service) ListSynthesisDrafts(ctx context.Context) ([]models.SynthesisDraft, error) {
-	if s == nil || s.synthesisStore == nil {
-		return nil, errors.New("synthesis draft store is unavailable")
-	}
-	return s.synthesisStore.ListDrafts(ctx)
-}
-
-func (s *Service) GetSynthesisDraft(ctx context.Context, draftID string) (models.SynthesisDraft, error) {
-	if s == nil || s.synthesisStore == nil {
-		return models.SynthesisDraft{}, errors.New("synthesis draft store is unavailable")
-	}
-	return s.synthesisStore.GetDraft(ctx, draftID)
-}
-
-func (s *Service) MarkSynthesisSaved(ctx context.Context, draftID string, content string, thought models.Thought) (models.SynthesisDraft, error) {
-	if s == nil || s.synthesisStore == nil {
-		return models.SynthesisDraft{}, errors.New("synthesis draft store is unavailable")
-	}
-	return s.synthesisStore.MarkSaved(ctx, draftID, content, thought)
 }
 
 func (s *Service) refineJob(job models.Job, force bool) {

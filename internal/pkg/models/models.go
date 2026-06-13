@@ -638,36 +638,24 @@ type TopicSessionCandidate struct {
 	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
-type SynthesisRequest struct {
-	ThoughtIDs []string `json:"thought_ids"`
-	Goal       string   `json:"goal"`
-	Format     string   `json:"format"`
-}
-
-type SynthesisSaveRequest struct {
-	DraftID     string   `json:"draft_id,omitempty"`
-	ThoughtIDs  []string `json:"thought_ids"`
-	Goal        string   `json:"goal"`
-	Format      string   `json:"format"`
-	Title       string   `json:"title,omitempty"`
-	Content     string   `json:"content"`
-	SourceLinks []string `json:"source_links,omitempty"`
-}
-
+// SynthesisDraft is the LLM-side wire shape returned by
+// ai.SynthesisProvider. The HTTP-facing type is ComposeDraft; the
+// compose service translates SynthesisDraft into ComposeDraft on the
+// way in. We keep the type here (rather than folding into ComposeDraft)
+// so the LLM provider boundary can evolve without breaking the
+// application/persistence DTO.
 type SynthesisDraft struct {
-	ID             string                  `json:"id" yaml:"id"`
-	ThoughtIDs     []string                `json:"thought_ids" yaml:"thought_ids"`
-	Goal           string                  `json:"goal" yaml:"goal"`
-	Format         string                  `json:"format" yaml:"format"`
-	Content        string                  `json:"content" yaml:"content"`
-	SourceLinks    []string                `json:"source_links" yaml:"source_links"`
-	Model          string                  `json:"model" yaml:"model"`
-	Status         string                  `json:"status" yaml:"status"`
-	SavedThoughtID string                  `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
-	History        []SynthesisDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
-	CreatedAt      time.Time               `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time               `json:"updated_at" yaml:"updated_at"`
-	SavedAt        *time.Time              `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
+	ID          string                 `json:"id" yaml:"id"`
+	ThoughtIDs  []string               `json:"thought_ids" yaml:"thought_ids"`
+	Goal        string                 `json:"goal" yaml:"goal"`
+	Format      string                 `json:"format" yaml:"format"`
+	Content     string                 `json:"content" yaml:"content"`
+	SourceLinks []string               `json:"source_links" yaml:"source_links"`
+	Model       string                 `json:"model" yaml:"model"`
+	Status      string                 `json:"status" yaml:"status"`
+	History     []SynthesisDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
+	CreatedAt   time.Time              `json:"created_at" yaml:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at" yaml:"updated_at"`
 }
 
 type SynthesisDraftHistory struct {
@@ -675,12 +663,6 @@ type SynthesisDraftHistory struct {
 	Message   string    `json:"message,omitempty" yaml:"message,omitempty"`
 	ThoughtID string    `json:"thought_id,omitempty" yaml:"thought_id,omitempty"`
 	At        time.Time `json:"at" yaml:"at"`
-}
-
-type SynthesisSaveResult struct {
-	Thought     Thought  `json:"thought"`
-	Jobs        []Job    `json:"jobs,omitempty"`
-	SourceLinks []string `json:"source_links,omitempty"`
 }
 
 // ComposeSource represents a single source entry inside a
