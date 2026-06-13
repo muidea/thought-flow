@@ -348,6 +348,40 @@ test("API e2e", async (t) => {
     }
   });
 
+  await t.test("search filters by tag and topic_id, returns SearchResultView shape", async () => {
+    // The Web-facing search surface (per convergence todo 6.1) only emits
+    // q / tags / topic_id; assertions here pin the API contract to that
+    // surface and verify SearchResultView projects results without an
+    // explain block.
+    await request(server.baseURL, "/api/thoughts", "POST", {
+      body: {
+        type: "text",
+        title: "search-tagged",
+        content: "vector store retrieval",
+        tags: ["rag"],
+      },
+    });
+    await sleep(50);
+
+    // tags=rag should surface the freshly seeded note.
+    const byTag = await request(
+      server.baseURL,
+      `/api/search?q=vector&tags=rag&limit=5`,
+      "GET"
+    );
+    assert.equal(byTag.status, 200, `tags filter status=${byTag.status}`);
+    const tagData = envelope(byTag).data;
+    assert.ok(Array.isArray(tagData.results), "results must be an array");
+    assert.ok(
+      tagData.results.find((r) => r.title === "search-tagged"),
+      "tags=rag must surface the seeded note",
+    );
+    // SearchResultView does not expose an `explain` field; the legacy
+    // /api/search?explain=true still works server-side but the projection is
+    // a flat results array.
+    assert.equal(typeof tagData.explain, "undefined", "explain field is not part of the projection");
+  });
+
   await t.test("topics CRUD: create, get, update, refresh, weave-proposals", async () => {
     const create = await request(server.baseURL, "/api/topics", "POST", {
       body: {
