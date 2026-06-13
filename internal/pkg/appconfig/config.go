@@ -205,7 +205,7 @@ func defaultConfig() Config {
 		},
 		Search: SearchConfig{
 			DuckDBPath:  "thoughtflow.duckdb",
-			DefaultMode: "hybrid",
+			DefaultMode: "keyword",
 		},
 		Topic: TopicConfig{
 			AutoWeave:        true,

@@ -9,6 +9,19 @@ const (
 	ThoughtSourceManual    = "manual"
 	ThoughtSourceAPI       = "api"
 	ThoughtSourceSynthesis = "synthesis"
+	ThoughtSourceCompose   = "compose"
+
+	ComposeSourceTypeThought        = "thought"
+	ComposeSourceTypeSearchResult   = "search_result"
+	ComposeSourceTypeTopicSection   = "topic_section"
+	ComposeSourceTypeCaptureSession = "capture_session"
+
+	ComposeFormatSummary = "summary"
+	ComposeFormatOutline = "outline"
+	ComposeFormatReport  = "report"
+
+	ComposeStatusDraft = "draft"
+	ComposeStatusSaved = "saved"
 
 	CaptureStatusCaptured        = "captured"
 	CaptureStatusDuplicateWarned = "duplicate_warned"
@@ -665,6 +678,78 @@ type SynthesisDraftHistory struct {
 }
 
 type SynthesisSaveResult struct {
+	Thought     Thought  `json:"thought"`
+	Jobs        []Job    `json:"jobs,omitempty"`
+	SourceLinks []string `json:"source_links,omitempty"`
+}
+
+// ComposeSource represents a single source entry inside a
+// ComposeBasket or a ComposeDraft. The source_type/source_id pair is
+// the stable join key for the Web basket helper; the auxiliary
+// fields (title/snippet/source_link/metadata) are display-only and
+// may be rehydrated server-side when a draft is opened.
+type ComposeSource struct {
+	SourceType string            `json:"source_type" yaml:"source_type"`
+	SourceID   string            `json:"source_id" yaml:"source_id"`
+	Title      string            `json:"title,omitempty" yaml:"title,omitempty"`
+	Snippet    string            `json:"snippet,omitempty" yaml:"snippet,omitempty"`
+	SourceLink string            `json:"source_link,omitempty" yaml:"source_link,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// ComposeRequest is the body of POST /api/compose/drafts. It
+// supersedes the legacy SynthesisRequest (thought_ids[]) shape —
+// sources carry their own type discriminator so the server can
+// hydrate Search/Topic/Capture rows in addition to Thought rows.
+type ComposeRequest struct {
+	Sources            []ComposeSource `json:"sources"`
+	SelectedThoughtIDs []string        `json:"selected_thought_ids,omitempty"`
+	Prompt             string          `json:"prompt,omitempty"`
+	Goal               string          `json:"goal,omitempty"`
+	Format             string          `json:"format,omitempty"`
+}
+
+// ComposeSaveRequest is the body of POST /api/compose/drafts/{id}/save.
+// The draft_id path parameter identifies the stored draft; the body
+// optionally overrides the rendered content and the title/tags used
+// when the resulting Thought is captured.
+type ComposeSaveRequest struct {
+	Content string   `json:"content,omitempty"`
+	Title   string   `json:"title,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+// ComposeDraft is the on-disk and over-the-wire shape of a compose
+// draft. The YAML-backed file lives at
+// workspace/compose/drafts/{draft_id}.yaml. The status transitions
+// draft → saved when the user commits the draft to a Thought.
+type ComposeDraft struct {
+	ID             string                `json:"id" yaml:"id"`
+	Sources        []ComposeSource       `json:"sources" yaml:"sources"`
+	Goal           string                `json:"goal" yaml:"goal"`
+	Format         string                `json:"format" yaml:"format"`
+	Content        string                `json:"content" yaml:"content"`
+	SourceLinks    []string              `json:"source_links" yaml:"source_links"`
+	Model          string                `json:"model" yaml:"model"`
+	Status         string                `json:"status" yaml:"status"`
+	SavedThoughtID string                `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
+	History        []ComposeDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
+	CreatedAt      time.Time             `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time             `json:"updated_at" yaml:"updated_at"`
+	SavedAt        *time.Time            `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
+}
+
+type ComposeDraftHistory struct {
+	Status    string    `json:"status" yaml:"status"`
+	Message   string    `json:"message,omitempty" yaml:"message,omitempty"`
+	ThoughtID string    `json:"thought_id,omitempty" yaml:"thought_id,omitempty"`
+	At        time.Time `json:"at" yaml:"at"`
+}
+
+// ComposeSaveResult mirrors SynthesisSaveResult: it bundles the
+// created Thought with the new thought's job and the source links
+// the Web drawer uses to render the "Saved to thought-X" bubble.
+type ComposeSaveResult struct {
 	Thought     Thought  `json:"thought"`
 	Jobs        []Job    `json:"jobs,omitempty"`
 	SourceLinks []string `json:"source_links,omitempty"`

@@ -22,6 +22,7 @@ import (
 	engine "github.com/muidea/magicEngine/http"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	composebiz "thoughtflow/internal/modules/compose/biz"
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
@@ -37,13 +38,12 @@ import (
 //go:embed web/*
 var webAssets embed.FS
 
-var errSynthesisThoughtIDsRequired = errors.New("thought_ids is required")
-
 type Service struct {
 	registry         engine.RouteRegistry
 	captureService   *capturebiz.Service
 	scratchpadSvc    *capturebiz.ScratchpadService
 	refinerService   *refinerbiz.Service
+	composeService   *composebiz.Service
 	searchService    *searchbiz.Service
 	topicService     *topicbiz.Service
 	classifyProvider ai.ClassifyProvider
@@ -92,13 +92,14 @@ type backgroundTaskAcceptor interface {
 	AsyncFunction(function func()) error
 }
 
-func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scratchpadService *capturebiz.ScratchpadService, refinerService *refinerbiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, scratchpadStore scratchpadStore, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
+func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scratchpadService *capturebiz.ScratchpadService, refinerService *refinerbiz.Service, composeService *composebiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, scratchpadStore scratchpadStore, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	return &Service{
 		registry:         registry,
 		captureService:   captureService,
 		scratchpadSvc:    scratchpadService,
 		refinerService:   refinerService,
+		composeService:   composeService,
 		searchService:    searchService,
 		topicService:     topicService,
 		classifyProvider: ai.NewClassifyProvider(cfg.LLM),
@@ -150,10 +151,10 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive", engine.POST, s.handleSessionArchive)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
-	s.registry.AddHandler("/api/synthesis/save", engine.POST, s.handleSaveSynthesis)
-	s.registry.AddHandler("/api/synthesis/:id", engine.GET, s.handleGetSynthesisDraft)
-	s.registry.AddHandler("/api/synthesis", engine.GET, s.handleListSynthesisDrafts)
-	s.registry.AddHandler("/api/synthesis", engine.POST, s.handleSynthesis)
+	s.registry.AddHandler("/api/compose/drafts", engine.GET, s.handleListComposeDrafts)
+	s.registry.AddHandler("/api/compose/drafts", engine.POST, s.handleCreateComposeDraft)
+	s.registry.AddHandler("/api/compose/drafts/:id", engine.GET, s.handleGetComposeDraft)
+	s.registry.AddHandler("/api/compose/drafts/:id/save", engine.POST, s.handleSaveComposeDraft)
 	s.registry.AddHandler("/api/topics", engine.GET, s.handleListTopics)
 	s.registry.AddHandler("/api/topics", engine.POST, s.handleCreateTopic)
 	s.registry.AddHandler("/api/topics/:id/rebuild", engine.POST, s.handleRebuildTopic)
@@ -476,202 +477,86 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	writeJSON(res, req, http.StatusOK, result)
 }
 
-func (s *Service) handleSynthesis(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	var request models.SynthesisRequest
+func (s *Service) handleCreateComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	var request models.ComposeRequest
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_json", err.Error())
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_json", err.Error())
 		return
 	}
-	if len(request.ThoughtIDs) == 0 {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "thought_ids is required")
+	if len(request.Sources) == 0 {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_request", "sources is required")
 		return
 	}
-	if s.refinerService == nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
-		return
-	}
-	snapshots, sourceLinks, err := s.synthesisSources(ctx, request.ThoughtIDs)
+	draft, err := s.composeService.CreateDraft(ctx, request)
 	if err != nil {
-		writeSynthesisSourceError(res, req, err)
-		return
-	}
-	draft, err := s.refinerService.CreateSynthesisDraft(ctx, request, snapshots, sourceLinks)
-	if err != nil {
-		var storeErr refinerbiz.SynthesisDraftStoreError
-		if errors.As(err, &storeErr) {
-			writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.draft_failed", err.Error())
-			return
-		}
-		writeError(res, req, http.StatusBadGateway, "thoughtflow.synthesis.generate_failed", err.Error())
+		writeError(res, req, http.StatusBadGateway, "thoughtflow.compose.generate_failed", err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusOK, draft)
 }
 
-func (s *Service) handleListSynthesisDrafts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	if s.refinerService == nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
+func (s *Service) handleListComposeDrafts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
 		return
 	}
-	drafts, err := s.refinerService.ListSynthesisDrafts(ctx)
+	drafts, err := s.composeService.ListDrafts(ctx)
 	if err != nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.list_failed", err.Error())
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.list_failed", err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusOK, drafts)
 }
 
-func (s *Service) handleGetSynthesisDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	draftID := pathID(req.URL.Path, "/api/synthesis/")
+func (s *Service) handleGetComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	draftID := pathID(req.URL.Path, "/api/compose/drafts/")
 	if draftID == "" {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "draft id is required")
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_request", "draft id is required")
 		return
 	}
-	if s.refinerService == nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
-		return
-	}
-	draft, err := s.refinerService.GetSynthesisDraft(ctx, draftID)
+	draft, err := s.composeService.GetDraft(ctx, draftID)
 	if err != nil {
-		writeError(res, req, http.StatusNotFound, "thoughtflow.synthesis.draft_not_found", err.Error())
+		writeError(res, req, http.StatusNotFound, "thoughtflow.compose.draft_not_found", err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusOK, draft)
 }
 
-func (s *Service) handleSaveSynthesis(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	var request models.SynthesisSaveRequest
-	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_json", err.Error())
+func (s *Service) handleSaveComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
 		return
 	}
-	if s.refinerService == nil && strings.TrimSpace(request.DraftID) != "" {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.synthesis.refiner_unavailable", "refiner service is not ready")
+	draftID := pathID(req.URL.Path, "/api/compose/drafts/")
+	draftID = strings.SplitN(draftID, "/", 2)[0]
+	if draftID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_request", "draft id is required")
 		return
 	}
-	if strings.TrimSpace(request.DraftID) != "" {
-		draft, err := s.refinerService.GetSynthesisDraft(ctx, request.DraftID)
-		if err != nil {
-			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_not_found", err.Error())
-			return
-		}
-		if len(request.ThoughtIDs) == 0 {
-			request.ThoughtIDs = draft.ThoughtIDs
-		}
-		if strings.TrimSpace(request.Goal) == "" {
-			request.Goal = draft.Goal
-		}
-		if strings.TrimSpace(request.Format) == "" {
-			request.Format = draft.Format
-		}
-		if strings.TrimSpace(request.Content) == "" {
-			request.Content = draft.Content
-		}
-	}
-	if len(request.ThoughtIDs) == 0 {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "thought_ids is required")
-		return
-	}
-	if strings.TrimSpace(request.Content) == "" {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", "content is required")
-		return
-	}
-	_, sourceLinks, err := s.synthesisSources(ctx, request.ThoughtIDs)
-	if err != nil {
-		writeSynthesisSourceError(res, req, err)
-		return
-	}
-	format := firstNonEmpty(request.Format, "summary")
-	title := firstNonEmpty(request.Title, request.Goal, "Synthesis draft")
-	content := appendSynthesisSourceLinks(request.Content, sourceLinks)
-	tags := []string{"synthesis"}
-	if format != "" {
-		tags = append(tags, format)
-	}
-	result, err := s.captureService.Capture(ctx, models.CaptureCommand{
-		Type:    models.ThoughtTypeText,
-		Source:  models.ThoughtSourceSynthesis,
-		Title:   title,
-		Content: content,
-		Tags:    tags,
-	})
-	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.save_failed", err.Error())
-		return
-	}
-	if strings.TrimSpace(request.DraftID) != "" {
-		if _, err := s.refinerService.MarkSynthesisSaved(ctx, request.DraftID, content, result.Thought); err != nil {
-			writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.draft_save_failed", err.Error())
+	// The draft id from the path is the canonical id; any draft_id
+	// in the body is ignored so a stale client cannot route a save
+	// to a different draft than the URL names.
+	var request models.ComposeSaveRequest
+	if req.ContentLength > 0 {
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_json", err.Error())
 			return
 		}
 	}
-	writeJSON(res, req, http.StatusAccepted, models.SynthesisSaveResult{
-		Thought:     result.Thought,
-		Jobs:        result.Jobs,
-		SourceLinks: sourceLinks,
-	})
-}
-
-func (s *Service) synthesisSources(ctx context.Context, thoughtIDs []string) ([]models.ThoughtSnapshot, []string, error) {
-	snapshots := []models.ThoughtSnapshot{}
-	sourceLinks := []string{}
-	seen := map[string]struct{}{}
-	for _, thoughtID := range thoughtIDs {
-		thoughtID = strings.TrimSpace(thoughtID)
-		if thoughtID == "" {
-			continue
-		}
-		if _, ok := seen[thoughtID]; ok {
-			continue
-		}
-		seen[thoughtID] = struct{}{}
-		snapshot, err := s.captureService.GetThought(ctx, thoughtID)
-		if err != nil {
-			return nil, nil, err
-		}
-		snapshots = append(snapshots, snapshot)
-		sourceLinks = append(sourceLinks, snapshot.Thought.Path)
-	}
-	if len(snapshots) == 0 {
-		return nil, nil, errSynthesisThoughtIDsRequired
-	}
-	return snapshots, sourceLinks, nil
-}
-
-func writeSynthesisSourceError(res http.ResponseWriter, req *http.Request, err error) {
-	if errors.Is(err, errSynthesisThoughtIDsRequired) {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.synthesis.invalid_request", err.Error())
+	result, err := s.composeService.SaveDraft(ctx, draftID, request)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.save_failed", err.Error())
 		return
 	}
-	writeError(res, req, http.StatusNotFound, "thoughtflow.synthesis.thought_not_found", err.Error())
-}
-
-func appendSynthesisSourceLinks(content string, sourceLinks []string) string {
-	content = strings.TrimSpace(content)
-	missing := []string{}
-	for _, link := range sourceLinks {
-		link = strings.TrimSpace(link)
-		if link == "" || strings.Contains(content, link) {
-			continue
-		}
-		missing = append(missing, link)
-	}
-	if len(missing) == 0 {
-		return content
-	}
-	var builder strings.Builder
-	builder.WriteString(content)
-	if strings.Contains(strings.ToLower(content), "### sources") {
-		builder.WriteString("\n")
-	} else {
-		builder.WriteString("\n\n### Sources\n\n")
-	}
-	for _, link := range missing {
-		builder.WriteString("- [[")
-		builder.WriteString(link)
-		builder.WriteString("]]\n")
-	}
-	return strings.TrimSpace(builder.String())
+	writeJSON(res, req, http.StatusAccepted, result)
 }
 
 func (s *Service) handleListTopics(ctx context.Context, res http.ResponseWriter, req *http.Request) {

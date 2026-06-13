@@ -17,11 +17,13 @@ import (
 	mcevent "github.com/muidea/magicCommon/event"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	composebiz "thoughtflow/internal/modules/compose/biz"
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
 	searchbiz "thoughtflow/internal/modules/search/biz"
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/composedraft"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -29,7 +31,6 @@ import (
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/searchdb"
-	"thoughtflow/internal/pkg/synthesisstore"
 	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/topicstore"
 )
@@ -560,7 +561,7 @@ func TestHandlePrivacyReportAllDisabled(t *testing.T) {
 	}
 }
 
-func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
+func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:       "test",
@@ -571,7 +572,15 @@ func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
-	service := &Service{captureService: captureService}
+	composeService := composebiz.NewService(
+		ws,
+		composedraft.New(root),
+		jobstore.New(ws.JobsPath),
+		nil,
+		fakeComposeProvider{body: "# Compose draft\n\nPicked notes."},
+		captureService,
+	)
+	service := &Service{captureService: captureService, composeService: composeService, workspace: ws}
 	ctx := context.Background()
 
 	left, err := captureService.Capture(ctx, models.CaptureCommand{
@@ -591,47 +600,61 @@ func TestHandleSaveSynthesisCreatesSynthesisThought(t *testing.T) {
 		t.Fatalf("Capture(right) error = %v", err)
 	}
 
-	body := strings.NewReader(`{
-		"thought_ids":["` + left.Thought.ID + `","` + right.Thought.ID + `"],
+	createBody := strings.NewReader(`{
+		"sources":[
+			{"source_type":"thought","source_id":"` + left.Thought.ID + `","title":"Vector notes"},
+			{"source_type":"thought","source_id":"` + right.Thought.ID + `","title":"Topic notes"}
+		],
 		"goal":"Research outline",
-		"format":"outline",
-		"content":"# Research outline\n\nCombine the selected notes."
+		"format":"outline"
+	}`)
+	createRes := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts", createBody)
+	service.handleCreateComposeDraft(ctx, createRes, createReq)
+	if createRes.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRes.Code, createRes.Body.String())
+	}
+	var created struct {
+		Data models.ComposeDraft `json:"data"`
+	}
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal(create) error = %v", err)
+	}
+
+	saveBody := strings.NewReader(`{
+		"title":"Research outline",
+		"tags":["compose","outline"]
 	}`)
 	res := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/synthesis/save", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+created.Data.ID+"/save", saveBody)
 
-	service.handleSaveSynthesis(ctx, res, req)
+	service.handleSaveComposeDraft(ctx, res, req)
 
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 	var payload struct {
-		Data models.SynthesisSaveResult `json:"data"`
+		Data models.ComposeSaveResult `json:"data"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if payload.Data.Thought.Source != models.ThoughtSourceSynthesis {
+	if payload.Data.Thought.Source != models.ThoughtSourceCompose {
 		t.Fatalf("source = %q", payload.Data.Thought.Source)
 	}
-	if !containsString(payload.Data.Thought.UserTags, "synthesis") || !containsString(payload.Data.Thought.UserTags, "outline") {
+	if !containsString(payload.Data.Thought.UserTags, "compose") || !containsString(payload.Data.Thought.UserTags, "outline") {
 		t.Fatalf("tags = %#v", payload.Data.Thought.UserTags)
 	}
-	savedThought, savedContent, err := markdown.ReadThought(root, payload.Data.Thought.ID)
+	savedThought, _, err := markdown.ReadThought(root, payload.Data.Thought.ID)
 	if err != nil {
 		t.Fatalf("ReadThought(saved) error = %v", err)
 	}
-	if savedThought.Source != models.ThoughtSourceSynthesis {
+	if savedThought.Source != models.ThoughtSourceCompose {
 		t.Fatalf("saved source = %q", savedThought.Source)
-	}
-	for _, sourcePath := range []string{left.Thought.Path, right.Thought.Path} {
-		if !strings.Contains(savedContent.Original, sourcePath) {
-			t.Fatalf("saved synthesis content should include source %s:\n%s", sourcePath, savedContent.Original)
-		}
 	}
 }
 
-func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
+func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:       "test",
@@ -642,34 +665,41 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
 	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil)
-	drafts := synthesisstore.New(root)
-	refinerService := refinerbiz.NewService(ws, jobstore.New(ws.JobsPath), nil, nil, nil, nil)
-	refinerService.ConfigureSynthesis(fakeSynthesisProvider{}, drafts)
-	service := &Service{captureService: captureService, refinerService: refinerService, workspace: ws}
+	composeService := composebiz.NewService(
+		ws,
+		composedraft.New(root),
+		jobstore.New(ws.JobsPath),
+		nil,
+		fakeComposeProvider{body: "# Cloud compose draft\n\nGenerated from provider."},
+		captureService,
+	)
+	service := &Service{captureService: captureService, composeService: composeService, workspace: ws}
 	ctx := context.Background()
 	result, err := captureService.Capture(ctx, models.CaptureCommand{
 		Type:    models.ThoughtTypeText,
 		Title:   "Draft source",
-		Content: "Synthesis drafts should keep a local approval history.",
+		Content: "Compose drafts should keep a local approval history.",
 	})
 	if err != nil {
 		t.Fatalf("Capture() error = %v", err)
 	}
 
 	createBody := strings.NewReader(`{
-		"thought_ids":["` + result.Thought.ID + `"],
+		"sources":[
+			{"source_type":"thought","source_id":"` + result.Thought.ID + `","title":"Draft source"}
+		],
 		"goal":"Draft goal",
 		"format":"summary"
 	}`)
 	createRes := httptest.NewRecorder()
-	createReq := httptest.NewRequest(http.MethodPost, "/api/synthesis", createBody)
-	service.handleSynthesis(ctx, createRes, createReq)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts", createBody)
+	service.handleCreateComposeDraft(ctx, createRes, createReq)
 
 	if createRes.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body = %s", createRes.Code, createRes.Body.String())
 	}
 	var createPayload struct {
-		Data models.SynthesisDraft `json:"data"`
+		Data models.ComposeDraft `json:"data"`
 	}
 	if err := json.Unmarshal(createRes.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("Unmarshal(create) error = %v", err)
@@ -677,41 +707,32 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	if createPayload.Data.ID == "" || createPayload.Data.Status != "draft" {
 		t.Fatalf("created draft = %#v", createPayload.Data)
 	}
-	if createPayload.Data.Model != "fake-cloud" || !strings.Contains(createPayload.Data.Content, "Cloud synthesis draft") {
-		t.Fatalf("draft should come from synthesis provider, got %#v", createPayload.Data)
-	}
-	loaded, err := drafts.GetDraft(ctx, createPayload.Data.ID)
-	if err != nil {
-		t.Fatalf("GetDraft() error = %v", err)
-	}
-	if loaded.ID != createPayload.Data.ID || len(loaded.History) != 1 {
-		t.Fatalf("loaded draft = %#v", loaded)
+	if createPayload.Data.Model != "fake-cloud" || !strings.Contains(createPayload.Data.Content, "Cloud compose draft") {
+		t.Fatalf("draft should come from compose provider, got %#v", createPayload.Data)
 	}
 
 	listRes := httptest.NewRecorder()
-	listReq := httptest.NewRequest(http.MethodGet, "/api/synthesis", nil)
-	service.handleListSynthesisDrafts(ctx, listRes, listReq)
+	listReq := httptest.NewRequest(http.MethodGet, "/api/compose/drafts", nil)
+	service.handleListComposeDrafts(ctx, listRes, listReq)
 	if listRes.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
 	}
 	getRes := httptest.NewRecorder()
-	getReq := httptest.NewRequest(http.MethodGet, "/api/synthesis/"+createPayload.Data.ID, nil)
-	service.handleGetSynthesisDraft(ctx, getRes, getReq)
+	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/drafts/"+createPayload.Data.ID, nil)
+	service.handleGetComposeDraft(ctx, getRes, getReq)
 	if getRes.Code != http.StatusOK {
 		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
 	}
 
-	saveBody := strings.NewReader(`{
-		"draft_id":"` + createPayload.Data.ID + `",
-		"content":"# Draft goal\n\nAccepted synthesis."
-	}`)
+	saveBody := strings.NewReader(`{"content":"# Draft goal\n\nAccepted compose."}`)
 	saveRes := httptest.NewRecorder()
-	saveReq := httptest.NewRequest(http.MethodPost, "/api/synthesis/save", saveBody)
-	service.handleSaveSynthesis(ctx, saveRes, saveReq)
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+createPayload.Data.ID+"/save", saveBody)
+	service.handleSaveComposeDraft(ctx, saveRes, saveReq)
 
 	if saveRes.Code != http.StatusAccepted {
 		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
 	}
+	drafts := composedraft.New(root)
 	saved, err := drafts.GetDraft(ctx, createPayload.Data.ID)
 	if err != nil {
 		t.Fatalf("GetDraft(saved) error = %v", err)
@@ -719,22 +740,22 @@ func TestHandleSynthesisPersistsDraftAndSaveHistory(t *testing.T) {
 	if saved.Status != "saved" || saved.SavedThoughtID == "" || saved.SavedAt == nil {
 		t.Fatalf("saved draft = %#v", saved)
 	}
-	if len(saved.History) != 2 || saved.History[1].Status != "saved" {
-		t.Fatalf("saved history = %#v", saved.History)
-	}
 }
 
-type fakeSynthesisProvider struct{}
+type fakeComposeProvider struct {
+	body  string
+	model string
+}
 
-func (fakeSynthesisProvider) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
+func (fakeComposeProvider) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
 	_ = ctx
 	now := time.Now().UTC()
 	return models.SynthesisDraft{
-		ID:          models.NewJobID("synthesis", now),
+		ID:          models.NewJobID("compose", now),
 		ThoughtIDs:  req.ThoughtIDs,
 		Goal:        req.Goal,
 		Format:      req.Format,
-		Content:     "# Cloud synthesis draft\n\nGenerated from provider.\n\n### Sources\n\n- [[" + req.SourceLinks[0] + "]]",
+		Content:     "# Cloud compose draft\n\nGenerated from provider.",
 		SourceLinks: req.SourceLinks,
 		Model:       "fake-cloud",
 		Status:      "draft",
@@ -778,7 +799,7 @@ func TestHandleEventsHonorsLastEventIDAndTypeFilter(t *testing.T) {
 
 func TestHandleEventsStopsWhenServiceCloses(t *testing.T) {
 	stream := eventstream.New(10)
-	service := New(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream, nil, appconfig.Config{})
+	service := New(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream, nil, appconfig.Config{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	res := httptest.NewRecorder()

@@ -23,7 +23,7 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	if cfg.GitSync.DebounceDuration != 5*time.Second {
 		t.Fatalf("git debounce = %v", cfg.GitSync.DebounceDuration)
 	}
-	if cfg.Search.DuckDBPath != "thoughtflow.duckdb" || cfg.Search.DefaultMode != "hybrid" {
+	if cfg.Search.DuckDBPath != "thoughtflow.duckdb" || cfg.Search.DefaultMode != "keyword" {
 		t.Fatalf("search config = %#v", cfg.Search)
 	}
 }
@@ -208,7 +208,7 @@ func TestConfigTemplateLoadsAsFrameworkApplicationConfig(t *testing.T) {
 	if !cfg.GitSync.Enabled || cfg.GitSync.DebounceDuration != 5*time.Second {
 		t.Fatalf("git config = %#v", cfg.GitSync)
 	}
-	if cfg.Search.DuckDBPath != "thoughtflow.duckdb" || cfg.Search.DefaultMode != "hybrid" {
+	if cfg.Search.DuckDBPath != "thoughtflow.duckdb" || cfg.Search.DefaultMode != "keyword" {
 		t.Fatalf("search config = %#v", cfg.Search)
 	}
 	if !cfg.Topic.AutoWeave || cfg.Topic.MinSemanticScore != 0.78 {
