@@ -26,6 +26,12 @@ function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-topic-id", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter"];
+  // Side-effect nodes (toast, basket list, etc.) only need the methods the
+  // app touches — they all swallow writes silently so callers don't crash
+  // when the test doesn't drive them.
+  const sideEffectNodes = new Set(["toast", "compose-source-count", "compose-source-list",
+    "clear-compose-basket", "compose-basket-list", "compose-source-count-basket",
+    "clear-compose-basket-tab"]);
   // Each control is a live proxy over the store: reads go to store, writes
   // (and `checked` toggles) flow back into the store so assertions can see them.
   const nodes = Object.fromEntries(controls.map((id) => {
@@ -37,6 +43,18 @@ function makeDomStub(initial = {}) {
     };
     return [id, node];
   }));
+  for (const id of sideEffectNodes) {
+    nodes[id] = {
+      textContent: "",
+      innerHTML: "",
+      classList: { add: () => {}, remove: () => {}, contains: () => false },
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      disabled: false,
+      dataset: {},
+      style: {},
+    };
+  }
   function find(selector) {
     const m = selector.match(/^#([\w-]+)$/);
     if (!m) return null;
@@ -108,6 +126,8 @@ function loadAppFunctionsWith(opts = {}) {
       renderTopicCandidateImpact,
       renderTopicCandidates,
       createComposeBasket,
+      addToComposeBasket,
+      clearComposeBasket,
       displayWorkspace,
       displayRuntimePath,
       buildRouteHash,
@@ -165,14 +185,20 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
 
   assert.deepEqual(route(""), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
+  assert.deepEqual(route("#/capture"), { page: "capture", nav: "capture", params: {}, query: {} });
+  assert.deepEqual(route("#/search"), { page: "search", nav: "search", params: {}, query: {} });
   // PR2: topic detail and review are tabs under #/topics. The URL
   // /topics/{id} opens the detail tab by default; the /review segment
   // is rewritten to ?tab=proposals so the same page section hosts both
   // views.
   assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
+  // /topics?topic=...&tab=... is an alternate path syntax (no path id);
+  // the topic id lives in the query and the page has no in-param topicId.
+  assert.deepEqual(route("#/topics?topic=demo&tab=rules"), { page: "topics", nav: "topics", params: {}, query: { topic: "demo", tab: "rules" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
   assert.deepEqual(route("#/compose"), { page: "compose", nav: "compose", params: {}, query: {} });
+  assert.deepEqual(route("#/compose?draft=d-1"), { page: "compose", nav: "compose", params: {}, query: { draft: "d-1" } });
   // The bare /notes segment opens the notes list with no thought selected;
   // ?id= selects a specific thought.
   assert.deepEqual(route("#/notes"), { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} });
@@ -664,6 +690,64 @@ test("createComposeBasket deduplicates by source_type+source_id and supports cle
   basket.clear();
   assert.equal(basket.size(), 0);
   assert.deepEqual(flat(basket.values()), []);
+});
+
+test("addToComposeBasket accepts strings and source objects, defaults to thought", () => {
+  // addToComposeBasket is a side-effecting helper (it persists, broadcasts,
+  // and renders) so it needs the dom + storage stubs.
+  const dom = makeDomStub();
+  const storage = makeStorageStub();
+  const app = loadAppFunctionsWith({ dom, storage, exposeState: true });
+
+  const flat = () => JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
+
+  // A bare string defaults to source_type "thought".
+  app.addToComposeBasket(["t-1"]);
+  assert.deepEqual(flat(), [{ source_type: "thought", source_id: "t-1", title: "" }]);
+
+  // A second thought under the default sourceType — string path again.
+  app.addToComposeBasket(["t-2"]);
+  assert.deepEqual(flat(), [
+    { source_type: "thought", source_id: "t-1", title: "" },
+    { source_type: "thought", source_id: "t-2", title: "" },
+  ]);
+
+  // Duplicate thought id is a no-op (no second entry, no error).
+  app.addToComposeBasket(["t-1"]);
+  assert.equal(app._state.composeBasket.size, 2);
+
+  // Source objects override source_type and carry title metadata.
+  app.addToComposeBasket([
+    { source_type: "search_result", source_id: "s-1", title: "S1" },
+    { source_type: "topic_section", source_id: "u-1", title: "U1" },
+  ]);
+  assert.deepEqual(flat(), [
+    { source_type: "thought", source_id: "t-1", title: "" },
+    { source_type: "thought", source_id: "t-2", title: "" },
+    { source_type: "search_result", source_id: "s-1", title: "S1" },
+    { source_type: "topic_section", source_id: "u-1", title: "U1" },
+  ]);
+
+  // Mixing strings and objects in one call is supported; strings get the
+  // explicit sourceType, objects use their own source_type.
+  app.addToComposeBasket(
+    [{ source_type: "capture_session", source_id: "c-1", title: "C1" }, "t-3"],
+    "thought",
+  );
+  assert.equal(app._state.composeBasket.size, 6);
+  assert.deepEqual(flat(), [
+    { source_type: "thought", source_id: "t-1", title: "" },
+    { source_type: "thought", source_id: "t-2", title: "" },
+    { source_type: "search_result", source_id: "s-1", title: "S1" },
+    { source_type: "topic_section", source_id: "u-1", title: "U1" },
+    { source_type: "capture_session", source_id: "c-1", title: "C1" },
+    { source_type: "thought", source_id: "t-3", title: "" },
+  ]);
+
+  // clearComposeBasket empties state without touching storage directly.
+  app.clearComposeBasket();
+  assert.equal(app._state.composeBasket.size, 0);
+  assert.equal(flat().length, 0);
 });
 
 test("navItemAriaCurrent marks the active page and clears others", () => {
