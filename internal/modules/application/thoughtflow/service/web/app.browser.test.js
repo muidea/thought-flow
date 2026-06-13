@@ -7,10 +7,12 @@ const { spawn } = require("node:child_process");
 const test = require("node:test");
 
 const chromePath = process.env.CHROME_PATH || findChrome();
-// skip reasons for firefox / safari may need to launch the browser
-// itself through Playwright to know whether the host can drive it
-// (e.g. WebKit on Linux without libgstreamer). Resolution is async
-// and happens inside the top-level test below.
+// Browser scope is intentionally limited to Chrome. Firefox / WebKit are
+// out of scope: the product targets Chrome desktop and the test host
+// has no need to validate other engines. See
+// `doc/thoughtflow-implementation-status.md` §"跨浏览器收口" for the
+// scope decision and the investigation that ruled out adding Firefox /
+// WebKit on Linux.
 const browserTargets = discoverBrowserTargets();
 
 test("embedded UI browser smoke matrix", async (t) => {
@@ -18,9 +20,12 @@ test("embedded UI browser smoke matrix", async (t) => {
   t.after(() => server.close());
 
   const baseURL = `http://127.0.0.1:${server.address().port}`;
-  const resolvedTargets = await resolveTargetSkips(browserTargets);
-  for (const target of resolvedTargets) {
-    await t.test(target.name, { skip: target.skip }, async (browserTest) => {
+  for (const target of browserTargets) {
+    if (target.skip) {
+      await t.test(target.name, { skip: target.skip }, () => {});
+      continue;
+    }
+    await t.test(target.name, async (browserTest) => {
       for (const viewport of viewports()) {
         await browserTest.test(viewport.name, async () => {
           const browser = await target.launch(viewport);
@@ -35,31 +40,12 @@ test("embedded UI browser smoke matrix", async (t) => {
   }
 });
 
-async function resolveTargetSkips(targets) {
-  const resolved = [];
-  for (const target of targets) {
-    const skip = await target.skipReason();
-    resolved.push({ ...target, skip });
-  }
-  return resolved;
-}
-
 function discoverBrowserTargets() {
   return [
     {
       name: "chrome",
-      skipReason: () => Promise.resolve(chromePath ? false : "Chrome executable not found"),
+      skip: chromePath ? "" : "Chrome executable not found",
       launch: launchChrome,
-    },
-    {
-      name: "firefox",
-      skipReason: firefoxSkipReason,
-      launch: launchFirefox,
-    },
-    {
-      name: "safari",
-      skipReason: safariSkipReason,
-      launch: launchSafari,
     },
   ];
 }
@@ -342,144 +328,28 @@ async function runBrowserSmoke(browser, url) {
 }
 
 function findChrome() {
-  for (const candidate of [
-    findExecutable("google-chrome"),
-    findExecutable("google-chrome-stable"),
-    findExecutable("chromium"),
-    findExecutable("chromium-browser"),
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ]) {
+  const PATH_DIRS = String(process.env.PATH || "").split(path.delimiter);
+  const candidates = [];
+  for (const dir of PATH_DIRS) {
+    for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
+      candidates.push(path.join(dir, name));
+    }
+  }
+  candidates.push("/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser");
+  for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
   return "";
 }
 
-// firefox smoke runs through Playwright (see launchFirefox below) so
-// the skip reason is "can Playwright actually launch Firefox on this
-// host?" not "is geckodriver on PATH?".
-async function firefoxSkipReason() {
-  if (!playwrightAvailable()) return "playwright npm package is not installed";
-  return await probePlaywright("firefox");
-}
+// firefox / safari helpers (Playwright launchers, probe, skip-
+// reason resolver) used to live here. Browser scope is limited
+// to Chrome only; see the discoverBrowserTargets comment near
+// the top of this file for the scope decision.
 
-// safari / webkit has a stronger platform constraint: WebDriver /
-// Playwright / Safari are only meaningful on macOS. On Linux the
-// honest reason is "this host is not macOS" — even though Playwright
-// ships a WebKit binary that runs on Linux, the WebKit binaries
-// require system libraries (libgstreamer-plugins-bad1.0-0, libflite1,
-// libavif16, gstreamer1.0-libav) that need sudo apt-get install on
-// the test host. Probing launches the browser; if the probe fails
-// the subtest skips with the underlying launch error as the reason.
-async function safariSkipReason() {
-  if (process.platform !== "darwin") {
-    return `Safari/WebKit automation is unavailable on this ${process.platform} test host`;
-  }
-  if (!playwrightAvailable()) return "playwright npm package is not installed";
-  return await probePlaywright("webkit");
-}
-
-// probePlaywright returns false when the browser launches cleanly
-// and a skip-reason string when it cannot. The probe exercises the
-// same launcher code path the test body will use, so the decision is
-// a true signal — not a guess.
-async function probePlaywright(kind) {
-  let playwright;
-  try { playwright = require("playwright"); }
-  catch (error) { return `playwright require failed: ${error.message}`; }
-  const launcher = playwright[kind];
-  if (!launcher) return `playwright does not expose a ${kind} launcher`;
-  let browser;
-  try {
-    browser = await launcher.launch({ headless: true });
-  } catch (error) {
-    return `${kind}.launch failed: ${error.message.split("\n")[0]}`;
-  }
-  try { await browser.close(); } catch (_) { /* ignore */ }
-  return false;
-}
-
-function playwrightAvailable() {
-  try {
-    require.resolve("playwright");
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-// Launch Firefox via Playwright. Returns a { kind: "playwright",
-// page, close } object so connectPage can route to PlaywrightPage
-// instead of CDPPage. The firefox binary is downloaded by
-// `npx playwright install firefox` (see devDependency in
-// package.json).
-async function launchFirefox(viewport) {
-  if (!playwrightAvailable()) {
-    throw new Error("playwright npm package is not installed");
-  }
-  const { firefox } = require("playwright");
-  const browser = await firefox.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
-  const page = await context.newPage();
-  return {
-    kind: "playwright",
-    page,
-    async close() {
-      try { await page.close(); } catch (_) { /* ignore */ }
-      try { await context.close(); } catch (_) { /* ignore */ }
-      try { await browser.close(); } catch (_) { /* ignore */ }
-    },
-  };
-}
-
-// Launch Safari/WebKit via Playwright. Same shape as launchFirefox;
-// in practice this only runs on macOS test hosts (see
-// safariSkipReason). On Linux the subtest is skipped before this
-// is ever called.
-async function launchSafari(viewport) {
-  if (!playwrightAvailable()) {
-    throw new Error("playwright npm package is not installed");
-  }
-  const { webkit } = require("playwright");
-  const browser = await webkit.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
-  const page = await context.newPage();
-  return {
-    kind: "playwright",
-    page,
-    async close() {
-      try { await page.close(); } catch (_) { /* ignore */ }
-      try { await context.close(); } catch (_) { /* ignore */ }
-      try { await browser.close(); } catch (_) { /* ignore */ }
-    },
-  };
-}
-
-function findFirefox() {
-  return findExecutable("firefox") || findExecutable("firefox-esr");
-}
-
-function findExecutable(name) {
-  const paths = String(process.env.PATH || "").split(path.delimiter);
-  for (const dir of paths) {
-    const candidate = path.join(dir, name);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return "";
-}
-
-function isUnavailableSnapWrapper(filePath) {
-  try {
-    const body = fs.readFileSync(filePath, "utf8");
-    return body.includes("requires the firefox snap to be installed");
-  } catch {
-    return false;
-  }
-}
 
 test("browser smoke matrix declares cross-browser targets", () => {
-  assert.deepEqual(browserTargets.map((target) => target.name), ["chrome", "firefox", "safari"]);
+  assert.deepEqual(browserTargets.map((target) => target.name), ["chrome"]);
 });
 
 test("embedded UI restores deep-link query into inputs and reflects input changes back into the hash", async (t) => {
@@ -1415,13 +1285,9 @@ function cleanupChromeUserDataDir(userDataDir) {
 }
 
 async function connectPage(browser) {
-  // Playwright-launched browsers expose a `kind: "playwright"` tag
-  // and a Playwright Page object. We still want the rest of the
-  // smoke test to talk to a CDPPage-shaped interface, so wrap the
-  // Playwright Page in PlaywrightPage below.
-  if (browser && browser.kind === "playwright") {
-    return new PlaywrightPage(browser.page);
-  }
+  // Chrome-only: launchChrome always returns { wsURL, close } (no
+  // Playwright adapter path) and the DevTools protocol runs over a
+  // websocket. Probe the local port to find the page target.
   const { port } = new URL(browser.wsURL);
   const targets = await getJSON(`http://127.0.0.1:${port}/json/list`);
   const target = targets.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
@@ -1529,57 +1395,7 @@ class CDPPage {
   }
 }
 
-// PlaywrightPage is a CDPPage-compatible adapter for Playwright Page
-// objects. The smoke matrix only uses a small slice of CDP: enabling
-// runtime/log domains (no-op over Playwright), navigating, evaluating
-// a function and waiting for a boolean expression to become true.
-// Playwright's own page.evaluate / page.waitForFunction cover the
-// evaluation and waiting halves directly; for the domain-enable /
-// event-listener half we wire Playwright's `pageerror` and `console`
-// streams into the same listener map CDPPage exposes, so the smoke
-// body can stay identical regardless of which browser the launch
-// returned.
-class PlaywrightPage {
-  constructor(page) {
-    this.page = page;
-    this.listeners = new Map();
-    this._wireConsoleEvents();
-  }
-
-  _wireConsoleEvents() {
-    this.page.on("pageerror", (err) => {
-      const handler = this.listeners.get("Runtime.exceptionThrown");
-      if (handler) handler({ exceptionDetails: { text: err.message } });
-    });
-    this.page.on("console", (msg) => {
-      if (msg.type() === "error") {
-        const handler = this.listeners.get("Log.entryAdded");
-        if (handler) handler({ entry: { level: "error", text: msg.text() } });
-      }
-    });
-  }
-
-  onEvent(method, handler) {
-    this.listeners.set(method, handler);
-  }
-
-  // Domain-enable calls (Runtime.enable / Log.enable / Page.enable)
-  // are no-ops over Playwright. The smoke body treats them as
-  // advisory, so we just acknowledge.
-  async send(method, _params = {}) {
-    if (method.endsWith(".enable") || method.endsWith(".disable")) return {};
-    throw new Error(`PlaywrightPage cannot dispatch CDP method ${method}`);
-  }
-
-  async navigate(url) {
-    await this.page.goto(url, { waitUntil: "load", timeout: 15000 });
-  }
-
-  async evaluate(fn) {
-    return await this.page.evaluate(fn);
-  }
-
-  async waitForExpression(fn, timeout = 10000) {
-    await this.page.waitForFunction(fn, undefined, { timeout, polling: 100 });
-  }
-}
+// PlaywrightPage used to be a CDPPage-compatible adapter for
+// Playwright-launched browsers. The browser matrix is now Chrome-
+// only, so the adapter has been removed; launchChrome still goes
+// through CDPPage over the DevTools websocket.
