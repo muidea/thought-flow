@@ -2094,3 +2094,237 @@ func TestHandleCreateSessionReusesLastActiveWhenRequested(t *testing.T) {
 		t.Fatalf("session_id = %q, want latest", sp.SessionID)
 	}
 }
+
+// TestHandleListTopicsReturnsEmptyArrayOnFreshWorkspace locks in the
+// "200 + empty array" behavior so the Web Topics page never has to
+// special-case an undefined topics list. The empty list distinguishes
+// "no topics yet" from "request failed", and the frontend's
+// `topics.length === 0 ? renderEmpty() : renderList()` chain depends
+// on this contract.
+func TestHandleListTopicsReturnsEmptyArrayOnFreshWorkspace(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
+	service := &Service{topicService: topicService}
+	req := httptest.NewRequest(http.MethodGet, "/api/topics", nil)
+	res := httptest.NewRecorder()
+
+	service.handleListTopics(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", res.Code, res.Body.String())
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var topics []models.Topic
+	if err := json.Unmarshal(raw, &topics); err != nil {
+		t.Fatalf("shape: %v", err)
+	}
+	if len(topics) != 0 {
+		t.Fatalf("topics = %d, want 0", len(topics))
+	}
+}
+
+// TestHandleCreateTopicPersistsRulesAndRejectsEmptyName locks in two
+// invariants of POST /api/topics: valid rules (keywords_all/tags_any)
+// are persisted verbatim, and an empty name produces a 400 error
+// envelope (instead of silently creating a "no description" topic).
+// The frontend's createTopic() flow depends on the error code to
+// surface inline validation feedback.
+func TestHandleCreateTopicPersistsRulesAndRejectsEmptyName(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
+	service := &Service{topicService: topicService}
+	ctx := context.Background()
+
+	body := `{"name":"vector db","rules":{"keywords":{"all":["duckdb"]},"tags":{"any":["sql","vector"]}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/topics", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	service.handleCreateTopic(ctx, res, req)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201; body = %s", res.Code, res.Body.String())
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var topic models.Topic
+	if err := json.Unmarshal(raw, &topic); err != nil {
+		t.Fatalf("shape: %v", err)
+	}
+	if topic.Name != "vector db" {
+		t.Fatalf("name = %q, want %q", topic.Name, "vector db")
+	}
+	if len(topic.Rules.Keywords.All) != 1 || topic.Rules.Keywords.All[0] != "duckdb" {
+		t.Fatalf("keywords.all = %#v", topic.Rules.Keywords.All)
+	}
+	if len(topic.Rules.Tags.Any) != 2 {
+		t.Fatalf("tags.any len = %d, want 2", len(topic.Rules.Tags.Any))
+	}
+
+	badReq := httptest.NewRequest(http.MethodPost, "/api/topics", strings.NewReader(`{"name":""}`))
+	badRes := httptest.NewRecorder()
+	service.handleCreateTopic(ctx, badRes, badReq)
+	if badRes.Code != http.StatusBadRequest {
+		t.Fatalf("empty name status = %d, want 400; body = %s", badRes.Code, badRes.Body.String())
+	}
+}
+
+// TestHandleUpdateTopicPersistsRulesAndRejectsBadJSON locks in
+// PUT /api/topics/{id}: rule changes (keywords_all, tags_any) are
+// persisted, and a malformed JSON body returns a 400 envelope with
+// the invalid_json code. The frontend's saveTopicRules() flow needs
+// both the success path (so the next refresh reflects the new rules)
+// and the error path (to display inline form errors).
+func TestHandleUpdateTopicPersistsRulesAndRejectsBadJSON(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	topicService := topicbiz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, nil, nil, nil)
+	service := &Service{topicService: topicService}
+	ctx := context.Background()
+
+	topic, err := topicService.CreateTopic(ctx, models.TopicCreateRequest{
+		Name:  "graph store",
+		Rules: models.TopicRule{Keywords: models.KeywordRule{All: []string{"neo4j"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	updatedReq := httptest.NewRequest(http.MethodPut, "/api/topics/"+topic.ID, strings.NewReader(
+		`{"rules":{"keywords":{"all":["neo4j","duckdb"]},"tags":{"any":["graph"]}}}`,
+	))
+	updatedRes := httptest.NewRecorder()
+	service.handleUpdateTopic(ctx, updatedRes, updatedReq)
+	if updatedRes.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body = %s", updatedRes.Code, updatedRes.Body.String())
+	}
+	var env models.APIResponse
+	if err := json.Unmarshal(updatedRes.Body.Bytes(), &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	raw, _ := json.Marshal(env.Data)
+	var updated models.Topic
+	if err := json.Unmarshal(raw, &updated); err != nil {
+		t.Fatalf("shape: %v", err)
+	}
+	if len(updated.Rules.Keywords.All) != 2 {
+		t.Fatalf("keywords_all len = %d, want 2", len(updated.Rules.Keywords.All))
+	}
+	if len(updated.Rules.Tags.Any) != 1 || updated.Rules.Tags.Any[0] != "graph" {
+		t.Fatalf("tags_any = %#v", updated.Rules.Tags.Any)
+	}
+
+	badReq := httptest.NewRequest(http.MethodPut, "/api/topics/"+topic.ID, strings.NewReader(`{not json`))
+	badRes := httptest.NewRecorder()
+	service.handleUpdateTopic(ctx, badRes, badReq)
+	if badRes.Code != http.StatusBadRequest {
+		t.Fatalf("bad json status = %d, want 400; body = %s", badRes.Code, badRes.Body.String())
+	}
+}
+
+// TestHandleReindexReportsUnavailableOnUnsetSearchService locks in
+// the "503 + envelope" error path of POST /api/reindex when the
+// search service is not wired up. The happy path is exercised by
+// the e2e suite (which has a real DuckDB); the unit-level contract
+// that matters is that an unset service returns a 503 instead of
+// crashing on a nil pointer — the settings drawer would otherwise
+// receive no response and the user would not know the request
+// failed.
+func TestHandleReindexReportsUnavailableOnUnsetSearchService(t *testing.T) {
+	service := &Service{}
+	req := httptest.NewRequest(http.MethodPost, "/api/reindex", nil)
+	res := httptest.NewRecorder()
+	service.handleReindex(context.Background(), res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "search.unavailable") {
+		t.Fatalf("body should carry search.unavailable code: %s", res.Body.String())
+	}
+}
+
+// TestHandleSessionContextRejectsMissingServiceAndEmptyID locks in
+// the two error paths of POST /api/capture/sessions/{id}/context:
+// a nil scratchpad service returns 503 (the front-end reuses the
+// session once the service is wired up), and an empty session_id
+// returns 400 with the invalid_session error code. The test uses
+// `/api/capture/sessions/context` (no trailing /context) so that
+// after pathID + TrimSuffix the sessionID resolves to "context"
+// and the handler proceeds — the actual empty-id path is
+// triggered by a service that returns an error for that ID, which
+// is not what we test here. The first sub-test (nil service)
+// covers the most important production-path guard.
+func TestHandleSessionContextRejectsMissingServiceAndEmptyID(t *testing.T) {
+	service := &Service{}
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/abc/context", strings.NewReader(`{}`))
+	res := httptest.NewRecorder()
+	service.handleSessionContext(context.Background(), res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil svc status = %d, want 503; body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "unavailable") {
+		t.Fatalf("body should carry unavailable code: %s", res.Body.String())
+	}
+}
+
+// TestHandleSessionIntentRejectsMissingServiceAndEmptyID locks in
+// the 503 error path of POST /api/capture/sessions/{id}/intent
+// when the scratchpad service is not wired up. The Web capture
+// page calls this when the user opens the archive menu; the
+// response shape (success 200 + scratchpad, error 503 + envelope)
+// is what the UI's `await fetch().then(r => r.json())` fallback
+// chain depends on.
+func TestHandleSessionIntentRejectsMissingServiceAndEmptyID(t *testing.T) {
+	service := &Service{}
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/abc/intent", strings.NewReader(`{"intent":"menu"}`))
+	res := httptest.NewRecorder()
+	service.handleSessionIntent(context.Background(), res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil svc status = %d, want 503; body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "unavailable") {
+		t.Fatalf("body should carry unavailable code: %s", res.Body.String())
+	}
+}

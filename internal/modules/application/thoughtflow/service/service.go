@@ -1397,6 +1397,10 @@ func eventsRuntimeStatus(stream *eventstream.Stream, publisher eventPublisher) m
 
 func (s *Service) handleReindex(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	_ = ctx
+	if s.searchService == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.search.unavailable", "search service is not ready")
+		return
+	}
 	job, err := s.searchService.ReindexWorkspace(req.Context())
 	if err != nil {
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.search.reindex_failed", err.Error())
