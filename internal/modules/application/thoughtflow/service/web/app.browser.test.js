@@ -487,8 +487,8 @@ test("embedded UI restores deep-link query into inputs and reflects input change
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -549,8 +549,8 @@ test("compose basket persists across reloads via localStorage", async (t) => {
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -582,8 +582,8 @@ test("capture composer starts a new session, persists a thought, and shows the c
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -645,8 +645,8 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -732,8 +732,8 @@ test("capture lock indicator stays hidden when no session is active", async (t) 
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -772,8 +772,8 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
@@ -846,8 +846,8 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
-  if (!target || target.skip) {
-    t.skip(target ? target.skip : "Chrome not available");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
     return;
   }
   const browser = await target.launch(viewports()[0]);
