@@ -2,7 +2,10 @@ package searchdb
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +122,76 @@ func TestIndexAndSearchThought(t *testing.T) {
 	if len(preview.Topics) != 1 || preview.Topics[0] != "duckdb-notes" {
 		t.Fatalf("preview topics = %#v", preview.Topics)
 	}
+}
+
+func TestRecoverableDuckDBOpenErrorDetection(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{err: os.ErrNotExist, want: false},
+		{err: &errorString{"IO Error: database is locked by another process"}, want: false},
+		{err: &errorString{"Dependency Error: Failure while replaying WAL file thoughtflow.duckdb.wal"}, want: true},
+		{err: &errorString{"Cannot drop entry fts_main_thought_contents because there are entries that depend on it"}, want: true},
+		{err: &errorString{"IO Error: database file appears corrupt"}, want: true},
+	}
+	for _, tc := range cases {
+		if got := isRecoverableDuckDBOpenError(tc.err); got != tc.want {
+			t.Fatalf("isRecoverableDuckDBOpenError(%q) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestQuarantineDuckDBFilesMovesDatabaseSidecars(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "thoughtflow.duckdb")
+	for _, name := range []string{"thoughtflow.duckdb", "thoughtflow.duckdb.wal"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.duckdb"), []byte("other"), 0o644); err != nil {
+		t.Fatalf("WriteFile(other): %v", err)
+	}
+
+	if err := quarantineDuckDBFiles(dbPath); err != nil {
+		t.Fatalf("quarantineDuckDBFiles() error = %v", err)
+	}
+	for _, name := range []string{"thoughtflow.duckdb", "thoughtflow.duckdb.wal"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s still exists or stat failed differently: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other.duckdb")); err != nil {
+		t.Fatalf("other.duckdb should remain: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	var quarantine string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "corrupt-") {
+			quarantine = filepath.Join(dir, entry.Name())
+			break
+		}
+	}
+	if quarantine == "" {
+		t.Fatalf("quarantine dir not created")
+	}
+	for _, name := range []string{"thoughtflow.duckdb", "thoughtflow.duckdb.wal"} {
+		if _, err := os.Stat(filepath.Join(quarantine, name)); err != nil {
+			t.Fatalf("quarantined %s missing: %v", name, err)
+		}
+	}
+}
+
+type errorString struct {
+	message string
+}
+
+func (e *errorString) Error() string {
+	return e.message
 }
 
 func TestReindexWorkspaceBuildsIndexFromMarkdown(t *testing.T) {

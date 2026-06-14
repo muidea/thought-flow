@@ -41,6 +41,25 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
+
+	store, err := openDuckDBStore(ctx, path)
+	if err == nil {
+		return store, nil
+	}
+	if !isRecoverableDuckDBOpenError(err) {
+		return nil, err
+	}
+	if recoverErr := quarantineDuckDBFiles(path); recoverErr != nil {
+		return nil, fmt.Errorf("%w; quarantine duckdb index: %v", err, recoverErr)
+	}
+	store, retryErr := openDuckDBStore(ctx, path)
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	return store, nil
+}
+
+func openDuckDBStore(ctx context.Context, path string) (*Store, error) {
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, err
@@ -51,6 +70,64 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func isRecoverableDuckDBOpenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, token := range []string{
+		"replaying wal",
+		".duckdb.wal",
+		"database file",
+		"dependency error",
+		"fts_main_",
+		"cannot drop entry",
+	} {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func quarantineDuckDBFiles(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("duckdb path is required")
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	quarantineDir := filepath.Join(dir, "corrupt-"+stamp)
+	matches, err := filepath.Glob(filepath.Join(dir, base+"*"))
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
+		return err
+	}
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+		dst := filepath.Join(quarantineDir, filepath.Base(match))
+		if err := os.Rename(match, dst); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
