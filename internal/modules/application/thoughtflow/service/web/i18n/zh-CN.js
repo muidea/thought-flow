@@ -215,6 +215,7 @@ export const messages = {
   "topics.candidate_source.capture_session": "采集会话",
   "topics.candidate_source.thought_reopen_session": "补充会话",
   "topics.candidate_source.thought": "笔记",
+  "topics.candidate_source.compose_draft": "整理草稿",
   "topics.weave_proposals_empty": "暂无缝合审批。",
   "topics.weave_proposals_none": "该专题暂无缝合提案。",
   "topics.select_first": "请先选择专题。",

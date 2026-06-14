@@ -70,6 +70,8 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	eventHub.Subscribe("search.index_updated", m.service)
 	eventHub.Subscribe(models.EventScratchpadContextUpdated, m.service)
 	eventHub.Subscribe(models.EventScratchpadCommitted, m.service)
+	eventHub.Subscribe("compose.draft_created", m.service)
+	eventHub.Subscribe("compose.draft_saved", m.service)
 	return nil
 }
 
@@ -85,6 +87,14 @@ func InjectScratchpadProvider(provider biz.ScratchpadProvider) {
 		return
 	}
 	svc.SetScratchpadProvider(provider)
+}
+
+func InjectComposeDraftProvider(provider biz.ComposeDraftProvider) {
+	svc := Current()
+	if svc == nil {
+		return
+	}
+	svc.SetComposeDraftProvider(provider)
 }
 
 func (m *Module) Run(ctx context.Context) *cd.Error {

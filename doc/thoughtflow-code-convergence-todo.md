@@ -152,7 +152,10 @@
 
 代码收口完成时必须同时满足：
 
-1. `rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" internal cmd doc` 不再命中目标实现或目标文档；历史实现状态可保留但需标注。
+1. 旧接口 / 旧 hash 字面量不得出现在目标实现或当前目标文档中：
+   - 实现验收命令：`rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" internal cmd` 必须 0 命中。
+   - 当前目标文档验收命令：`rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" README.md doc/thoughtflow-usage-config.md doc/thoughtflow-functional-design.md doc/thoughtflow-domain-models.md doc/thoughtflow-prd.md doc/thoughtflow-web-ux-redesign.md doc/thoughtflow-web-ux-polish-v2.md` 必须 0 命中。
+   - `doc/thoughtflow-code-convergence-todo.md`、`doc/thoughtflow-code-convergence-todo-evidence.md` 与 `doc/thoughtflow-implementation-status.md` 的历史基线 / 附录 A 可保留旧字面量，但必须标注为历史实现状态或验收约束文本，不代表当前目标。
 2. `make test`、`make node-check`、`make node-test`、`make node-test-i18n`、`make e2e-test` 通过。
 3. 有浏览器环境时 `make browser-test` 通过；无浏览器时 skip 原因明确。
 4. `git diff --check` 通过。

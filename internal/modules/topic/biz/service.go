@@ -31,6 +31,7 @@ type Service struct {
 	embedder   ai.EmbeddingProvider
 	cache      EmbeddingCache
 	scratchpad ScratchpadProvider
+	compose    ComposeDraftProvider
 }
 
 type EmbeddingCache interface {
@@ -49,6 +50,10 @@ type SemanticScoreCache interface {
 type ScratchpadProvider interface {
 	List() []scratchpad.Summary
 	Get(sessionID string) (scratchpad.Scratchpad, error)
+}
+
+type ComposeDraftProvider interface {
+	ListDrafts(ctx context.Context) ([]models.ComposeDraft, error)
 }
 
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *topicstore.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, cache EmbeddingCache, scratchpadProvider ScratchpadProvider) *Service {
@@ -76,6 +81,10 @@ func (s *Service) SetScratchpadProvider(provider ScratchpadProvider) {
 	s.scratchpad = provider
 }
 
+func (s *Service) SetComposeDraftProvider(provider ComposeDraftProvider) {
+	s.compose = provider
+}
+
 func (s *Service) Notify(ev event.Event, result event.Result) {
 	domainEvent, ok := ev.Data().(models.DomainEvent)
 	if !ok {
@@ -94,6 +103,8 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 		if domainEvent.ResourceType == models.ResourceTypeThought && domainEvent.ResourceID != "" {
 			_, _ = s.MatchThoughtAsync(domainEvent.ResourceID)
 		}
+	case "compose.draft_created", "compose.draft_saved":
+		_, _ = s.RefreshAllTopics(context.Background())
 	}
 	if result != nil {
 		result.Set(nil, nil)
@@ -308,9 +319,8 @@ func (s *Service) ListSessionCandidates(ctx context.Context, topicID string) ([]
 //   - thought: each member of the topic, in topic.Members order,
 //     is exposed as an impact so the Web can show a "currently
 //     associated thoughts" panel.
-//   - compose_draft: this source is reserved for compose-module
-//     integration; the biz layer returns no entries until the
-//     compose side wires its draft index through.
+//   - compose_draft: unsaved compose drafts that mention or source
+//     the topic, sourced through the injected compose draft provider.
 //
 // The result is sorted by Score descending then by UpdatedAt
 // descending so the most-prominent candidates surface first.
@@ -362,6 +372,7 @@ func (s *Service) ListCandidates(ctx context.Context, topicID string) ([]models.
 			UpdatedAt:   topic.UpdatedAt,
 		})
 	}
+	candidates = append(candidates, s.composeDraftCandidates(ctx, topic)...)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Score != candidates[j].Score {
 			return candidates[i].Score > candidates[j].Score
@@ -369,6 +380,92 @@ func (s *Service) ListCandidates(ctx context.Context, topicID string) ([]models.
 		return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
 	})
 	return candidates, nil
+}
+
+func (s *Service) composeDraftCandidates(ctx context.Context, topic models.Topic) []models.TopicCandidateImpact {
+	if s == nil || s.compose == nil {
+		return nil
+	}
+	drafts, err := s.compose.ListDrafts(ctx)
+	if err != nil {
+		return nil
+	}
+	impacts := []models.TopicCandidateImpact{}
+	for _, draft := range drafts {
+		if draft.Status == models.ComposeStatusSaved {
+			continue
+		}
+		score, reasons := scoreComposeDraftForTopic(draft, topic)
+		if score <= 0 {
+			continue
+		}
+		title := strings.TrimSpace(draft.Goal)
+		if title == "" {
+			title = draft.ID
+		}
+		impacts = append(impacts, models.TopicCandidateImpact{
+			Source:      models.TopicCandidateSourceComposeDraft,
+			CandidateID: draft.ID,
+			DraftID:     draft.ID,
+			Title:       title,
+			MatchType:   "compose_draft",
+			Score:       score,
+			Status:      draft.Status,
+			Reasons:     reasons,
+			UpdatedAt:   draft.UpdatedAt,
+		})
+	}
+	return impacts
+}
+
+func scoreComposeDraftForTopic(draft models.ComposeDraft, topic models.Topic) (float64, []string) {
+	topicIDs := map[string]struct{}{}
+	for _, value := range []string{topic.ID, topic.Slug, topic.Name} {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			topicIDs[value] = struct{}{}
+		}
+	}
+	for _, src := range draft.Sources {
+		if src.SourceType == models.ComposeSourceTypeTopicSection {
+			for _, value := range []string{src.SourceID, src.Title, src.SourceLink, src.Metadata["topic_id"], src.Metadata["topic_slug"]} {
+				if _, ok := topicIDs[strings.ToLower(strings.TrimSpace(value))]; ok {
+					return 1, []string{"compose source links to topic"}
+				}
+			}
+		}
+	}
+	corpus := strings.ToLower(strings.Join([]string{
+		draft.Goal,
+		draft.Content,
+		composeSourceCorpus(draft.Sources),
+	}, " "))
+	if name := strings.ToLower(strings.TrimSpace(topic.Name)); name != "" && strings.Contains(corpus, name) {
+		return 0.65, []string{"compose draft mentions topic name"}
+	}
+	for _, keyword := range append(append([]string{}, topic.Rules.Keywords.Any...), topic.Rules.Keywords.All...) {
+		keyword = strings.ToLower(strings.TrimSpace(keyword))
+		if keyword != "" && strings.Contains(corpus, keyword) {
+			return 0.5, []string{"compose draft matches topic keyword"}
+		}
+	}
+	return 0, nil
+}
+
+func composeSourceCorpus(sources []models.ComposeSource) string {
+	parts := []string{}
+	for _, source := range sources {
+		parts = append(parts,
+			source.SourceID,
+			source.Title,
+			source.Snippet,
+			source.SourceLink,
+		)
+		for key, value := range source.Metadata {
+			parts = append(parts, key, value)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.TopicWeaveAcceptRequest) (models.TopicDetail, error) {
@@ -815,6 +912,25 @@ func (s *Service) RefreshTopic(ctx context.Context, id string) (models.Job, erro
 	}
 	go run()
 	return job, nil
+}
+
+func (s *Service) RefreshAllTopics(ctx context.Context) ([]models.Job, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("topic service is not ready")
+	}
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]models.Job, 0, len(topics))
+	for _, topic := range topics {
+		job, err := s.RefreshTopic(ctx, topic.ID)
+		if err != nil {
+			return jobs, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
 }
 
 func (s *Service) matchThoughtJob(job models.Job) {

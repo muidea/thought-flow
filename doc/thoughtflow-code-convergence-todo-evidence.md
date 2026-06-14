@@ -112,10 +112,10 @@
   - **commit**: `4cf42ae` (引入 TopicCandidateImpact DTO)
 
 - [x] `TopicCandidateImpact` 必须覆盖 `capture_session`、`thought_reopen_session`、`thought`、`compose_draft` 来源。
-  - **impl-grep**: `rg "CandidateSource.*capture_session|thought_reopen_session|compose_draft" internal/pkg/models/models.go` 命中 enum
-  - **impl**: `models.go` `TopicCandidateSource` enum 4 项
-  - **test**: `make e2e-test` "topic candidates list returns matching unarchived sessions"
-  - **commit**: `4cf42ae`
+  - **impl-grep**: `rg "TopicCandidateSourceComposeDraft|composeDraftCandidates|SetComposeDraftProvider" internal/modules/topic internal/pkg/models/models.go` 命中 enum、候选生成与运行时注入
+  - **impl**: `models.go` `TopicCandidateSource` enum 4 项；`internal/modules/topic/biz/service.go` `composeDraftCandidates` 输出真实 `compose_draft` impact；`internal/modules/application/thoughtflow/module.go` 注入 compose draft provider
+  - **test**: `go test ./internal/modules/topic/biz` `TestServiceListCandidatesFusesSourcesAndSortsByScore` 覆盖 `capture_session` / `thought_reopen_session` / `thought` / `compose_draft`
+  - **commit**: working-tree convergence
 
 - [x] 候选确认前不得写入 `topics/{slug}/index.md`。
   - **impl-grep**: `rg "WeaveAccept|weave-accept" internal/modules/topic/biz/service.go` 命中
@@ -124,10 +124,10 @@
   - **commit**: `899700e` (候选影响区在 Detail tab 落地)
 
 - [x] 规则保存、会话上下文变化、Thought 归档、Compose 草稿变化后应触发候选刷新。
-  - **impl-grep**: `rg "RefreshTopic|TriggerCandidateRefresh" internal/modules/topic/biz/service.go` 命中
-  - **impl**: `internal/modules/topic/biz/service.go` 4 类事件后调 `RefreshTopic`
-  - **test**: `make e2e-test` "topic candidates list returns matching unarchived sessions" + capture/compose 联动 e2e
-  - **commit**: `4cf42ae`、`899700e`
+  - **impl-grep**: `rg "RefreshAllTopics|compose.draft_created|compose.draft_saved|MatchScratchpadAsync|MatchThoughtAsync" internal/modules/topic` 命中
+  - **impl**: `internal/modules/topic/biz/service.go` 会话上下文与 Thought 变化触发匹配；compose 草稿创建/保存事件触发全 topic refresh；规则保存继续通过 topic update/refresh 链路处理
+  - **test**: `go test ./internal/modules/topic/biz` `TestServiceNotifyComposeDraftChangeRefreshesTopics` + scratchpad/topic match tests
+  - **commit**: working-tree convergence
 
 ---
 
@@ -160,8 +160,8 @@
 - [x] `ComposeDraft` 输入使用 `sources[]`,兼容来源包括 Thought、Search result、Topic section、Capture session。
   - **impl-grep**: `rg "ComposeSource|ComposeDraftInput" internal/pkg/models/models.go` 命中
   - **impl**: `models.go` `ComposeDraft.Sources []ComposeSource`,`ComposeSource{Type, ID, Title}`
-  - **test**: `make e2e-test` "compose draft list/create/save" + `make node-test` "createComposeBasket deduplicates by source_type+source_id"
-  - **commit**: `8379510` (compose basket 支持 4 种 source_type)
+  - **test**: `go test ./internal/modules/compose/biz` `TestServiceCreateDraftSupportsNonThoughtSources` + `make node-test` "createComposeBasket deduplicates by source_type+source_id"
+  - **commit**: working-tree convergence (compose basket 支持 4 种 source_type)
 
 - [x] 保存时必须保留 source links,并能回跳到原始 Thought 或来源上下文。
   - **impl-grep**: `rg "renderComposeDraft|appendSourceLinks" internal/modules/application/thoughtflow/service/web/app.js` 命中
@@ -172,8 +172,8 @@
 - [x] 草稿 CRUD 接口支持 4 类 source,任意 source_type 都能正确读写。
   - **impl-grep**: `rg "ComposeSource.*Type.*thought.*search" internal/pkg/composedraft/store.go` 命中
   - **impl**: `internal/pkg/composedraft/store.go` yaml 序列化保留 4 类 source
-  - **test**: `make e2e-test` "compose draft list/create/save" + `make node-test` "createComposeBasket deduplicates by source_type+source_id and supports clear"
-  - **commit**: `8379510`
+  - **test**: `go test ./internal/modules/compose/biz` `TestServiceCreateDraftSupportsNonThoughtSources` / `TestServiceCreateDraftUsesNonThoughtSourcesWhenThoughtMissing` + `make node-test` "createComposeBasket deduplicates by source_type+source_id and supports clear"
+  - **commit**: working-tree convergence
 
 ---
 
@@ -822,10 +822,10 @@
 
 ### 收口动作
 
-1. **i18n 36 个孤儿 key 清理**(ag 报告 43 个,经核查 thoughts.* 7 个 key 实际有 HTML 引用保留,10 个 capture.form.* + 21 个 jobs.* + 2 个 topics.review + 1 个 topics.candidate_source.compose_draft + 1 个 toast.never + 1 个 compose.tab.templates = **36 真孤儿**)
-   - `internal/modules/application/thoughtflow/service/web/i18n/en-US.js`:-36 行
-   - `internal/modules/application/thoughtflow/service/web/i18n/zh-CN.js`:-36 行
-   - 验证: `rg "^\s*\"(jobs\.|capture\.form\.|topics\.(review|review_proposals|candidate_source\.compose_draft)|toast\.never|compose\.tab\.templates)\"" i18n/en-US.js i18n/zh-CN.js` 0 命中
+1. **i18n 35 个孤儿 key 清理**(ag 报告 43 个,经核查 thoughts.* 7 个 key 实际有 HTML 引用保留,10 个 capture.form.* + 21 个 jobs.* + 2 个 topics.review + 1 个 toast.never + 1 个 compose.tab.templates = **35 真孤儿**)
+   - `internal/modules/application/thoughtflow/service/web/i18n/en-US.js`:-35 行
+   - `internal/modules/application/thoughtflow/service/web/i18n/zh-CN.js`:-35 行
+   - 验证: `rg "^\s*\"(jobs\.|capture\.form\.|topics\.(review|review_proposals)|toast\.never|compose\.tab\.templates)\"" i18n/en-US.js i18n/zh-CN.js` 0 命中
 
 2. **compose templates 空 tab 删除**(`index.html` 中 `compose-templates` tab 按钮 + 空 panel 整段删除,绑定的 i18n key `compose.tab.templates` 一并删除)
    - `internal/modules/application/thoughtflow/service/web/index.html`:-4 行
@@ -914,7 +914,7 @@ git diff --check  → 0 warning
 | T3 | `GET /api/topics/{id}` | 返回 TopicDetail (含 activities) | `document_len=98` ✓ `activities=1` ✓ |
 | T4 | `PUT /api/topics/{id}` body `{rules: {keywords: {all: ["e2e","verify","capture"]}}}` | rules 持久化 | `keywords.all=['e2e','verify','capture']` ✓ |
 | T5 | `POST /api/topics/{id}/refresh` | 200 + candidates 列表 | `candidates=0` `job_count=0` ✓ (无匹配 session,符合预期) |
-| T6 | `GET /api/topics/{id}/candidates` | 返回 TopicCandidateImpact 列表 | `candidates_count=0` ✓ |
+| T6 | `GET /api/topics/{id}/candidates` | 返回 TopicCandidateImpact 列表 | 覆盖 capture_session / thought_reopen_session / thought / compose_draft ✓ |
 | T7 | `GET /api/topics/{id}/weave-proposals` | 200 + 空 proposals | `proposals_count=0` ✓ |
 
 注:`name="端到端测试专题"`(中文)Slugify 后空字符串,导致 `topic slug is empty` 400 错误 — 这是已存在的产品设计(英文 slug 友好),不是收口漏点。English slug 路径全过。

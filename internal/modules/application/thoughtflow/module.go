@@ -135,6 +135,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		capturebiz.WithEventHub(eventHub),
 	)
 	topic.InjectScratchpadProvider(scratchpadStore)
+	topic.InjectComposeDraftProvider(compose.Current())
 	registry := engine.NewRouteRegistry()
 	m.httpService = service.New(registry, captureService, scratchpadSvc, refinerService, compose.Current(), searchService, topicService, scratchpadStore, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
 	m.httpService.RegisterRoutes()

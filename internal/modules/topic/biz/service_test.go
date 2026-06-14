@@ -1061,6 +1061,18 @@ func (c *captureBackground) Shutdown(_ context.Context) bool { return true }
 
 var _ task.BackgroundRoutine = (*captureBackground)(nil)
 
+type stubComposeDraftProvider struct {
+	drafts []models.ComposeDraft
+	err    error
+}
+
+func (p stubComposeDraftProvider) ListDrafts(_ context.Context) ([]models.ComposeDraft, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return append([]models.ComposeDraft(nil), p.drafts...), nil
+}
+
 func topicTestWorkspace(root string) *models.Workspace {
 	return &models.Workspace{
 		ID:           "local",
@@ -1129,6 +1141,20 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 		}
 		current = updated
 	}
+	service.SetComposeDraftProvider(stubComposeDraftProvider{drafts: []models.ComposeDraft{
+		{
+			ID:     "draft-vector",
+			Goal:   "Vector notes synthesis",
+			Status: models.ComposeStatusDraft,
+			Sources: []models.ComposeSource{{
+				SourceType: models.ComposeSourceTypeTopicSection,
+				SourceID:   topic.ID,
+				Title:      topic.Name,
+				SourceLink: "topics/vector-notes/index.md#context",
+			}},
+			UpdatedAt: time.Now().UTC().Add(time.Second),
+		},
+	}})
 
 	impacts, err := service.ListCandidates(ctx, topic.ID)
 	if err != nil {
@@ -1148,28 +1174,70 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 	if sourceCount[models.TopicCandidateSourceThought] != 2 {
 		t.Fatalf("thought count = %d, want 2", sourceCount[models.TopicCandidateSourceThought])
 	}
-	if sourceCount[models.TopicCandidateSourceComposeDraft] != 0 {
-		t.Fatalf("compose_draft count = %d, want 0", sourceCount[models.TopicCandidateSourceComposeDraft])
+	if sourceCount[models.TopicCandidateSourceComposeDraft] != 1 {
+		t.Fatalf("compose_draft count = %d, want 1", sourceCount[models.TopicCandidateSourceComposeDraft])
 	}
 
 	// capture_session and thought_reopen_session come from the same
 	// session data; their IDs must match.
-	var capture, reopen models.TopicCandidateImpact
+	var capture, reopen, draft models.TopicCandidateImpact
 	for _, impact := range impacts {
 		switch impact.Source {
 		case models.TopicCandidateSourceCaptureSession:
 			capture = impact
 		case models.TopicCandidateSourceThoughtReopen:
 			reopen = impact
+		case models.TopicCandidateSourceComposeDraft:
+			draft = impact
 		}
 	}
 	if capture.SessionID != "sp-cand" || reopen.SessionID != "sp-cand" {
 		t.Fatalf("session IDs = (%q, %q), want (sp-cand, sp-cand)", capture.SessionID, reopen.SessionID)
 	}
+	if draft.DraftID != "draft-vector" || draft.Status != models.ComposeStatusDraft {
+		t.Fatalf("compose draft impact = %+v", draft)
+	}
 
 	// Highest score first.
 	if impacts[0].Score < impacts[len(impacts)-1].Score {
 		t.Fatalf("impacts not sorted by score desc: %+v", impacts)
+	}
+}
+
+func TestServiceNotifyComposeDraftChangeRefreshesTopics(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	background := &captureBackground{}
+	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, background, nil, nil, nil)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{Name: "Draft Topic"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+
+	ev := event.NewEvent("compose.draft_created", "compose", "#", event.NewHeader(), models.DomainEvent{
+		EventType:    "compose.draft_created",
+		ResourceType: models.ResourceTypeWorkspace,
+		ResourceID:   ws.ID,
+	})
+	result := event.NewResult("compose.draft_created", "compose", "#")
+	service.Notify(ev, result)
+	if background.last == nil {
+		t.Fatalf("Notify did not queue topic refresh")
+	}
+	background.last()
+
+	jobs, err := service.jobs.RecentByResource(topic.ID, 1)
+	if err != nil {
+		t.Fatalf("RecentByResource() error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	}
+	job := jobs[0]
+	if job.Type != models.JobTypeTopicWeave {
+		t.Fatalf("job type = %q, want %q", job.Type, models.JobTypeTopicWeave)
 	}
 }
 

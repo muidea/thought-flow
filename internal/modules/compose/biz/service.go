@@ -111,15 +111,13 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (m
 	deduped, sourceLinks := dedupeSources(req.Sources)
 	snapshots, hydrateErrs := s.hydrateSnapshots(ctx, deduped)
 	if len(snapshots) == 0 {
-		// We tolerate partial hydration: search/topic/capture
-		// sources may be unavailable in the current workspace,
-		// and the user should still get a useful draft from the
-		// thought snapshots. We only error out when there are no
-		// snapshots at all to feed the LLM.
+		// We tolerate partial hydration: a missing thought file is
+		// skipped when other source types can still provide context.
+		// Only a purely-broken thought-only request should fail.
 		if len(hydrateErrs) > 0 {
 			return models.ComposeDraft{}, hydrateErrs[0]
 		}
-		return models.ComposeDraft{}, errors.New("no thought sources could be loaded")
+		return models.ComposeDraft{}, errors.New("no compose sources could be loaded")
 	}
 
 	thoughtIDs := make([]string, 0, len(snapshots))
@@ -281,14 +279,14 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 
 // hydrateSnapshots turns a ComposeSource list into the ThoughtSnapshot
 // list the synthesis provider needs. Thought sources are loaded from
-// disk; non-thought sources (search/topic/capture) are skipped here
-// and folded into the prompt as labelled context blocks — the LLM
-// only consumes ThoughtSnapshot structs natively.
+// disk. Search result, topic section, and capture session sources are
+// represented as minimal context snapshots so a draft can be generated
+// from any supported source type while preserving source_links.
 //
 // Partial hydration is allowed: missing thought files are recorded
 // in the returned error list and skipped, so a single bad source ID
 // in a multi-source request does not abort the whole compose. The
-// caller only receives a non-nil error when no thought sources
+// caller only receives a non-nil error when no source of any type
 // survived hydration, because then the LLM has nothing to draw on.
 func (s *Service) hydrateSnapshots(_ context.Context, sources []models.ComposeSource) ([]models.ThoughtSnapshot, []error) {
 	if s == nil || s.workspace == nil {
@@ -297,17 +295,52 @@ func (s *Service) hydrateSnapshots(_ context.Context, sources []models.ComposeSo
 	snapshots := []models.ThoughtSnapshot{}
 	errs := []error{}
 	for _, src := range sources {
-		if src.SourceType != models.ComposeSourceTypeThought {
+		switch src.SourceType {
+		case models.ComposeSourceTypeThought, "":
+			thought, content, err := markdown.ReadThought(s.workspace.RootPath, src.SourceID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("hydrate thought %q: %w", src.SourceID, err))
+				continue
+			}
+			snapshots = append(snapshots, models.ThoughtSnapshot{Thought: thought, Content: content})
+		case models.ComposeSourceTypeSearchResult, models.ComposeSourceTypeTopicSection, models.ComposeSourceTypeCaptureSession:
+			snapshots = append(snapshots, composeSourceSnapshot(src))
+		default:
 			continue
 		}
-		thought, content, err := markdown.ReadThought(s.workspace.RootPath, src.SourceID)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("hydrate thought %q: %w", src.SourceID, err))
-			continue
-		}
-		snapshots = append(snapshots, models.ThoughtSnapshot{Thought: thought, Content: content})
+	}
+	if len(snapshots) > 0 {
+		return snapshots, nil
 	}
 	return snapshots, errs
+}
+
+func composeSourceSnapshot(src models.ComposeSource) models.ThoughtSnapshot {
+	title := strings.TrimSpace(src.Title)
+	if title == "" {
+		title = strings.TrimSpace(src.SourceID)
+	}
+	original := strings.Join([]string{
+		"Compose source type: " + strings.TrimSpace(src.SourceType),
+		"Compose source id: " + strings.TrimSpace(src.SourceID),
+	}, "\n")
+	if link := strings.TrimSpace(src.SourceLink); link != "" {
+		original += "\nSource link: " + link
+	}
+	return models.ThoughtSnapshot{
+		Thought: models.Thought{
+			ID:           strings.TrimSpace(src.SourceID),
+			Type:         models.ThoughtTypeText,
+			Source:       strings.TrimSpace(src.SourceType),
+			UserTitle:    title,
+			DisplayTitle: title,
+			Path:         strings.TrimSpace(src.SourceLink),
+		},
+		Content: models.ThoughtContent{
+			Original: original,
+			Links:    strings.TrimSpace(src.SourceLink),
+		},
+	}
 }
 
 func (s *Service) recordJob(draftID string) (models.Job, error) {

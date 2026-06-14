@@ -215,6 +215,7 @@ export const messages = {
   "topics.candidate_source.capture_session": "Capture session",
   "topics.candidate_source.thought_reopen_session": "Reopen session",
   "topics.candidate_source.thought": "Thought",
+  "topics.candidate_source.compose_draft": "Compose draft",
   "topics.weave_proposals_empty": "No weave proposals.",
   "topics.weave_proposals_none": "No weave proposals for this topic.",
   "topics.select_first": "Select a topic to see weave proposals.",

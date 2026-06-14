@@ -185,6 +185,55 @@ func TestServiceCreateDraftDedupeSourcesAndLinks(t *testing.T) {
 	}
 }
 
+func TestServiceCreateDraftSupportsNonThoughtSources(t *testing.T) {
+	svc, _, synth := newTestService(t)
+
+	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{
+			{
+				SourceType: models.ComposeSourceTypeSearchResult,
+				SourceID:   "search-result-1",
+				Title:      "Search result",
+				SourceLink: "thoughts/2026/06/search-result-1.md",
+			},
+			{
+				SourceType: models.ComposeSourceTypeTopicSection,
+				SourceID:   "topic-a#context",
+				Title:      "Topic context",
+				SourceLink: "topics/topic-a/index.md#context",
+			},
+			{
+				SourceType: models.ComposeSourceTypeCaptureSession,
+				SourceID:   "session-1",
+				Title:      "Capture session",
+				SourceLink: "capture/session-1",
+			},
+		},
+		Goal: "Compose from runtime sources",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if len(draft.Sources) != 3 {
+		t.Fatalf("sources len = %d, want 3", len(draft.Sources))
+	}
+	if len(draft.SourceLinks) != 3 {
+		t.Fatalf("source links len = %d, want 3", len(draft.SourceLinks))
+	}
+	if len(synth.lastReq.Snapshots) != 3 {
+		t.Fatalf("snapshots len = %d, want 3", len(synth.lastReq.Snapshots))
+	}
+	if got := synth.lastReq.Snapshots[0].Thought.Source; got != models.ComposeSourceTypeSearchResult {
+		t.Fatalf("first snapshot source = %q", got)
+	}
+	if got := synth.lastReq.Snapshots[1].Content.Links; got != "topics/topic-a/index.md#context" {
+		t.Fatalf("topic source link = %q", got)
+	}
+	if !strings.Contains(synth.lastReq.Snapshots[2].Content.Original, "capture_session") {
+		t.Fatalf("capture context missing discriminator: %q", synth.lastReq.Snapshots[2].Content.Original)
+	}
+}
+
 func TestServiceCreateDraftSkipsMissingThoughts(t *testing.T) {
 	svc, _, synth := newTestService(t)
 	root := svc.workspace.RootPath
@@ -207,6 +256,29 @@ func TestServiceCreateDraftSkipsMissingThoughts(t *testing.T) {
 	}
 	if len(draft.Sources) != 2 {
 		t.Fatalf("sources len = %d, want 2 (both kept; only hydration failed)", len(draft.Sources))
+	}
+}
+
+func TestServiceCreateDraftUsesNonThoughtSourcesWhenThoughtMissing(t *testing.T) {
+	svc, _, synth := newTestService(t)
+
+	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{
+			{SourceType: models.ComposeSourceTypeThought, SourceID: "missing-2026-xxxx"},
+			{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "search-result-1", Title: "Search result"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if len(draft.Sources) != 2 {
+		t.Fatalf("sources len = %d, want 2", len(draft.Sources))
+	}
+	if len(synth.lastReq.Snapshots) != 1 {
+		t.Fatalf("snapshots len = %d, want 1", len(synth.lastReq.Snapshots))
+	}
+	if got := synth.lastReq.Snapshots[0].Thought.ID; got != "search-result-1" {
+		t.Fatalf("hydrated snapshot id = %q", got)
 	}
 }
 
