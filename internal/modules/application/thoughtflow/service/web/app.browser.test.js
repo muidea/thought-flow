@@ -613,17 +613,13 @@ test("capture composer starts a new session, persists a thought, and shows the c
     // follow-up GET /api/thoughts/:id returns. Wait for the chip to
     // land before asserting — the initial capture response does not
     // include refine_status, so the bubble re-renders shortly after.
-    await page.waitForExpression(() => {
-      const aiBubble = document.querySelector("#capture-conversation .tf-msg-ai");
-      return aiBubble && /data-status="refine-pending"/.test(aiBubble.outerHTML || "");
-    });
+    await page.waitForExpression(() => /data-status="refine-pending"/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]')?.outerHTML || ""));
     const messages = await page.evaluate(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.textContent || ""));
     assert.ok(messages.some((text) => text.includes("Browser session smoke text")), "user message should be in conversation");
     assert.ok(messages.some((text) => text.includes("thought-capture")), "AI response should include the new thought id");
     const cardHTML = await page.evaluate(() => {
-      const aiBubbles = Array.from(document.querySelectorAll("#capture-conversation .tf-msg-ai"));
-      const bubble = aiBubbles.length > 0 ? aiBubbles[aiBubbles.length - 1] : null;
-      return bubble ? bubble.outerHTML : "";
+      const thoughtBubble = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]');
+      return thoughtBubble ? thoughtBubble.innerHTML : "";
     });
     assert.match(cardHTML, /data-status="refine-pending"/, "rich card should expose refine status chip");
     assert.match(cardHTML, /data-status="capture-captured"/, "rich card should expose capture status chip");

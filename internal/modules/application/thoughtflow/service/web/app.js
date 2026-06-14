@@ -1688,7 +1688,8 @@ function renderCaptureConversation() {
       const roleLabel = msg.role ? escapeHTML(msg.role) : "";
       const body = renderCaptureBubbleBody(msg);
       const meta = msg.meta ? `<div class="tf-msg-meta">${escapeHTML(msg.meta)}</div>` : "";
-      return `<li class="tf-msg ${cls}" data-role="${roleLabel}">${body}${meta}</li>`;
+      const thoughtHook = msg.thoughtId ? ` data-thought-id="${escapeHTML(msg.thoughtId)}"` : "";
+      return `<li class="tf-msg ${cls}" data-role="${roleLabel}"${thoughtHook}>${body}${meta}</li>`;
     }).join("");
   }
   list.scrollTop = list.scrollHeight;
