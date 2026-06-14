@@ -1593,6 +1593,64 @@ function appendCaptureMessage(message) {
   return entry;
 }
 
+function upsertCaptureMessage(kind, message) {
+  if (!kind || !message || !message.role) return null;
+  const sessionId = message.sessionId || state.capture.sessionId || "";
+  const messages = state.capture.messages || [];
+  const idx = messages.findIndex((item) => item.kind === kind && (item.sessionId || "") === sessionId);
+  if (idx >= 0) {
+    const existing = messages[idx];
+    const next = {
+      ...existing,
+      ...message,
+      kind,
+      sessionId,
+      at: new Date().toISOString(),
+    };
+    state.capture.messages = messages.map((item, itemIdx) => itemIdx === idx ? next : item);
+    renderCaptureConversation();
+    return next;
+  }
+  return appendCaptureMessage({ ...message, kind, sessionId });
+}
+
+function upsertCaptureContextMessage() {
+  const sp = state.capture.activeScratchpad || {};
+  const ctx = sp.session_context || sp.SessionContext || {};
+  if (!state.capture.sessionId || !hasCaptureSessionContext(ctx)) return null;
+  return upsertCaptureMessage("context", {
+    role: "ai",
+    sessionId: state.capture.sessionId,
+  });
+}
+
+function upsertArchivePreviewMessage() {
+  if (!state.capture.sessionId || !state.capture.archivePreview) return null;
+  return upsertCaptureMessage("archive_preview", {
+    role: "ai",
+    sessionId: state.capture.sessionId,
+    preview: state.capture.archivePreview,
+  });
+}
+
+function hasCaptureSessionContext(ctx) {
+  if (!ctx || typeof ctx !== "object") return false;
+  return Boolean(
+    ctx.topic ||
+    ctx.goal ||
+    ctx.candidate_title ||
+    ctx.candidate_summary ||
+    ctx.candidate_body ||
+    (Array.isArray(ctx.candidate_tags) && ctx.candidate_tags.length) ||
+    (Array.isArray(ctx.confirmed_facts) && ctx.confirmed_facts.length) ||
+    (Array.isArray(ctx.open_questions) && ctx.open_questions.length) ||
+    (Array.isArray(ctx.conflicts) && ctx.conflicts.length) ||
+    (Array.isArray(ctx.source_links) && ctx.source_links.length) ||
+    (Array.isArray(ctx.related_thought_ids) && ctx.related_thought_ids.length) ||
+    (Array.isArray(ctx.suggested_topic_ids) && ctx.suggested_topic_ids.length)
+  );
+}
+
 function captureRoleClass(role) {
   switch (role) {
     case "user": return "tf-msg-user";
@@ -1611,6 +1669,8 @@ function renderCaptureBubbleBody(msg) {
   if (msg.thoughtId && msg.thoughtId === state.capture.activeThoughtId && state.capture.activeSnapshot) {
     return renderCaptureThoughtCardFromSnapshot(state.capture.activeSnapshot);
   }
+  if (msg.kind === "context") return renderCaptureContextCard();
+  if (msg.kind === "archive_preview") return renderArchivePreviewCard(msg);
   if (msg.html) return msg.html;
   if (msg.text) return `<div class="tf-msg-body">${escapeHTML(msg.text)}</div>`;
   return "";
@@ -1641,36 +1701,59 @@ function renderCaptureConversation() {
   renderCaptureLockIndicator();
 }
 
-function renderCaptureContextPanel() {
-  const node = $("#capture-context-panel");
-  if (!node) return;
-  const sp = state.capture.activeScratchpad || {};
-  const ctx = sp.session_context || sp.SessionContext || {};
+function renderCaptureContextRows(ctx) {
+  ctx = ctx || {};
   const rows = [];
   if (ctx.topic) rows.push(`<div><span>${escapeHTML(t("capture.context.topic"))}</span><strong>${escapeHTML(ctx.topic)}</strong></div>`);
   if (ctx.goal) rows.push(`<div><span>${escapeHTML(t("capture.context.goal"))}</span><strong>${escapeHTML(ctx.goal)}</strong></div>`);
+  if (Array.isArray(ctx.confirmed_facts) && ctx.confirmed_facts.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.facts"))}</span><ul>${ctx.confirmed_facts.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
+  }
   if (ctx.candidate_title) rows.push(`<div><span>${escapeHTML(t("capture.context.candidate_title"))}</span><strong>${escapeHTML(ctx.candidate_title)}</strong></div>`);
   if (Array.isArray(ctx.candidate_tags) && ctx.candidate_tags.length) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.tags"))}</span><strong>${ctx.candidate_tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join(" ")}</strong></div>`);
   }
   if (ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.summary"))}</span><p>${escapeHTML(ctx.candidate_summary)}</p></div>`);
+  if (ctx.candidate_body && ctx.candidate_body !== ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.body"))}</span><p>${escapeHTML(ctx.candidate_body)}</p></div>`);
+  if (Array.isArray(ctx.source_links) && ctx.source_links.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.source_links"))}</span><ul>${ctx.source_links.map((link) => `<li><a href="${escapeHTML(link)}" target="_blank" rel="noreferrer">${escapeHTML(link)}</a></li>`).join("")}</ul></div>`);
+  }
+  if (Array.isArray(ctx.related_thought_ids) && ctx.related_thought_ids.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.related"))}</span><strong>${ctx.related_thought_ids.map((id) => `<span class="tf-chip">${escapeHTML(id)}</span>`).join(" ")}</strong></div>`);
+  }
+  if (Array.isArray(ctx.suggested_topic_ids) && ctx.suggested_topic_ids.length) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.suggested_topics"))}</span><strong>${ctx.suggested_topic_ids.map((id) => `<span class="tf-chip">${escapeHTML(id)}</span>`).join(" ")}</strong></div>`);
+  }
   if (Array.isArray(ctx.open_questions) && ctx.open_questions.length) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.questions"))}</span><ul>${ctx.open_questions.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
   }
   if (Array.isArray(ctx.conflicts) && ctx.conflicts.length) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.conflicts"))}</span><ul>${ctx.conflicts.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
   }
+  return rows;
+}
+
+function renderCaptureContextCard() {
+  const sp = state.capture.activeScratchpad || {};
+  const ctx = sp.session_context || sp.SessionContext || {};
+  const rows = renderCaptureContextRows(ctx);
+  return `<article class="tf-capture-message-card tf-capture-context-card">
+    <header>${escapeHTML(t("capture.context.title"))}</header>
+    <div class="tf-capture-context">${rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"))}</div>
+  </article>`;
+}
+
+function renderCaptureContextPanel() {
+  const node = $("#capture-context-panel");
+  if (!node) return;
+  const sp = state.capture.activeScratchpad || {};
+  const ctx = sp.session_context || sp.SessionContext || {};
+  const rows = renderCaptureContextRows(ctx);
   node.innerHTML = rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"));
 }
 
-function renderArchivePreviewPanel() {
-  const node = $("#capture-archive-preview");
-  if (!node) return;
-  const preview = state.capture.archivePreview;
-  if (!preview) {
-    node.innerHTML = escapeHTML(t("capture.archive.preview_empty"));
-    return;
-  }
+function renderArchivePreviewBody(preview) {
+  if (!preview) return escapeHTML(t("capture.archive.preview_empty"));
   const tags = Array.isArray(preview.tags) && preview.tags.length
     ? `<div class="tf-capture-tags">${preview.tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join("")}</div>`
     : "";
@@ -1686,7 +1769,7 @@ function renderArchivePreviewPanel() {
         ${renderDiff(preview.diff.before || "", preview.diff.after || "")}
       </details>`
     : "";
-  node.innerHTML = `<div class="tf-capture-preview-body">
+  return `<div class="tf-capture-preview-body">
     <strong>${escapeHTML(preview.title || t("capture.archive.untitled"))}</strong>
     <div class="topic-meta">${escapeHTML(t("capture.archive.strategy"))}: ${escapeHTML(preview.strategy || "new")}</div>
     ${tags}
@@ -1694,6 +1777,20 @@ function renderArchivePreviewPanel() {
     ${links ? `<div class="tf-capture-section"><div class="tf-capture-section-title">${escapeHTML(t("capture.archive.source_links"))}</div>${links}</div>` : ""}
     ${diff}
   </div>`;
+}
+
+function renderArchivePreviewCard(msg) {
+  const preview = (msg && msg.preview) || state.capture.archivePreview;
+  return `<article class="tf-capture-message-card tf-capture-preview-card">
+    <header>${escapeHTML(t("capture.archive.preview_title"))}</header>
+    ${renderArchivePreviewBody(preview)}
+  </article>`;
+}
+
+function renderArchivePreviewPanel() {
+  const node = $("#capture-archive-preview");
+  if (!node) return;
+  node.innerHTML = renderArchivePreviewBody(state.capture.archivePreview);
 }
 
 function renderCaptureLockIndicator() {
@@ -1858,6 +1955,8 @@ async function rehydrateActiveScratchpad() {
   // Restore the chat history verbatim so the user sees the same
   // composer state they had when they refreshed.
   state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : [];
+  upsertCaptureContextMessage();
+  upsertArchivePreviewMessage();
   if (typeof renderCaptureConversation === "function") {
     renderCaptureConversation();
   }
@@ -1920,6 +2019,8 @@ function switchCaptureSession(sessionId) {
       state.capture.activeScratchpad = detail;
       state.capture.archivePreview = detail.archive_preview || null;
       state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : state.capture.messages;
+      upsertCaptureContextMessage();
+      upsertArchivePreviewMessage();
       renderCaptureConversation();
     })
     .catch(() => {});
@@ -1941,6 +2042,25 @@ function refreshActiveCaptureThought() {
       renderCaptureConversation();
     })
     .catch(() => { /* offline / 404 — leave the cache in place */ });
+}
+
+async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650 } = {}) {
+  const sessionId = state.capture.sessionId;
+  if (!sessionId) return;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    let detail;
+    try {
+      detail = await api(`/api/capture/sessions/${encodeURIComponent(sessionId)}`);
+    } catch (_) {
+      return;
+    }
+    if (!detail || detail.session_id !== sessionId) return;
+    state.capture.activeScratchpad = detail;
+    state.capture.archivePreview = detail.archive_preview || null;
+    upsertCaptureContextMessage();
+    upsertArchivePreviewMessage();
+  }
 }
 
 function classifyCaptureInput(text) {
@@ -2016,6 +2136,9 @@ async function appendSessionMessage(text) {
     messages: state.capture.messages,
   });
   appendCaptureMessage({ role: "system", text: t("capture.command.noted") });
+  upsertCaptureContextMessage();
+  upsertArchivePreviewMessage();
+  refreshActiveScratchpadContext().catch(() => {});
   // When the scratchpad transitions from "no committed thought" to
   // "anchored to thought-X" (e.g. reopening a previously-archived
   // session and then dropping another message, or the legacy
@@ -2369,6 +2492,8 @@ async function patchScratchpad(draft) {
   });
   state.capture.activeScratchpad = next;
   state.capture.archivePreview = next.archive_preview || null;
+  upsertCaptureContextMessage();
+  upsertArchivePreviewMessage();
   appendCaptureMessage({
     role: "ai",
     text: formatScratchpadFeedback(draft),
@@ -2450,7 +2575,8 @@ async function previewArchive({ intent = "menu", strategy = "" } = {}) {
     if (state.capture.activeScratchpad) {
       state.capture.activeScratchpad.archive_preview = state.capture.archivePreview;
     }
-    appendCaptureMessage({ role: "ai", text: t("capture.archive.preview_ready") });
+    upsertArchivePreviewMessage();
+    appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
     renderCaptureConversation();
     const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
     if (ok) await commitScratchpad();
@@ -2642,6 +2768,10 @@ function newCaptureSession() {
 }
 
 function finishCaptureSession() {
+  if (state.capture.sessionId && !state.capture.activeThoughtId) {
+    previewArchive({ intent: "menu" }).catch((error) => appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") }));
+    return;
+  }
   const thoughtId = state.capture.activeThoughtId;
   if (window.tflowSessionLock) {
     window.tflowSessionLock.release(thoughtId, state.capture.sessionId);

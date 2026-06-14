@@ -1444,7 +1444,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--tf-space-3, 0.75rem);
-  min-height: 60vh;
+  min-height: 72vh;
 }
 
 .tf-capture-header {
@@ -1480,8 +1480,8 @@ textarea:focus-visible {
   flex-direction: column;
   gap: var(--tf-space-2, 0.5rem);
   flex: 1 1 auto;
-  min-height: 18rem;
-  max-height: 28rem;
+  min-height: 28rem;
+  max-height: min(62vh, 44rem);
   overflow-y: auto;
   background: var(--tf-color-bg-subtle, #fafafa);
   border: 1px solid var(--tf-color-border, #e5e5e5);
@@ -1493,6 +1493,10 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 12px;
+}
+
+.tf-capture-workbench[hidden] {
+  display: none !important;
 }
 
 .tf-capture-panel {
@@ -1550,6 +1554,34 @@ textarea:focus-visible {
   color: var(--tf-color-text);
 }
 
+.tf-capture-message-card {
+  display: grid;
+  gap: 10px;
+  min-width: min(34rem, 100%);
+}
+
+.tf-capture-message-card > header {
+  color: var(--tf-color-text-secondary, #555);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.tf-capture-message-card .tf-capture-context {
+  min-height: 0;
+}
+
+.tf-capture-message-card .tf-capture-context > div,
+.tf-capture-message-card .tf-description-list > div {
+  grid-template-columns: minmax(7rem, 0.3fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.tf-capture-message-card .markdown-rendered {
+  max-width: 100%;
+}
+
 .tf-msg {
   display: flex;
   flex-direction: column;
@@ -1572,6 +1604,11 @@ textarea:focus-visible {
   align-self: flex-start;
   background: var(--tf-color-surface, #fff);
   border-color: var(--tf-color-border, #e5e5e5);
+}
+
+.tf-msg-ai:has(.tf-capture-message-card) {
+  max-width: min(48rem, 100%);
+  width: fit-content;
 }
 
 .tf-msg-system {

@@ -145,6 +145,10 @@ function loadAppFunctionsWith(opts = {}) {
       renderCaptureThoughtCardFromSnapshot,
       buildCaptureExpansionSections,
       formatPatchFeedback,
+      upsertCaptureContextMessage,
+      upsertArchivePreviewMessage,
+      renderCaptureContextCard,
+      renderArchivePreviewCard,
       renderCaptureBubbleBody,
       formatBadgeCount,
       computeSidebarBadgeCounts,
@@ -1029,6 +1033,52 @@ test("renderCaptureBubbleBody falls back to stored html/text for non-bound messa
   assert.match(out, /<div class="tf-msg-body">hello<\/div>/);
   const htmlOut = app.renderCaptureBubbleBody({ role: "ai", html: "<b>static</b>" });
   assert.match(htmlOut, /<b>static<\/b>/);
+});
+
+test("capture context is rendered as an updatable conversation card", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_title: "RAG capture title",
+      candidate_tags: ["rag", "llm"],
+      candidate_summary: "Context summary",
+    },
+  };
+  const first = app.upsertCaptureContextMessage();
+  assert.equal(first.kind, "context");
+  assert.equal(app._state.capture.messages.length, 1);
+  const html = app.renderCaptureBubbleBody(first);
+  assert.match(html, /capture\.context\.title/);
+  assert.match(html, /RAG capture title/);
+  assert.match(html, /Context summary/);
+
+  app._state.capture.activeScratchpad.session_context.candidate_title = "Updated title";
+  const updated = app.upsertCaptureContextMessage();
+  assert.equal(updated.id, first.id);
+  assert.equal(app._state.capture.messages.length, 1);
+  assert.match(app.renderCaptureBubbleBody(updated), /Updated title/);
+});
+
+test("archive preview is rendered as a conversation card with a stored snapshot", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.archivePreview = {
+    title: "Preview title",
+    strategy: "new",
+    tags: ["capture"],
+    body: "Preview body",
+  };
+  const message = app.upsertArchivePreviewMessage();
+  assert.equal(message.kind, "archive_preview");
+  const html = app.renderCaptureBubbleBody(message);
+  assert.match(html, /capture\.archive\.preview_title/);
+  assert.match(html, /Preview title/);
+  assert.match(html, /Preview body/);
+
+  app._state.capture.archivePreview = null;
+  assert.match(app.renderCaptureBubbleBody(message), /Preview title/);
 });
 
 test("formatPatchFeedback picks the right message per PATCH shape", () => {

@@ -668,13 +668,14 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await page.evaluate(() => { window.location.hash = "#/capture"; });
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
-    // Start a session and wait for the extracted context panel.
+    // Start a session and wait for the extracted context card in the
+    // conversation stream.
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "Multi-turn browser smoke";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    await page.waitForExpression(() => /Multi-turn browser smoke/.test(document.querySelector("#capture-context-panel")?.textContent || ""));
+    await page.waitForExpression(() => /Multi-turn browser smoke/.test(document.querySelector("#capture-conversation")?.textContent || ""));
     // Issue a rename command; in the current capture flow it updates
     // session_context.CandidateTitle rather than PATCHing a Thought.
     await page.evaluate(() => {
@@ -682,13 +683,13 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       input.value = "rename to Renamed in browser";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    // Poll for the rename to land in the context and for the preview
+    // Poll for the rename to land in the conversation context and for the preview
     // action to produce a before-save archive preview.
     let renamed = false;
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       renamed = await page.evaluate(() => {
-        const context = document.querySelector("#capture-context-panel");
+        const context = document.querySelector("#capture-conversation");
         return context && /Renamed in browser/.test(context.textContent || "");
       });
       if (renamed) break;
@@ -702,12 +703,13 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
     }
     assert.ok(renamed, "rename command should update the session context title");
-    await page.evaluate(() => document.querySelector("#capture-refresh-preview").click());
-    await page.waitForExpression(() => /Renamed in browser/.test(document.querySelector("#capture-archive-preview")?.textContent || ""));
+    await page.evaluate(() => document.querySelector("#capture-finish").click());
+    await page.waitForExpression(() => /Archive preview|归档预览/.test(document.querySelector("#capture-conversation")?.textContent || "")
+      && /Renamed in browser/.test(document.querySelector("#capture-conversation")?.textContent || ""));
     const rendered = await page.evaluate(() => {
       return {
-        context: document.querySelector("#capture-context-panel")?.textContent || "",
-        preview: document.querySelector("#capture-archive-preview")?.textContent || "",
+        context: document.querySelector("#capture-conversation")?.textContent || "",
+        preview: Array.from(document.querySelectorAll("#capture-conversation .tf-capture-preview-card")).map((el) => el.textContent || "").join("\n"),
       };
     });
     assert.match(rendered.context, /Renamed in browser/);

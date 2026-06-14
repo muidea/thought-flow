@@ -65,6 +65,37 @@ type ExpandResult struct {
 	GeneratedAt time.Time
 }
 
+type CaptureContextMessage struct {
+	Role string
+	Text string
+}
+
+type CaptureContextRequest struct {
+	SessionID string
+	Content   string
+	Messages  []CaptureContextMessage
+	Existing  CaptureContextResult
+}
+
+type CaptureContextResult struct {
+	Topic             string
+	Goal              string
+	ConfirmedFacts    []string
+	OpenQuestions     []string
+	Conflicts         []string
+	CandidateTitle    string
+	CandidateTags     []string
+	CandidateSummary  string
+	CandidateBody     string
+	SourceLinks       []string
+	RelatedThoughtIDs []string
+	SuggestedTopicIDs []string
+	ArchiveIntent     string
+	ArchiveStrategy   string
+	Model             string
+	GeneratedAt       time.Time
+}
+
 type RefineProvider interface {
 	Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error)
 }
@@ -83,6 +114,10 @@ type SynthesisProvider interface {
 
 type ExpandProvider interface {
 	Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error)
+}
+
+type CaptureContextProvider interface {
+	BuildCaptureContext(ctx context.Context, req CaptureContextRequest) (CaptureContextResult, error)
 }
 
 type Provider interface {
@@ -152,6 +187,13 @@ func NewExpandProvider(cfg appconfig.LLMConfig) ExpandProvider {
 	return observedExpandProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
 }
 
+func NewCaptureContextProvider(cfg appconfig.LLMConfig) CaptureContextProvider {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return observedCaptureContextProvider{next: NewLocalRefineProvider()}
+	}
+	return observedCaptureContextProvider{next: NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})}
+}
+
 type observedRefineProvider struct {
 	next RefineProvider
 }
@@ -195,6 +237,15 @@ type observedExpandProvider struct {
 func (p observedExpandProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
 	observability.IncrementAIRequest()
 	return p.next.Expand(ctx, req)
+}
+
+type observedCaptureContextProvider struct {
+	next CaptureContextProvider
+}
+
+func (p observedCaptureContextProvider) BuildCaptureContext(ctx context.Context, req CaptureContextRequest) (CaptureContextResult, error) {
+	observability.IncrementAIRequest()
+	return p.next.BuildCaptureContext(ctx, req)
 }
 
 func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
@@ -313,6 +364,51 @@ func (p *LocalRefineProvider) Expand(ctx context.Context, req ExpandRequest) (Ex
 	}
 	plan.WriteString("\n## 推荐的具体步骤\n\n1. 复述本笔记的目标\n2. 关联 1-2 条已有 Thought（搜索 hybrid 模式）\n3. 写入专题并触发 weave\n\n## 关键注意事项\n\n- 涉及 URL 时走 Jina reader 抓取\n- 专题判定阈值默认 0.75，near-miss 阈值 0.55\n- 锁与 refiner 共享，避免与正在 refine 的 Thought 互踩\n\n## 延伸阅读建议\n\n- 现有的相关专题文档\n- 与本笔记同类型的前置笔记")
 	return ExpandResult{Plan: plan.String(), Model: "local-rule", GeneratedAt: time.Now().UTC()}, nil
+}
+
+func (p *LocalRefineProvider) BuildCaptureContext(ctx context.Context, req CaptureContextRequest) (CaptureContextResult, error) {
+	_ = ctx
+	text := strings.TrimSpace(req.Content)
+	if text == "" {
+		for _, msg := range req.Messages {
+			if strings.TrimSpace(msg.Role) != "user" {
+				continue
+			}
+			msgText := strings.TrimSpace(msg.Text)
+			if msgText == "" {
+				continue
+			}
+			if text != "" {
+				text += "\n\n"
+			}
+			text += msgText
+		}
+	}
+	if text == "" {
+		return CaptureContextResult{}, errors.New("capture context content is empty")
+	}
+	title := firstLine(text)
+	if title == "" {
+		title = req.SessionID
+	}
+	return CaptureContextResult{
+		Topic:             firstNonEmpty(req.Existing.Topic, title),
+		Goal:              firstNonEmpty(req.Existing.Goal, deriveLocalCaptureGoal(text)),
+		ConfirmedFacts:    normalizeList(append(req.Existing.ConfirmedFacts, title)),
+		OpenQuestions:     normalizeList(append(req.Existing.OpenQuestions, localQuestions(text)...)),
+		Conflicts:         normalizeList(append(req.Existing.Conflicts, localConflicts(text)...)),
+		CandidateTitle:    firstNonEmpty(req.Existing.CandidateTitle, title),
+		CandidateTags:     normalizeList(append(req.Existing.CandidateTags, inferTags(text)...)),
+		CandidateSummary:  firstNonEmpty(req.Existing.CandidateSummary, summarize(text)),
+		CandidateBody:     text,
+		SourceLinks:       normalizeList(append(req.Existing.SourceLinks, localURLs(text)...)),
+		RelatedThoughtIDs: normalizeList(req.Existing.RelatedThoughtIDs),
+		SuggestedTopicIDs: normalizeList(req.Existing.SuggestedTopicIDs),
+		ArchiveIntent:     firstNonEmpty(req.Existing.ArchiveIntent, "none"),
+		ArchiveStrategy:   firstNonEmpty(req.Existing.ArchiveStrategy, "new"),
+		Model:             "local-rule",
+		GeneratedAt:       time.Now().UTC(),
+	}, nil
 }
 
 // --------------------------------------------------------------------------
@@ -560,6 +656,46 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		refinement.Embedding = &embedding
 	}
 	return refinement, nil
+}
+
+func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req CaptureContextRequest) (CaptureContextResult, error) {
+	text := strings.TrimSpace(req.Content)
+	if text == "" {
+		return CaptureContextResult{}, errors.New("capture context content is empty")
+	}
+	content, err := p.chatCompletion(ctx,
+		"You maintain ThoughtFlow capture session context. Return strict JSON only with fields topic string, goal string, confirmed_facts string array, open_questions string array, conflicts string array, candidate_title string, candidate_tags string array, candidate_summary string, candidate_body string, source_links string array, related_thought_ids string array, suggested_topic_ids string array, archive_intent string, archive_strategy string. Use Chinese when the input is Chinese. Do not invent source links or thought ids.",
+		"Session ID: "+req.SessionID+
+			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
+			"\n\nConversation:\n"+renderCaptureContextMessages(req.Messages)+
+			"\n\nAccumulated user content:\n"+text,
+		0.2,
+	)
+	if err != nil {
+		return CaptureContextResult{}, err
+	}
+	var parsed captureContextJSON
+	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+		return CaptureContextResult{}, fmt.Errorf("parse capture context json: %w", err)
+	}
+	return CaptureContextResult{
+		Topic:             strings.TrimSpace(parsed.Topic),
+		Goal:              strings.TrimSpace(parsed.Goal),
+		ConfirmedFacts:    normalizeList(parsed.ConfirmedFacts),
+		OpenQuestions:     normalizeList(parsed.OpenQuestions),
+		Conflicts:         normalizeList(parsed.Conflicts),
+		CandidateTitle:    strings.TrimSpace(parsed.CandidateTitle),
+		CandidateTags:     normalizeList(parsed.CandidateTags),
+		CandidateSummary:  strings.TrimSpace(parsed.CandidateSummary),
+		CandidateBody:     strings.TrimSpace(parsed.CandidateBody),
+		SourceLinks:       normalizeList(parsed.SourceLinks),
+		RelatedThoughtIDs: normalizeList(parsed.RelatedThoughtIDs),
+		SuggestedTopicIDs: normalizeList(parsed.SuggestedTopicIDs),
+		ArchiveIntent:     firstNonEmpty(parsed.ArchiveIntent, "none"),
+		ArchiveStrategy:   firstNonEmpty(parsed.ArchiveStrategy, "new"),
+		Model:             p.chatModel,
+		GeneratedAt:       time.Now().UTC(),
+	}, nil
 }
 
 func (p *OpenAICompatibleProvider) Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error) {
@@ -848,6 +984,23 @@ type synthesisJSON struct {
 	Content string `json:"content"`
 }
 
+type captureContextJSON struct {
+	Topic             string   `json:"topic"`
+	Goal              string   `json:"goal"`
+	ConfirmedFacts    []string `json:"confirmed_facts"`
+	OpenQuestions     []string `json:"open_questions"`
+	Conflicts         []string `json:"conflicts"`
+	CandidateTitle    string   `json:"candidate_title"`
+	CandidateTags     []string `json:"candidate_tags"`
+	CandidateSummary  string   `json:"candidate_summary"`
+	CandidateBody     string   `json:"candidate_body"`
+	SourceLinks       []string `json:"source_links"`
+	RelatedThoughtIDs []string `json:"related_thought_ids"`
+	SuggestedTopicIDs []string `json:"suggested_topic_ids"`
+	ArchiveIntent     string   `json:"archive_intent"`
+	ArchiveStrategy   string   `json:"archive_strategy"`
+}
+
 func extractJSONObject(value string) string {
 	value = strings.TrimSpace(value)
 	start := strings.Index(value, "{")
@@ -926,6 +1079,86 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func renderCaptureContextMessages(messages []CaptureContextMessage) string {
+	if len(messages) == 0 {
+		return "(empty)"
+	}
+	parts := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, firstNonEmpty(msg.Role, "user")+": "+text)
+	}
+	if len(parts) == 0 {
+		return "(empty)"
+	}
+	return strings.Join(parts, "\n")
+}
+
+func mustJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func deriveLocalCaptureGoal(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "todo") || strings.Contains(text, "待办") || strings.Contains(text, "计划"):
+		return "整理为可执行事项"
+	case strings.Contains(lower, "design") || strings.Contains(text, "设计"):
+		return "沉淀设计思路"
+	case strings.Contains(text, "问题") || strings.Contains(text, "冲突"):
+		return "梳理问题与后续处理方向"
+	default:
+		return "整理为可归档知识"
+	}
+}
+
+func localQuestions(text string) []string {
+	out := []string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "?") || strings.Contains(line, "？") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func localConflicts(text string) []string {
+	out := []string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(line, "冲突") || strings.Contains(line, "但是") || strings.Contains(lower, "but ") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+var captureURLPattern = regexp.MustCompile(`https?://[^\s]+`)
+
+func localURLs(text string) []string {
+	matches := captureURLPattern.FindAllString(text, -1)
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, strings.TrimRight(match, ".,;:!?)]}"))
+	}
+	return out
 }
 
 func localInitialTopicDocument(topic models.Topic) string {

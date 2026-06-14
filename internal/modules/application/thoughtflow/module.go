@@ -23,6 +23,7 @@ import (
 	"thoughtflow/internal/modules/refiner"
 	"thoughtflow/internal/modules/search"
 	"thoughtflow/internal/modules/topic"
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
@@ -133,6 +134,8 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	scratchpadSvc := capture.NewScratchpadService(scratchpadStore,
 		capture.WithCapture(captureService),
 		capturebiz.WithEventHub(eventHub),
+		capturebiz.WithBackgroundRoutine(backgroundRoutine),
+		capturebiz.WithCaptureContextProvider(ai.NewCaptureContextProvider(cfg.LLM)),
 	)
 	topic.InjectScratchpadProvider(scratchpadStore)
 	topic.InjectComposeDraftProvider(compose.Current())

@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muidea/magicCommon/task"
+
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/scratchpad"
 )
@@ -145,6 +148,66 @@ func TestScratchpadServiceAppendMessageRefreshesSessionContext(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			Topic:            "LLM topic",
+			Goal:             "LLM goal",
+			CandidateTitle:   "LLM title",
+			CandidateTags:    []string{"llm", "capture"},
+			CandidateSummary: "LLM summary",
+			CandidateBody:    "LLM body",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(syncBackground{}),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "raw capture message"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("BuildCaptureContext calls = %d, want 1", provider.calls)
+	}
+	if provider.lastReq.SessionID != "s1" || provider.lastReq.Content != "raw capture message" {
+		t.Fatalf("provider request = %+v", provider.lastReq)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if sp.SessionContext.CandidateTitle != "LLM title" {
+		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
+	}
+	if sp.SessionContext.CandidateSummary != "LLM summary" {
+		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
+	}
+	if !sameStringSet(sp.SessionContext.CandidateTags, []string{"capture", "llm"}) {
+		t.Fatalf("CandidateTags = %+v", sp.SessionContext.CandidateTags)
+	}
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, item := range left {
+		seen[item]++
+	}
+	for _, item := range right {
+		if seen[item] == 0 {
+			return false
+		}
+		seen[item]--
+	}
+	return true
+}
+
 func TestScratchpadServiceAppendMessageRejectsEmptyFields(t *testing.T) {
 	svc := NewScratchpadService(newMemoryScratchpad())
 	if _, err := svc.AppendMessage("", "user", "hi"); err == nil {
@@ -153,6 +216,51 @@ func TestScratchpadServiceAppendMessageRejectsEmptyFields(t *testing.T) {
 	if _, err := svc.AppendMessage("s1", "user", "   "); err == nil {
 		t.Fatalf("whitespace text should error")
 	}
+}
+
+type syncBackground struct{}
+
+func (syncBackground) AsyncFunction(fn func()) error {
+	fn()
+	return nil
+}
+
+func (syncBackground) AsyncTask(task.Task) error { return nil }
+
+func (syncBackground) SyncTask(task.Task) error { return nil }
+
+func (syncBackground) SyncTaskWithTimeOut(task.Task, time.Duration) error { return nil }
+
+func (syncBackground) SyncFunction(fn func()) error {
+	fn()
+	return nil
+}
+
+func (syncBackground) SyncFunctionWithTimeOut(fn func(), _ time.Duration) error {
+	fn()
+	return nil
+}
+
+func (syncBackground) Timer(context.Context, task.Task, time.Duration, time.Duration) error {
+	return nil
+}
+
+func (syncBackground) Shutdown(context.Context) bool { return true }
+
+type stubCaptureContextProvider struct {
+	calls   int
+	lastReq ai.CaptureContextRequest
+	result  ai.CaptureContextResult
+	err     error
+}
+
+func (s *stubCaptureContextProvider) BuildCaptureContext(_ context.Context, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
+	s.calls++
+	s.lastReq = req
+	if s.err != nil {
+		return ai.CaptureContextResult{}, s.err
+	}
+	return s.result, nil
 }
 
 func TestScratchpadServiceAppendDraftMergesAndProjects(t *testing.T) {

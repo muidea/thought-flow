@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/task"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/scratchpad"
@@ -40,11 +42,13 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
-	store     ScratchpadStore
-	capture   CaptureCommitter
-	eventHub  eventHub
-	sessionID string
-	now       func() time.Time
+	store      ScratchpadStore
+	capture    CaptureCommitter
+	eventHub   eventHub
+	background task.BackgroundRoutine
+	contextAI  ai.CaptureContextProvider
+	sessionID  string
+	now        func() time.Time
 }
 
 // ScratchpadStore is the subset of scratchpad.Store this package
@@ -92,6 +96,14 @@ func WithCapture(c CaptureCommitter) ScratchpadServiceOption {
 // scratchpad-committed domain event.
 func WithEventHub(h eventHub) ScratchpadServiceOption {
 	return func(s *ScratchpadService) { s.eventHub = h }
+}
+
+func WithBackgroundRoutine(background task.BackgroundRoutine) ScratchpadServiceOption {
+	return func(s *ScratchpadService) { s.background = background }
+}
+
+func WithCaptureContextProvider(provider ai.CaptureContextProvider) ScratchpadServiceOption {
+	return func(s *ScratchpadService) { s.contextAI = provider }
 }
 
 // WithSessionID sets the sessionID used by PatchThought's
@@ -162,6 +174,7 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 	}
 	if role == "user" {
 		s.publishContextUpdatedEvent(sessionID)
+		s.enrichSessionContextAsync(saved)
 	}
 	return saved, nil
 }
@@ -273,6 +286,98 @@ func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpa
 	}
 	s.publishContextUpdatedEvent(sessionID)
 	return saved, nil
+}
+
+func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad) {
+	if s == nil || s.contextAI == nil || s.store == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(sp.SessionID)
+	contentAtSchedule := sp.Content
+	if sessionID == "" || strings.TrimSpace(contentAtSchedule) == "" {
+		return
+	}
+	run := func() {
+		current, err := s.store.Get(sessionID)
+		if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
+			return
+		}
+		result, err := s.contextAI.BuildCaptureContext(context.Background(), ai.CaptureContextRequest{
+			SessionID: sessionID,
+			Content:   current.Content,
+			Messages:  captureContextMessages(current.Messages),
+			Existing:  captureContextFromScratchpad(current.SessionContext),
+		})
+		if err != nil {
+			return
+		}
+		latest, err := s.store.Get(sessionID)
+		if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
+			return
+		}
+		_, _ = s.UpdateSessionContext(sessionID, captureContextToScratchpad(result, latest))
+	}
+	if s.background != nil {
+		if err := s.background.AsyncFunction(run); err == nil {
+			return
+		}
+	}
+	go run()
+}
+
+func captureContextMessages(messages []scratchpad.Message) []ai.CaptureContextMessage {
+	out := make([]ai.CaptureContextMessage, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, ai.CaptureContextMessage{Role: msg.Role, Text: msg.Text})
+	}
+	return out
+}
+
+func captureContextFromScratchpad(ctx scratchpad.SessionContext) ai.CaptureContextResult {
+	return ai.CaptureContextResult{
+		Topic:             ctx.Topic,
+		Goal:              ctx.Goal,
+		ConfirmedFacts:    append([]string(nil), ctx.ConfirmedFacts...),
+		OpenQuestions:     append([]string(nil), ctx.OpenQuestions...),
+		Conflicts:         append([]string(nil), ctx.Conflicts...),
+		CandidateTitle:    ctx.CandidateTitle,
+		CandidateTags:     append([]string(nil), ctx.CandidateTags...),
+		CandidateSummary:  ctx.CandidateSummary,
+		CandidateBody:     ctx.CandidateBody,
+		SourceLinks:       append([]string(nil), ctx.SourceLinks...),
+		RelatedThoughtIDs: append([]string(nil), ctx.RelatedThoughtIDs...),
+		SuggestedTopicIDs: append([]string(nil), ctx.SuggestedTopicIDs...),
+		ArchiveIntent:     string(ctx.ArchiveIntent),
+		ArchiveStrategy:   string(ctx.ArchiveStrategy),
+	}
+}
+
+func captureContextToScratchpad(result ai.CaptureContextResult, current scratchpad.Scratchpad) scratchpad.SessionContext {
+	return scratchpad.SessionContext{
+		Topic:             firstNonEmptyString(result.Topic, current.SessionContext.Topic),
+		Goal:              firstNonEmptyString(result.Goal, current.SessionContext.Goal),
+		ConfirmedFacts:    trimNonEmpty(result.ConfirmedFacts),
+		OpenQuestions:     trimNonEmpty(result.OpenQuestions),
+		Conflicts:         trimNonEmpty(result.Conflicts),
+		CandidateTitle:    firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
+		CandidateTags:     trimNonEmpty(result.CandidateTags),
+		CandidateSummary:  firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
+		CandidateBody:     firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody, current.Content),
+		SourceLinks:       trimNonEmpty(result.SourceLinks),
+		RelatedThoughtIDs: trimNonEmpty(result.RelatedThoughtIDs),
+		SuggestedTopicIDs: trimNonEmpty(result.SuggestedTopicIDs),
+		ArchiveIntent:     normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
+		ArchiveStrategy:   normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // SetArchiveIntent records WHO is driving the archive. The values
