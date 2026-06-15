@@ -86,10 +86,11 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
   await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
-  await page.waitForExpression(() => document.querySelectorAll(".result-item").length === 1);
+  await page.waitForExpression(() => document.querySelectorAll("#search-results .result-item").length === 1);
+  await page.waitForExpression(() => document.querySelectorAll("#thought-list .result-item").length === 2);
   // PR5: sidebar count badges surface notes / topics / compose totals.
-  // Topics and compose loaders populate the badges on boot; the
-  // capture (notes) counter comes from the metrics endpoint.
+  // Notes now comes from GET /api/thoughts, while Topics and Compose
+  // come from their own list endpoints.
   await page.waitForExpression(() => {
     const notes = document.querySelector('.tf-menu-badge[data-badge="notes"]');
     const topics = document.querySelector('.tf-menu-badge[data-badge="topics"]');
@@ -233,6 +234,7 @@ async function runBrowserSmoke(browser, url) {
       sidebar: !!document.querySelector(".tf-sider"),
       dashboardActive,
       topicItems: document.querySelectorAll(".topic-item").length,
+      notesItems: document.querySelectorAll("#thought-list .result-item").length,
       searchItems: document.querySelectorAll("#search-results .result-item").length,
       // PR4: each page description in zh-CN must be ≤ 12 chars and in
       // en-US must be ≤ 60 chars. Sample every visible page section and
@@ -282,6 +284,7 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.sidebar, true);
   assert.equal(state.dashboardActive, true);
   assert.equal(state.topicItems, 1);
+  assert.equal(state.notesItems, 2);
   assert.equal(state.searchItems, 1);
   assert.deepEqual(state.routeStates, [
     { name: "capture", active: true, visible: true, navActive: true },
@@ -1558,6 +1561,34 @@ function startFixtureServer(options = {}) {
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
         ]));
       case "/api/thoughts":
+        if (req.method === "GET") {
+          return json(res, api([
+            {
+              id: "thought-2",
+              display_title: "Second Browser Thought",
+              user_title: "Second Browser Thought",
+              refine_status: "pending",
+              index_status: "pending",
+              topic_status: "unmatched",
+              path: "thoughts/browser-2.md",
+              summary: "",
+              updated_at: "2026-06-10T10:00:00Z",
+              created_at: "2026-06-10T09:50:00Z",
+            },
+            {
+              id: "thought-1",
+              display_title: "Browser Thought",
+              user_title: "Browser Thought",
+              refine_status: "succeeded",
+              index_status: "succeeded",
+              topic_status: "matched",
+              path: "thoughts/browser.md",
+              summary: "Browser summary",
+              updated_at: "2026-06-10T09:00:00Z",
+              created_at: "2026-06-10T08:30:00Z",
+            },
+          ]));
+        }
         if (req.method === "POST") {
           return json(res, api({
             thought: {

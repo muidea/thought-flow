@@ -14,6 +14,7 @@ const tListLocales = (tflow && tflow.listLocales) || (() => ["zh-CN", "en-US"]);
 
 const state = {
   route: { page: "dashboard", nav: "dashboard", params: {}, query: {} },
+  notes: [],
   topics: [],
   activeTopicId: "",
   selectedThoughts: new Set(),
@@ -1076,7 +1077,7 @@ function formatBadgeCount(value) {
 function computeSidebarBadgeCounts(snapshot) {
   const state = snapshot || {};
   return {
-    notes: formatBadgeCount(state.metrics?.values?.thoughtflow_capture_total),
+    notes: formatBadgeCount(state.notes?.length),
     topics: formatBadgeCount(state.topics?.length),
     compose: formatBadgeCount(state.composeDrafts?.length),
   };
@@ -1095,6 +1096,268 @@ function renderSidebarBadges() {
       delete node.dataset.count;
     }
   }
+}
+
+function thoughtDisplayTitle(thought = {}) {
+  return String(thought.display_title || thought.user_title || thought.extracted_title || thought.id || "").trim();
+}
+
+function thoughtTimeValue(value) {
+  const parsed = new Date(value || "");
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+function sortThoughts(thoughts) {
+  return [...(thoughts || [])].sort((left, right) => {
+    const updatedDelta = thoughtTimeValue(right.updated_at) - thoughtTimeValue(left.updated_at);
+    if (updatedDelta !== 0) return updatedDelta;
+    const createdDelta = thoughtTimeValue(right.created_at) - thoughtTimeValue(left.created_at);
+    if (createdDelta !== 0) return createdDelta;
+    return String(right.id || "").localeCompare(String(left.id || ""));
+  });
+}
+
+function upsertThoughtRecord(thought, { render = true } = {}) {
+  if (!thought || !thought.id) return;
+  const next = Array.isArray(state.notes) ? state.notes.slice() : [];
+  const index = next.findIndex((item) => item.id === thought.id);
+  if (index >= 0) next[index] = { ...next[index], ...thought };
+  else next.push(thought);
+  state.notes = sortThoughts(next);
+  if (render) {
+    renderThoughtsList();
+    renderSidebarBadges();
+  }
+}
+
+function renderThoughtListItem(thought) {
+  const title = thoughtDisplayTitle(thought) || thought.id || "";
+  const updatedAt = fmtDate(thought.updated_at || thought.created_at);
+  const summary = String(thought.summary || thought.url || "").trim();
+  const tags = [...(thought.user_tags || []), ...(thought.ai_tags || [])]
+    .filter((tag) => typeof tag === "string" && tag.trim())
+    .slice(0, 5)
+    .map((tag) => `<span class="pill">${escapeHTML(tag)}</span>`)
+    .join("");
+  const statuses = [
+    [t("capture.card.status_refine"), thought.refine_status || ""],
+    [t("capture.card.status_index"), thought.index_status || ""],
+    [t("capture.card.status_topic"), thought.topic_status || ""],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => `<span class="pill" title="${escapeHTML(label)}">${escapeHTML(value)}</span>`)
+    .join("");
+  const active = state.activeThoughtId === thought.id ? " active" : "";
+  return `
+    <article class="result-item${active}" data-thought-id="${escapeHTML(thought.id || "")}">
+      <div>
+        <strong><button class="link-button" data-note-open="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(title)}</button></strong>
+        <div class="result-meta">${escapeHTML(updatedAt)}${thought.path ? ` · ${escapeHTML(thought.path)}` : ""}</div>
+        ${summary ? `<div class="result-meta">${escapeHTML(summary)}</div>` : ""}
+        ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
+        <div class="tf-action-row">
+          <button class="mini-button" data-note-open="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.open"))}</button>
+          <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
+          ${thought.path ? `<button class="mini-button" data-copy-path="${escapeHTML(thought.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderThoughtsList() {
+  const list = $("#thought-list");
+  if (!list) return;
+  const count = $("#thought-list-count");
+  const filterText = ($("#thought-filter")?.value || "").trim().toLowerCase();
+  const thoughts = Array.isArray(state.notes) ? state.notes : [];
+  const filtered = thoughts.filter((thought) => {
+    const haystack = [
+      thought.id,
+      thought.display_title,
+      thought.user_title,
+      thought.extracted_title,
+      thought.summary,
+      thought.url,
+      ...(thought.user_tags || []),
+      ...(thought.ai_tags || []),
+      ...(thought.topic_ids || []),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return !filterText || haystack.includes(filterText);
+  });
+  if (count) {
+    count.setAttribute("data-n", String(filtered.length));
+    count.textContent = t("notes.list_count", { n: filtered.length });
+  }
+  if (thoughts.length === 0) {
+    list.innerHTML = `<div class="tf-empty" data-i18n="notes.list_empty">${escapeHTML(t("notes.list_empty"))}</div>`;
+    return;
+  }
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="tf-empty" data-i18n="notes.list_empty_filtered">${escapeHTML(t("notes.list_empty_filtered"))}</div>`;
+    return;
+  }
+  list.innerHTML = filtered.map((thought) => renderThoughtListItem(thought)).join("");
+  list.querySelectorAll("[data-note-open]").forEach((button) => {
+    button.addEventListener("click", () => previewThought(button.dataset.noteOpen, { syncRoute: true }).catch((error) => toast(error.message)));
+  });
+  list.querySelectorAll(".result-item[data-thought-id]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      previewThought(item.dataset.thoughtId, { syncRoute: true }).catch((error) => toast(error.message));
+    });
+  });
+  list.querySelectorAll("[data-note-compose]").forEach((button) => {
+    button.addEventListener("click", () => addToComposeBasket([button.dataset.noteCompose]));
+  });
+  list.querySelectorAll("[data-copy-path]").forEach((button) => {
+    button.addEventListener("click", () => copyPath(button.dataset.copyPath));
+  });
+}
+
+function renderEmptyThoughtPanels() {
+  const preview = $("#thought-preview");
+  if (preview) preview.innerHTML = escapeHTML(t("empty.no_thought"));
+  const detail = $("#thought-detail");
+  if (detail) detail.innerHTML = `<div class="tf-empty" data-i18n="empty.no_thought">${escapeHTML(t("empty.no_thought"))}</div>`;
+  const status = $("#thought-status-detail");
+  if (status) status.innerHTML = `<div class="tf-empty" data-i18n="empty.no_thought">${escapeHTML(t("empty.no_thought"))}</div>`;
+  const drawer = $("#thought-drawer-content");
+  if (drawer) drawer.innerHTML = escapeHTML(t("empty.no_thought"));
+  const addCompose = $("#drawer-add-compose");
+  if (addCompose) addCompose.disabled = true;
+  const retry = $("#retry-refine");
+  if (retry) retry.disabled = true;
+}
+
+function renderThoughtDetailPanel(snapshot) {
+  const thought = snapshot?.thought || {};
+  const content = snapshot?.content || {};
+  const title = thoughtDisplayTitle(thought) || thought.id || "";
+  const keyPoints = Array.isArray(thought.key_points) ? thought.key_points.filter((item) => typeof item === "string" && item.trim()) : [];
+  const sections = [
+    `# ${title}`,
+    thought.summary ? `## ${t("thoughts.preview_summary")}\n${thought.summary}` : "",
+    keyPoints.length > 0 ? `## ${t("notes.detail.key_points")}\n${keyPoints.map((item) => `- ${item}`).join("\n")}` : "",
+    content.ai_notes ? `## ${t("notes.detail.ai_notes")}\n${content.ai_notes}` : "",
+    `## ${t("thoughts.preview_original")}\n${content.original || ""}`,
+    content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
+    content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
+    appendExpansionSections(thought),
+  ].filter(Boolean);
+  const metaRows = [
+    [t("notes.status.id"), thought.id],
+    [t("notes.status.path"), thought.path],
+    [t("notes.status.updated_at"), fmtDate(thought.updated_at || thought.created_at)],
+    [t("capture.context.tags"), joinCSV([...(thought.user_tags || []), ...(thought.ai_tags || [])])],
+    [t("notes.status.topics"), joinCSV(thought.topic_ids || [])],
+  ];
+  return `<div class="tf-result">
+    <div class="tf-description-list">${renderDescription(metaRows)}</div>
+    <div class="preview-box markdown-rendered">${renderMarkdown(sections.join("\n\n"))}</div>
+  </div>`;
+}
+
+function renderThoughtStatusPanel(snapshot) {
+  const thought = snapshot?.thought || {};
+  const jobs = snapshot?.jobs || [];
+  const commits = snapshot?.git_commits || [];
+  const errors = thought.errors || [];
+  const rows = [
+    [t("notes.status.id"), thought.id],
+    [t("capture.card.status_capture"), thought.capture_status || t("toast.unknown")],
+    [t("capture.card.status_refine"), thought.refine_status || t("toast.unknown")],
+    [t("capture.card.status_index"), thought.index_status || t("toast.unknown")],
+    [t("capture.card.status_topic"), thought.topic_status || t("toast.unknown")],
+    [t("notes.status.path"), thought.path],
+    [t("notes.status.created_at"), fmtDate(thought.created_at)],
+    [t("notes.status.updated_at"), fmtDate(thought.updated_at)],
+    [t("notes.status.source_url"), thought.url],
+    [t("notes.status.content_hash"), thought.content_hash],
+    [t("capture.context.tags"), joinCSV([...(thought.user_tags || []), ...(thought.ai_tags || [])])],
+    [t("notes.status.topics"), joinCSV(thought.topic_ids || [])],
+  ];
+  const jobsBlock = jobs.length > 0
+    ? `<section><h4>${escapeHTML(t("notes.runtime.jobs_label"))}</h4><div class="tf-description-list">${renderDescription(jobs.map((job) => [
+      `${job.id || ""} · ${job.type || "job"}`,
+      `${job.status || t("toast.unknown")} · ${job.resource_type || ""}:${job.resource_id || ""}`,
+    ]))}</div></section>`
+    : "";
+  const commitsBlock = commits.length > 0
+    ? `<section><h4>${escapeHTML(t("notes.status.git"))}</h4><div class="results-list">${commits.map((commit) => `
+      <article class="result-item">
+        <strong>${escapeHTML(commit.message || commit.commit_hash || "")}</strong>
+        <div class="result-meta">${escapeHTML(commit.commit_hash || "")} · ${escapeHTML(fmtDate(commit.committed_at))}</div>
+      </article>
+    `).join("")}</div></section>`
+    : "";
+  const errorsBlock = errors.length > 0
+    ? `<section><h4>${escapeHTML(t("notes.status.errors"))}</h4><div class="results-list">${errors.map((error) => `
+      <article class="result-item">
+        <strong>${escapeHTML(error.code || t("common.error"))}</strong>
+        <div class="result-meta">${escapeHTML(error.message || "")}</div>
+      </article>
+    `).join("")}</div></section>`
+    : "";
+  return `<div class="tf-result">
+    <div class="tf-description-list">${renderDescription(rows)}</div>
+    ${jobsBlock}
+    ${commitsBlock}
+    ${errorsBlock}
+  </div>`;
+}
+
+function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
+  if (!snapshot || !snapshot.thought || !snapshot.thought.id) {
+    renderEmptyThoughtPanels();
+    return;
+  }
+  const thought = snapshot.thought;
+  const content = snapshot.content || {};
+  const sections = [
+    `# ${thoughtDisplayTitle(thought) || thought.id}`,
+    "",
+    `status: ${thought.refine_status} / ${thought.index_status} / ${thought.topic_status}`,
+    `path: ${thought.path}`,
+    "",
+    `## ${t("thoughts.preview_summary")}`,
+    thought.summary || t("compose.empty"),
+    "",
+    `## ${t("thoughts.preview_original")}`,
+    content.original || "",
+    "",
+    content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
+    content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
+    (snapshot.jobs || []).length > 0 ? `## ${t("thoughts.preview_jobs")}\n${(snapshot.jobs || []).map((job) => `- ${job.id} (${job.status})`).join("\n")}` : "",
+  ];
+  sections.push(appendExpansionSections(thought));
+  const html = renderMarkdown(sections.filter(Boolean).join("\n"));
+  const preview = $("#thought-preview");
+  if (preview) preview.innerHTML = html;
+  const drawer = $("#thought-drawer-content");
+  if (drawer) drawer.innerHTML = html;
+  const detail = $("#thought-detail");
+  if (detail) detail.innerHTML = renderThoughtDetailPanel(snapshot);
+  const status = $("#thought-status-detail");
+  if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
+  const addCompose = $("#drawer-add-compose");
+  if (addCompose) addCompose.disabled = false;
+  const retry = $("#retry-refine");
+  if (retry) retry.disabled = false;
+  renderThoughtsList();
+}
+
+async function loadThoughts() {
+  const thoughts = await api("/api/thoughts");
+  state.notes = sortThoughts(Array.isArray(thoughts) ? thoughts : []);
+  if (state.activeThoughtSnapshot?.thought?.id) {
+    upsertThoughtRecord(state.activeThoughtSnapshot.thought, { render: false });
+  }
+  renderThoughtsList();
+  renderSidebarBadges();
 }
 
 // PR3: the notes runtime card is a lightweight summary — most recent jobs
@@ -1606,7 +1869,12 @@ function upsertCaptureMessage(kind, message) {
   if (!kind || !message || !message.role) return null;
   const sessionId = message.sessionId || state.capture.sessionId || "";
   const messages = state.capture.messages || [];
-  const idx = messages.findIndex((item) => item.kind === kind && (item.sessionId || "") === sessionId);
+  const messageKey = message.messageKey || "";
+  const idx = messages.findIndex((item) =>
+    item.kind === kind &&
+    (item.sessionId || "") === sessionId &&
+    (item.messageKey || "") === messageKey
+  );
   if (idx >= 0) {
     const existing = messages[idx];
     const next = {
@@ -1614,22 +1882,32 @@ function upsertCaptureMessage(kind, message) {
       ...message,
       kind,
       sessionId,
+      messageKey,
       at: new Date().toISOString(),
     };
-    state.capture.messages = messages.map((item, itemIdx) => itemIdx === idx ? next : item);
+    if (message.moveToEnd) {
+      state.capture.messages = messages.filter((_, itemIdx) => itemIdx !== idx).concat(next);
+    } else {
+      state.capture.messages = messages.map((item, itemIdx) => itemIdx === idx ? next : item);
+    }
     renderCaptureConversation();
     return next;
   }
-  return appendCaptureMessage({ ...message, kind, sessionId });
+  return appendCaptureMessage({ ...message, kind, sessionId, messageKey });
 }
 
-function upsertCaptureContextMessage() {
-  const sp = state.capture.activeScratchpad || {};
+function upsertCaptureContextMessage(options = {}) {
+  const sp = options.scratchpad || state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
-  if (!state.capture.sessionId || !hasCaptureSessionContext(ctx)) return null;
+  const sessionId = options.sessionId || state.capture.sessionId || "";
+  const pending = Boolean(options.pending);
+  if (!sessionId) return null;
+  if (!pending && !hasCaptureSessionContext(ctx)) return null;
   return upsertCaptureMessage("context", {
     role: "ai",
-    sessionId: state.capture.sessionId,
+    sessionId,
+    pending,
+    moveToEnd: true,
   });
 }
 
@@ -1639,6 +1917,7 @@ function upsertArchivePreviewMessage() {
     role: "ai",
     sessionId: state.capture.sessionId,
     preview: state.capture.archivePreview,
+    moveToEnd: true,
   });
 }
 
@@ -1684,7 +1963,7 @@ function renderCaptureBubbleBody(msg) {
         : null);
     if (snap) return renderCaptureThoughtCardFromSnapshot(snap);
   }
-  if (msg.kind === "context") return renderCaptureContextCard();
+  if (msg.kind === "context") return renderCaptureContextCard(msg);
   if (msg.kind === "archive_preview") return renderArchivePreviewCard(msg);
   if (msg.html) return msg.html;
   if (msg.text) return `<div class="tf-msg-body">${escapeHTML(msg.text)}</div>`;
@@ -1717,8 +1996,9 @@ function renderCaptureConversation() {
   renderCaptureLockIndicator();
 }
 
-function renderCaptureContextRows(ctx) {
+function renderCaptureContextRows(ctx, options = {}) {
   ctx = ctx || {};
+  const includeBody = Boolean(options.includeBody);
   const rows = [];
   if (ctx.topic) rows.push(`<div><span>${escapeHTML(t("capture.context.topic"))}</span><strong>${escapeHTML(ctx.topic)}</strong></div>`);
   if (ctx.goal) rows.push(`<div><span>${escapeHTML(t("capture.context.goal"))}</span><strong>${escapeHTML(ctx.goal)}</strong></div>`);
@@ -1730,7 +2010,7 @@ function renderCaptureContextRows(ctx) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.tags"))}</span><strong>${ctx.candidate_tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join(" ")}</strong></div>`);
   }
   if (ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.summary"))}</span><p>${escapeHTML(ctx.candidate_summary)}</p></div>`);
-  if (ctx.candidate_body && ctx.candidate_body !== ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.body"))}</span><p>${escapeHTML(ctx.candidate_body)}</p></div>`);
+  if (includeBody && ctx.candidate_body && ctx.candidate_body !== ctx.candidate_summary) rows.push(`<div><span>${escapeHTML(t("capture.context.body"))}</span><p>${escapeHTML(ctx.candidate_body)}</p></div>`);
   if (Array.isArray(ctx.source_links) && ctx.source_links.length) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.source_links"))}</span><ul>${ctx.source_links.map((link) => `<li><a href="${escapeHTML(link)}" target="_blank" rel="noreferrer">${escapeHTML(link)}</a></li>`).join("")}</ul></div>`);
   }
@@ -1749,10 +2029,19 @@ function renderCaptureContextRows(ctx) {
   return rows;
 }
 
-function renderCaptureContextCard() {
+function renderCaptureContextCard(message) {
+  if (message?.pending) {
+    return `<article class="tf-capture-message-card tf-capture-context-card">
+      <header>${escapeHTML(t("capture.context.title"))}</header>
+      <div class="tf-capture-context">${escapeHTML(t("capture.context.pending"))}</div>
+    </article>`;
+  }
   const sp = state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
   const rows = renderCaptureContextRows(ctx);
+  if (rows.length === 0 && ctx.candidate_body) {
+    rows.push(`<div><span>${escapeHTML(t("capture.context.body"))}</span><p>${escapeHTML(ctx.candidate_body)}</p></div>`);
+  }
   return `<article class="tf-capture-message-card tf-capture-context-card">
     <header>${escapeHTML(t("capture.context.title"))}</header>
     <div class="tf-capture-context">${rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"))}</div>
@@ -1764,7 +2053,7 @@ function renderCaptureContextPanel() {
   if (!node) return;
   const sp = state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
-  const rows = renderCaptureContextRows(ctx);
+  const rows = renderCaptureContextRows(ctx, { includeBody: true });
   node.innerHTML = rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"));
 }
 
@@ -2072,6 +2361,7 @@ function refreshThoughtSnapshot(thoughtId) {
       if (state.capture.activeThoughtId === snapshot.thought.id) {
         state.capture.activeSnapshot = snapshot;
       }
+      upsertThoughtRecord(snapshot.thought);
       renderCaptureConversation();
       return snapshot;
     })
@@ -2170,14 +2460,7 @@ async function appendSessionMessage(text) {
   state.capture.archivePreview = scratchpad.archive_preview || null;
   const linkedThoughtId = scratchpad.committed_thought_id || "";
   state.capture.activeThoughtId = linkedThoughtId;
-  rememberCaptureSession({
-    sessionId: scratchpad.session_id,
-    thoughtId: linkedThoughtId,
-    title: scratchpad.session_context?.candidate_title || scratchpad.title || scratchpad.session_id,
-    messages: state.capture.messages,
-  });
-  appendCaptureMessage({ role: "system", text: t("capture.command.noted") });
-  upsertCaptureContextMessage();
+  upsertCaptureContextMessage({ scratchpad, pending: true });
   upsertArchivePreviewMessage();
   refreshActiveScratchpadContext().catch(() => {});
   // When the scratchpad transitions from "no committed thought" to
@@ -2190,6 +2473,12 @@ async function appendSessionMessage(text) {
     appendCaptureMessage({ role: "ai", thoughtId: linkedThoughtId, text: t("capture.command.committed", { id: linkedThoughtId }) });
     refreshThoughtSnapshot(linkedThoughtId);
   }
+  rememberCaptureSession({
+    sessionId: scratchpad.session_id,
+    thoughtId: linkedThoughtId,
+    title: scratchpad.session_context?.candidate_title || scratchpad.title || scratchpad.session_id,
+    messages: state.capture.messages,
+  });
   renderCaptureConversation();
 }
 
@@ -2533,12 +2822,12 @@ async function patchScratchpad(draft) {
   });
   state.capture.activeScratchpad = next;
   state.capture.archivePreview = next.archive_preview || null;
-  upsertCaptureContextMessage();
-  upsertArchivePreviewMessage();
   appendCaptureMessage({
     role: "ai",
     text: formatScratchpadFeedback(draft),
   });
+  upsertCaptureContextMessage({ scratchpad: next });
+  upsertArchivePreviewMessage();
   renderCaptureConversation();
 }
 
@@ -2616,8 +2905,8 @@ async function previewArchive({ intent = "menu", strategy = "" } = {}) {
     if (state.capture.activeScratchpad) {
       state.capture.activeScratchpad.archive_preview = state.capture.archivePreview;
     }
-    upsertArchivePreviewMessage();
     appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
+    upsertArchivePreviewMessage();
     renderCaptureConversation();
     const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
     if (ok) await commitScratchpad();
@@ -3074,39 +3363,24 @@ function renderComposeBasket() {
 }
 
 async function previewThought(thoughtId, options = {}) {
+  if (!thoughtId) {
+    renderEmptyThoughtPanels();
+    return;
+  }
   const snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`);
   state.activeThoughtId = thoughtId;
   state.activeThoughtSnapshot = snapshot;
-  const thought = snapshot.thought;
-  const content = snapshot.content || {};
-  const sections = [
-    `# ${thought.display_title || thought.user_title || thought.id}`,
-    "",
-    `status: ${thought.refine_status} / ${thought.index_status} / ${thought.topic_status}`,
-    `path: ${thought.path}`,
-    "",
-    `## ${t("thoughts.preview_summary")}`,
-    thought.summary || t("compose.empty"),
-    "",
-    `## ${t("thoughts.preview_original")}`,
-    content.original || "",
-    "",
-    content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
-    content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
-    (snapshot.jobs || []).length > 0 ? `## ${t("thoughts.preview_jobs")}\n${(snapshot.jobs || []).map((job) => `- ${job.id} (${job.status})`).join("\n")}` : "",
-  ];
-  // Post-refine expansion: surface 4 sub-sections written by the
-  // expander module. Each section is omitted when the corresponding
-  // field is empty so freshly-captured thoughts don't show skeleton
-  // placeholders before the pipeline finishes. A dedicated "pending"
-  // hint is shown only while the expansion is still running.
-  sections.push(appendExpansionSections(thought));
-  const html = renderMarkdown(sections.filter(Boolean).join("\n"));
-  $("#thought-preview").innerHTML = html;
-  const drawer = $("#thought-drawer-content");
-  if (drawer) drawer.innerHTML = html;
-  $("#drawer-add-compose").disabled = false;
-  $("#retry-refine").disabled = false;
+  $("#thought-id").value = thoughtId;
+  upsertThoughtRecord(snapshot.thought, { render: false });
+  renderThoughtPanels(snapshot);
+  if (options.syncRoute) {
+    const query = { id: thoughtId };
+    const activeTab = document.querySelector("#page-thoughts .tab.active")?.dataset.tab || "";
+    if (activeTab && activeTab !== "notes-all") query.tab = activeTab;
+    const hash = buildRouteHash("thoughts", { thoughtId }, query);
+    if (window.location.hash !== hash) window.location.hash = hash;
+    else syncHash();
+  }
   if (options.drawer) openDrawer("thought-drawer");
 }
 
@@ -3161,8 +3435,7 @@ async function loadThoughtByID(event) {
     toast(t("toast.thought_id_required"));
     return;
   }
-  window.location.hash = `#/notes?id=${encodeURIComponent(thoughtID)}`;
-  await previewThought(thoughtID);
+  await previewThought(thoughtID, { syncRoute: true });
 }
 
 async function retryRefine() {
@@ -3362,6 +3635,7 @@ function connectEvents() {
       appendEvent(type, event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
+      if (type === "thought.captured") loadThoughts().catch(() => {});
       // scratchpad.* and thought.* events are routed to a single
       // capture-aware dispatcher. The dispatcher re-fetches the
       // relevant scratchpad / thought payload and re-renders the
@@ -3467,10 +3741,10 @@ async function handleCaptureEvent(type, rawData) {
   ) {
     if (!resourceID) return;
     const trackedByCapture = captureConversationTracksThought(resourceID);
-    if (type === "thought.expanded" && state.activeThoughtId === resourceID) {
+    if (state.activeThoughtId === resourceID) {
       // Notes-page preview is keyed on the global state.activeThoughtId,
-      // not state.capture.* — so we still need the legacy "is the open
-      // thought on the notes page the same as this one" check.
+      // not state.capture.* — so any thought.* update for the open note
+      // should refresh the Notes surfaces in place.
       previewThought(resourceID).catch((error) => toast(error.message));
     }
     if (!trackedByCapture) return;
@@ -3609,6 +3883,8 @@ function bind() {
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
   $("#thought-id").addEventListener("input", persistRouteDebounced);
+  $("#thought-filter")?.addEventListener("input", () => renderThoughtsList());
+  $("#refresh-thoughts")?.addEventListener("click", () => loadThoughts().catch((error) => toast(error.message)));
   $("#compose-form").addEventListener("submit", (event) => createComposeDraft(event).catch((error) => toast(error.message)));
   $("#settings-drawer-event-type")?.addEventListener("input", () => applyEventFilter());
   $("#settings-drawer-event-resource")?.addEventListener("input", () => applyEventFilter());
@@ -3726,6 +4002,8 @@ function syncLanguageSwitcher() {
 function rerenderForLocale() {
   tApply(document);
   // re-render dynamic content that holds its own text
+  try { renderThoughtsList(); } catch (_) {}
+  try { renderThoughtPanels(); } catch (_) {}
   try { renderTopics(); } catch (_) {}
   try { renderComposeBasket(); } catch (_) {}
   try { updateSelectionControls(); } catch (_) {}
@@ -3801,6 +4079,7 @@ async function boot() {
   await loadStatus();
   await loadTopics();
   await loadComposeDrafts();
+  await loadThoughts();
   await loadMetrics();
   await runSearch();
   await applyRoute();

@@ -25,7 +25,8 @@ const stubTflow = {
 function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-topic-id", "search-tags",
-    "topic-filter", "topic-auto-filter", "event-type-filter"];
+    "topic-filter", "topic-auto-filter", "event-type-filter",
+    "thought-id", "thought-filter"];
   // Side-effect nodes (toast, basket list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
@@ -844,16 +845,16 @@ test("formatBadgeCount returns empty for zero/negative/non-finite, caps at 99+",
   assert.equal(app.formatBadgeCount("0"), "");
 });
 
-test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
+test("computeSidebarBadgeCounts only shows badges for surfaces with a real enumerable collection", () => {
   const app = loadAppFunctions();
   const counts = app.computeSidebarBadgeCounts({
-    metrics: { values: { thoughtflow_capture_total: 42 } },
+    notes: [{ id: "n1" }, { id: "n2" }],
     topics: [{ id: "a" }, { id: "b" }, { id: "c" }],
     composeDrafts: [{ id: "d1" }],
   });
   // The returned object comes from a different vm context, so we compare
   // via JSON to avoid prototype/reference-equality false negatives.
-  assert.equal(JSON.stringify(counts), JSON.stringify({ notes: "42", topics: "3", compose: "1" }));
+  assert.equal(JSON.stringify(counts), JSON.stringify({ notes: "2", topics: "3", compose: "1" }));
 
   // Missing slices should render as empty so the badges stay hidden.
   const empty = app.computeSidebarBadgeCounts({});
@@ -861,11 +862,20 @@ test("computeSidebarBadgeCounts reads notes/topics/compose from state", () => {
 
   // Zero and non-finite inputs are treated as no data.
   const zeros = app.computeSidebarBadgeCounts({
-    metrics: { values: { thoughtflow_capture_total: 0 } },
+    notes: [],
     topics: [],
     composeDrafts: [],
   });
   assert.equal(JSON.stringify(zeros), JSON.stringify({ notes: "", topics: "", compose: "" }));
+});
+
+test("restoreRoutePage hydrates notes deep-link input from query", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom });
+
+  app.restoreRoutePage("thoughts", { id: "thought-123" });
+
+  assert.equal(dom.store["thought-id"], "thought-123");
 });
 
 test("appendExpansionSections renders the 4 expansion fields when present", () => {
@@ -1060,6 +1070,47 @@ test("capture context is rendered as an updatable conversation card", () => {
   assert.equal(updated.id, first.id);
   assert.equal(app._state.capture.messages.length, 1);
   assert.match(app.renderCaptureBubbleBody(updated), /Updated title/);
+});
+
+test("capture context card can render a pending placeholder and is moved to the latest turn", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.messages = [
+    { id: "u1", role: "user", text: "first user turn" },
+  ];
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_title: "First title",
+      candidate_summary: "First summary",
+      candidate_body: "First body draft",
+    },
+  };
+  const pending = app.upsertCaptureContextMessage({ pending: true });
+  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 1].kind, "context");
+  assert.match(app.renderCaptureBubbleBody(pending), /capture\.context\.pending/);
+
+  app._state.capture.activeScratchpad.session_context = {
+    candidate_title: "Updated title",
+    candidate_summary: "Updated summary",
+    candidate_body: "Updated body draft should stay out of the conversation card",
+  };
+  const resolved = app.upsertCaptureContextMessage();
+  const resolvedHTML = app.renderCaptureBubbleBody(resolved);
+  assert.equal(resolved.id, pending.id);
+  assert.equal(app._state.capture.messages.length, 2);
+  assert.match(resolvedHTML, /Updated title/);
+  assert.match(resolvedHTML, /Updated summary/);
+  assert.doesNotMatch(resolvedHTML, /Updated body draft should stay out of the conversation card/);
+
+  app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
+  app._state.capture.activeScratchpad.session_context = {
+    candidate_title: "Second title",
+    candidate_summary: "Second summary",
+  };
+  const moved = app.upsertCaptureContextMessage();
+  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 1].id, moved.id);
+  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 2].id, "u2");
 });
 
 test("archive preview is rendered as a conversation card with a stored snapshot", () => {

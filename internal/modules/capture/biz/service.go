@@ -426,6 +426,17 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return []models.Thought{}, nil
 	}
+	sort.Slice(thoughts, func(i, j int) bool {
+		left := thoughts[i]
+		right := thoughts[j]
+		if !left.UpdatedAt.Equal(right.UpdatedAt) {
+			return left.UpdatedAt.After(right.UpdatedAt)
+		}
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.After(right.CreatedAt)
+		}
+		return left.ID > right.ID
+	})
 	return thoughts, err
 }
 

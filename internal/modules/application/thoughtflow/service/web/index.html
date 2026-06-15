@@ -189,14 +189,29 @@
             </div>
             <section class="tf-card">
               <div id="tab-notes-all" class="tab-panel active">
-                <form id="thought-form" class="search-form">
-                  <input id="thought-id" type="search" data-i18n-attr="thoughts.id_placeholder" data-i18n-attr-target="placeholder" placeholder="Thought ID">
-                  <button class="tf-btn tf-btn-primary" type="submit" data-i18n="thoughts.load_button">Load thought</button>
-                </form>
-                <div id="thought-preview" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
+                <div class="tf-page-actions">
+                  <form id="thought-form" class="search-form">
+                    <input id="thought-id" type="search" data-i18n-attr="thoughts.id_placeholder" data-i18n-attr-target="placeholder" placeholder="Thought ID">
+                    <button class="tf-btn tf-btn-primary" type="submit" data-i18n="thoughts.load_button">Load thought</button>
+                  </form>
+                  <button class="tf-btn" id="refresh-thoughts" type="button" data-i18n="common.refresh">Refresh</button>
+                </div>
+                <div class="tf-two-column tf-notes-layout">
+                  <div class="tf-notes-pane">
+                    <div class="panel-header">
+                      <h3 data-i18n="notes.list_title">Recent notes</h3>
+                      <span id="thought-list-count" class="tf-text-secondary" data-i18n-template="notes.list_count" data-n="0">0 notes</span>
+                    </div>
+                    <input id="thought-filter" type="search" data-i18n-attr="notes.filter_placeholder" data-i18n-attr-target="placeholder" placeholder="filter notes">
+                    <div id="thought-list" class="results-list"></div>
+                  </div>
+                  <div class="tf-notes-pane">
+                    <div id="thought-preview" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
+                  </div>
+                </div>
               </div>
               <div id="tab-notes-detail" class="tab-panel">
-                <div class="tf-empty" data-i18n="empty.no_thought">No thought selected.</div>
+                <div id="thought-detail" class="tf-empty" data-i18n="empty.no_thought">No thought selected.</div>
               </div>
               <div id="tab-notes-status" class="tab-panel">
                 <div id="thought-status-detail" class="tf-description-list" data-i18n="empty.no_thought">No thought selected.</div>

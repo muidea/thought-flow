@@ -259,6 +259,30 @@ test("API e2e", async (t) => {
     assert.ok([200, 204, 404].includes(suggest.status), `unexpected suggest status=${suggest.status}`);
   });
 
+  await t.test("thoughts list returns workspace notes in recent-first order", async () => {
+    const first = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "list-first", content: "first list note" },
+    });
+    assert.equal(first.status, 202, `create(first) status=${first.status} body=${first.text}`);
+    const firstID = envelope(first).data.thought.id;
+    await sleep(25);
+    const second = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "list-second", content: "second list note" },
+    });
+    assert.equal(second.status, 202, `create(second) status=${second.status} body=${second.text}`);
+    const secondID = envelope(second).data.thought.id;
+
+    const listed = await request(server.baseURL, "/api/thoughts", "GET");
+    assert.equal(listed.status, 200, `list status=${listed.status} body=${listed.text}`);
+    const body = envelope(listed).data;
+    assert.ok(Array.isArray(body), `expected array, got ${typeof body}`);
+    const firstIndex = body.findIndex((thought) => thought.id === firstID);
+    const secondIndex = body.findIndex((thought) => thought.id === secondID);
+    assert.ok(firstIndex >= 0, `missing first thought in list: ${JSON.stringify(body).slice(0, 400)}`);
+    assert.ok(secondIndex >= 0, `missing second thought in list: ${JSON.stringify(body).slice(0, 400)}`);
+    assert.ok(secondIndex < firstIndex, `expected newer thought first, got first=${firstIndex} second=${secondIndex}`);
+  });
+
   await t.test("patch thought rejects unknown fields and missing session id", async () => {
     const create = await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "patch validation", content: "Body" },

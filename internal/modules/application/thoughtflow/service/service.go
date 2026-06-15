@@ -134,6 +134,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/i18n/en-US.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.min.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/api/thoughts", engine.GET, s.handleListThoughts)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)
 	s.registry.AddHandler("/api/thoughts/:id/suggest", engine.GET, s.handleThoughtSuggest)
@@ -227,6 +228,19 @@ func (s *Service) handleCreateThought(ctx context.Context, res http.ResponseWrit
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, result)
+}
+
+func (s *Service) handleListThoughts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.captureService == nil {
+		writeJSON(res, req, http.StatusOK, []models.Thought{})
+		return
+	}
+	thoughts, err := s.captureService.ListThoughts(ctx)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.list_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, thoughts)
 }
 
 var classifyURLPattern = regexp.MustCompile(`(?i)\b((https?://|www\.)[^\s]+)`)

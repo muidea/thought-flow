@@ -263,6 +263,62 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 	}
 }
 
+func TestHandleListThoughtsReturnsRecentWorkspaceThoughts(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	jobs := jobstore.New(ws.JobsPath)
+	captureService := capturebiz.NewService(ws, jobs, nil)
+	first, err := captureService.Capture(context.Background(), models.CaptureCommand{
+		Type:    models.ThoughtTypeText,
+		Title:   "first",
+		Content: "first note",
+	})
+	if err != nil {
+		t.Fatalf("Capture(first) error = %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	second, err := captureService.Capture(context.Background(), models.CaptureCommand{
+		Type:    models.ThoughtTypeText,
+		Title:   "second",
+		Content: "second note",
+	})
+	if err != nil {
+		t.Fatalf("Capture(second) error = %v", err)
+	}
+	service := &Service{captureService: captureService}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/thoughts", nil)
+	service.handleListThoughts(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data []models.Thought `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(payload.Data) != 2 {
+		t.Fatalf("thoughts = %#v", payload.Data)
+	}
+	if payload.Data[0].ID != second.Thought.ID || payload.Data[1].ID != first.Thought.ID {
+		t.Fatalf("thought order = %#v", payload.Data)
+	}
+}
+
 type fakeGitQueryReader struct {
 	records []models.GitCommitRecord
 }

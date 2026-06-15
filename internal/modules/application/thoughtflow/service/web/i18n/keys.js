@@ -99,6 +99,7 @@ export const Key = Object.freeze({
   CaptureSessionContextEnriching: "capture.session.context_enriching",
   CaptureSessionContextEnriched: "capture.session.context_enriched",
   CaptureSessionRefineFailed: "capture.session.refine_failed",
+  CaptureContextPending: "capture.context.pending",
 
   // Thoughts page
   ThoughtsIDPlaceholder: "thoughts.id_placeholder",
@@ -123,6 +124,22 @@ export const Key = Object.freeze({
   ThoughtsExpansionFailed: "thoughts.expansion_failed",
   ThoughtsExpansionPending: "thoughts.expansion_pending",
   ThoughtsNoRelated: "thoughts.no_related",
+  NotesListTitle: "notes.list_title",
+  NotesListCount: "notes.list_count",
+  NotesListEmpty: "notes.list_empty",
+  NotesListEmptyFiltered: "notes.list_empty_filtered",
+  NotesFilterPlaceholder: "notes.filter_placeholder",
+  NotesDetailKeyPoints: "notes.detail.key_points",
+  NotesDetailAINotes: "notes.detail.ai_notes",
+  NotesStatusID: "notes.status.id",
+  NotesStatusPath: "notes.status.path",
+  NotesStatusCreatedAt: "notes.status.created_at",
+  NotesStatusUpdatedAt: "notes.status.updated_at",
+  NotesStatusSourceURL: "notes.status.source_url",
+  NotesStatusContentHash: "notes.status.content_hash",
+  NotesStatusTopics: "notes.status.topics",
+  NotesStatusGit: "notes.status.git",
+  NotesStatusErrors: "notes.status.errors",
 
   // Search page
   SearchTitle: "search.title",
