@@ -108,6 +108,8 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	m.stream = eventstream.New(200)
 	setCurrentStream(m.stream)
 	for _, eventID := range []string{
+		"scratchpad.context_updated",
+		"scratchpad.committed",
 		"thought.captured",
 		"thought.refine_started",
 		"thought.refined",

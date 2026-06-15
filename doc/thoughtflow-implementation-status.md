@@ -687,3 +687,48 @@ stop hook feedback #4 指出前轮 transcript 仅有 grep + node test 命中,缺
 ### 已知非本轮问题
 
 - `make e2e-test` 中 "capture session survives service restart with session_context" 在 baseline (无本轮改动) 也以同一断言失败(`actual: 'engineering', expected: 'prd'`),属预存在 e2e 问题,与本轮收口无关,待后续单独收口。
+
+## 2026-06-15 SSE 路由补漏:scratchpad.* 事件接入 (close verify fail #5)
+
+前轮 commit `5f3f427` 收口后,production binary 端到端核对发现:`/api/events` 流从未发出 `scratchpad.context_updated` / `scratchpad.committed` 事件,30-90s LLM 富化后前端依然拿不到通知,per-bubble 快照缓存形同虚设。根因不在前端,在 backend SSE 路由漏配。
+
+### 根因
+
+`internal/modules/application/thoughtflow/module.go` 的 `m.stream = eventstream.New(200)` 把 stream 注册成 magicCommon eventHub 的 subscriber 时,白名单只列了 17 类事件(thought.* / search.* / topic.* / git.* / job.updated)。`scratchpad.context_updated` / `scratchpad.committed` **不在白名单**。
+
+链路:
+1. `ScratchpadService.publishContextUpdatedEvent` / `publishCommittedEvent` 调 `eventutil.Post(s.eventHub, ev)` — 成功 publish 到 magicCommon eventHub
+2. `m.stream` 没订阅这俩类型 — `Notify` 永远不触发
+3. `/api/events` SSE 流从 `m.stream.Subscribe` 拿事件 — 永远拿不到 scratchpad.*
+
+phase 1 探索的 `grep -rn "scratchpad.context_updated"` 只能验证 publish 调用存在,不能验证 Subscribe 链路完整,plan 阶段"后端 0 改动"假设与现实不符。
+
+### 修复
+
+`internal/modules/application/thoughtflow/module.go` L110-128 `eventHub.Subscribe` 白名单表头补 2 行:
+
+```go
+"scratchpad.context_updated",
+"scratchpad.committed",
+```
+
+### 验证
+
+production binary 重打(`make build`,74934296 字节),端口 18060,`/api/system/status` ready。
+
+| 场景 | 60-90s SSE 事件计数 | 证据 |
+|---|---|---|
+| 单条 capture | `scratchpad.context_updated` x1 | payload `{session_id: "verify-v3-..."}` |
+| capture + 等 30s | `scratchpad.context_updated` x3 | AppendMessage 同步 + LLM 富化完成 + topic 重匹配 |
+| capture + archive | `scratchpad.committed` x1 + `thought.captured` x1 + `thought.refine_started` x1 + `search.index_updated` x1 + `scratchpad.context_updated` x5 + `job.updated` x26 | scratchpad.committed payload `{mode: "fresh", thought_id: "20260615-032452-4a4b0c", session_id: "verify-v5-..."}` |
+
+回归:
+- `make node-test`: 54 / 54 PASS
+- `make node-test-i18n`: 5 / 5 PASS
+- `make browser-test`: 16 / 16 PASS(2 skip:firefox/safari 探针)
+- 4 个 capture SSE 新 test 仍全过:scratchpad.context_updated 重渲染 / scratchpad.committed supplement 切 active / thought.refined per-bubble 隔离 / LLM 富化字段终态可见
+- `git diff --check` 通过
+
+### 副发现(非本轮范围)
+
+verify 期间同时观察:即便 `scratchpad.context_updated` 事件能流到 SSE,`session_context` 在 30-60s 后**仍未被 LLM 改写**(`open_questions` 为空,`candidate_title` 仍是 keyword 提取的 mirror)。直接 `curl https://aiapi.bluetron.cn/v1/chat/completions` 验证 endpoint 可用,但 binary 内 `enrichSessionContextAsync` 似乎没真正调用 LLM,或 LLM 调用被本地 proxy / DNS 拦截。这是 **pre-existing LLM provider 网络问题**,与本轮 SSE 路由修复正交,需另立 LLM 连通性专项核对。
