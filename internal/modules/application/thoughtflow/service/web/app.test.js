@@ -104,7 +104,7 @@ function loadAppFunctionsWith(opts = {}) {
       localStorage: storage,
     },
     URLSearchParams,
-    fetch: async () => ({ ok: true, json: async () => ({ data: null }) }),
+    fetch: opts.fetch || (async () => ({ ok: true, json: async () => ({ data: null }) })),
     EventSource: function EventSource() {},
     console,
   };
@@ -150,6 +150,7 @@ function loadAppFunctionsWith(opts = {}) {
       renderCaptureContextCard,
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
+      handleCaptureEvent,
       formatBadgeCount,
       computeSidebarBadgeCounts,
       appendExpansionSections,
@@ -1079,6 +1080,39 @@ test("archive preview is rendered as a conversation card with a stored snapshot"
 
   app._state.capture.archivePreview = null;
   assert.match(app.renderCaptureBubbleBody(message), /Preview title/);
+});
+
+test("handleCaptureEvent ignores unrelated thought events for the current capture conversation", async () => {
+  let fetchCalls = 0;
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async () => {
+      fetchCalls++;
+      return { ok: true, json: async () => ({ data: { thought: { id: "thought-other" } } }) };
+    },
+  });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeThoughtId = "thought-capture";
+  app._state.capture.messages = [
+    { id: "m1", role: "ai", thoughtId: "thought-capture", text: "anchored thought" },
+  ];
+
+  await app.handleCaptureEvent("thought.refined", JSON.stringify({
+    resource_id: "thought-other",
+    payload: {},
+  }));
+  await app.handleCaptureEvent("thought.refine_failed", JSON.stringify({
+    resource_id: "thought-other",
+    payload: {},
+  }));
+  await app.handleCaptureEvent("thought.expanded", JSON.stringify({
+    resource_id: "thought-other",
+    payload: {},
+  }));
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(app._state.capture.messages.length, 1);
+  assert.equal(app._state.capture.messages[0].thoughtId, "thought-capture");
 });
 
 test("formatPatchFeedback picks the right message per PATCH shape", () => {

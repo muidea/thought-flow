@@ -191,6 +191,74 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	}
 }
 
+func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderReturnsPartial(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			ConfirmedFacts:    []string{"old fact"},
+			OpenQuestions:     []string{"old question?"},
+			Conflicts:         []string{"old conflict"},
+			CandidateTitle:    "old title",
+			CandidateTags:     []string{"old-tag"},
+			CandidateSummary:  "old summary",
+			SourceLinks:       []string{"https://old.example"},
+			RelatedThoughtIDs: []string{"thought-old"},
+			SuggestedTopicIDs: []string{"topic-old"},
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateTitle:   "new title",
+			CandidateTags:    []string{"new-tag"},
+			CandidateSummary: "new summary",
+			ConfirmedFacts:   []string{"new fact"},
+			SourceLinks:      []string{"https://new.example"},
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(syncBackground{}),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if sp.SessionContext.CandidateTitle != "new title" {
+		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
+	}
+	if sp.SessionContext.CandidateSummary != "new summary" {
+		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
+	}
+	if !containsStrings(sp.SessionContext.ConfirmedFacts, "old fact", "new fact") {
+		t.Fatalf("ConfirmedFacts = %+v", sp.SessionContext.ConfirmedFacts)
+	}
+	if !sameStringSet(sp.SessionContext.CandidateTags, []string{"old-tag", "new-tag"}) {
+		t.Fatalf("CandidateTags = %+v", sp.SessionContext.CandidateTags)
+	}
+	if !containsStrings(sp.SessionContext.SourceLinks, "https://old.example", "https://new.example") {
+		t.Fatalf("SourceLinks = %+v", sp.SessionContext.SourceLinks)
+	}
+	if !containsStrings(sp.SessionContext.OpenQuestions, "old question?") {
+		t.Fatalf("OpenQuestions = %+v", sp.SessionContext.OpenQuestions)
+	}
+	if !containsStrings(sp.SessionContext.Conflicts, "old conflict") {
+		t.Fatalf("Conflicts = %+v", sp.SessionContext.Conflicts)
+	}
+	if !containsStrings(sp.SessionContext.RelatedThoughtIDs, "thought-old") {
+		t.Fatalf("RelatedThoughtIDs = %+v", sp.SessionContext.RelatedThoughtIDs)
+	}
+	if !containsStrings(sp.SessionContext.SuggestedTopicIDs, "topic-old") {
+		t.Fatalf("SuggestedTopicIDs = %+v", sp.SessionContext.SuggestedTopicIDs)
+	}
+}
+
 func sameStringSet(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -204,6 +272,19 @@ func sameStringSet(left, right []string) bool {
 			return false
 		}
 		seen[item]--
+	}
+	return true
+}
+
+func containsStrings(haystack []string, needles ...string) bool {
+	values := map[string]struct{}{}
+	for _, item := range haystack {
+		values[item] = struct{}{}
+	}
+	for _, needle := range needles {
+		if _, ok := values[needle]; !ok {
+			return false
+		}
 	}
 	return true
 }

@@ -2078,6 +2078,13 @@ function refreshThoughtSnapshot(thoughtId) {
     .catch(() => null);
 }
 
+function captureConversationTracksThought(thoughtId) {
+  const id = (thoughtId || "").trim();
+  if (!id) return false;
+  if (state.capture.activeThoughtId === id) return true;
+  return (state.capture.messages || []).some((msg) => msg.thoughtId === id);
+}
+
 async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650 } = {}) {
   const sessionId = state.capture.sessionId;
   if (!sessionId) return;
@@ -3459,6 +3466,14 @@ async function handleCaptureEvent(type, rawData) {
     type === "thought.refine_failed"
   ) {
     if (!resourceID) return;
+    const trackedByCapture = captureConversationTracksThought(resourceID);
+    if (type === "thought.expanded" && state.activeThoughtId === resourceID) {
+      // Notes-page preview is keyed on the global state.activeThoughtId,
+      // not state.capture.* — so we still need the legacy "is the open
+      // thought on the notes page the same as this one" check.
+      previewThought(resourceID).catch((error) => toast(error.message));
+    }
+    if (!trackedByCapture) return;
     if (type === "thought.refine_failed") {
       appendCaptureMessage({
         role: "system",
@@ -3466,12 +3481,6 @@ async function handleCaptureEvent(type, rawData) {
       });
     }
     if (type === "thought.expanded") {
-      // Notes-page preview is keyed on the global state.activeThoughtId,
-      // not state.capture.* — so we still need the legacy "is the open
-      // thought on the notes page the same as this one" check.
-      if (state.activeThoughtId === resourceID) {
-        previewThought(resourceID).catch((error) => toast(error.message));
-      }
       appendCaptureMessage({
         role: "system",
         text: t("capture.session.expanded", { id: resourceID }),

@@ -356,16 +356,16 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 	return scratchpad.SessionContext{
 		Topic:             firstNonEmptyString(result.Topic, current.SessionContext.Topic),
 		Goal:              firstNonEmptyString(result.Goal, current.SessionContext.Goal),
-		ConfirmedFacts:    trimNonEmpty(result.ConfirmedFacts),
-		OpenQuestions:     trimNonEmpty(result.OpenQuestions),
-		Conflicts:         trimNonEmpty(result.Conflicts),
+		ConfirmedFacts:    mergeContextStrings(current.SessionContext.ConfirmedFacts, result.ConfirmedFacts),
+		OpenQuestions:     mergeContextStrings(current.SessionContext.OpenQuestions, result.OpenQuestions),
+		Conflicts:         mergeContextStrings(current.SessionContext.Conflicts, result.Conflicts),
 		CandidateTitle:    firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
-		CandidateTags:     trimNonEmpty(result.CandidateTags),
+		CandidateTags:     mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),
 		CandidateSummary:  firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
 		CandidateBody:     firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody, current.Content),
-		SourceLinks:       trimNonEmpty(result.SourceLinks),
-		RelatedThoughtIDs: trimNonEmpty(result.RelatedThoughtIDs),
-		SuggestedTopicIDs: trimNonEmpty(result.SuggestedTopicIDs),
+		SourceLinks:       mergeContextStrings(current.SessionContext.SourceLinks, result.SourceLinks),
+		RelatedThoughtIDs: mergeContextStrings(current.SessionContext.RelatedThoughtIDs, result.RelatedThoughtIDs),
+		SuggestedTopicIDs: mergeContextStrings(current.SessionContext.SuggestedTopicIDs, result.SuggestedTopicIDs),
 		ArchiveIntent:     normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
 		ArchiveStrategy:   normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
 	}
@@ -378,6 +378,16 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// mergeContextStrings keeps previously discovered session-context facts
+// unless the new enrich pass contributes additional values. The async
+// capture-context provider is best-effort and may return partial lists,
+// so the enrich path should accumulate, not erase, prior context.
+func mergeContextStrings(existing, next []string) []string {
+	merged := trimNonEmpty(existing)
+	merged = append(merged, trimNonEmpty(next)...)
+	return uniqueStrings(merged)
 }
 
 // SetArchiveIntent records WHO is driving the archive. The values
