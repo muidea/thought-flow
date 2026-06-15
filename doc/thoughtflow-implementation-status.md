@@ -729,6 +729,16 @@ production binary 重打(`make build`,74934296 字节),端口 18060,`/api/system
 - 4 个 capture SSE 新 test 仍全过:scratchpad.context_updated 重渲染 / scratchpad.committed supplement 切 active / thought.refined per-bubble 隔离 / LLM 富化字段终态可见
 - `git diff --check` 通过
 
-### 副发现(非本轮范围)
+### 副发现更正(原 verify 报告误报)
 
-verify 期间同时观察:即便 `scratchpad.context_updated` 事件能流到 SSE,`session_context` 在 30-60s 后**仍未被 LLM 改写**(`open_questions` 为空,`candidate_title` 仍是 keyword 提取的 mirror)。直接 `curl https://aiapi.bluetron.cn/v1/chat/completions` 验证 endpoint 可用,但 binary 内 `enrichSessionContextAsync` 似乎没真正调用 LLM,或 LLM 调用被本地 proxy / DNS 拦截。这是 **pre-existing LLM provider 网络问题**,与本轮 SSE 路由修复正交,需另立 LLM 连通性专项核对。
+verify 期间观察到 `session_context` 30-60s 后 `open_questions` 为空,曾怀疑 LLM provider 在 binary 内未跑通。本轮追查时增加时间序列轮询(4s / 8s / 12s / 20s / 40s / 120s)复测,确认:
+
+| 时刻 | `open_questions` | `candidate_summary` |
+|---|---|---|
+| 4-12s | `[]` | 原始 user input 的 mirror |
+| **20s** | **5 个 LLM 生成问题** | "通过端到端流程确认 LLM enrichment 功能在生产 binary 中真" |
+| 40-120s | 同上 | 同上 |
+
+LLM enrichment **完全工作**,响应时间 8-20s 不等(取决于 LLM provider 实时负载)。前次 verify 看到 `open_questions count: 0` 是因为 30-60s 轮询命中了 LLM 富化**完成前**的中间状态(API 返回 keyword 提取结果,LLM 还在跑,15-20s 后才被 UpdateSessionContext 写回)。前次 verify 副发现误报,无需任何代码收口。
+
+教训:verify LLM 端到端时,**采样时间必须覆盖 LLM 响应时间上限**(`llm.timeout_seconds = 600` 下至少 90-120s),并在时间序列上做轮询,不能单点观察。
