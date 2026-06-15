@@ -634,3 +634,56 @@ stop hook feedback #4 指出前轮 transcript 仅有 grep + node test 命中,缺
 | **合计** | | **110+** | |
 
 **与 feedback #4 原文呼应**:缺真实 production 端到端 transcript — 本轮独立 production 二进制 30 步真实 HTTP 调用 transcript 落盘,补齐"实现→编译→单测→端到端"四级证据链最末一环,闭合反馈。
+
+## 2026-06-15 Capture 多轮 LLM 输出动态化收口
+
+用户反馈:"在多轮对话中提交信息后,web 端未实现自动显示 LLM 扩展输出,多轮对话无法实现对话信息动态输出"。经 Phase 1 探索定位 6 个 gap,核心时序错配:后端 `enrichSessionContextAsync` 跑 30-90s LLM,完成时 publish `scratchpad.context_updated` 事件,但前端 1.95s 短轮询早已结束,LLM 输出永远到不了 UI。本轮收口:
+
+### 根因
+
+单一 `state.capture.activeThoughtId` / `activeSnapshot` 硬限制让 6 个 gap 同时存在:
+1. LLM 富化上下文到不了 conversation
+2. commit 完成无即时反馈
+3. supplement 创建的第二个 thought 没有 anchor bubble
+4. 第二个 thought 完成 refine 时,bubble 不更新
+5. 没有 per-bubble 快照
+6. 回归防线缺失
+
+### 方案 B(per-bubble 快照缓存)
+
+替代单一 `activeSnapshot`,改为 `state.capture.thoughtSnapshots: Map<thoughtId, snapshot>`。后端 0 改动 — 事件已发(`scratchpad.committed` / `scratchpad.context_updated` / `thought.captured` / `thought.refined` / `thought.expanded` / `thought.refine_failed`),前端订阅即可。
+
+### 实施
+
+| 改动 | 文件 | 关键点 |
+|---|---|---|
+| state 模型 + 渲染函数 | `app.js` | 新增 `thoughtSnapshots: Map<thoughtId, snapshot>`;`renderCaptureBubbleBody` 优先查 Map,miss 后回退 `activeSnapshot`(向后兼容) |
+| `refreshThoughtSnapshot(thoughtId)` 新增 | `app.js` | 不限于 active thought,任意 thoughtId 都可刷;同步 `activeSnapshot` 仅在 active 时 |
+| `handleCaptureEvent(type, rawData)` 集中化 | `app.js` | 路由矩阵:scratchpad.context_updated → upsert context bubble + archive preview;scratchpad.committed → 切 activeThoughtId + 新 anchor bubble;thought.* → `refreshThoughtSnapshot(resourceID)` |
+| 事件订阅补 2 类 | `app.js` | `scratchpad.committed` + `scratchpad.context_updated` |
+| 4 个 i18n key + 双语翻译 | `i18n/keys.js` / `en-US.js` / `zh-CN.js` | `CaptureSessionContextEnriching` / `ContextEnriched` / `ThoughtCommitted` / `RefineFailed` |
+| Fixture 改造 | `app.browser.test.js` | `EventEmitter` 中心 + 真实 SSE 端点 `/api/events` + 测试可控 emit 端点 `/api/test/emit` + `enrichEnabled` 开关(默认关,避免破坏 legacy capture test) + `enrichDelayMs` 可调延迟 |
+| 4 个新 browser test | `app.browser.test.js` | 覆盖 context_updated 重渲染 / supplement 切 activeThoughtId / per-bubble refine 隔离 / LLM 富化字段终态可见 |
+
+### 关键时序
+
+- **archive POST** 后端响应前用 `setImmediate` + `setTimeout(100)` 双重 emit,避开 EventSource listener 注册竞态。
+- **per-bubble 隔离**通过 `thoughtState` Map 实现,`/api/test/emit` 命中 thought.* 事件时把对应 thoughtId 提升到 succeeded 状态;fixture 读 Map 渲染,默认空/pending。
+- **enrichment 显式 opt-in**:`enrichEnabled: false` 默认,只有 Test 1 开启。Node `setTimeout(_, Infinity)` 被 clamp 到 1ms,若默认开 enrichment 会在 1ms 内 fire,破坏 PATCH / lock indicator 等 legacy 测试。
+
+### 验证
+
+| 命令 | 结果 |
+|---|---|
+| `node --check app.browser.test.js` | syntax OK |
+| `make node-check` | 全部 syntax OK |
+| `make node-test` | 54 / 54 PASS |
+| `make node-test-i18n` | 5 / 5 PASS |
+| `make test` (Go) | 全 ok |
+| `make browser-test` | 16 / 16 PASS(2 skip:无 firefox/safari 探针) |
+| 稳定性 | 5 轮连续 16 / 16 全过 |
+| `git diff --check` | 通过 |
+
+### 已知非本轮问题
+
+- `make e2e-test` 中 "capture session survives service restart with session_context" 在 baseline (无本轮改动) 也以同一断言失败(`actual: 'engineering', expected: 'prd'`),属预存在 e2e 问题,与本轮收口无关,待后续单独收口。

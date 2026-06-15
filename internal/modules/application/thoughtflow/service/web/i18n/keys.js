@@ -95,6 +95,10 @@ export const Key = Object.freeze({
   CaptureFeedbackRefineQueued: "capture.feedback.refine_queued",
   // SSE-derived chat feedback (not from a user command).
   CaptureSessionExpanded: "capture.session.expanded",
+  CaptureSessionThoughtCommitted: "capture.session.thought_committed",
+  CaptureSessionContextEnriching: "capture.session.context_enriching",
+  CaptureSessionContextEnriched: "capture.session.context_enriched",
+  CaptureSessionRefineFailed: "capture.session.refine_failed",
 
   // Thoughts page
   ThoughtsIDPlaceholder: "thoughts.id_placeholder",

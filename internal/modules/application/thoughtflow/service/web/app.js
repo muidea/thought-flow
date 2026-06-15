@@ -33,6 +33,15 @@ const state = {
     sessionId: "",
     activeThoughtId: "",
     activeSnapshot: null,
+    // thoughtSnapshots keeps a per-thoughtId cache of the latest
+    // /api/thoughts/:id response. The conversation can therefore show
+    // rich thoughtId-bound bubbles for every thought committed in the
+    // scratchpad session (including supplement chains), each rendered
+    // from its own snapshot. SSE handlers (scratchpad.committed,
+    // thought.refined, thought.expanded, …) write to this map; the
+    // 1.95 s refreshActiveScratchpadContext poll is just a fast-path
+    // best-effort, not the source of truth.
+    thoughtSnapshots: new Map(),
     activeScratchpad: null,
     archivePreview: null,
     messages: [],
@@ -1666,8 +1675,14 @@ function captureRoleClass(role) {
 // the freshest snapshot (refine / expand / patch) so the user sees the
 // AI bubble update in place as the pipeline progresses.
 function renderCaptureBubbleBody(msg) {
-  if (msg.thoughtId && msg.thoughtId === state.capture.activeThoughtId && state.capture.activeSnapshot) {
-    return renderCaptureThoughtCardFromSnapshot(state.capture.activeSnapshot);
+  if (msg.thoughtId) {
+    const snap = state.capture.thoughtSnapshots.get(msg.thoughtId)
+      || (state.capture.activeSnapshot
+        && state.capture.activeSnapshot.thought
+        && state.capture.activeSnapshot.thought.id === msg.thoughtId
+        ? state.capture.activeSnapshot
+        : null);
+    if (snap) return renderCaptureThoughtCardFromSnapshot(snap);
   }
   if (msg.kind === "context") return renderCaptureContextCard();
   if (msg.kind === "archive_preview") return renderArchivePreviewCard(msg);
@@ -2036,13 +2051,31 @@ function switchCaptureSession(sessionId) {
 }
 
 function refreshActiveCaptureThought() {
-  if (!state.capture.activeThoughtId) return;
-  api(`/api/thoughts/${encodeURIComponent(state.capture.activeThoughtId)}`)
+  if (!state.capture.activeThoughtId) return Promise.resolve(null);
+  return refreshThoughtSnapshot(state.capture.activeThoughtId);
+}
+
+// refreshThoughtSnapshot fetches the latest /api/thoughts/:id payload
+// and stores it in thoughtSnapshots keyed by thoughtId. Callers can be
+// any SSE handler that sees a thought.* event for any thoughtId-bound
+// bubble — not just the active thought. Returns the snapshot, or null
+// when the fetch fails / payload is malformed. Re-renders the
+// conversation so every bubble that references this thoughtId picks
+// up the new chip / summary / expansion sections.
+function refreshThoughtSnapshot(thoughtId) {
+  const id = (thoughtId || "").trim();
+  if (!id) return Promise.resolve(null);
+  return api(`/api/thoughts/${encodeURIComponent(id)}`)
     .then((snapshot) => {
-      state.capture.activeSnapshot = snapshot;
+      if (!snapshot || !snapshot.thought || !snapshot.thought.id) return null;
+      state.capture.thoughtSnapshots.set(snapshot.thought.id, snapshot);
+      if (state.capture.activeThoughtId === snapshot.thought.id) {
+        state.capture.activeSnapshot = snapshot;
+      }
       renderCaptureConversation();
+      return snapshot;
     })
-    .catch(() => { /* offline / 404 — leave the cache in place */ });
+    .catch(() => null);
 }
 
 async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650 } = {}) {
@@ -2148,7 +2181,7 @@ async function appendSessionMessage(text) {
   // refine/index/topic chips in place.
   if (linkedThoughtId && previousThoughtId !== linkedThoughtId) {
     appendCaptureMessage({ role: "ai", thoughtId: linkedThoughtId, text: t("capture.command.committed", { id: linkedThoughtId }) });
-    refreshActiveCaptureThought();
+    refreshThoughtSnapshot(linkedThoughtId);
   }
   renderCaptureConversation();
 }
@@ -3309,6 +3342,8 @@ function connectEvents() {
     "thought.refine_failed",
     "thought.patched",
     "thought.expanded",
+    "scratchpad.committed",
+    "scratchpad.context_updated",
     "search.index_updated",
     "topic.updated",
     "topic.matched",
@@ -3320,42 +3355,24 @@ function connectEvents() {
       appendEvent(type, event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
-      if ((type === "thought.refined" || type === "thought.patched" || type === "thought.refine_failed")
-          && state.capture.activeThoughtId) {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload?.resource_id === state.capture.activeThoughtId) {
-            if (type === "thought.refine_failed") {
-              appendCaptureMessage({ role: "system", text: t("toast.retry_refine_queued", { id: payload?.resource_id || "" }).replace("已加入重试队列", "refine 失败") });
-            } else {
-              appendCaptureMessage({ role: "system", text: t("capture.session.saved_path", { id: payload?.resource_id || "" }) });
-            }
-            refreshActiveCaptureThought();
-          }
-        } catch (_) { /* malformed event payload */ }
-      }
-      if (type === "thought.expanded") {
-        try {
-          const payload = JSON.parse(event.data);
-          const expandedID = payload?.resource_id;
-          if (!expandedID) return;
-          // Refresh the open thought preview if it matches — both the
-          // notes-page inline preview and the drawer-backed preview
-          // read the same `state.activeThoughtId`, so a single
-          // re-render covers both.
-          if (state.activeThoughtId === expandedID) {
-            previewThought(expandedID).catch((error) => toast(error.message));
-          }
-          // The capture conversation owns its own copy of the snapshot
-          // and re-renders thoughtId-bound bubbles in place from the
-          // freshest snapshot — so a thought.expanded event simply
-          // triggers refreshActiveCaptureThought which fetches and
-          // re-renders the ai bubble to surface the new sections.
-          if (state.capture.activeThoughtId === expandedID) {
-            refreshActiveCaptureThought();
-            appendCaptureMessage({ role: "system", text: t("capture.session.expanded", { id: expandedID }) });
-          }
-        } catch (_) { /* malformed event payload */ }
+      // scratchpad.* and thought.* events are routed to a single
+      // capture-aware dispatcher. The dispatcher re-fetches the
+      // relevant scratchpad / thought payload and re-renders the
+      // conversation in place — including per-bubble thought snapshots
+      // for multi-thought sessions. SSE is the source of truth; the
+      // 1.95 s refreshActiveScratchpadContext poll is a best-effort
+      // fast path that loses gracefully when LLM round-trips take
+      // 30-90 s.
+      if (
+        type === "scratchpad.committed" ||
+        type === "scratchpad.context_updated" ||
+        type === "thought.captured" ||
+        type === "thought.refined" ||
+        type === "thought.refine_failed" ||
+        type === "thought.patched" ||
+        type === "thought.expanded"
+      ) {
+        handleCaptureEvent(type, event.data);
       }
     });
   });
@@ -3364,6 +3381,112 @@ function connectEvents() {
       appendEvent("events", t("toast.sse_reconnecting"));
     }
   };
+}
+
+// handleCaptureEvent routes scratchpad and thought SSE events into the
+// capture conversation. It is the single source of truth for keeping
+// state.capture.* in sync with the backend: the per-thoughtId snapshot
+// cache, the active thoughtId, the session context card, and the
+// anchor bubble list. Side effects are idempotent — multiple events
+// for the same thought collapse to the latest snapshot, and re-renders
+// are full re-renders so we accept a small re-render churn cost.
+async function handleCaptureEvent(type, rawData) {
+  let payload = null;
+  try { payload = JSON.parse(rawData); } catch (_) { return; }
+  if (!payload) return;
+
+  const resourceID = payload.resource_id || "";
+  const eventPayload = payload.payload || {};
+  const sessionID =
+    eventPayload.session_id ||
+    (type === "scratchpad.context_updated" || type === "scratchpad.committed" ? resourceID : "");
+
+  // 1. scratchpad.context_updated — the capture-context LLM has
+  // updated session_context, or the user/auto-pipeline has rewritten
+  // the context block. Re-fetch the scratchpad and re-render.
+  if (type === "scratchpad.context_updated") {
+    if (!state.capture.sessionId || state.capture.sessionId !== sessionID) return;
+    let detail = null;
+    try {
+      detail = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}`);
+    } catch (_) { return; }
+    if (!detail || detail.session_id !== state.capture.sessionId) return;
+    state.capture.activeScratchpad = detail;
+    state.capture.archivePreview = detail.archive_preview || null;
+    upsertCaptureContextMessage();
+    upsertArchivePreviewMessage();
+    renderCaptureConversation();
+    return;
+  }
+
+  // 2. scratchpad.committed — a thought has been committed from this
+  // scratchpad session. Switch the active thoughtId, anchor a new
+  // bubble (de-duped against existing messages), and re-fetch the
+  // thought snapshot so the rich card appears.
+  if (type === "scratchpad.committed") {
+    if (!state.capture.sessionId || eventPayload.session_id !== state.capture.sessionId) return;
+    const thoughtID = eventPayload.thought_id || resourceID;
+    const mode = eventPayload.mode || "";
+    if (thoughtID && state.capture.activeThoughtId !== thoughtID) {
+      state.capture.activeThoughtId = thoughtID;
+      const alreadyAnchored = (state.capture.messages || []).some(
+        (m) => m.thoughtId === thoughtID
+      );
+      if (!alreadyAnchored) {
+        appendCaptureMessage({
+          role: "ai",
+          thoughtId: thoughtID,
+          text: t("capture.session.thought_committed", { id: thoughtID }),
+        });
+      }
+      refreshThoughtSnapshot(thoughtID);
+    }
+    if (mode === "repeat" || mode === "update") {
+      refreshActiveCaptureThought();
+    }
+    return;
+  }
+
+  // 3. thought.* — re-fetch the thought snapshot, write to the per-
+  // thoughtId cache, and let the conversation re-render. The notes-
+  // page preview is refreshed in parallel when the open thought
+  // matches (preserves the pre-SSE-routing behaviour).
+  if (
+    type === "thought.captured" ||
+    type === "thought.refined" ||
+    type === "thought.patched" ||
+    type === "thought.expanded" ||
+    type === "thought.refine_failed"
+  ) {
+    if (!resourceID) return;
+    if (type === "thought.refine_failed") {
+      appendCaptureMessage({
+        role: "system",
+        text: t("capture.session.refine_failed", { id: resourceID }),
+      });
+    }
+    if (type === "thought.expanded") {
+      // Notes-page preview is keyed on the global state.activeThoughtId,
+      // not state.capture.* — so we still need the legacy "is the open
+      // thought on the notes page the same as this one" check.
+      if (state.activeThoughtId === resourceID) {
+        previewThought(resourceID).catch((error) => toast(error.message));
+      }
+      appendCaptureMessage({
+        role: "system",
+        text: t("capture.session.expanded", { id: resourceID }),
+      });
+    }
+    if (
+      type === "thought.captured" ||
+      type === "thought.refined" ||
+      type === "thought.patched" ||
+      type === "thought.expanded"
+    ) {
+      await refreshThoughtSnapshot(resourceID);
+    }
+    return;
+  }
 }
 
 function appendEvent(type, data) {

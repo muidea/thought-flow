@@ -146,6 +146,10 @@ export const messages = {
   "capture.feedback.moved_to_topic": "已归到专题「{topic}」。",
   "capture.feedback.refine_queued": "已加入 refine 重试队列。",
   "capture.session.expanded": "AI 已生成扩展建议，刷新查看。",
+  "capture.session.thought_committed": "已 commit 到 thought {id}。",
+  "capture.session.context_enriching": "AI 正在富化会话上下文...",
+  "capture.session.context_enriched": "AI 已更新会话上下文。",
+  "capture.session.refine_failed": "{id} refine 失败，已加入重试队列。",
 
   "notes.title": "笔记",
   "thoughts.description": "查看、编辑、分享笔记",

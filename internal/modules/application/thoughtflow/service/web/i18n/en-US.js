@@ -146,6 +146,10 @@ export const messages = {
   "capture.feedback.moved_to_topic": "Moved to topic “{topic}”.",
   "capture.feedback.refine_queued": "Re-queued for refine.",
   "capture.session.expanded": "Expansion suggestions ready — view refreshed.",
+  "capture.session.thought_committed": "Committed to thought {id}.",
+  "capture.session.context_enriching": "AI is enriching the session context...",
+  "capture.session.context_enriched": "Session context updated by the AI.",
+  "capture.session.refine_failed": "Refine failed for {id}; retry queued.",
 
   "notes.title": "Notes",
   "thoughts.description": "View, edit, share thoughts",

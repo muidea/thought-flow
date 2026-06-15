@@ -1,3 +1,4 @@
+const { EventEmitter } = require("node:events");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -932,10 +933,353 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
   }
 });
 
+test("scratchpad.context_updated event drives context card re-render via SSE", async (t) => {
+  // The real backend's enrichSessionContextAsync runs the LLM after the
+  // user submits a message and publishes scratchpad.context_updated
+  // when it lands. The front-end refetches the scratchpad and
+  // re-renders #capture-context-panel from the new session_context.
+  // 800 ms enrichment delay exercises the full SSE path; the assertion
+  // fires when the LLM-enriched string lands in the panel.
+  const server = await startFixtureServer({ enrichEnabled: true, enrichDelayMs: 800 });
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    const errors = [];
+    page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+    page.onEvent("Log.entryAdded", (event) => {
+      if (event.entry?.level === "error") errors.push(event.entry.text);
+    });
+    await page.send("Page.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    await page.navigate(`${baseURL}/`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "LLM enrichment probe";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    // Pre-enrichment: only the locally-computed context string is visible.
+    await page.waitForExpression(() => {
+      const el = document.querySelector("#capture-context-panel");
+      return el && /LLM enrichment probe/.test(el.textContent || "");
+    }, 6000);
+    // Post-enrichment (after scratchpad.context_updated lands via SSE).
+    // The session_context card only renders the high-level fields
+    // (title / summary / tags / related_thought_ids / suggested_topic_ids);
+    // the deeper fields (key_points / url_followups / expansion_plan) are
+    // surfaced in the thought-anchored bubble once the scratchpad
+    // commits — see the dedicated LLM-enriched test below.
+    await page.waitForExpression(() => {
+      const el = document.querySelector("#capture-context-panel");
+      return el && /LLM-enriched summary/.test(el.textContent || "");
+    }, 8000);
+    const panelText = await page.evaluate(() => document.querySelector("#capture-context-panel")?.textContent || "");
+    assert.match(panelText, /LLM-enriched summary/);
+    assert.match(panelText, /LLM enrichment probe/, "candidate_title keeps the priming text");
+    assert.match(panelText, /browser/);
+    assert.match(panelText, /enriched/);
+    assert.match(panelText, /thought-1/);
+    assert.match(panelText, /demo/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("scratchpad.committed mode=supplement switches activeThoughtId and anchors a new bubble", async (t) => {
+  // Multi-thought flow: the same scratchpad session is committed a
+  // second time with strategy=supplement, producing a fresh
+  // thought_id. The front-end must switch activeThoughtId and emit a
+  // new anchor bubble for the new thoughtId (without losing the first
+  // thought's bubble). We drive the supplement commit through the
+  // real /api/capture/sessions/{id}/archive path so the fixture
+  // publishes scratchpad.committed with the correct session_id —
+  // the front-end's session_id guard would otherwise reject an
+  // event synthesized via /api/test/emit.
+  const server = await startFixtureServer({ autoCommit: true });
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    const errors = [];
+    page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+    page.onEvent("Log.entryAdded", (event) => {
+      if (event.entry?.level === "error") errors.push(event.entry.text);
+    });
+    await page.send("Page.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    await page.navigate(`${baseURL}/`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "first thought body";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    // First commit anchors the original thought-capture bubble.
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]'), 8000);
+    // Supplement commit through the real archive endpoint. The
+    // fixture detects strategy=supplement and publishes
+    // scratchpad.committed with thought_id=thought-2 and the real
+    // session_id, which is what the front-end's session guard
+    // expects.
+    await page.evaluate(async () => {
+      await fetch("/api/capture/sessions/browser-session/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "supplement" }),
+      });
+    });
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]'), 8000);
+    // The original thought-capture bubble must still be present —
+    // supplement is additive.
+    const bubbleCount = await page.evaluate(() => ({
+      first: !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]'),
+      second: !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]'),
+    }));
+    assert.ok(bubbleCount.first, "first thought-capture bubble should remain anchored");
+    assert.ok(bubbleCount.second, "supplement commit should add a thought-2 anchor bubble");
+    const active = await page.evaluate(() => {
+      // state is module-scoped, not on window. The presence of the
+      // second bubble + its fetched snapshot is the observable
+      // contract; we re-fetch via DOM as a proxy for the active flip.
+      const card = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      return card ? card.getAttribute("data-thought-id") : "";
+    });
+    assert.equal(active, "thought-2");
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("thought.refined updates only the matching thoughtId bubble, not the first thought", async (t) => {
+  // Per-bubble isolation: a thought.refined event whose resource_id is
+  // thought-2 must re-fetch and re-render the thought-2 bubble only.
+  // The thought-1 bubble (no anchor in the conversation here, but
+  // fetched through state.capture.thoughtSnapshots) must not gain the
+  // second thought's summary / key_points / ai_tags.
+  const server = await startFixtureServer({ autoCommit: true });
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    const errors = [];
+    page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+    page.onEvent("Log.entryAdded", (event) => {
+      if (event.entry?.level === "error") errors.push(event.entry.text);
+    });
+    await page.send("Page.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    await page.navigate(`${baseURL}/`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    // Prime: submit a message so the fixture scratchpad is alive and
+    // the first thought-capture bubble is anchored.
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "isolation primer";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]'), 8000);
+    // Anchor the second thought via a real supplement commit. The
+    // fixture publishes scratchpad.committed with the real session_id
+    // (the front-end's session guard would reject a session-less
+    // /api/test/emit event).
+    await page.evaluate(async () => {
+      await fetch("/api/capture/sessions/browser-session/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "supplement" }),
+      });
+    });
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]'), 8000);
+    // Pre-refine: thought-2 bubble exists but does not yet have the
+    // fixture's "Refined second thought" summary text.
+    const beforeRefine = await page.evaluate(() => {
+      const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      return second ? second.textContent || "" : "";
+    });
+    assert.ok(!/Refined second thought/.test(beforeRefine), "thought-2 should not yet carry the refined summary");
+    // Now fire thought.refined for thought-2; the front-end must
+    // re-fetch /api/thoughts/thought-2 and re-render only the
+    // thought-2 bubble. thought.refined only requires a resource_id,
+    // so the /api/test/emit shortcut is safe here (no session guard).
+    await page.evaluate(async () => {
+      await fetch("/api/test/emit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "thought.refined",
+          payload: {
+            resource_type: "thought",
+            resource_id: "thought-2",
+            status: "succeeded",
+          },
+        }),
+      });
+    });
+    await page.waitForExpression(() => {
+      const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      return second && /Refined second thought/.test(second.textContent || "");
+    }, 8000);
+    const afterRefine = await page.evaluate(() => {
+      const first = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]');
+      const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      return {
+        first: first ? first.textContent || "" : "",
+        second: second ? second.textContent || "" : "",
+      };
+    });
+    assert.match(afterRefine.second, /Refined second thought/, "thought-2 bubble should pick up the refined summary");
+    assert.match(afterRefine.second, /Second point alpha/, "thought-2 bubble should pick up refined key points");
+    assert.match(afterRefine.second, /supplement/, "thought-2 bubble should pick up refined ai_tags");
+    // The first thought-capture bubble must NOT contain thought-2's
+    // refined fields — that's the per-bubble isolation guarantee.
+    assert.ok(!/Refined second thought/.test(afterRefine.first), "thought-1 bubble must not absorb thought-2's refined summary");
+    assert.ok(!/Second point alpha/.test(afterRefine.first), "thought-1 bubble must not absorb thought-2's refined key points");
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("LLM-enriched thought fields land in the conversation without a reload", async (t) => {
+  // End-to-end dynamic-display assertion: a supplement commit followed
+  // by a thought.refined event must surface every LLM-enriched field
+  // (summary / key_points / ai_tags / related_thought_ids /
+  // suggested_topic_ids / url_followups / expansion_plan) in the
+  // thought-2 bubble, without a navigation reload.
+  const server = await startFixtureServer({ autoCommit: true });
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    const errors = [];
+    page.onEvent("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text || "runtime exception"));
+    page.onEvent("Log.entryAdded", (event) => {
+      if (event.entry?.level === "error") errors.push(event.entry.text);
+    });
+    await page.send("Page.enable");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "window.localStorage.clear();",
+    });
+    await page.navigate(`${baseURL}/`);
+    await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "dynamic field surface";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]'), 8000);
+    // Anchor thought-2 via a real supplement archive commit, then
+    // fire thought.refined via /api/test/emit (the latter only needs
+    // a resource_id, so the session guard is bypassed).
+    await page.evaluate(async () => {
+      await fetch("/api/capture/sessions/browser-session/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "supplement" }),
+      });
+      await fetch("/api/test/emit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "thought.refined",
+          payload: {
+            resource_type: "thought",
+            resource_id: "thought-2",
+            status: "succeeded",
+          },
+        }),
+      });
+    });
+    await page.waitForExpression(() => {
+      const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      if (!second) return false;
+      // textContent skips href / data-attribute values, so URLs and
+      // ai-tag chips need outerHTML for a stable probe.
+      const html = second.outerHTML || "";
+      const text = second.textContent || "";
+      return /Refined second thought/.test(text)
+        && /Second point alpha/.test(text)
+        && /Second point beta/.test(text)
+        && /Approach: merge supplement into existing topic\./.test(text)
+        && /Supplements follow-up/.test(text)
+        && /href="https:\/\/example\.test\/supplement"/.test(html);
+    }, 10000);
+    const card = await page.evaluate(() => {
+      const el = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
+      return el ? el.innerHTML : "";
+    });
+    assert.match(card, /Refined second thought/);
+    assert.match(card, /Second point alpha/);
+    assert.match(card, /Second point beta/);
+    assert.match(card, /tf-chip[^>]*data-tag="ai"[^>]*>supplement/);
+    assert.match(card, /href="#\/notes\?id=thought-1"/, "related_thought_ids should render as notes links");
+    assert.match(card, /Supplements follow-up/);
+    assert.match(card, /https:\/\/example\.test\/supplement/);
+    assert.match(card, /Approach: merge supplement into existing topic/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 function startFixtureServer(options = {}) {
-  const { autoCommit = false } = options;
+  // The LLM-enrichment side-effect is opt-in. Defaulting it to
+  // "always on with a 50ms delay" silently broke several legacy
+  // capture tests (PATCH command flow, scratchpad lock indicator)
+  // because the enrichment rewrote the session_context mid-flight
+  // and corrupted the conversation the tests were probing. We use
+  // an explicit flag so the wiring stays disabled for tests that
+  // don't opt in.
+  const { autoCommit = false, enrichEnabled = false, enrichDelayMs = 50 } = options;
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
+  // SSE plumbing: tests can subscribe to /api/events, and post events via
+  // POST /api/test/emit { type, payload }. The capture enrichment and
+  // archive flows schedule real events through this bus so the front-end
+  // receives scratchpad.context_updated / scratchpad.committed without
+  // polling.
+  const eventBus = new EventEmitter();
   // Per-thought PATCH state. The GET response reflects the most recent
   // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
@@ -973,6 +1317,50 @@ function startFixtureServer(options = {}) {
     created_at: "2026-06-13T00:00:00Z",
     updated_at: "2026-06-13T00:00:00Z",
   });
+  // scheduleCaptureEnrichment mocks enrichSessionContextAsync: after
+  // enrichDelayMs it rewrites the session_context with the same
+  // fields the production code populates and publishes
+  // scratchpad.context_updated so the SSE subscriber sees the rich
+  // output without polling. Used by both the session-create and
+  // session-messages entry points because the front-end primes a
+  // new session through POST /api/capture/sessions (no messages
+  // round-trip) and follows up with /messages on later turns.
+  // Gated on `enrichEnabled` so legacy capture tests can opt out.
+  const scheduleCaptureEnrichment = (sessionID, text, sp) => {
+    if (!enrichEnabled) return;
+    setTimeout(() => {
+      const live = captureSessions.get(sessionID) || sp;
+      if (!live) return;
+      live.session_context = {
+        ...live.session_context,
+        candidate_title: `[LLM] ${text}`.slice(0, 60),
+        candidate_summary: `LLM-enriched summary for: ${text}`,
+        candidate_tags: ["browser", "llm", "enriched"],
+        related_thought_ids: ["thought-1"],
+        suggested_topic_ids: ["demo"],
+        url_followups: [
+          { title: "Follow-up reading", url: "https://example.test/follow-up" },
+        ],
+        expansion_plan: `Approach: process ${text} via refine pipeline.`,
+        key_points: [
+          "LLM-enriched point 1",
+          "LLM-enriched point 2",
+        ],
+      };
+      captureSessions.set(sessionID, live);
+      eventBus.emit("event", "scratchpad.context_updated", {
+        resource_type: "session",
+        resource_id: sessionID,
+        payload: {
+          session_id: sessionID,
+          workspace_id: live.workspace_id,
+          source_thought_id: live.source_thought_id || "",
+          committed_thought_id: live.committed_thought_id || "",
+          updated_at: live.updated_at,
+        },
+      });
+    }, enrichDelayMs);
+  };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     if (url.pathname.startsWith("/api/capture/sessions/")) {
@@ -1004,6 +1392,7 @@ function startFixtureServer(options = {}) {
           sp.archive_preview = null;
         }
         captureSessions.set(sessionID, sp);
+        scheduleCaptureEnrichment(sessionID, text, sp);
         return json(res, api(sp));
       }
       if (suffix === `${sessionID}/context` && req.method === "POST") {
@@ -1034,16 +1423,60 @@ function startFixtureServer(options = {}) {
         return json(res, api({ preview: sp.archive_preview, persisted: true }));
       }
       if (suffix === `${sessionID}/archive` && req.method === "POST") {
-        sp.committed_thought_id = "thought-capture";
+        const body = (await readJson(req)) || {};
+        // For the multi-thought (supplement / repeat / update) flows we
+        // allocate a fresh thought id so the front-end's per-bubble
+        // snapshot cache has a second entry to update. The single-shot
+        // case keeps the legacy id so existing tests stay deterministic.
+        const isMulti = body && (body.strategy === "supplement" || body.strategy === "repeat" || body.strategy === "update");
+        const newID = isMulti ? "thought-2" : "thought-capture";
+        sp.committed_thought_id = newID;
         sp.archive_preview = null;
         captureSessions.set(sessionID, sp);
+        // Emit on the next macrotask and again 100ms later so the
+        // browser-side EventSource has time to register its
+        // listener. The archive POST handler returns to the test
+        // synchronously, and on cold cache + first EventSource
+        // connection the listener isn't always installed before
+        // the synchronous emit fires — silently dropping the frame
+        // and the new anchor bubble. The 100ms retry is a safety
+        // net that doubles the chance both scratchpad.committed
+        // and thought.captured are observed; the front-end is
+        // idempotent on the receiver side.
+        const scratchpadPayload = {
+          resource_type: "thought",
+          resource_id: newID,
+          payload: {
+            session_id: sessionID,
+            workspace_id: sp.workspace_id,
+            thought_id: newID,
+            source_thought_id: sp.source_thought_id || "",
+            mode: body.strategy || sp.archive_strategy || "new",
+            updated_at: sp.updated_at,
+          },
+        };
+        const capturedPayload = {
+          resource_type: "thought",
+          resource_id: newID,
+          workspace_id: sp.workspace_id,
+          status: "captured",
+          capture_status: "captured",
+          occurred_at: "2026-06-13T00:00:00Z",
+          payload: { thought_id: newID, session_id: sessionID },
+        };
+        const emitArchiveEvents = () => {
+          eventBus.emit("event", "scratchpad.committed", scratchpadPayload);
+          eventBus.emit("event", "thought.captured", capturedPayload);
+        };
+        setImmediate(emitArchiveEvents);
+        setTimeout(emitArchiveEvents, 100);
         return json(res, api({
           thought: {
-            id: "thought-capture",
+            id: newID,
             display_title: sp.session_context.candidate_title || "Browser capture",
             user_title: sp.session_context.candidate_title || "Browser capture",
             capture_status: "captured",
-            path: "thoughts/browser-capture.md",
+            path: `thoughts/${newID}.md`,
           },
           jobs: [{ id: "job-capture", type: "refine", status: "queued" }],
         }));
@@ -1167,6 +1600,13 @@ function startFixtureServer(options = {}) {
             sp.committed_thought_id = "thought-capture";
           }
           captureSessions.set(id, sp);
+          // The capture flow's first user turn lands here (no
+          // existing session), so the front-end never goes through
+          // /api/capture/sessions/{id}/messages for the priming
+          // turn. Mirror the LLM-enrichment wiring in the messages
+          // path so SSE-driven context updates fire for both
+          // entry points.
+          scheduleCaptureEnrichment(id, body.content || "", sp);
           return json(res, api(sp));
         }
         break;
@@ -1188,6 +1628,44 @@ function startFixtureServer(options = {}) {
             links: "- https://example.test",
           },
           jobs: [{ id: "job-capture", type: "refine", status: "succeeded" }],
+        }));
+      case "/api/thoughts/thought-2":
+        // Second thought created by a supplement / repeat / update
+        // commit on the same scratchpad session. The fixture
+        // defaults to a "pending refine, no LLM fields" state so
+        // the per-bubble isolation test can assert that a
+        // `thought.refined` event flips refine_status and surfaces
+        // the rich fields. The full set of LLM-enriched fields is
+        // also returned after the test publishes thought.refined
+        // (the LLM-emit handler promotes thought-2 into its
+        // "refined" snapshot), and the dynamic-display test asserts
+        // each surface lands in the conversation without a page
+        // reload.
+        const thought2State = thoughtState.get("thought-2") || {};
+        const thought2 = {
+          id: "thought-2",
+          display_title: thought2State.display_title || "Second Browser Thought",
+          user_title: thought2State.user_title || "Second Browser Thought",
+          refine_status: thought2State.refine_status || "pending",
+          index_status: thought2State.index_status || "pending",
+          topic_status: thought2State.topic_status || "unmatched",
+          path: "thoughts/browser-2.md",
+          summary: thought2State.summary || "",
+          key_points: thought2State.key_points || [],
+          ai_tags: thought2State.ai_tags || [],
+          related_thought_ids: thought2State.related_thought_ids || [],
+          suggested_topic_ids: thought2State.suggested_topic_ids || [],
+          url_followups: thought2State.url_followups || [],
+          expansion_plan: thought2State.expansion_plan || "",
+        };
+        return json(res, api({
+          thought: thought2,
+          content: {
+            original: "Captured via supplement flow",
+            extracted_content: thought2State.summary || "",
+            links: "- https://example.test/2",
+          },
+          jobs: [{ id: "job-capture-2", type: "refine", status: thought2.refine_status === "succeeded" ? "succeeded" : "queued" }],
         }));
       case "/api/thoughts/thought-capture":
         if (req.method === "PATCH") {
@@ -1282,12 +1760,65 @@ function startFixtureServer(options = {}) {
           total: 1,
         }));
       case "/api/events":
+        if (req.method !== "GET") break;
+        // Server-Sent Events stream. The fixture mirrors the real
+        // backend: a single long-lived connection per subscriber,
+        // comment preamble to keep proxies happy, and an event
+        // listener that frames each bus emission as a `data:` line.
+        // We deliberately do NOT res.end() — the test harness
+        // tears the connection down via server.close().
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           "Connection": "keep-alive",
         });
         res.write(": browser smoke\n\n");
+        const onEvent = (type, payload) => {
+          res.write(`event: ${type}\n`);
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        };
+        eventBus.on("event", onEvent);
+        req.on("close", () => eventBus.off("event", onEvent));
+        return;
+      case "/api/test/emit":
+        if (req.method !== "POST") break;
+        // Test-only seam: lets the browser test trigger arbitrary
+        // domain events through the same bus the real backend uses,
+        // so the SSE wiring can be exercised without driving a real
+        // pipeline. The handler also updates the matching thought's
+        // fixture snapshot so subsequent GET /api/thoughts/{id}
+        // calls return the post-event state — without this,
+        // thought.refined events would still see a "pending"
+        // snapshot because the fixture's per-thought GET path is
+        // static by default.
+        (async () => {
+          const body = (await readJson(req)) || {};
+          const type = body.type || "";
+          const payload = body.payload || {};
+          if (type === "thought.refined" || type === "thought.expanded" || type === "thought.patched") {
+            const resourceID = payload.resource_id || "";
+            if (resourceID) {
+              thoughtState.set(resourceID, {
+                refine_status: "succeeded",
+                index_status: "succeeded",
+                topic_status: "matched",
+                summary: "Refined second thought",
+                key_points: ["Second point alpha", "Second point beta"],
+                ai_tags: ["supplement", "ux"],
+                related_thought_ids: ["thought-1"],
+                suggested_topic_ids: ["demo"],
+                url_followups: [
+                  { title: "Supplements follow-up", url: "https://example.test/supplement" },
+                ],
+                expansion_plan: "Approach: merge supplement into existing topic.",
+                ...(thoughtState.get(resourceID) || {}),
+              });
+            }
+          }
+          if (type) eventBus.emit("event", type, payload);
+          res.writeHead(204);
+          res.end();
+        })();
         return;
       default:
         res.writeHead(404);
