@@ -1638,6 +1638,13 @@ textarea:focus-visible {
   border-color: var(--tf-color-border, #e5e5e5);
 }
 
+.tf-msg-ai[data-kind="context"],
+.tf-msg-ai[data-kind="archive_preview"],
+.tf-msg-ai[data-thought-id] {
+  width: min(56rem, 96%);
+  max-width: 96%;
+}
+
 .tf-msg-ai:has(.tf-capture-message-card) {
   max-width: min(48rem, 100%);
   width: fit-content;
