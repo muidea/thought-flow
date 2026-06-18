@@ -283,6 +283,8 @@ func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpa
 	if sp.SessionContext.ArchiveStrategy == scratchpad.ArchiveStrategyNew {
 		sp.SessionContext.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
 	}
+	sp.ArchiveIntent = sp.SessionContext.ArchiveIntent
+	sp.ArchiveStrategy = sp.SessionContext.ArchiveStrategy
 	if appendReply {
 		if reply := sessionContextReplyText(sp.SessionContext); reply != "" {
 			sp.Messages = appendContextReplyMessage(sp.Messages, reply, s.now())

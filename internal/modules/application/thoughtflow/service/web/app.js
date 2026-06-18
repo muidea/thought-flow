@@ -1976,6 +1976,33 @@ function stringsTrim(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function scratchpadArchiveIntent(sp = {}) {
+  const ctx = (sp && (sp.session_context || sp.SessionContext)) || {};
+  return stringsTrim(ctx.archive_intent || sp.archive_intent || sp.ArchiveIntent).toLowerCase();
+}
+
+function scratchpadArchiveStrategy(sp = {}) {
+  const ctx = (sp && (sp.session_context || sp.SessionContext)) || {};
+  return stringsTrim(ctx.archive_strategy || sp.archive_strategy || sp.ArchiveStrategy);
+}
+
+function shouldAutoPreviewArchive(sp = {}) {
+  if (!sp || !sp.session_id) return false;
+  if (state.capture.activeThoughtId || sp.committed_thought_id) return false;
+  if (state.capture.archivePreview || sp.archive_preview) return false;
+  return scratchpadArchiveIntent(sp) === "llm";
+}
+
+async function maybeAutoPreviewArchiveFromContext(sp = {}) {
+  if (!shouldAutoPreviewArchive(sp)) return false;
+  await previewArchive({
+    intent: "llm",
+    strategy: scratchpadArchiveStrategy(sp),
+    confirmAfterPreview: true,
+  });
+  return true;
+}
+
 function latestCaptureUserTurnKey() {
   const messages = state.capture.messages || [];
   for (let index = messages.length - 1; index >= 0; index--) {
@@ -2659,6 +2686,7 @@ async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650, ses
     upsertCaptureContextMessage({ scratchpad: detail, sessionId, messageKey });
     upsertArchivePreviewMessage();
     renderCaptureConversation();
+    await maybeAutoPreviewArchiveFromContext(detail);
   }
 }
 
@@ -3978,6 +4006,7 @@ async function handleCaptureEvent(type, rawData) {
     upsertCaptureContextMessage();
     upsertArchivePreviewMessage();
     renderCaptureConversation();
+    await maybeAutoPreviewArchiveFromContext(detail);
     return;
   }
 

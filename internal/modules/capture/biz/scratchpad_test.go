@@ -342,6 +342,26 @@ func TestScratchpadServiceUpdateSessionContextDoesNotPersistAIReply(t *testing.T
 	}
 }
 
+func TestScratchpadServiceUpdateSessionContextMirrorsArchiveIntent(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+
+	sp, err := svc.UpdateSessionContext("s1", scratchpad.SessionContext{
+		CandidateSummary: "ready to archive",
+		ArchiveIntent:    scratchpad.ArchiveIntentLLM,
+		ArchiveStrategy:  scratchpad.ArchiveStrategyNew,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSessionContext: %v", err)
+	}
+	if sp.SessionContext.ArchiveIntent != scratchpad.ArchiveIntentLLM || sp.ArchiveIntent != scratchpad.ArchiveIntentLLM {
+		t.Fatalf("ArchiveIntent session=%q top=%q", sp.SessionContext.ArchiveIntent, sp.ArchiveIntent)
+	}
+	if sp.SessionContext.ArchiveStrategy != scratchpad.ArchiveStrategyNew || sp.ArchiveStrategy != scratchpad.ArchiveStrategyNew {
+		t.Fatalf("ArchiveStrategy session=%q top=%q", sp.SessionContext.ArchiveStrategy, sp.ArchiveStrategy)
+	}
+}
+
 func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderReturnsPartial(t *testing.T) {
 	store := newMemoryScratchpad()
 	if _, err := store.Save(scratchpad.Scratchpad{

@@ -1270,6 +1270,78 @@ test("scratchpad context event replaces pending context with persisted ai reply"
   ]);
 });
 
+test("scratchpad context event auto-previews llm archive intent before commit", async () => {
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push({ url, method: options.method || "GET", body: options.body || "" });
+      if (url === "/api/capture/sessions/s1") {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              session_id: "s1",
+              archive_intent: "llm",
+              archive_strategy: "new",
+              messages: [
+                { role: "user", text: "将上述内容进行归档", at: "2026-06-18T00:00:00Z" },
+                { role: "ai", text: "ready to archive", at: "2026-06-18T00:00:01Z" },
+              ],
+              session_context: {
+                candidate_summary: "ready to archive",
+                archive_intent: "llm",
+                archive_strategy: "new",
+              },
+            },
+          }),
+        };
+      }
+      if (url === "/api/capture/sessions/s1/intent") {
+        return { ok: true, json: async () => ({ data: { session_id: "s1" } }) };
+      }
+      if (url === "/api/capture/sessions/s1/archive/preview?strategy=new") {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              preview: {
+                title: "Archive title",
+                body: "Archive body",
+                tags: [],
+                source_links: [],
+                strategy: "new",
+              },
+            },
+          }),
+        };
+      }
+      if (url === "/api/capture/sessions/s1/archive") {
+        return { ok: true, json: async () => ({ data: { thought_id: "thought-1" } }) };
+      }
+      if (url === "/api/thoughts/thought-1") {
+        return { ok: true, json: async () => ({ data: { thought: { id: "thought-1" } } }) };
+      }
+      throw new Error(`unexpected fetch ${options.method || "GET"} ${url}`);
+    },
+  });
+  app._state.capture.sessionId = "s1";
+
+  await app.handleCaptureEvent("scratchpad.context_updated", JSON.stringify({
+    resource_id: "s1",
+    payload: {},
+  }));
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
+    "GET /api/capture/sessions/s1",
+    "POST /api/capture/sessions/s1/intent",
+    "GET /api/capture/sessions/s1/archive/preview?strategy=new",
+    "POST /api/capture/sessions/s1/archive",
+    "GET /api/thoughts/thought-1",
+  ]);
+  assert.equal(app._state.capture.activeThoughtId, "thought-1");
+});
+
 test("capture context text drops duplicate and low-signal LLM fields", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";

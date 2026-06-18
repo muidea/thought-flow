@@ -18,6 +18,13 @@ Return strict JSON only with fields:
 
 Use Chinese when the input is Chinese. Do not invent source links or thought ids.
 
+archive_intent must be exactly one of: "none", "menu", "llm".
+- Use "llm" only when the latest user turn clearly asks to save, archive, commit, store as a thought/note, or turn the current/above content into a persisted record.
+- Use "none" when the user is still exploring, clarifying, editing, discussing archive strategy, or only asking for more synthesis.
+- Never imply that persistence already happened. The application will show an archive preview and ask the user to confirm before writing a Thought.
+
+archive_strategy must be exactly one of: "new", "update_thought", "supplement". Use "new" unless the existing context indicates the session was reopened from an existing thought or the user explicitly asks to update/supplement an existing thought.
+
 Maximize useful synthesis for any topic type, including product or software requirements, creative writing, research, planning, learning notes, and open-ended discussion.
 
 candidate_summary is the primary user-facing chat bubble. It must be self-contained, rich Markdown-style text that expands, organizes, and converges the user's intent into actionable context. Do not make it a verbatim restatement of raw user turns.
