@@ -1904,6 +1904,7 @@ function upsertCaptureContextMessage(options = {}) {
   const pending = Boolean(options.pending);
   if (!sessionId) return null;
   if (!pending && !hasCaptureSessionContext(ctx)) return null;
+  if (!pending && hasPersistedCaptureContextReply(ctx)) return null;
   const message = {
     role: "ai",
     sessionId,
@@ -1913,6 +1914,12 @@ function upsertCaptureContextMessage(options = {}) {
   };
   if (!pending) message.sessionContext = cloneSessionContext(ctx);
   return upsertCaptureMessage("context", message);
+}
+
+function replaceCaptureMessagesFromScratchpad(detail) {
+  if (!detail || !Array.isArray(detail.messages)) return false;
+  state.capture.messages = detail.messages.slice();
+  return true;
 }
 
 function upsertArchivePreviewMessage() {
@@ -1941,6 +1948,32 @@ function hasCaptureSessionContext(ctx) {
     (Array.isArray(ctx.related_thought_ids) && ctx.related_thought_ids.length) ||
     (Array.isArray(ctx.suggested_topic_ids) && ctx.suggested_topic_ids.length)
   );
+}
+
+function hasPersistedCaptureContextReply(ctx) {
+  const reply = stringsTrim(ctx && ctx.candidate_summary);
+  if (!reply) return false;
+  const replyKey = normalizePlainTextForCompare(reply);
+  if (!replyKey) return false;
+  const messages = state.capture.messages || [];
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index] && messages[index].role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  const start = lastUserIndex >= 0 ? lastUserIndex + 1 : 0;
+  return messages.slice(start).some((msg) => (
+    msg &&
+    msg.role === "ai" &&
+    !msg.kind &&
+    normalizePlainTextForCompare(msg.text) === replyKey
+  ));
+}
+
+function stringsTrim(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function latestCaptureUserTurnKey() {
@@ -2616,11 +2649,16 @@ async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650, ses
       return;
     }
     if (!detail || detail.session_id !== sessionId || state.capture.sessionId !== sessionId) return;
-    if (expectedMessageCount > 0 && Array.isArray(detail.messages) && detail.messages.length !== expectedMessageCount) return;
+    const messageCount = Array.isArray(detail.messages) ? detail.messages.length : 0;
+    if (expectedMessageCount > 0 && messageCount > 0 && messageCount < expectedMessageCount) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
+    if (expectedMessageCount === 0 || messageCount > expectedMessageCount) {
+      replaceCaptureMessagesFromScratchpad(detail);
+    }
     upsertCaptureContextMessage({ scratchpad: detail, sessionId, messageKey });
     upsertArchivePreviewMessage();
+    renderCaptureConversation();
   }
 }
 
@@ -3913,6 +3951,7 @@ async function handleCaptureEvent(type, rawData) {
     if (!detail || detail.session_id !== state.capture.sessionId) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
+    replaceCaptureMessagesFromScratchpad(detail);
     upsertCaptureContextMessage();
     upsertArchivePreviewMessage();
     renderCaptureConversation();

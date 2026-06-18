@@ -1167,6 +1167,69 @@ test("capture context messages stay interleaved with their user turn snapshots",
   assert.match(secondHTML, /Second summary/);
 });
 
+test("capture context restore keeps persisted alternating ai replies without duplicating last context", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.messages = [
+    { role: "user", text: "first user turn", at: "2026-06-18T00:00:00Z" },
+    { role: "ai", text: "first synthesized reply", at: "2026-06-18T00:00:01Z" },
+    { role: "user", text: "second user turn", at: "2026-06-18T00:00:02Z" },
+    { role: "ai", text: "second synthesized reply", at: "2026-06-18T00:00:03Z" },
+  ];
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_summary: "second synthesized reply",
+    },
+  };
+
+  const message = app.upsertCaptureContextMessage();
+
+  assert.equal(message, null);
+  assert.equal(app._state.capture.messages.length, 4);
+  assert.equal(app._state.capture.messages[1].text, "first synthesized reply");
+  assert.equal(app._state.capture.messages[3].text, "second synthesized reply");
+});
+
+test("scratchpad context event replaces pending context with persisted ai reply", async () => {
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url) => {
+      assert.match(url, /\/api\/capture\/sessions\/s1$/);
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            session_id: "s1",
+            messages: [
+              { role: "user", text: "current user turn", at: "2026-06-18T00:00:00Z" },
+              { role: "ai", text: "synthesized reply", at: "2026-06-18T00:00:01Z" },
+            ],
+            session_context: {
+              candidate_summary: "synthesized reply",
+            },
+          },
+        }),
+      };
+    },
+  });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.messages = [
+    { id: "u1", role: "user", text: "current user turn" },
+    { id: "pending", role: "ai", kind: "context", pending: true, messageKey: "u1" },
+  ];
+
+  await app.handleCaptureEvent("scratchpad.context_updated", JSON.stringify({
+    resource_id: "s1",
+    payload: {},
+  }));
+
+  assert.deepEqual(app._state.capture.messages.map((msg) => [msg.role, msg.kind || "", msg.text || ""]), [
+    ["user", "", "current user turn"],
+    ["ai", "", "synthesized reply"],
+  ]);
+});
+
 test("capture context text drops duplicate and low-signal LLM fields", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";

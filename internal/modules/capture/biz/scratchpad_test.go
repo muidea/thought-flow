@@ -204,6 +204,12 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	if !sameStringSet(sp.SessionContext.CandidateTags, []string{"capture", "llm"}) {
 		t.Fatalf("CandidateTags = %+v", sp.SessionContext.CandidateTags)
 	}
+	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" {
+		t.Fatalf("Messages = %+v", sp.Messages)
+	}
+	if sp.Messages[1].Text != "LLM summary" {
+		t.Fatalf("persisted ai reply = %q", sp.Messages[1].Text)
+	}
 }
 
 func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *testing.T) {
@@ -258,8 +264,71 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	if sp.SessionContext.CandidateTitle != "new title" || sp.SessionContext.CandidateSummary != "new summary" {
 		t.Fatalf("SessionContext = %+v", sp.SessionContext)
 	}
+	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" || sp.Messages[1].Text != "new summary" {
+		t.Fatalf("Messages = %+v", sp.Messages)
+	}
 	if len(hub.events) != 1 || hub.events[0].ID() != models.EventScratchpadContextUpdated {
 		t.Fatalf("events = %+v", hub.events)
+	}
+}
+
+func TestScratchpadServiceAppendMessagePersistsAlternatingContextReplies(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &sequenceCaptureContextProvider{
+		results: []ai.CaptureContextResult{
+			{CandidateSummary: "first synthesized reply", ArchiveIntent: "none", ArchiveStrategy: "new"},
+			{CandidateSummary: "second synthesized reply", ArchiveIntent: "none", ArchiveStrategy: "new"},
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(syncBackground{}),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "first user turn"); err != nil {
+		t.Fatalf("AppendMessage first: %v", err)
+	}
+	if _, err := svc.AppendMessage("s1", "user", "second user turn"); err != nil {
+		t.Fatalf("AppendMessage second: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(sp.Messages) != 4 {
+		t.Fatalf("Messages = %+v", sp.Messages)
+	}
+	want := []scratchpad.Message{
+		{Role: "user", Text: "first user turn"},
+		{Role: "ai", Text: "first synthesized reply"},
+		{Role: "user", Text: "second user turn"},
+		{Role: "ai", Text: "second synthesized reply"},
+	}
+	for idx, expected := range want {
+		if sp.Messages[idx].Role != expected.Role || sp.Messages[idx].Text != expected.Text {
+			t.Fatalf("Messages[%d] = %+v, want role=%q text=%q", idx, sp.Messages[idx], expected.Role, expected.Text)
+		}
+	}
+}
+
+func TestScratchpadServiceUpdateSessionContextDoesNotPersistAIReply(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+
+	if _, err := svc.AppendMessage("s1", "user", "first user turn"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if _, err := svc.UpdateSessionContext("s1", scratchpad.SessionContext{
+		CandidateSummary: "manual context edit",
+	}); err != nil {
+		t.Fatalf("UpdateSessionContext: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(sp.Messages) != 1 || sp.Messages[0].Role != "user" {
+		t.Fatalf("Messages = %+v", sp.Messages)
 	}
 }
 
@@ -499,6 +568,21 @@ func (s *stubCaptureContextProvider) BuildCaptureContext(_ context.Context, req 
 		return ai.CaptureContextResult{}, s.err
 	}
 	return s.result, nil
+}
+
+type sequenceCaptureContextProvider struct {
+	calls   int
+	results []ai.CaptureContextResult
+}
+
+func (s *sequenceCaptureContextProvider) BuildCaptureContext(_ context.Context, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
+	_ = req
+	if s.calls >= len(s.results) {
+		return ai.CaptureContextResult{}, errors.New("no capture context result")
+	}
+	result := s.results[s.calls]
+	s.calls++
+	return result, nil
 }
 
 func TestScratchpadServiceAppendDraftMergesAndProjects(t *testing.T) {

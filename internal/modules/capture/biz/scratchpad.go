@@ -246,6 +246,10 @@ func (s *ScratchpadService) AppendDraft(sessionID string, draft scratchpad.Draft
 // behaviour of AppendMessage so the LLM tool can fire before the
 // first user message lands.
 func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpad.SessionContext) (scratchpad.Scratchpad, error) {
+	return s.updateSessionContext(sessionID, ctx, false)
+}
+
+func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpad.SessionContext, appendReply bool) (scratchpad.Scratchpad, error) {
 	if s == nil || s.store == nil {
 		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
 	}
@@ -278,6 +282,11 @@ func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpa
 	}
 	if sp.SessionContext.ArchiveStrategy == scratchpad.ArchiveStrategyNew {
 		sp.SessionContext.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
+	}
+	if appendReply {
+		if reply := sessionContextReplyText(sp.SessionContext); reply != "" {
+			sp.Messages = appendContextReplyMessage(sp.Messages, reply, s.now())
+		}
 	}
 	saved, err := s.store.Save(sp)
 	if err != nil {
@@ -318,7 +327,7 @@ func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, 
 		if !hasSessionContext(contextBase.SessionContext) {
 			contextBase.SessionContext = existingContext
 		}
-		_, _ = s.UpdateSessionContext(sessionID, captureContextToScratchpad(result, contextBase))
+		_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
 	}
 	if s.background != nil {
 		if err := s.background.AsyncFunction(run); err == nil {
@@ -368,6 +377,24 @@ func hasSessionContext(ctx scratchpad.SessionContext) bool {
 		len(ctx.SourceLinks) > 0 ||
 		len(ctx.RelatedThoughtIDs) > 0 ||
 		len(ctx.SuggestedTopicIDs) > 0
+}
+
+func sessionContextReplyText(ctx scratchpad.SessionContext) string {
+	return strings.TrimSpace(ctx.CandidateSummary)
+}
+
+func appendContextReplyMessage(messages []scratchpad.Message, reply string, at time.Time) []scratchpad.Message {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return messages
+	}
+	if len(messages) > 0 {
+		last := messages[len(messages)-1]
+		if strings.TrimSpace(last.Role) == "ai" && strings.TrimSpace(last.Text) == reply {
+			return messages
+		}
+	}
+	return append(messages, scratchpad.Message{Role: "ai", Text: reply, At: at})
 }
 
 func captureContextToScratchpad(result ai.CaptureContextResult, current scratchpad.Scratchpad) scratchpad.SessionContext {
