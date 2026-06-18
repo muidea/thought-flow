@@ -707,6 +707,36 @@ func TestScratchpadServiceBuildCaptureCommandFlattens(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceBuildCaptureCommandUsesEnrichedContext(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw request",
+		Title:     "raw title",
+		Tags:      []string{"raw"},
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "LLM title",
+			CandidateTags:    []string{"llm", "archive"},
+			CandidateBody:    "raw request",
+			CandidateSummary: "## 当前收敛结论\n\n- 已整理成完整归档正文\n- 包含下一步行动",
+		},
+	}
+	cmd, err := svc.BuildCaptureCommand(sp)
+	if err != nil {
+		t.Fatalf("BuildCaptureCommand: %v", err)
+	}
+	if cmd.Content != "## 当前收敛结论\n\n- 已整理成完整归档正文\n- 包含下一步行动" {
+		t.Fatalf("Content = %q", cmd.Content)
+	}
+	if cmd.Title != "LLM title" {
+		t.Fatalf("Title = %q", cmd.Title)
+	}
+	if len(cmd.Tags) != 2 || cmd.Tags[0] != "llm" || cmd.Tags[1] != "archive" {
+		t.Fatalf("Tags = %v", cmd.Tags)
+	}
+}
+
 func TestScratchpadServiceBuildCaptureCommandInferURLType(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
@@ -981,6 +1011,28 @@ func TestScratchpadServiceBuildArchivePreviewNewStrategyDefaultsToBodyAndTags(t 
 	}
 }
 
+func TestScratchpadServiceBuildArchivePreviewUsesRicherSummaryWhenBodyIsRaw(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw request",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "previewed title",
+			CandidateBody:    "raw request",
+			CandidateSummary: "## 当前收敛结论\n\n- 已补全背景、约束与待确认事项\n- 可直接归档为 Thought",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+	}
+	preview, err := svc.BuildArchivePreview(sp, nil)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if preview.Body != "## 当前收敛结论\n\n- 已补全背景、约束与待确认事项\n- 可直接归档为 Thought" {
+		t.Fatalf("Body = %q", preview.Body)
+	}
+}
+
 func TestScratchpadServiceBuildArchivePreviewFallsBackToScratchpadState(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
@@ -1215,6 +1267,7 @@ type stubCapture struct {
 	getCalls           int
 	patchReq           models.ThoughtPatchRequest
 	applyReq           models.ThoughtPatchRequest
+	captureCmd         models.CaptureCommand
 	captureResult      models.CaptureResult
 	patchResult        models.ThoughtSnapshot
 	applyResult        models.ThoughtSnapshot
@@ -1231,6 +1284,7 @@ type stubCapture struct {
 
 func (s *stubCapture) Capture(_ context.Context, cmd models.CaptureCommand) (models.CaptureResult, error) {
 	s.captureCalls++
+	s.captureCmd = cmd
 	if s.captureErr != nil {
 		return models.CaptureResult{}, s.captureErr
 	}
@@ -1314,6 +1368,38 @@ func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T)
 	}
 }
 
+func TestScratchpadServiceCommitFreshPersistsFinalLLMSynthesis(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw request",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "LLM title",
+			CandidateTags:    []string{"llm"},
+			CandidateBody:    "raw request",
+			CandidateSummary: "## 当前收敛结论\n\n- 最终整理结果\n- 可直接进入归档",
+		},
+	})
+	captureStub := &stubCapture{
+		captureResult: models.CaptureResult{
+			Thought: models.Thought{ID: "thought-1", Type: models.ThoughtTypeText},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.captureCmd.Content != "## 当前收敛结论\n\n- 最终整理结果\n- 可直接进入归档" {
+		t.Fatalf("captured content = %q", captureStub.captureCmd.Content)
+	}
+	if captureStub.captureCmd.Title != "LLM title" {
+		t.Fatalf("captured title = %q", captureStub.captureCmd.Title)
+	}
+	if len(captureStub.captureCmd.Tags) != 1 || captureStub.captureCmd.Tags[0] != "llm" {
+		t.Fatalf("captured tags = %v", captureStub.captureCmd.Tags)
+	}
+}
+
 func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	store := newMemoryScratchpad()
 	// Pre-stage: scratchpad already committed to thought-1.
@@ -1359,11 +1445,36 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	if captureStub.applyReq.Tags == nil || len(*captureStub.applyReq.Tags) != 1 {
 		t.Fatalf("Tags = %v", captureStub.applyReq.Tags)
 	}
+	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "first round\n\nmore thoughts" {
+		t.Fatalf("AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
+	}
 	if captureStub.lastApplySessionID != "s1" {
 		t.Fatalf("session id = %q, want s1", captureStub.lastApplySessionID)
 	}
 	if result.Thought.ID != "thought-1" {
 		t.Fatalf("result thought id = %q, want thought-1", result.Thought.ID)
+	}
+}
+
+func TestScratchpadServiceCommitRepeatAppendsFinalLLMSynthesis(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw follow-up",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody:    "raw follow-up",
+			CandidateSummary: "## 后续整理\n\n- 新增内容已经合并\n- 待办事项已经收口",
+		},
+		CommittedThoughtID: "thought-1",
+		CommittedAt:        ptrTime(),
+	})
+	captureStub := &stubCapture{}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "## 后续整理\n\n- 新增内容已经合并\n- 待办事项已经收口" {
+		t.Fatalf("AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
 	}
 }
 
@@ -1424,9 +1535,10 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 		SessionID: "s1",
 		Content:   "drafted body",
 		SessionContext: scratchpad.SessionContext{
-			CandidateTitle: "Updated Title",
-			CandidateBody:  "## New Body",
-			CandidateTags:  []string{"updated"},
+			CandidateTitle:   "Updated Title",
+			CandidateBody:    "drafted body",
+			CandidateSummary: "## New Body\n\n- updated synthesis",
+			CandidateTags:    []string{"updated"},
 		},
 		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		SourceThoughtID: "thought-source",
@@ -1458,6 +1570,9 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 	}
 	if captureStub.patchReq.Tags == nil || len(*captureStub.patchReq.Tags) != 1 || (*captureStub.patchReq.Tags)[0] != "updated" {
 		t.Fatalf("Tags = %v, want [updated]", captureStub.patchReq.Tags)
+	}
+	if captureStub.patchReq.AINotesAppend == nil || *captureStub.patchReq.AINotesAppend != "## New Body\n\n- updated synthesis" {
+		t.Fatalf("AINotesAppend = %v", captureStub.patchReq.AINotesAppend)
 	}
 	// scratchpad's CommittedThoughtID must NOT be set (the user
 	// is still iterating against the source thought).

@@ -551,10 +551,7 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 		title = strings.TrimSpace(sp.Title)
 	}
 
-	body := sp.SessionContext.CandidateBody
-	if body == "" {
-		body = sp.Content
-	}
+	body := archiveBody(sp)
 	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
 		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", currentThought.Thought.ID)
 		if !strings.HasPrefix(body, prefix) {
@@ -675,6 +672,78 @@ func sameTagSet(a, b []string) bool {
 	return true
 }
 
+// archiveBody returns the body that should be shown in archive
+// preview and persisted on commit. The LLM-facing contract treats
+// CandidateSummary as the primary user-visible synthesis and
+// CandidateBody as the archive-ready body, but providers can return
+// an empty or lower-signal body. In that case, prefer the richer
+// synthesized text over the raw accumulated user turns so the
+// confirmed Thought matches the final LLM整理 bubble.
+func archiveBody(sp scratchpad.Scratchpad) string {
+	summary := strings.TrimSpace(sp.SessionContext.CandidateSummary)
+	body := strings.TrimSpace(sp.SessionContext.CandidateBody)
+	content := strings.TrimSpace(sp.Content)
+	if body == "" {
+		if summary != "" {
+			return summary
+		}
+		return content
+	}
+	if summary == "" {
+		return body
+	}
+	return richerArchiveText(body, summary)
+}
+
+func richerArchiveText(body, summary string) string {
+	body = strings.TrimSpace(body)
+	summary = strings.TrimSpace(summary)
+	if body == "" {
+		return summary
+	}
+	if summary == "" {
+		return body
+	}
+	bodyKey := compactText(body)
+	summaryKey := compactText(summary)
+	if bodyKey == summaryKey || strings.Contains(bodyKey, summaryKey) {
+		return body
+	}
+	if strings.Contains(summaryKey, bodyKey) {
+		return summary
+	}
+	bodyScore := archiveTextScore(body)
+	summaryScore := archiveTextScore(summary)
+	if summaryScore > bodyScore {
+		return summary
+	}
+	return body
+}
+
+func compactText(value string) string {
+	return strings.Join(strings.Fields(value), "")
+}
+
+func archiveTextScore(value string) int {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0
+	}
+	score := len([]rune(trimmed))
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "#"):
+			score += 120
+		case strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "):
+			score += 25
+		case strings.HasPrefix(line, "1. "), strings.HasPrefix(line, "2. "), strings.HasPrefix(line, "3. "):
+			score += 25
+		}
+	}
+	return score
+}
+
 // BuildCaptureCommand flattens a scratchpad into a CaptureCommand
 // ready for Service.Capture. The shape matches what the existing
 // handleCreateThought path sends:
@@ -698,18 +767,24 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 	if strings.TrimSpace(sp.CommittedThoughtID) != "" {
 		return models.CaptureCommand{}, ErrAlreadyCommitted
 	}
-	content := strings.TrimSpace(sp.Content)
+	content := archiveBody(sp)
 	if content == "" {
 		return models.CaptureCommand{}, errors.New("capture: scratchpad content is empty")
 	}
-	title := strings.TrimSpace(sp.Draft.TitleSet)
+	title := strings.TrimSpace(sp.SessionContext.CandidateTitle)
+	if title == "" {
+		title = strings.TrimSpace(sp.Draft.TitleSet)
+	}
 	if title == "" {
 		title = strings.TrimSpace(sp.Title)
 	}
-	tags := uniqueStrings(sp.Tags)
+	tags := uniqueStrings(sp.SessionContext.CandidateTags)
+	if len(tags) == 0 {
+		tags = uniqueStrings(sp.Tags)
+	}
 	topicHints := uniqueStrings(sp.TopicHints)
 	cmdType := models.ThoughtTypeText
-	if url := extractURL(content); url != "" {
+	if url := extractURL(firstNonEmptyString(sp.Content, content)); url != "" {
 		cmdType = models.ThoughtTypeURL
 	}
 	return models.CaptureCommand{
@@ -1140,7 +1215,7 @@ func buildPatchFromScratchpad(sp scratchpad.Scratchpad) (*models.ThoughtPatchReq
 	// is in the thought's `original`. We just append Content as a
 	// note — duplicates are not catastrophic because AINotes is
 	// additive and the user can edit them down.
-	if note := strings.TrimSpace(sp.Content); note != "" {
+	if note := archiveBody(sp); note != "" {
 		req.AINotesAppend = &note
 		hasAny = true
 	}
@@ -1208,16 +1283,13 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		req.Tags = &merged
 		hasAny = true
 	}
-	if body := strings.TrimSpace(sp.SessionContext.CandidateBody); body != "" {
+	if body := archiveBody(sp); body != "" {
 		// AINotesAppend is additive: the user's new body goes in
 		// the AINotes block rather than overwriting the original
 		// content. A future PR can add a Body patch field to
 		// ThoughtPatchRequest so the update actually replaces
 		// `original`; for now the visible diff is in AINotes.
 		req.AINotesAppend = &body
-		hasAny = true
-	} else if note := strings.TrimSpace(sp.Content); note != "" {
-		req.AINotesAppend = &note
 		hasAny = true
 	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {

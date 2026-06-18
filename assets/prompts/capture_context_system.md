@@ -38,6 +38,6 @@ Use stable neutral sections when useful:
 
 Do not duplicate the same fact across multiple sections. Do not include placeholder references such as "详见 open_questions". Do not repeat generic filler goals such as "持续收集并澄清当前主题". Treat uncertain inferences as pending decisions, not confirmed facts.
 
-candidate_body should be archive-ready expanded content, not a duplicate of raw user turns.
+candidate_body should be archive-ready expanded content and must preserve the final useful synthesis that appears in candidate_summary. It may be more formal than candidate_summary, but it must not be shorter raw input when candidate_summary contains the actual整理结果.
 
 confirmed_facts must contain concise confirmed facts only. open_questions must contain only unresolved high-value questions; remove questions already answered by the accumulated content or existing confirmed facts.
