@@ -150,6 +150,7 @@ function loadAppFunctionsWith(opts = {}) {
       upsertArchivePreviewMessage,
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
+      handleCaptureComposerKeydown,
       handleCaptureEvent,
       formatBadgeCount,
       computeSidebarBadgeCounts,
@@ -826,6 +827,39 @@ test("appendCaptureMessage records the message into state.capture", () => {
   assert.equal(app._state.capture.messages[before].text, "hi");
 });
 
+test("capture composer Enter submits while modified Enter keeps editing", () => {
+  const app = loadAppFunctions();
+  let submitCount = 0;
+  let prevented = 0;
+  const target = {
+    id: "capture-composer-input",
+    form: {
+      requestSubmit: () => { submitCount++; },
+    },
+  };
+
+  app.handleCaptureComposerKeydown({
+    key: "Enter",
+    target,
+    preventDefault: () => { prevented++; },
+  });
+  app.handleCaptureComposerKeydown({
+    key: "Enter",
+    shiftKey: true,
+    target,
+    preventDefault: () => { prevented++; },
+  });
+  app.handleCaptureComposerKeydown({
+    key: "Enter",
+    metaKey: true,
+    target,
+    preventDefault: () => { prevented++; },
+  });
+
+  assert.equal(submitCount, 1);
+  assert.equal(prevented, 1);
+});
+
 test("formatBadgeCount returns empty for zero/negative/non-finite, caps at 99+", () => {
   const app = loadAppFunctions();
   assert.equal(app.formatBadgeCount(0), "");
@@ -1167,12 +1201,11 @@ test("capture context messages stay interleaved with their user turn snapshots",
   assert.match(secondHTML, /Second summary/);
 });
 
-test("capture context restore keeps persisted alternating ai replies without duplicating last context", () => {
+test("capture context restore keeps persisted message timeline without duplicating last context", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.messages = [
     { role: "user", text: "first user turn", at: "2026-06-18T00:00:00Z" },
-    { role: "ai", text: "first synthesized reply", at: "2026-06-18T00:00:01Z" },
     { role: "user", text: "second user turn", at: "2026-06-18T00:00:02Z" },
     { role: "ai", text: "second synthesized reply", at: "2026-06-18T00:00:03Z" },
   ];
@@ -1186,9 +1219,10 @@ test("capture context restore keeps persisted alternating ai replies without dup
   const message = app.upsertCaptureContextMessage();
 
   assert.equal(message, null);
-  assert.equal(app._state.capture.messages.length, 4);
-  assert.equal(app._state.capture.messages[1].text, "first synthesized reply");
-  assert.equal(app._state.capture.messages[3].text, "second synthesized reply");
+  assert.equal(app._state.capture.messages.length, 3);
+  assert.equal(app._state.capture.messages[0].role, "user");
+  assert.equal(app._state.capture.messages[1].role, "user");
+  assert.equal(app._state.capture.messages[2].text, "second synthesized reply");
 });
 
 test("scratchpad context event replaces pending context with persisted ai reply", async () => {

@@ -2693,6 +2693,20 @@ async function submitCaptureComposer(event) {
   }
 }
 
+function handleCaptureComposerKeydown(event) {
+  if (!event || event.key !== "Enter") return;
+  if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  const input = event.target || $("#capture-composer-input");
+  if (!input || input.id !== "capture-composer-input") return;
+  if (typeof event.preventDefault === "function") event.preventDefault();
+  const form = input.form || $("#capture-composer");
+  if (form && typeof form.requestSubmit === "function") {
+    form.requestSubmit();
+    return;
+  }
+  submitCaptureComposer().catch((error) => toast(error.message));
+}
+
 // stageScratchpadTurn routes a user turn into the current capture
 // session. Plain text is appended through /api/capture/sessions*;
 // recognized commands update context, open a new session, or build
@@ -4120,6 +4134,7 @@ async function applyRoute(hash = window.location.hash) {
 function bind() {
   $("#capture-form")?.addEventListener("submit", (event) => captureThought(event).catch((error) => toast(error.message)));
   $("#capture-composer")?.addEventListener("submit", (event) => submitCaptureComposer(event).catch((error) => toast(error.message)));
+  $("#capture-composer-input")?.addEventListener("keydown", handleCaptureComposerKeydown);
   $("#capture-new-session")?.addEventListener("click", () => newCaptureSession());
   $("#capture-refresh-preview")?.addEventListener("click", () => previewArchive({ intent: "menu" }));
   $("#capture-archive-commit")?.addEventListener("click", async () => {

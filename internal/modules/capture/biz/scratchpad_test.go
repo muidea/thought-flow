@@ -272,17 +272,19 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	}
 }
 
-func TestScratchpadServiceAppendMessagePersistsAlternatingContextReplies(t *testing.T) {
+func TestScratchpadServiceAppendMessageAllowsConsecutiveUserTurnsBeforeContextReply(t *testing.T) {
 	store := newMemoryScratchpad()
-	provider := &sequenceCaptureContextProvider{
-		results: []ai.CaptureContextResult{
-			{CandidateSummary: "first synthesized reply", ArchiveIntent: "none", ArchiveStrategy: "new"},
-			{CandidateSummary: "second synthesized reply", ArchiveIntent: "none", ArchiveStrategy: "new"},
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateSummary: "synthesized reply after both turns",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
 		},
 	}
+	background := &queuedBackground{}
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(syncBackground{}),
+		WithBackgroundRoutine(background),
 	)
 
 	if _, err := svc.AppendMessage("s1", "user", "first user turn"); err != nil {
@@ -291,18 +293,26 @@ func TestScratchpadServiceAppendMessagePersistsAlternatingContextReplies(t *test
 	if _, err := svc.AppendMessage("s1", "user", "second user turn"); err != nil {
 		t.Fatalf("AppendMessage second: %v", err)
 	}
+	beforeReply, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get before reply: %v", err)
+	}
+	if len(beforeReply.Messages) != 2 || beforeReply.Messages[0].Role != "user" || beforeReply.Messages[1].Role != "user" {
+		t.Fatalf("Messages before reply = %+v", beforeReply.Messages)
+	}
+
+	background.Run()
 	sp, err := store.Get("s1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(sp.Messages) != 4 {
+	if len(sp.Messages) != 3 {
 		t.Fatalf("Messages = %+v", sp.Messages)
 	}
 	want := []scratchpad.Message{
 		{Role: "user", Text: "first user turn"},
-		{Role: "ai", Text: "first synthesized reply"},
 		{Role: "user", Text: "second user turn"},
-		{Role: "ai", Text: "second synthesized reply"},
+		{Role: "ai", Text: "synthesized reply after both turns"},
 	}
 	for idx, expected := range want {
 		if sp.Messages[idx].Role != expected.Role || sp.Messages[idx].Text != expected.Text {
@@ -568,21 +578,6 @@ func (s *stubCaptureContextProvider) BuildCaptureContext(_ context.Context, req 
 		return ai.CaptureContextResult{}, s.err
 	}
 	return s.result, nil
-}
-
-type sequenceCaptureContextProvider struct {
-	calls   int
-	results []ai.CaptureContextResult
-}
-
-func (s *sequenceCaptureContextProvider) BuildCaptureContext(_ context.Context, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
-	_ = req
-	if s.calls >= len(s.results) {
-		return ai.CaptureContextResult{}, errors.New("no capture context result")
-	}
-	result := s.results[s.calls]
-	s.calls++
-	return result, nil
 }
 
 func TestScratchpadServiceAppendDraftMergesAndProjects(t *testing.T) {
