@@ -111,6 +111,8 @@ export const Key = Object.freeze({
   ThoughtsDrawerClose: "thoughts.drawer_close",
   ThoughtsDrawerAddCompose: "thoughts.drawer_add_compose",
   ThoughtsDrawerRetryRefine: "thoughts.drawer_retry_refine",
+  ThoughtsActionReopenCapture: "thoughts.action.reopen_capture",
+  ThoughtsActionReopenCaptureDone: "thoughts.action.reopen_capture_done",
   ThoughtsPreviewTitle: "thoughts.preview_title",
   ThoughtsPreviewOriginal: "thoughts.preview_original",
   ThoughtsPreviewExtracted: "thoughts.preview_extracted",

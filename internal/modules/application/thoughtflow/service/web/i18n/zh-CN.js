@@ -172,6 +172,8 @@ export const messages = {
   "thoughts.drawer_close": "关闭",
   "thoughts.drawer_add_compose": "加入整理",
   "thoughts.drawer_retry_refine": "重新 refine",
+  "thoughts.action.reopen_capture": "继续整理",
+  "thoughts.action.reopen_capture_done": "已恢复到采集会话。",
   "thoughts.preview_title": "标题",
   "thoughts.preview_original": "原文",
   "thoughts.preview_extracted": "提取内容",

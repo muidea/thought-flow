@@ -689,6 +689,8 @@ func TestScratchpadServiceBuildCaptureCommandFlattens(t *testing.T) {
 		t.Fatalf("AppendDraft: %v", err)
 	}
 	sp, _ := store.Get("s1")
+	sp.SessionContext.CandidateBody = "hello world"
+	sp, _ = store.Save(sp)
 	cmd, err := svc.BuildCaptureCommand(sp)
 	if err != nil {
 		t.Fatalf("BuildCaptureCommand: %v", err)
@@ -744,6 +746,8 @@ func TestScratchpadServiceBuildCaptureCommandInferURLType(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	sp, _ := store.Get("s1")
+	sp.SessionContext.CandidateBody = "final URL synthesis"
+	sp, _ = store.Save(sp)
 	cmd, err := svc.BuildCaptureCommand(sp)
 	if err != nil {
 		t.Fatalf("BuildCaptureCommand: %v", err)
@@ -760,6 +764,8 @@ func TestScratchpadServiceBuildCaptureCommandDefaultsToTextType(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	sp, _ := store.Get("s1")
+	sp.SessionContext.CandidateBody = "final plain text synthesis"
+	sp, _ = store.Save(sp)
 	cmd, err := svc.BuildCaptureCommand(sp)
 	if err != nil {
 		t.Fatalf("BuildCaptureCommand: %v", err)
@@ -774,6 +780,14 @@ func TestScratchpadServiceBuildCaptureCommandRejectsEmptyContent(t *testing.T) {
 	_, err := svc.BuildCaptureCommand(scratchpad.Scratchpad{SessionID: "s1"})
 	if err == nil {
 		t.Fatalf("empty content should error")
+	}
+}
+
+func TestScratchpadServiceBuildCaptureCommandRejectsRawOnlyContent(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	_, err := svc.BuildCaptureCommand(scratchpad.Scratchpad{SessionID: "s1", Content: "raw user input"})
+	if err == nil {
+		t.Fatalf("raw-only content should not be archivable without final llm context")
 	}
 }
 
@@ -1033,7 +1047,7 @@ func TestScratchpadServiceBuildArchivePreviewUsesRicherSummaryWhenBodyIsRaw(t *t
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewFallsBackToScratchpadState(t *testing.T) {
+func TestScratchpadServiceBuildArchivePreviewDoesNotUseRawScratchpadContent(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
 	sp := scratchpad.Scratchpad{
@@ -1054,8 +1068,8 @@ func TestScratchpadServiceBuildArchivePreviewFallsBackToScratchpadState(t *testi
 	if preview.Title != "renamed" {
 		t.Fatalf("Title = %q (should fall back to draft.title_set)", preview.Title)
 	}
-	if preview.Body != "scratchpad body" {
-		t.Fatalf("Body = %q (should fall back to content)", preview.Body)
+	if preview.Body != "" {
+		t.Fatalf("Body = %q (should not fall back to raw scratchpad content)", preview.Body)
 	}
 	if len(preview.SourceLinks) != 1 || preview.SourceLinks[0] != "https://y" {
 		t.Fatalf("SourceLinks = %v (should fall back to URL)", preview.SourceLinks)
@@ -1332,6 +1346,9 @@ func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T)
 	if _, err := svc.AppendMessage("s1", "user", "draft content"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
+	sp, _ := store.Get("s1")
+	sp.SessionContext.CandidateBody = "final draft content"
+	_, _ = store.Save(sp)
 	result, err := svc.Commit(context.Background(), "s1")
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -1356,7 +1373,7 @@ func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T)
 	if captureStub.patchCalls != 0 {
 		t.Fatalf("PatchThought should not be called on fresh commit, got %d", captureStub.patchCalls)
 	}
-	sp, _ := store.Get("s1")
+	sp, _ = store.Get("s1")
 	if sp.CommittedThoughtID != "thought-1" {
 		t.Fatalf("CommittedThoughtID = %q, want thought-1", sp.CommittedThoughtID)
 	}
@@ -1413,6 +1430,9 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	_, _ = store.Save(scratchpad.Scratchpad{
 		SessionID: "s1",
 		Content:   "first round\n\nmore thoughts",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "final more thoughts",
+		},
 		Draft: scratchpad.Draft{
 			TitleSet:  "renamed",
 			TagsAdded: []string{"new-tag"},
@@ -1445,7 +1465,7 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	if captureStub.applyReq.Tags == nil || len(*captureStub.applyReq.Tags) != 1 {
 		t.Fatalf("Tags = %v", captureStub.applyReq.Tags)
 	}
-	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "first round\n\nmore thoughts" {
+	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "final more thoughts" {
 		t.Fatalf("AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
 	}
 	if captureStub.lastApplySessionID != "s1" {
@@ -1653,6 +1673,7 @@ func TestScratchpadServiceCommitSupplementFiresCaptureAndStampsBacklinkNote(t *t
 		Tags:      []string{"ai"},
 		SessionContext: scratchpad.SessionContext{
 			CandidateTitle: "Supplement",
+			CandidateBody:  "final supplement content",
 		},
 		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
 		SourceThoughtID: "thought-parent",
@@ -1718,6 +1739,7 @@ func TestScratchpadServiceCommitUnknownStrategyDegradesToNew(t *testing.T) {
 	_, _ = store.Save(scratchpad.Scratchpad{
 		SessionID:       "s1",
 		Content:         "draft",
+		SessionContext:  scratchpad.SessionContext{CandidateBody: "final draft"},
 		ArchiveStrategy: scratchpad.ArchiveStrategy("bogus"),
 	})
 	captureStub := &stubCapture{
@@ -1771,8 +1793,11 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	if sp.Title != "Original Title" {
 		t.Fatalf("Title = %q (UserTitle wins over ExtractedTitle)", sp.Title)
 	}
-	if sp.Content != "original body" {
-		t.Fatalf("Content = %q (Original wins over ExtractedContent)", sp.Content)
+	if sp.Content != "" {
+		t.Fatalf("Content = %q (reopen should not restore archived content as user input)", sp.Content)
+	}
+	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != "original body" {
+		t.Fatalf("Messages = %+v (should restore final archived content as an ai bubble)", sp.Messages)
 	}
 	if len(sp.Tags) != 2 {
 		t.Fatalf("Tags = %v (UserTags ∪ AITags, deduplicated)", sp.Tags)
@@ -1797,6 +1822,9 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	}
 	if sp.SessionContext.CandidateBody != "original body" {
 		t.Fatalf("CandidateBody = %q", sp.SessionContext.CandidateBody)
+	}
+	if sp.SessionContext.CandidateSummary != "original body" {
+		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
 	}
 }
 
@@ -1834,8 +1862,11 @@ func TestScratchpadServiceReopenFromThoughtFallsBackThroughContentLayers(t *test
 	if err != nil {
 		t.Fatalf("ReopenFromThought: %v", err)
 	}
-	if sp.Content != "from ai notes" {
-		t.Fatalf("Content = %q (should fall back to AINotes)", sp.Content)
+	if sp.Content != "" {
+		t.Fatalf("Content = %q (reopen should keep user input empty)", sp.Content)
+	}
+	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != "from ai notes" {
+		t.Fatalf("Messages = %+v (should fall back to AINotes as an ai bubble)", sp.Messages)
 	}
 }
 

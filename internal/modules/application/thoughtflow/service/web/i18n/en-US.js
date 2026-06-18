@@ -172,6 +172,8 @@ export const messages = {
   "thoughts.drawer_close": "Close",
   "thoughts.drawer_add_compose": "Add to compose",
   "thoughts.drawer_retry_refine": "Retry refine",
+  "thoughts.action.reopen_capture": "Continue in capture",
+  "thoughts.action.reopen_capture_done": "Capture session restored.",
   "thoughts.preview_title": "Title",
   "thoughts.preview_original": "Original",
   "thoughts.preview_extracted": "Extracted Content",

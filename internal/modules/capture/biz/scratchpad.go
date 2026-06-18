@@ -409,7 +409,7 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		CandidateTitle:    firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
 		CandidateTags:     mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),
 		CandidateSummary:  firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
-		CandidateBody:     firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody, current.Content),
+		CandidateBody:     firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody),
 		SourceLinks:       mergeContextStrings(current.SessionContext.SourceLinks, result.SourceLinks),
 		RelatedThoughtIDs: mergeContextStrings(current.SessionContext.RelatedThoughtIDs, result.RelatedThoughtIDs),
 		SuggestedTopicIDs: mergeContextStrings(current.SessionContext.SuggestedTopicIDs, result.SuggestedTopicIDs),
@@ -677,17 +677,14 @@ func sameTagSet(a, b []string) bool {
 // CandidateSummary as the primary user-visible synthesis and
 // CandidateBody as the archive-ready body, but providers can return
 // an empty or lower-signal body. In that case, prefer the richer
-// synthesized text over the raw accumulated user turns so the
-// confirmed Thought matches the final LLM整理 bubble.
+// synthesized text. Never fall back to scratchpad.Content here:
+// Content is the user's raw capture-session input and must not be
+// persisted into a Thought after archive.
 func archiveBody(sp scratchpad.Scratchpad) string {
 	summary := strings.TrimSpace(sp.SessionContext.CandidateSummary)
 	body := strings.TrimSpace(sp.SessionContext.CandidateBody)
-	content := strings.TrimSpace(sp.Content)
 	if body == "" {
-		if summary != "" {
-			return summary
-		}
-		return content
+		return summary
 	}
 	if summary == "" {
 		return body
@@ -1137,18 +1134,24 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 	if body == "" {
 		body = strings.TrimSpace(content.AINotes)
 	}
+	messages := []scratchpad.Message{}
+	if body != "" {
+		messages = append(messages, scratchpad.Message{Role: "ai", Text: body, At: s.now()})
+	}
 
 	sp := scratchpad.Scratchpad{
 		SessionID:       newID,
 		SourceThoughtID: thoughtID,
 		Title:           title,
-		Content:         body,
+		Content:         "",
+		Messages:        messages,
 		Tags:            tags,
 		TopicHints:      append([]string(nil), thought.TopicIDs...),
 		SessionContext: scratchpad.SessionContext{
 			Topic:             strings.TrimSpace(thought.UserTitle),
 			CandidateTitle:    title,
 			CandidateTags:     tags,
+			CandidateSummary:  body,
 			CandidateBody:     body,
 			SourceLinks:       sourceLinks,
 			RelatedThoughtIDs: related,

@@ -1157,6 +1157,7 @@ function renderThoughtListItem(thought) {
         ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
         <div class="tf-action-row">
           <button class="mini-button" data-note-open="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.open"))}</button>
+          <button class="mini-button" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
           <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
           ${thought.path ? `<button class="mini-button" data-copy-path="${escapeHTML(thought.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button>` : ""}
         </div>
@@ -1213,6 +1214,7 @@ function renderThoughtsList() {
   list.querySelectorAll("[data-note-compose]").forEach((button) => {
     button.addEventListener("click", () => addToComposeBasket([button.dataset.noteCompose]));
   });
+  bindThoughtReopenButtons(list);
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
     button.addEventListener("click", () => copyPath(button.dataset.copyPath));
   });
@@ -1257,6 +1259,9 @@ function renderThoughtDetailPanel(snapshot) {
   ];
   return `<div class="tf-result">
     <div class="tf-description-list">${renderDescription(metaRows)}</div>
+    <div class="tf-action-row">
+      <button class="tf-btn" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
+    </div>
     <div class="preview-box markdown-rendered">${renderMarkdown(sections.join("\n\n"))}</div>
   </div>`;
 }
@@ -1343,6 +1348,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   if (detail) detail.innerHTML = renderThoughtDetailPanel(snapshot);
   const status = $("#thought-status-detail");
   if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
+  bindThoughtReopenButtons(document);
   const addCompose = $("#drawer-add-compose");
   if (addCompose) addCompose.disabled = false;
   const retry = $("#retry-refine");
@@ -3690,6 +3696,55 @@ async function previewThought(thoughtId, options = {}) {
     else syncHash();
   }
   if (options.drawer) openDrawer("thought-drawer");
+}
+
+function bindThoughtReopenButtons(root = document) {
+  root.querySelectorAll("[data-reopen-capture]").forEach((button) => {
+    if (button.dataset.reopenBound === "1") return;
+    button.dataset.reopenBound = "1";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      reopenThoughtInCapture(button.dataset.reopenCapture).catch((error) => toast(error.message));
+    });
+  });
+}
+
+function applyScratchpadToCaptureState(sp, options = {}) {
+  if (!sp || !sp.session_id) return;
+  state.capture.activeScratchpad = sp;
+  state.capture.archivePreview = sp.archive_preview || null;
+  state.capture.sessionId = sp.session_id;
+  state.capture.activeThoughtId = options.thoughtId || sp.source_thought_id || sp.committed_thought_id || "";
+  state.capture.activeSnapshot = null;
+  state.capture.messages = Array.isArray(sp.messages) ? sp.messages.slice() : [];
+  upsertCaptureContextMessage({ scratchpad: sp, sessionId: sp.session_id });
+  upsertArchivePreviewMessage();
+  rememberCaptureSession({
+    sessionId: sp.session_id,
+    thoughtId: state.capture.activeThoughtId,
+    title: sp.title || state.capture.activeThoughtId || sp.session_id,
+    messages: state.capture.messages,
+    source: "server",
+  });
+  if (state.capture.activeThoughtId && window.tflowSessionLock) {
+    window.tflowSessionLock.acquire(state.capture.activeThoughtId, sp.session_id);
+  }
+  renderCaptureConversation();
+  refreshActiveCaptureThought();
+}
+
+async function reopenThoughtInCapture(thoughtId) {
+  const id = String(thoughtId || "").trim();
+  if (!id) return;
+  const result = await api(`/api/thoughts/${encodeURIComponent(id)}/reopen-session`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  const sp = result.scratchpad || result.Scratchpad || null;
+  if (!sp || !sp.session_id) throw new Error(t("toast.request_failed"));
+  applyScratchpadToCaptureState(sp, { thoughtId: id });
+  window.location.hash = "#/capture";
+  toast(t("thoughts.action.reopen_capture_done"));
 }
 
 // appendExpansionSections renders the post-refine expansion pipeline
