@@ -134,6 +134,9 @@ api_key = "local-llm-key"
 chat_model = "local-chat"
 timeout_seconds = 17
 
+[llm.prompts]
+capture_context_system_path = "prompts/capture-context.md"
+
 [embedding]
 base_url = "https://embedding.example.test"
 api_key = "local-embedding-key"
@@ -170,7 +173,8 @@ timeout_seconds = 19
 	if cfg.LLM.BaseURL != "https://llm.example.test" ||
 		cfg.LLM.APIKey != "local-llm-key" ||
 		cfg.LLM.ChatModel != "local-chat" ||
-		cfg.LLM.Timeout != 17*time.Second {
+		cfg.LLM.Timeout != 17*time.Second ||
+		cfg.LLM.Prompts.CaptureContextSystemPath != filepath.Join(configDir, "prompts", "capture-context.md") {
 		t.Fatalf("llm config = %#v", cfg.LLM)
 	}
 	if cfg.Embedding.BaseURL != "https://embedding.example.test" ||

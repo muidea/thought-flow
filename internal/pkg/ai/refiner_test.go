@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -327,6 +330,59 @@ func TestLocalProviderBuildCaptureContextReturnsStructuredSummary(t *testing.T) 
 	}
 	if strings.TrimSpace(result.CandidateSummary) == strings.TrimSpace(result.CandidateBody) {
 		t.Fatalf("summary should not be a verbatim body replay")
+	}
+}
+
+func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T) {
+	promptPath := filepath.Join(t.TempDir(), "capture-context-system.md")
+	customPrompt := "Custom capture context system prompt for a configured business template."
+	if err := os.WriteFile(promptPath, []byte(customPrompt), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		requestBody = string(raw)
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": `{"topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+		Prompts: appconfig.LLMPromptsConfig{
+			CaptureContextSystemPath: promptPath,
+		},
+	}, appconfig.EmbeddingConfig{})
+	result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{
+		SessionID: "s1",
+		Content:   "整理一个主题方向",
+	})
+	if err != nil {
+		t.Fatalf("BuildCaptureContext() error = %v", err)
+	}
+	if result.CandidateSummary != "summary" {
+		t.Fatalf("CandidateSummary = %q", result.CandidateSummary)
+	}
+	if !strings.Contains(requestBody, customPrompt) {
+		t.Fatalf("request body does not contain configured prompt:\n%s", requestBody)
+	}
+	if strings.Contains(requestBody, "You maintain ThoughtFlow capture session context") {
+		t.Fatalf("request body should not contain default prompt when a prompt file is configured:\n%s", requestBody)
 	}
 }
 

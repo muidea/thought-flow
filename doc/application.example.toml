@@ -66,6 +66,12 @@ api_key = ""
 chat_model = "gpt-4o-mini"
 timeout_seconds = 30
 
+[llm.prompts]
+# Optional capture conversation system prompt file.
+# Relative paths are resolved from this config directory, so templates can be
+# stored beside application.toml and switched per business scenario.
+capture_context_system_path = ""
+
 [embedding]
 # OpenAI-compatible embedding provider. Empty api_key uses deterministic local embeddings.
 base_url = "https://api.openai.com"

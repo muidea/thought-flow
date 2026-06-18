@@ -215,6 +215,13 @@ chat_model = "gpt-4o-mini"
 timeout_seconds = 30
 ```
 
+Capture 多轮对话的 system prompt 可以按文件加载，便于为不同业务模板维护不同定义。未配置时使用内置通用 prompt；相对路径会按配置目录解析：
+
+```toml
+[llm.prompts]
+capture_context_system_path = "prompts/capture-context-research.md"
+```
+
 配置 OpenAI-compatible embedding provider：
 
 ```toml

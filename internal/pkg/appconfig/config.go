@@ -88,6 +88,11 @@ type LLMConfig struct {
 	APIKey    string
 	ChatModel string
 	Timeout   time.Duration
+	Prompts   LLMPromptsConfig
+}
+
+type LLMPromptsConfig struct {
+	CaptureContextSystemPath string
 }
 
 type EmbeddingConfig struct {
@@ -125,7 +130,7 @@ func LoadWithConfigDir(configDir string) Config {
 	loadOnce.Do(func() {
 		loaded = defaultConfig()
 		ensureFrameworkConfigManager(configDir)
-		applyFrameworkOverrides(&loaded)
+		applyFrameworkOverrides(&loaded, configDir)
 	})
 	return loaded
 }
@@ -245,7 +250,7 @@ func ensureFrameworkConfigManager(configDir string) {
 	}
 }
 
-func applyFrameworkOverrides(cfg *Config) {
+func applyFrameworkOverrides(cfg *Config, configDir string) {
 	appConfig := applicationConfig()
 	cfg.Server.Host = configString(appConfig, "server.host", cfg.Server.Host)
 	cfg.Server.Port = configString(appConfig, "server.port", cfg.Server.Port)
@@ -271,6 +276,7 @@ func applyFrameworkOverrides(cfg *Config) {
 	cfg.LLM.APIKey = configString(appConfig, "llm.api_key", cfg.LLM.APIKey)
 	cfg.LLM.ChatModel = configString(appConfig, "llm.chat_model", cfg.LLM.ChatModel)
 	cfg.LLM.Timeout = time.Duration(configInt(appConfig, "llm.timeout_seconds", int(cfg.LLM.Timeout/time.Second))) * time.Second
+	cfg.LLM.Prompts.CaptureContextSystemPath = configPath(appConfig, "llm.prompts.capture_context_system_path", cfg.LLM.Prompts.CaptureContextSystemPath, configDir)
 	cfg.Embedding.BaseURL = configString(appConfig, "embedding.base_url", cfg.Embedding.BaseURL)
 	cfg.Embedding.APIKey = configString(appConfig, "embedding.api_key", cfg.Embedding.APIKey)
 	cfg.Embedding.Model = configString(appConfig, "embedding.model", cfg.Embedding.Model)
@@ -300,6 +306,17 @@ func configString(root map[string]any, key string, fallback string) string {
 		return fallback
 	}
 	return fmt.Sprint(value)
+}
+
+func configPath(root map[string]any, key string, fallback string, baseDir string) string {
+	value := strings.TrimSpace(configString(root, key, fallback))
+	if value == "" || filepath.IsAbs(value) {
+		return value
+	}
+	if strings.TrimSpace(baseDir) == "" {
+		return value
+	}
+	return filepath.Join(baseDir, value)
 }
 
 func configBool(root map[string]any, key string, fallback bool) bool {
