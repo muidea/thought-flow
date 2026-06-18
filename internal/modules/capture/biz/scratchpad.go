@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -49,6 +50,8 @@ type ScratchpadService struct {
 	sessionID  string
 	now        func() time.Time
 }
+
+const captureContextEnrichTimeout = 2 * time.Minute
 
 // ScratchpadStore is the subset of scratchpad.Store this package
 // depends on. The HTTP layer uses the same interface, which keeps
@@ -307,18 +310,25 @@ func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, 
 	if sessionID == "" || strings.TrimSpace(contentAtSchedule) == "" {
 		return
 	}
+	if s.background == nil {
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, errors.New("capture: background routine is not configured"))
+		return
+	}
 	run := func() {
 		current, err := s.store.Get(sessionID)
 		if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
 			return
 		}
-		result, err := s.contextAI.BuildCaptureContext(context.Background(), ai.CaptureContextRequest{
+		ctx, cancel := context.WithTimeout(context.Background(), captureContextEnrichTimeout)
+		defer cancel()
+		result, err := s.contextAI.BuildCaptureContext(ctx, ai.CaptureContextRequest{
 			SessionID: sessionID,
 			Content:   current.Content,
 			Messages:  captureContextMessages(current.Messages),
 			Existing:  captureContextFromScratchpad(existingContext),
 		})
 		if err != nil {
+			s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err)
 			return
 		}
 		latest, err := s.store.Get(sessionID)
@@ -331,12 +341,60 @@ func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, 
 		}
 		_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
 	}
-	if s.background != nil {
-		if err := s.background.AsyncFunction(run); err == nil {
-			return
+	if err := s.background.AsyncFunction(run); err != nil {
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, fmt.Errorf("capture: enqueue context enrichment: %w", err))
+	}
+}
+
+func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error) {
+	slog.Warn("capture context enrichment failed", "session_id", sessionID, "error", cause)
+	latest, err := s.store.Get(sessionID)
+	if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
+		return
+	}
+	text := captureContextFailureText(cause)
+	if text == "" {
+		return
+	}
+	latest.Messages = appendContextReplyMessage(latest.Messages, text, s.now())
+	if _, err := s.store.Save(latest); err != nil {
+		slog.Warn("persist capture context enrichment failure failed", "session_id", sessionID, "error", err)
+		return
+	}
+	s.publishContextUpdatedEvent(sessionID)
+}
+
+func captureContextFailureText(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return "LLM 整理超时，请检查模型服务响应时间后重试。"
+	}
+	if errors.Is(cause, context.Canceled) {
+		return "LLM 整理已取消，请重新发送本轮内容。"
+	}
+	var providerErr ai.ProviderError
+	if errors.As(cause, &providerErr) {
+		switch providerErr.StatusCode {
+		case 401, 403:
+			return "LLM 整理失败：模型服务鉴权失败，请检查 API Key 和模型服务配置。"
+		case 404:
+			return "LLM 整理失败：模型服务接口不存在，请检查 base_url 是否指向 OpenAI-compatible 接口。"
+		case 429:
+			return "LLM 整理失败：模型服务限流，请稍后重试。"
+		default:
+			if providerErr.StatusCode >= 500 {
+				return "LLM 整理失败：模型服务暂时不可用，请稍后重试。"
+			}
+			return "LLM 整理失败：模型服务返回异常，请检查模型配置后重试。"
 		}
 	}
-	go run()
+	message := strings.TrimSpace(cause.Error())
+	if strings.Contains(message, "parse capture context json") {
+		return "LLM 整理失败：模型返回格式无法解析，请重试或调整提示词模板。"
+	}
+	return "LLM 整理失败，请检查模型服务配置或稍后重试。"
 }
 
 func captureContextMessages(messages []scratchpad.Message) []ai.CaptureContextMessage {
@@ -1127,13 +1185,7 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 	related := append([]string(nil), thought.RelatedThoughtIDs...)
 	related = uniqueStrings(related)
 
-	body := strings.TrimSpace(content.Original)
-	if body == "" {
-		body = strings.TrimSpace(content.ExtractedContent)
-	}
-	if body == "" {
-		body = strings.TrimSpace(content.AINotes)
-	}
+	body := reopenThoughtBody(content)
 	messages := []scratchpad.Message{}
 	if body != "" {
 		messages = append(messages, scratchpad.Message{Role: "ai", Text: body, At: s.now()})
@@ -1162,6 +1214,32 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
 	}
 	return s.store.Save(sp)
+}
+
+func reopenThoughtBody(content models.ThoughtContent) string {
+	primary := stripLeadingMarkdownHeading(firstNonEmptyString(content.Original, content.ExtractedContent), "Original")
+	notes := stripLeadingMarkdownHeading(content.AINotes, "AI Notes")
+	if primary != "" && notes != "" {
+		return primary + "\n\n## AI Notes\n\n" + notes
+	}
+	if primary != "" {
+		return primary
+	}
+	return notes
+}
+
+func stripLeadingMarkdownHeading(value, heading string) string {
+	value = strings.TrimSpace(value)
+	marker := "## " + heading
+	for {
+		if strings.TrimSpace(value) == marker {
+			return ""
+		}
+		if !strings.HasPrefix(value, marker+"\n") && !strings.HasPrefix(value, marker+"\r\n") {
+			return value
+		}
+		value = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(value, marker+"\r\n"), marker+"\n"))
+	}
 }
 
 // applyDraftToThought runs after a fresh commit to apply the

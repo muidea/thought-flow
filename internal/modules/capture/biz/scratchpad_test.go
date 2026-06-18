@@ -185,16 +185,13 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	if _, err := svc.AppendMessage("s1", "user", "raw capture message"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	if provider.calls != 1 {
-		t.Fatalf("BuildCaptureContext calls = %d, want 1", provider.calls)
-	}
+	waitFor(t, func() bool { return provider.callCount() == 1 })
 	if provider.lastReq.SessionID != "s1" || provider.lastReq.Content != "raw capture message" {
 		t.Fatalf("provider request = %+v", provider.lastReq)
 	}
-	sp, err := store.Get("s1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return sp.SessionContext.CandidateSummary == "LLM summary"
+	})
 	if sp.SessionContext.CandidateTitle != "LLM title" {
 		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
 	}
@@ -223,14 +220,12 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	}); err != nil {
 		t.Fatalf("seed scratchpad: %v", err)
 	}
-	provider := &stubCaptureContextProvider{
-		result: ai.CaptureContextResult{
-			CandidateTitle:   "new title",
-			CandidateSummary: "new summary",
-			ArchiveIntent:    "none",
-			ArchiveStrategy:  "new",
-		},
-	}
+	provider := &stubCaptureContextProvider{result: ai.CaptureContextResult{
+		CandidateTitle:   "new title",
+		CandidateSummary: "new summary",
+		ArchiveIntent:    "none",
+		ArchiveStrategy:  "new",
+	}}
 	background := &queuedBackground{}
 	hub := &recordingEventHub{}
 	svc := NewScratchpadService(store,
@@ -242,8 +237,8 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	if provider.calls != 0 {
-		t.Fatalf("provider should wait for background execution, calls = %d", provider.calls)
+	if provider.callCount() != 0 {
+		t.Fatalf("provider should wait for framework background execution, calls = %d", provider.callCount())
 	}
 	if len(hub.events) != 0 {
 		t.Fatalf("context update event should not be published before provider completes, got %d", len(hub.events))
@@ -257,10 +252,9 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	}
 
 	background.Run()
-	sp, err = store.Get("s1")
-	if err != nil {
-		t.Fatalf("Get after provider: %v", err)
-	}
+	sp = waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return sp.SessionContext.CandidateSummary == "new summary"
+	})
 	if sp.SessionContext.CandidateTitle != "new title" || sp.SessionContext.CandidateSummary != "new summary" {
 		t.Fatalf("SessionContext = %+v", sp.SessionContext)
 	}
@@ -274,13 +268,11 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 
 func TestScratchpadServiceAppendMessageAllowsConsecutiveUserTurnsBeforeContextReply(t *testing.T) {
 	store := newMemoryScratchpad()
-	provider := &stubCaptureContextProvider{
-		result: ai.CaptureContextResult{
-			CandidateSummary: "synthesized reply after both turns",
-			ArchiveIntent:    "none",
-			ArchiveStrategy:  "new",
-		},
-	}
+	provider := &stubCaptureContextProvider{result: ai.CaptureContextResult{
+		CandidateSummary: "synthesized reply after both turns",
+		ArchiveIntent:    "none",
+		ArchiveStrategy:  "new",
+	}}
 	background := &queuedBackground{}
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
@@ -302,10 +294,9 @@ func TestScratchpadServiceAppendMessageAllowsConsecutiveUserTurnsBeforeContextRe
 	}
 
 	background.Run()
-	sp, err := store.Get("s1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return len(sp.Messages) == 3
+	})
 	if len(sp.Messages) != 3 {
 		t.Fatalf("Messages = %+v", sp.Messages)
 	}
@@ -397,10 +388,9 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	sp, err := store.Get("s1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return sp.SessionContext.CandidateSummary == "new summary"
+	})
 	if sp.SessionContext.CandidateTitle != "new title" {
 		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
 	}
@@ -453,12 +443,40 @@ func TestScratchpadServiceAppendMessageReplacesOpenQuestionsFromProvider(t *test
 	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	sp, err := store.Get("s1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return len(sp.SessionContext.OpenQuestions) > 0
+	})
 	if !sameStringSet(sp.SessionContext.OpenQuestions, []string{"new unresolved question?"}) {
 		t.Fatalf("OpenQuestions = %+v", sp.SessionContext.OpenQuestions)
+	}
+}
+
+func TestScratchpadServiceAppendMessageSurfacesProviderFailure(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &stubCaptureContextProvider{
+		err: ai.ProviderError{Code: "thoughtflow.ai.http_status", StatusCode: 401, Message: "invalid key"},
+	}
+	hub := &recordingEventHub{}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(syncBackground{}),
+		WithEventHub(hub),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "needs llm synthesis"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return len(sp.Messages) == 2
+	})
+	if hasSessionContext(sp.SessionContext) {
+		t.Fatalf("failure should not create archiveable context, got %+v", sp.SessionContext)
+	}
+	if sp.Messages[1].Role != "ai" || !strings.Contains(sp.Messages[1].Text, "鉴权失败") {
+		t.Fatalf("failure message = %+v", sp.Messages[1])
+	}
+	if len(hub.events) != 1 || hub.events[0].ID() != models.EventScratchpadContextUpdated {
+		t.Fatalf("events = %+v", hub.events)
 	}
 }
 
@@ -585,6 +603,7 @@ func (h *recordingEventHub) Send(mcevent.Event) mcevent.Result { return nil }
 func (h *recordingEventHub) Terminate(context.Context) {}
 
 type stubCaptureContextProvider struct {
+	mu      sync.Mutex
 	calls   int
 	lastReq ai.CaptureContextRequest
 	result  ai.CaptureContextResult
@@ -592,12 +611,46 @@ type stubCaptureContextProvider struct {
 }
 
 func (s *stubCaptureContextProvider) BuildCaptureContext(_ context.Context, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
+	s.mu.Lock()
 	s.calls++
 	s.lastReq = req
+	s.mu.Unlock()
 	if s.err != nil {
 		return ai.CaptureContextResult{}, s.err
 	}
 	return s.result, nil
+}
+
+func (s *stubCaptureContextProvider) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition was not met before timeout")
+}
+
+func waitForScratchpad(t *testing.T, store *memoryScratchpad, id string, condition func(scratchpad.Scratchpad) bool) scratchpad.Scratchpad {
+	t.Helper()
+	var latest scratchpad.Scratchpad
+	waitFor(t, func() bool {
+		sp, err := store.Get(id)
+		if err != nil {
+			return false
+		}
+		latest = sp
+		return condition(sp)
+	})
+	return latest
 }
 
 func TestScratchpadServiceAppendDraftMergesAndProjects(t *testing.T) {
@@ -1776,6 +1829,7 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 			Content: models.ThoughtContent{
 				Original:         "original body",
 				ExtractedContent: "extracted body",
+				AINotes:          "AI-generated notes",
 			},
 		},
 	}
@@ -1796,7 +1850,8 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	if sp.Content != "" {
 		t.Fatalf("Content = %q (reopen should not restore archived content as user input)", sp.Content)
 	}
-	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != "original body" {
+	wantBody := "original body\n\n## AI Notes\n\nAI-generated notes"
+	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != wantBody {
 		t.Fatalf("Messages = %+v (should restore final archived content as an ai bubble)", sp.Messages)
 	}
 	if len(sp.Tags) != 2 {
@@ -1820,10 +1875,10 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	if sp.SessionContext.CandidateTitle != "Original Title" {
 		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
 	}
-	if sp.SessionContext.CandidateBody != "original body" {
+	if sp.SessionContext.CandidateBody != wantBody {
 		t.Fatalf("CandidateBody = %q", sp.SessionContext.CandidateBody)
 	}
-	if sp.SessionContext.CandidateSummary != "original body" {
+	if sp.SessionContext.CandidateSummary != wantBody {
 		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
 	}
 }
@@ -1867,6 +1922,31 @@ func TestScratchpadServiceReopenFromThoughtFallsBackThroughContentLayers(t *test
 	}
 	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != "from ai notes" {
 		t.Fatalf("Messages = %+v (should fall back to AINotes as an ai bubble)", sp.Messages)
+	}
+}
+
+func TestScratchpadServiceReopenFromThoughtNormalizesSectionHeadings(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-1"},
+			Content: models.ThoughtContent{
+				Original: "## Original\n\nfinal archived body",
+				AINotes:  "## AI Notes\n\n### 2026-06-18 00:00:00 UTC\nextra note",
+			},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub))
+	sp, err := svc.ReopenFromThought(context.Background(), "thought-1", "")
+	if err != nil {
+		t.Fatalf("ReopenFromThought: %v", err)
+	}
+	want := "final archived body\n\n## AI Notes\n\n### 2026-06-18 00:00:00 UTC\nextra note"
+	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != want {
+		t.Fatalf("Messages = %+v, want ai bubble %q", sp.Messages, want)
+	}
+	if sp.Content != "" {
+		t.Fatalf("Content = %q (reopen should keep user input empty)", sp.Content)
 	}
 }
 
