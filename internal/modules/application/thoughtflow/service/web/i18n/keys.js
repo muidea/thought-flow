@@ -39,8 +39,6 @@ export const Key = Object.freeze({
   TopbarBadgeEmbedding: "topbar.badge.embedding",
   TopbarBadgeGit: "topbar.badge.git",
   TopbarBadgeSearch: "topbar.badge.search",
-  TopbarActionNewCapture: "topbar.action.new_capture",
-  TopbarActionNewTopic: "topbar.action.new_topic",
   TopbarActionSystem: "topbar.action.system",
   TopbarLanguage: "topbar.language",
 

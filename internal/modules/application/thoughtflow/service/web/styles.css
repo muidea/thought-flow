@@ -1724,14 +1724,6 @@ textarea:focus-visible {
   bottom: 0.625rem;
 }
 
-.tf-capture-composer-actions {
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  gap: var(--tf-space-2, 0.5rem);
-  flex-wrap: wrap;
-}
-
 .tf-suggestion-card {
   display: flex;
   flex-direction: column;
