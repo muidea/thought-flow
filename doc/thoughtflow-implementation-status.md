@@ -488,13 +488,13 @@ make e2e-test                          # 26 个 e2e 测试通过，含默认复�
 - 目标实现旧接口 / 旧 hash 搜索：`rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" internal cmd` 0 命中。
 - 当前目标文档旧接口 / 旧 hash 搜索：`rg "/api/synthesis|synthesis/drafts|source=synthesis|/api/topics/.*/rebuild|#/dashboard|#/thoughts|#/synthesis|#/jobs" README.md doc/thoughtflow-usage-config.md doc/thoughtflow-functional-design.md doc/thoughtflow-domain-models.md doc/thoughtflow-prd.md doc/thoughtflow-web-ux-redesign.md doc/thoughtflow-web-ux-polish-v2.md` 0 命中。
 - 历史状态文档、todo 清单和 evidence 文档中的旧字面量仅作为历史实现状态或验收约束文本保留。
-- `package.json` / `package-lock.json` 保留 Playwright devDependency，确保 `make browser-test` 的 Firefox/WebKit 探测能力不被删除。
+- 当前准则：项目根目录不保留 `package.json` / `package-lock.json`，避免把嵌入式原生 Web UI 误导成 npm 项目；Playwright 如需用于 browser smoke，由开发机或 CI 环境外部提供，缺失时按测试内 skip reason 处理。
 
 ## 2026-06-13 跨浏览器收口：firefox 通过 Playwright 真跑通
 
 todo 第 8 节第 3 条要求"有浏览器环境时 `make browser-test` 通过"。本轮通过 Playwright 把 Firefox 从"探测后 skip"升级为"真跑 desktop + mobile"：
 
-1. **依赖**：`package.json` 增加 `playwright` devDependency（`npm i -D playwright`），`npx playwright install firefox webkit` 下载 Firefox 150.0.2 与 WebKit 2287 二进制到 `~/.cache/ms-playwright/`。
+1. **依赖**：当时曾通过根目录 `package.json` 增加 `playwright` devDependency；当前已调整为不在项目根目录保留 npm manifest，Playwright 由开发机或 CI 外部环境按需提供。
 2. **代码改造**（`internal/modules/application/thoughtflow/service/web/app.browser.test.js`）：
    - 加 `PlaywrightPage` 类（CDPPage 兼容适配器）:接 `page.evaluate` / `page.waitForFunction` / `page.goto` 三个调用，`pageerror` / `console.error` 转 `Runtime.exceptionThrown` / `Log.entryAdded` 事件。
    - `connectPage(launched)` 检测 `launched.kind === "playwright"` 走 `PlaywrightPage`，否则走 `CDPPage`。

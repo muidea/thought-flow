@@ -1961,13 +1961,88 @@ function renderCaptureBubbleBody(msg) {
         && state.capture.activeSnapshot.thought.id === msg.thoughtId
         ? state.capture.activeSnapshot
         : null);
-    if (snap) return renderCaptureThoughtCardFromSnapshot(snap);
+    if (snap) return renderPlainMessage(thoughtSnapshotPlainText(snap, msg));
   }
-  if (msg.kind === "context") return renderCaptureContextCard(msg);
-  if (msg.kind === "archive_preview") return renderArchivePreviewCard(msg);
+  if (msg.kind === "context") return renderPlainMessage(captureContextPlainText(msg));
+  if (msg.kind === "archive_preview") return renderPlainMessage(archivePreviewPlainText(msg));
   if (msg.html) return msg.html;
-  if (msg.text) return `<div class="tf-msg-body">${escapeHTML(msg.text)}</div>`;
+  if (msg.text) return renderPlainMessage(msg.text);
   return "";
+}
+
+function renderPlainMessage(text) {
+  return `<div class="tf-msg-body">${escapeHTML(text || "")}</div>`;
+}
+
+function thoughtSnapshotPlainText(snapshot, msg = {}) {
+  const thought = (snapshot && snapshot.thought) || {};
+  const content = (snapshot && snapshot.content) || {};
+  const parts = [];
+  const fallback = msg.text || "";
+  const original = content.original || content.Original || "";
+  if (original) parts.push(original);
+  if (thought.summary) parts.push(thought.summary);
+  if (Array.isArray(thought.key_points) && thought.key_points.length) {
+    parts.push(thought.key_points.filter(Boolean).join("\n"));
+  }
+  if (Array.isArray(thought.ai_tags) && thought.ai_tags.length) {
+    parts.push(thought.ai_tags.filter(Boolean).join(", "));
+  }
+  if (Array.isArray(thought.related_thought_ids) && thought.related_thought_ids.length) {
+    parts.push(thought.related_thought_ids.filter(Boolean).join("\n"));
+  }
+  if (Array.isArray(thought.suggested_topic_ids) && thought.suggested_topic_ids.length) {
+    parts.push(thought.suggested_topic_ids.filter(Boolean).join("\n"));
+  }
+  if (Array.isArray(thought.url_followups) && thought.url_followups.length) {
+    parts.push(thought.url_followups
+      .map((item) => [item.title, item.url].filter(Boolean).join(" "))
+      .filter(Boolean)
+      .join("\n"));
+  }
+  if (thought.expansion_plan) parts.push(thought.expansion_plan);
+  if (parts.length === 0) {
+    const title = thought.display_title || thought.user_title || thought.extracted_title || thought.id || "";
+    if (title) parts.push(title);
+  }
+  return parts.filter(Boolean).join("\n\n") || fallback;
+}
+
+function captureContextPlainText(message = {}) {
+  if (message.pending) return t("capture.context.pending");
+  const sp = state.capture.activeScratchpad || {};
+  const ctx = sp.session_context || sp.SessionContext || {};
+  const parts = [
+    ctx.candidate_body,
+    ctx.candidate_summary,
+    ctx.candidate_title,
+    ctx.topic,
+    ctx.goal,
+    ...(Array.isArray(ctx.confirmed_facts) ? ctx.confirmed_facts : []),
+    ...(Array.isArray(ctx.open_questions) ? ctx.open_questions : []),
+    ...(Array.isArray(ctx.conflicts) ? ctx.conflicts : []),
+    ...(Array.isArray(ctx.source_links) ? ctx.source_links : []),
+    ...(Array.isArray(ctx.related_thought_ids) ? ctx.related_thought_ids : []),
+    ...(Array.isArray(ctx.suggested_topic_ids) ? ctx.suggested_topic_ids : []),
+    ...(Array.isArray(ctx.candidate_tags) && ctx.candidate_tags.length ? [ctx.candidate_tags.join(", ")] : []),
+  ];
+  return parts.filter((item) => typeof item === "string" && item.trim()).join("\n\n") || t("capture.context.empty");
+}
+
+function archivePreviewPlainText(msg = {}) {
+  const preview = (msg && msg.preview) || state.capture.archivePreview || {};
+  const parts = [
+    preview.title,
+    preview.thought_id || preview.ThoughtID,
+    preview.body,
+    ...(Array.isArray(preview.tags) && preview.tags.length ? [preview.tags.join(", ")] : []),
+    ...(Array.isArray(preview.source_links) ? preview.source_links : []),
+  ];
+  if (preview.diff) {
+    if (preview.diff.before) parts.push(preview.diff.before);
+    if (preview.diff.after) parts.push(preview.diff.after);
+  }
+  return parts.filter((item) => typeof item === "string" && item.trim()).join("\n\n") || t("capture.archive.preview_empty");
 }
 
 function renderCaptureConversation() {
@@ -1987,10 +2062,10 @@ function renderCaptureConversation() {
     }).join("");
   }
   list.scrollTop = list.scrollHeight;
-  const finish = $("#capture-finish");
-  if (finish) finish.disabled = !state.capture.sessionId;
   const previewButton = $("#capture-refresh-preview");
   if (previewButton) previewButton.disabled = !state.capture.sessionId;
+  const archiveButton = $("#capture-archive-commit");
+  if (archiveButton) archiveButton.disabled = !state.capture.sessionId || !state.capture.archivePreview;
   renderCaptureContextPanel();
   renderArchivePreviewPanel();
   renderCaptureLockIndicator();
@@ -2059,6 +2134,7 @@ function renderCaptureContextPanel() {
 
 function renderArchivePreviewBody(preview) {
   if (!preview) return escapeHTML(t("capture.archive.preview_empty"));
+  const target = preview.thought_id || preview.ThoughtID || "";
   const tags = Array.isArray(preview.tags) && preview.tags.length
     ? `<div class="tf-capture-tags">${preview.tags.map((tag) => `<span class="tf-chip">${escapeHTML(tag)}</span>`).join("")}</div>`
     : "";
@@ -2071,12 +2147,24 @@ function renderArchivePreviewBody(preview) {
         <div class="tf-description-list">
           <div><span>${escapeHTML(t("capture.archive.changed_fields"))}</span><strong>${escapeHTML((preview.diff.changed_fields || []).join(", ") || "-")}</strong></div>
         </div>
-        ${renderDiff(preview.diff.before || "", preview.diff.after || "")}
+        <div class="tf-diff-columns">
+          <div>
+            <span class="tf-text-secondary">${escapeHTML(t("capture.archive.diff_before"))}</span>
+            <pre>${escapeHTML(preview.diff.before || "")}</pre>
+          </div>
+          <div>
+            <span class="tf-text-secondary">${escapeHTML(t("capture.archive.diff_after"))}</span>
+            <pre>${escapeHTML(preview.diff.after || "")}</pre>
+          </div>
+        </div>
       </details>`
     : "";
   return `<div class="tf-capture-preview-body">
     <strong>${escapeHTML(preview.title || t("capture.archive.untitled"))}</strong>
-    <div class="topic-meta">${escapeHTML(t("capture.archive.strategy"))}: ${escapeHTML(preview.strategy || "new")}</div>
+    <div class="topic-meta">
+      ${escapeHTML(t("capture.archive.strategy"))}: ${escapeHTML(preview.strategy || "new")}
+      ${target ? ` · ${escapeHTML(t("capture.archive.target"))}: ${escapeHTML(target)}` : ""}
+    </div>
     ${tags}
     <div class="markdown-rendered">${renderMarkdown(preview.body || "")}</div>
     ${links ? `<div class="tf-capture-section"><div class="tf-capture-section-title">${escapeHTML(t("capture.archive.source_links"))}</div>${links}</div>` : ""}
@@ -2718,7 +2806,7 @@ async function dispatchCaptureCommand(text) {
 // into Title / Tags so the chat UI can render them immediately.
 async function dispatchScratchpadCommand(parsed, text) {
   if (parsed.kind === "commit") {
-    await previewArchive({ intent: "llm" });
+    await previewArchive({ intent: "llm", confirmAfterPreview: true });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -2794,7 +2882,7 @@ async function dispatchThoughtCommand(parsed) {
     return;
   }
   if (parsed.kind === "commit") {
-    await previewArchive({ intent: "llm" });
+    await previewArchive({ intent: "llm", confirmAfterPreview: true });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -2887,7 +2975,7 @@ async function resolveScratchpadTopic(topicRef) {
     null;
 }
 
-async function previewArchive({ intent = "menu", strategy = "" } = {}) {
+async function previewArchive({ intent = "menu", strategy = "", confirmAfterPreview = false } = {}) {
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
@@ -2908,8 +2996,10 @@ async function previewArchive({ intent = "menu", strategy = "" } = {}) {
     appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
     upsertArchivePreviewMessage();
     renderCaptureConversation();
-    const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
-    if (ok) await commitScratchpad();
+    if (confirmAfterPreview) {
+      const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
+      if (ok) await commitScratchpad();
+    }
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
   }
@@ -3095,25 +3185,6 @@ function newCaptureSession() {
   renderCaptureConversation();
   const input = $("#capture-composer-input");
   if (input) input.focus();
-}
-
-function finishCaptureSession() {
-  if (state.capture.sessionId && !state.capture.activeThoughtId) {
-    previewArchive({ intent: "menu" }).catch((error) => appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") }));
-    return;
-  }
-  const thoughtId = state.capture.activeThoughtId;
-  if (window.tflowSessionLock) {
-    window.tflowSessionLock.release(thoughtId, state.capture.sessionId);
-  }
-  state.capture.sessionId = "";
-  state.capture.activeThoughtId = "";
-  state.capture.activeSnapshot = null;
-  state.capture.activeScratchpad = null;
-  state.capture.archivePreview = null;
-  state.capture.messages = [];
-  appendCaptureMessage({ role: "system", text: t("capture.session.closed") });
-  renderCaptureConversation();
 }
 
 async function takeoverCaptureLock() {
@@ -3863,8 +3934,11 @@ function bind() {
   $("#capture-form")?.addEventListener("submit", (event) => captureThought(event).catch((error) => toast(error.message)));
   $("#capture-composer")?.addEventListener("submit", (event) => submitCaptureComposer(event).catch((error) => toast(error.message)));
   $("#capture-new-session")?.addEventListener("click", () => newCaptureSession());
-  $("#capture-finish")?.addEventListener("click", () => finishCaptureSession());
   $("#capture-refresh-preview")?.addEventListener("click", () => previewArchive({ intent: "menu" }));
+  $("#capture-archive-commit")?.addEventListener("click", async () => {
+    const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
+    if (ok) await commitScratchpad();
+  });
   $("#capture-sessions-toggle")?.addEventListener("click", () => {
     const drawer = $("#capture-sessions-drawer");
     if (!drawer) return;

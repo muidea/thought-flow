@@ -100,6 +100,10 @@ export const Key = Object.freeze({
   CaptureSessionContextEnriched: "capture.session.context_enriched",
   CaptureSessionRefineFailed: "capture.session.refine_failed",
   CaptureContextPending: "capture.context.pending",
+  CaptureArchiveSaveAction: "capture.archive.save_action",
+  CaptureArchiveTarget: "capture.archive.target",
+  CaptureArchiveDiffBefore: "capture.archive.diff_before",
+  CaptureArchiveDiffAfter: "capture.archive.diff_after",
 
   // Thoughts page
   ThoughtsIDPlaceholder: "thoughts.id_placeholder",

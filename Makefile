@@ -74,7 +74,7 @@ LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 		[ -e $$d/libstdc++.so ] && echo "-L$$d"; \
 	done)
 
-.PHONY: help fmt fmt-check test build node-check node-test node-test-i18n i18n-check browser-test check clean
+.PHONY: help fmt fmt-check test build node-check node-test node-test-i18n i18n-check browser-test e2e-test check ci-check clean
 
 help:
 	@printf '%s\n' \
@@ -89,7 +89,8 @@ help:
 		'  i18n-check       Verify every i18n key used in app.js/index.html is translated' \
 		'  browser-test     Run embedded UI browser smoke tests' \
 		'  e2e-test         Run end-to-end tests against a spawned thoughtflow binary' \
-		'  check            Run the full validation matrix' \
+		'  check            Run the local development validation set' \
+		'  ci-check         Run the full remote validation matrix, including browser/e2e' \
 		'  clean            Remove local build artifacts'
 
 fmt:
@@ -132,7 +133,9 @@ browser-test:
 e2e-test:
 	$(NODE) --test $(WEB_DIR)/api.e2e.test.js $(WEB_DIR)/events.e2e.test.js
 
-check: fmt-check test build node-check node-test node-test-i18n i18n-check browser-test e2e-test
+check: fmt-check test build node-check node-test i18n-check
+
+ci-check: check browser-test e2e-test
 
 clean:
 	rm -f $(BINARY)

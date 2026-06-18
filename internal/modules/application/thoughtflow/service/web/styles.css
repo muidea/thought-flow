@@ -1067,6 +1067,7 @@ textarea.markdown-preview {
   .main-grid,
   .capture-form,
   .tf-capture-workbench,
+  .tf-diff-columns,
   .search-form {
     grid-template-columns: 1fr;
   }
@@ -1462,19 +1463,6 @@ textarea:focus-visible {
   min-height: 72vh;
 }
 
-.tf-capture-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--tf-space-3, 0.75rem);
-}
-
-.tf-capture-header-meta {
-  display: flex;
-  flex-direction: column;
-  gap: var(--tf-space-1, 0.25rem);
-}
-
 .tf-capture-lock {
   display: flex;
   justify-content: space-between;
@@ -1567,6 +1555,23 @@ textarea:focus-visible {
   display: grid;
   gap: 8px;
   color: var(--tf-color-text);
+}
+
+.tf-diff-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.tf-diff-columns pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 4px 0 0;
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius-sm);
+  background: #fafafa;
+  padding: 8px;
+  white-space: pre-wrap;
 }
 
 .tf-capture-message-card {
@@ -1671,20 +1676,31 @@ textarea:focus-visible {
   color: var(--tf-color-text-secondary, #555);
 }
 
+.tf-capture-input-wrap {
+  position: relative;
+  min-width: 0;
+}
+
 #capture-composer-input {
   width: 100%;
-  min-height: 3rem;
+  min-height: 6.25rem;
   resize: vertical;
   font: inherit;
   border: 1px solid var(--tf-color-border, #e5e5e5);
   border-radius: var(--tf-radius-sm, 4px);
-  padding: var(--tf-space-2, 0.5rem);
+  padding: 0.65rem 5.75rem 2.75rem 0.75rem;
   background: var(--tf-color-bg, #fff);
+}
+
+#capture-composer-send {
+  position: absolute;
+  right: 0.625rem;
+  bottom: 0.625rem;
 }
 
 .tf-capture-composer-actions {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: var(--tf-space-2, 0.5rem);
   flex-wrap: wrap;

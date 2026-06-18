@@ -39,8 +39,8 @@ make test-duckdb   # duckdb build tag 测试
 make build         # 构建 ./thoughtflow
 make node-check    # 前端 JS 语法检查
 make node-test     # 前端 Node 组件测试
-make browser-test  # 嵌入式 UI Chrome smoke 测试
-make check         # 完整验证矩阵
+make check         # 日常开发轻量验证
+make ci-check      # 远端提交完整验证，含 browser/e2e
 ```
 
 本机运行 DuckDB tagged 测试时，如缺少 `libstdc++.so` 开发链接名，可使用：
@@ -64,10 +64,10 @@ make check CGO_LDFLAGS=-L/tmp
 GitHub Actions 位于 `.github/workflows/ci.yml`，会执行：
 
 ```bash
-make check
+make ci-check
 ```
 
-CI 环境使用 Go `1.24.x`、Node `22.x`，并安装 `build-essential` 用于 DuckDB tagged 测试。
+CI 环境使用 Go `1.24.x`、Node `22.x`，并安装 `build-essential` 用于 DuckDB tagged 测试。浏览器 smoke 与 e2e 默认只在远端 CI 完整矩阵中执行。
 
 ## 发布版本
 

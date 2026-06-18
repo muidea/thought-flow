@@ -125,15 +125,6 @@
               </div>
             </div>
             <section class="tf-card tf-capture-shell">
-              <div class="tf-capture-header">
-                <div class="tf-capture-header-meta">
-                  <h3 id="capture-active-title" data-i18n="capture.session.title">Capture session</h3>
-                  <span id="capture-active-status" class="tf-text-secondary" data-i18n="capture.session.idle">No active session.</span>
-                </div>
-                <div class="tf-capture-header-actions">
-                  <button class="tf-btn" id="capture-finish" type="button" data-i18n="capture.session.finish" disabled>Finish</button>
-                </div>
-              </div>
               <div id="capture-lock-indicator" class="tf-capture-lock" hidden>
                 <span data-i18n="capture.session.locked">Locked by another session</span>
                 <button class="tf-btn" id="capture-lock-takeover" type="button" data-i18n="capture.session.takeover">Take over</button>
@@ -149,17 +140,22 @@
                 <section class="tf-capture-panel" aria-labelledby="capture-preview-title">
                   <div class="tf-capture-panel-header">
                     <h4 id="capture-preview-title" data-i18n="capture.archive.preview_title">Archive preview</h4>
-                    <button class="tf-btn" id="capture-refresh-preview" type="button" data-i18n="capture.archive.preview_action" disabled>Preview</button>
+                    <div class="tf-action-row">
+                      <button class="tf-btn" id="capture-refresh-preview" type="button" data-i18n="capture.archive.preview_action" disabled>Preview</button>
+                      <button class="tf-btn tf-btn-primary" id="capture-archive-commit" type="button" data-i18n="capture.archive.save_action" disabled>Archive</button>
+                    </div>
                   </div>
                   <div id="capture-archive-preview" class="tf-capture-preview" data-i18n="capture.archive.preview_empty">Preview appears before saving.</div>
                 </section>
               </div>
               <form id="capture-composer" class="tf-capture-composer" autocomplete="off">
                 <label class="tf-capture-composer-label" for="capture-composer-input" data-i18n="capture.composer.label">Composer</label>
-                <textarea id="capture-composer-input" rows="2" data-i18n-attr="capture.composer.placeholder" data-i18n-attr-target="placeholder" placeholder="Type a thought, URL, or command (e.g. rename to X)"></textarea>
+                <div class="tf-capture-input-wrap">
+                  <textarea id="capture-composer-input" rows="3" data-i18n-attr="capture.composer.placeholder" data-i18n-attr-target="placeholder" placeholder="Type a thought, URL, or command (e.g. rename to X)"></textarea>
+                  <button class="tf-btn tf-btn-primary" id="capture-composer-send" type="submit" data-i18n="capture.composer.send">Send</button>
+                </div>
                 <div class="tf-capture-composer-actions">
                   <span class="tf-text-secondary" data-i18n="capture.composer.hint">Commands: rename to · add tag · move to topic · append note · refine again</span>
-                  <button class="tf-btn tf-btn-primary" id="capture-composer-send" type="submit" data-i18n="capture.composer.send">Send</button>
                 </div>
               </form>
             </section>

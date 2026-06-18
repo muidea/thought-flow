@@ -284,10 +284,16 @@ GET  /health/ready
 
 ## 11. 验证与 CI
 
-本地完整验证：
+本地日常开发验证：
 
 ```bash
 make check
+```
+
+远端提交完整验证（含浏览器 smoke 与 e2e）：
+
+```bash
+make ci-check
 ```
 
 本机 DuckDB tagged 测试如需指定 C++ 链接路径：
@@ -305,10 +311,10 @@ GitHub Actions 位于：
 CI 执行：
 
 ```bash
-make check
+make ci-check
 ```
 
-CI 会安装 Go `1.24.x`、Node `22.x` 和 `build-essential`，并检查 Chrome/Chromium 是否可用。
+CI 会安装 Go `1.24.x`、Node `22.x` 和 `build-essential`，并检查 Chrome/Chromium 是否可用。日常本地调试不默认执行 browser/e2e，避免不必要的大范围端到端验证。
 
 ## 12. 当前验证限制
 

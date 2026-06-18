@@ -1010,7 +1010,7 @@ test("renderCaptureThoughtCardFromSnapshot surfaces partial-failure errors", () 
   assert.match(html, /thoughts\.expansion_failed/);
 });
 
-test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles from the active snapshot", () => {
+test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text from the active snapshot", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   // Set up an active thought + a freshly refined snapshot.
   app._state.capture.activeThoughtId = "t1";
@@ -1031,10 +1031,15 @@ test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles from the active
       refine_status: "refined",
       summary: "Refine succeeded.",
     },
+    content: {
+      original: "Raw user capture",
+    },
   };
   const out = app.renderCaptureBubbleBody(message);
-  assert.match(out, /After refine/);
+  assert.match(out, /Raw user capture/);
   assert.match(out, /Refine succeeded/);
+  assert.doesNotMatch(out, /tf-suggestion-card/);
+  assert.doesNotMatch(out, /tf-capture-status-row/);
   assert.doesNotMatch(out, /<stale\/>/);
 });
 
@@ -1046,7 +1051,7 @@ test("renderCaptureBubbleBody falls back to stored html/text for non-bound messa
   assert.match(htmlOut, /<b>static<\/b>/);
 });
 
-test("capture context is rendered as an updatable conversation card", () => {
+test("capture context is rendered as plain conversation text", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.activeScratchpad = {
@@ -1061,7 +1066,8 @@ test("capture context is rendered as an updatable conversation card", () => {
   assert.equal(first.kind, "context");
   assert.equal(app._state.capture.messages.length, 1);
   const html = app.renderCaptureBubbleBody(first);
-  assert.match(html, /capture\.context\.title/);
+  assert.doesNotMatch(html, /capture\.context\.title/);
+  assert.doesNotMatch(html, /tf-capture-message-card/);
   assert.match(html, /RAG capture title/);
   assert.match(html, /Context summary/);
 
@@ -1072,7 +1078,7 @@ test("capture context is rendered as an updatable conversation card", () => {
   assert.match(app.renderCaptureBubbleBody(updated), /Updated title/);
 });
 
-test("capture context card can render a pending placeholder and is moved to the latest turn", () => {
+test("capture context text can render a pending placeholder and is moved to the latest turn", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.messages = [
@@ -1101,7 +1107,8 @@ test("capture context card can render a pending placeholder and is moved to the 
   assert.equal(app._state.capture.messages.length, 2);
   assert.match(resolvedHTML, /Updated title/);
   assert.match(resolvedHTML, /Updated summary/);
-  assert.doesNotMatch(resolvedHTML, /Updated body draft should stay out of the conversation card/);
+  assert.match(resolvedHTML, /Updated body draft should stay out of the conversation card/);
+  assert.doesNotMatch(resolvedHTML, /tf-capture-context-card/);
 
   app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
   app._state.capture.activeScratchpad.session_context = {
@@ -1113,21 +1120,30 @@ test("capture context card can render a pending placeholder and is moved to the 
   assert.equal(app._state.capture.messages[app._state.capture.messages.length - 2].id, "u2");
 });
 
-test("archive preview is rendered as a conversation card with a stored snapshot", () => {
+test("archive preview is rendered as plain conversation text with a stored snapshot", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.archivePreview = {
     title: "Preview title",
-    strategy: "new",
+    strategy: "update_thought",
+    thought_id: "thought-target",
     tags: ["capture"],
     body: "Preview body",
+    diff: {
+      before: "Old body",
+      after: "Preview body",
+      changed_fields: ["body"],
+    },
   };
   const message = app.upsertArchivePreviewMessage();
   assert.equal(message.kind, "archive_preview");
   const html = app.renderCaptureBubbleBody(message);
-  assert.match(html, /capture\.archive\.preview_title/);
+  assert.doesNotMatch(html, /capture\.archive\.preview_title/);
+  assert.doesNotMatch(html, /tf-capture-preview-card/);
   assert.match(html, /Preview title/);
   assert.match(html, /Preview body/);
+  assert.match(html, /thought-target/);
+  assert.match(html, /Old body/);
 
   app._state.capture.archivePreview = null;
   assert.match(app.renderCaptureBubbleBody(message), /Preview title/);

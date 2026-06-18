@@ -407,7 +407,11 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 		return []models.Thought{}, nil
 	}
 	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	thoughts := []models.Thought{}
+	type listedThought struct {
+		thought models.Thought
+		modTime time.Time
+	}
+	listed := []listedThought{}
 	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -420,23 +424,34 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 		if err != nil {
 			return err
 		}
-		thoughts = append(thoughts, thought)
+		var modTime time.Time
+		if info, infoErr := entry.Info(); infoErr == nil {
+			modTime = info.ModTime()
+		}
+		listed = append(listed, listedThought{thought: thought, modTime: modTime})
 		return nil
 	})
 	if errors.Is(err, os.ErrNotExist) {
 		return []models.Thought{}, nil
 	}
-	sort.Slice(thoughts, func(i, j int) bool {
-		left := thoughts[i]
-		right := thoughts[j]
+	sort.Slice(listed, func(i, j int) bool {
+		left := listed[i].thought
+		right := listed[j].thought
 		if !left.UpdatedAt.Equal(right.UpdatedAt) {
 			return left.UpdatedAt.After(right.UpdatedAt)
 		}
 		if !left.CreatedAt.Equal(right.CreatedAt) {
 			return left.CreatedAt.After(right.CreatedAt)
 		}
+		if !listed[i].modTime.Equal(listed[j].modTime) {
+			return listed[i].modTime.After(listed[j].modTime)
+		}
 		return left.ID > right.ID
 	})
+	thoughts := make([]models.Thought, 0, len(listed))
+	for _, item := range listed {
+		thoughts = append(thoughts, item.thought)
+	}
 	return thoughts, err
 }
 

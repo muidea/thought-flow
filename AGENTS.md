@@ -17,7 +17,8 @@ Embedded web assets and browser-facing tests are in `internal/modules/applicatio
 - `make node-test`: run Node component tests.
 - `make browser-test`: run embedded UI browser smoke tests.
 - `make e2e-test`: run API and SSE end-to-end tests.
-- `make check`: run the full local validation matrix used by CI.
+- `make check`: run the local development validation set.
+- `make ci-check`: run the full remote validation matrix used by CI, including browser and e2e tests.
 
 Run locally with `make build` then `./thoughtflow`; the default UI is `http://127.0.0.1:8080/`.
 
@@ -29,7 +30,7 @@ For web code, keep plain JavaScript, CSS, HTML, and i18n files in the existing `
 
 ## Testing Guidelines
 
-Prefer focused unit tests for stores, parsers, services, and module behavior. Use Go table tests where they simplify cases. Run `make test` for backend changes, relevant Node targets for web changes, and `make check` before opening a PR. Browser or API behavior changes should include `*.browser.test.js` or `*.e2e.test.js` coverage when applicable.
+Prefer focused unit tests for stores, parsers, services, and module behavior. Use Go table tests where they simplify cases. Run `make test` for backend changes, relevant Node targets for web changes, and `make check` for daily local validation. Browser and API e2e suites are part of `make ci-check` and should run in remote CI before merge.
 
 ## Commit & Pull Request Guidelines
 

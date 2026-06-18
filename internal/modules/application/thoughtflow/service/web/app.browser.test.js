@@ -416,8 +416,8 @@ function playwrightAvailable() {
 // Launch Firefox via Playwright. Returns a { kind: "playwright",
 // page, close } object so connectPage can route to PlaywrightPage
 // instead of CDPPage. The firefox binary is downloaded by
-// `npx playwright install firefox` (see devDependency in
-// package.json).
+// A developer or CI host may provide Playwright externally. The repo root
+// intentionally does not carry package.json / package-lock.json.
 async function launchFirefox(viewport) {
   if (!playwrightAvailable()) {
     throw new Error("playwright npm package is not installed");
@@ -703,7 +703,11 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
     }
     assert.ok(renamed, "rename command should update the session context title");
-    await page.evaluate(() => document.querySelector("#capture-finish").click());
+    await page.evaluate(() => {
+      const input = document.querySelector("#capture-composer-input");
+      input.value = "commit";
+      document.querySelector("#capture-composer").requestSubmit();
+    });
     await page.waitForExpression(() => /Archive preview|归档预览/.test(document.querySelector("#capture-conversation")?.textContent || "")
       && /Renamed in browser/.test(document.querySelector("#capture-conversation")?.textContent || ""));
     const rendered = await page.evaluate(() => {
