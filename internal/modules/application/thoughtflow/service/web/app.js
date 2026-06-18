@@ -2931,7 +2931,7 @@ const CAPTURE_COMMANDS = [
     match: (text) => {
       const en = /^(?:move to topic|attach to topic|add to topic)\s+(.+)$/i.exec(text);
       if (en) return { kind: "move_topic", topicRef: en[1].trim() };
-      const cn = /^(?:归到?|放到?|加入)\s*(.+?)(?:专题)?$/.exec(text);
+      const cn = /^(?:归到|归入|放到?|加入)\s*(.+?)(?:专题)?$/.exec(text);
       if (cn) return { kind: "move_topic", topicRef: cn[1].trim() };
       return null;
     },
@@ -2944,12 +2944,11 @@ const CAPTURE_COMMANDS = [
   },
   {
     name: "commit",
-    // "归档" / "保存" / "提交" / "落档" / "commit" / "save" — single
-    // whole-line match. Anchored with ^...$ so a sentence like
-    // "我想 commit 一段代码" is NOT misclassified as the commit
-    // command; it falls through to the text body and is appended to
-    // the scratchpad as a normal user turn.
-    match: (text) => (/^(归档|保存|提交|落档|commit|save|存档)\s*$/i.test(text)
+    // Explicit archive commands, including short commands ("归档")
+    // and clear natural-language requests ("将上述内容进行归档").
+    // Keep this anchored so discussion such as "我想讨论归档策略" is
+    // still captured as normal user content.
+    match: (text) => (isCaptureCommitCommand(text)
       ? { kind: "commit" }
       : null),
   },
@@ -2963,6 +2962,16 @@ const CAPTURE_COMMANDS = [
       : null),
   },
 ];
+
+function isCaptureCommitCommand(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (/^(归档|保存|提交|落档|commit|save|存档)\s*$/i.test(value)) return true;
+  if (/^(?:请|麻烦)?(?:将|把)(?:上述|以上|当前|这些|全部|本轮|前面)?(?:内容|信息|结果|会话|记录|材料|整理结果)?(?:进行)?(?:归档|保存|提交|存档|落档)(?:为|成)?(?:\s*(?:thought|Thought|笔记|记录))?[。.!！]?\s*$/.test(value)) return true;
+  if (/^(?:请|麻烦)?(?:归档|保存|提交|存档|落档)(?:上述|以上|当前|这些|全部|本轮|前面)?(?:内容|信息|结果|会话|记录|材料|整理结果)(?:为|成)?(?:\s*(?:thought|Thought|笔记|记录))?[。.!！]?\s*$/.test(value)) return true;
+  if (/^(?:archive|save|commit)\s+(?:this|current|the current)\s+(?:content|session|result|conversation|notes?)(?:\s+as\s+(?:thought|note|record))?\s*[.!]?\s*$/i.test(value)) return true;
+  return false;
+}
 
 function parseCaptureCommand(text) {
   for (const entry of CAPTURE_COMMANDS) {

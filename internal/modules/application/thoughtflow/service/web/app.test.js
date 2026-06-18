@@ -814,6 +814,12 @@ test("parseCaptureCommand matches known intents and ignores noise", () => {
     topicRef: "research",
   });
   assert.deepEqual(parse("refine again"), { kind: "refine_again" });
+  assert.deepEqual(parse("将上述内容进行归档"), { kind: "commit" });
+  assert.deepEqual(parse("请把当前会话保存为 Thought"), { kind: "commit" });
+  assert.deepEqual(parse("归档当前整理结果"), { kind: "commit" });
+  assert.deepEqual(parse("archive current session as thought"), { kind: "commit" });
+  assert.equal(app.parseCaptureCommand("我想讨论归档策略"), null);
+  assert.equal(app.parseCaptureCommand("我想 commit 一段代码"), null);
   assert.equal(app.parseCaptureCommand("just chatting"), null);
 });
 
