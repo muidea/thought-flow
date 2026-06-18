@@ -1,21 +1,19 @@
 package ai
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
 	"strings"
+
+	"thoughtflow/assets/prompts"
 )
 
 type promptFiles struct {
 	captureContextSystemPath string
 }
 
-//go:embed prompts/capture_context_system.md
-var defaultCaptureContextSystemPrompt string
-
 func (p *OpenAICompatibleProvider) captureContextSystemPrompt() (string, error) {
-	return loadPromptFileOrDefault(p.prompts.captureContextSystemPath, defaultCaptureContextSystemPrompt)
+	return loadPromptFileOrDefault(p.prompts.captureContextSystemPath, prompts.CaptureContextSystem)
 }
 
 func loadPromptFileOrDefault(path string, fallback string) (string, error) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	mcevent "github.com/muidea/magicCommon/event"
 	"github.com/muidea/magicCommon/task"
 
 	"thoughtflow/internal/pkg/ai"
@@ -107,54 +108,42 @@ func TestScratchpadServiceAppendMessageAccumulatesContent(t *testing.T) {
 	}
 }
 
-func TestScratchpadServiceAppendMessageRefreshesSessionContext(t *testing.T) {
+func TestScratchpadServiceAppendMessageClearsSessionContextUntilProviderReturns(t *testing.T) {
 	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "old title",
+			CandidateSummary: "old summary",
+			CandidateBody:    "old body",
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
 	svc := NewScratchpadService(store)
 
-	if _, err := svc.AppendMessage("s1", "user", "RAG pipeline design #ai https://example.com"); err != nil {
-		t.Fatalf("AppendMessage first: %v", err)
-	}
-	if _, err := svc.AppendMessage("s1", "user", "但是 chunk strategy 还有冲突？"); err != nil {
-		t.Fatalf("AppendMessage second: %v", err)
+	if _, err := svc.AppendMessage("s1", "user", "我需要整理一个主题方向"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
 	}
 	sp, err := store.Get("s1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	ctx := sp.SessionContext
-	if ctx.CandidateTitle != "RAG pipeline design #ai https://example.com" {
-		t.Fatalf("CandidateTitle = %q", ctx.CandidateTitle)
+	if sp.Content != "我需要整理一个主题方向" {
+		t.Fatalf("Content = %q", sp.Content)
 	}
-	if !strings.Contains(ctx.CandidateBody, "chunk strategy") {
-		t.Fatalf("CandidateBody = %q", ctx.CandidateBody)
-	}
-	if len(ctx.CandidateTags) != 1 || ctx.CandidateTags[0] != "ai" {
-		t.Fatalf("CandidateTags = %v", ctx.CandidateTags)
-	}
-	if len(ctx.SourceLinks) != 1 || ctx.SourceLinks[0] != "https://example.com" {
-		t.Fatalf("SourceLinks = %v", ctx.SourceLinks)
-	}
-	if len(ctx.OpenQuestions) != 1 {
-		t.Fatalf("OpenQuestions = %v", ctx.OpenQuestions)
-	}
-	if len(ctx.Conflicts) != 1 {
-		t.Fatalf("Conflicts = %v", ctx.Conflicts)
-	}
-	if ctx.ArchiveIntent != scratchpad.ArchiveIntentNone {
-		t.Fatalf("ArchiveIntent = %q", ctx.ArchiveIntent)
-	}
-	if ctx.ArchiveStrategy != scratchpad.ArchiveStrategyNew {
-		t.Fatalf("ArchiveStrategy = %q", ctx.ArchiveStrategy)
+	if hasSessionContext(sp.SessionContext) {
+		t.Fatalf("SessionContext should be empty while waiting for provider, got %+v", sp.SessionContext)
 	}
 }
 
-func TestScratchpadServiceAppendMessageRefreshesExistingLLMContext(t *testing.T) {
+func TestScratchpadServiceAppendMessageClearsExistingLLMContext(t *testing.T) {
 	store := newMemoryScratchpad()
 	if _, err := store.Save(scratchpad.Scratchpad{
 		SessionID: "s1",
-		Content:   "第一轮：我需要开发一个 web 采集程序。",
+		Content:   "第一轮：我需要整理一个主题方向。",
 		SessionContext: scratchpad.SessionContext{
-			CandidateBody:    "LLM 第一轮整理：开发一个 web 采集程序。",
+			CandidateBody:    "LLM 第一轮整理：主题方向。",
 			CandidateSummary: "LLM 第一轮摘要",
 		},
 	}); err != nil {
@@ -162,18 +151,15 @@ func TestScratchpadServiceAppendMessageRefreshesExistingLLMContext(t *testing.T)
 	}
 	svc := NewScratchpadService(store)
 
-	if _, err := svc.AppendMessage("s1", "user", "第二轮：目标网站需要登录，并且要定时每天采集。"); err != nil {
+	if _, err := svc.AppendMessage("s1", "user", "第二轮：补充背景、目标和预期产出。"); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	sp, err := store.Get("s1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !strings.Contains(sp.SessionContext.CandidateBody, "第二轮：目标网站需要登录") {
-		t.Fatalf("CandidateBody did not include latest turn: %q", sp.SessionContext.CandidateBody)
-	}
-	if !strings.Contains(sp.SessionContext.CandidateSummary, "第二轮：目标网站需要登录") {
-		t.Fatalf("CandidateSummary did not include latest turn: %q", sp.SessionContext.CandidateSummary)
+	if hasSessionContext(sp.SessionContext) {
+		t.Fatalf("SessionContext should be cleared while waiting for provider, got %+v", sp.SessionContext)
 	}
 }
 
@@ -217,6 +203,63 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	}
 	if !sameStringSet(sp.SessionContext.CandidateTags, []string{"capture", "llm"}) {
 		t.Fatalf("CandidateTags = %+v", sp.SessionContext.CandidateTags)
+	}
+}
+
+func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "old title",
+			CandidateSummary: "old summary",
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateTitle:   "new title",
+			CandidateSummary: "new summary",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	background := &queuedBackground{}
+	hub := &recordingEventHub{}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(background),
+		WithEventHub(hub),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider should wait for background execution, calls = %d", provider.calls)
+	}
+	if len(hub.events) != 0 {
+		t.Fatalf("context update event should not be published before provider completes, got %d", len(hub.events))
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if hasSessionContext(sp.SessionContext) {
+		t.Fatalf("SessionContext should stay empty while pending, got %+v", sp.SessionContext)
+	}
+
+	background.Run()
+	sp, err = store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get after provider: %v", err)
+	}
+	if sp.SessionContext.CandidateTitle != "new title" || sp.SessionContext.CandidateSummary != "new summary" {
+		t.Fatalf("SessionContext = %+v", sp.SessionContext)
+	}
+	if len(hub.events) != 1 || hub.events[0].ID() != models.EventScratchpadContextUpdated {
+		t.Fatalf("events = %+v", hub.events)
 	}
 }
 
@@ -388,6 +431,59 @@ func (syncBackground) Timer(context.Context, task.Task, time.Duration, time.Dura
 }
 
 func (syncBackground) Shutdown(context.Context) bool { return true }
+
+type queuedBackground struct {
+	fn func()
+}
+
+func (q *queuedBackground) AsyncFunction(fn func()) error {
+	q.fn = fn
+	return nil
+}
+
+func (q *queuedBackground) Run() {
+	if q.fn != nil {
+		q.fn()
+	}
+}
+
+func (q *queuedBackground) AsyncTask(task.Task) error { return nil }
+
+func (q *queuedBackground) SyncTask(task.Task) error { return nil }
+
+func (q *queuedBackground) SyncTaskWithTimeOut(task.Task, time.Duration) error { return nil }
+
+func (q *queuedBackground) SyncFunction(fn func()) error {
+	fn()
+	return nil
+}
+
+func (q *queuedBackground) SyncFunctionWithTimeOut(fn func(), _ time.Duration) error {
+	fn()
+	return nil
+}
+
+func (q *queuedBackground) Timer(context.Context, task.Task, time.Duration, time.Duration) error {
+	return nil
+}
+
+func (q *queuedBackground) Shutdown(context.Context) bool { return true }
+
+type recordingEventHub struct {
+	events []mcevent.Event
+}
+
+func (h *recordingEventHub) Subscribe(string, mcevent.Observer) {}
+
+func (h *recordingEventHub) Unsubscribe(string, mcevent.Observer) {}
+
+func (h *recordingEventHub) Post(ev mcevent.Event) {
+	h.events = append(h.events, ev)
+}
+
+func (h *recordingEventHub) Send(mcevent.Event) mcevent.Result { return nil }
+
+func (h *recordingEventHub) Terminate(context.Context) {}
 
 type stubCaptureContextProvider struct {
 	calls   int
