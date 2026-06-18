@@ -148,6 +148,35 @@ func TestScratchpadServiceAppendMessageRefreshesSessionContext(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceAppendMessageRefreshesExistingLLMContext(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "第一轮：我需要开发一个 web 采集程序。",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody:    "LLM 第一轮整理：开发一个 web 采集程序。",
+			CandidateSummary: "LLM 第一轮摘要",
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	svc := NewScratchpadService(store)
+
+	if _, err := svc.AppendMessage("s1", "user", "第二轮：目标网站需要登录，并且要定时每天采集。"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(sp.SessionContext.CandidateBody, "第二轮：目标网站需要登录") {
+		t.Fatalf("CandidateBody did not include latest turn: %q", sp.SessionContext.CandidateBody)
+	}
+	if !strings.Contains(sp.SessionContext.CandidateSummary, "第二轮：目标网站需要登录") {
+		t.Fatalf("CandidateSummary did not include latest turn: %q", sp.SessionContext.CandidateSummary)
+	}
+}
+
 func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T) {
 	store := newMemoryScratchpad()
 	provider := &stubCaptureContextProvider{

@@ -1261,15 +1261,11 @@ func mergeAutoSessionContext(sp scratchpad.Scratchpad, latestUserText string) sc
 	ctx := sp.SessionContext
 	content := strings.TrimSpace(sp.Content)
 	latest := strings.TrimSpace(latestUserText)
-	if ctx.CandidateBody == "" || strings.Contains(ctx.CandidateBody, latest) || len(content) > len(ctx.CandidateBody) {
-		ctx.CandidateBody = content
-	}
+	ctx.CandidateBody = content
 	if ctx.CandidateTitle == "" {
 		ctx.CandidateTitle = deriveCandidateTitle(content)
 	}
-	if ctx.CandidateSummary == "" || strings.Contains(ctx.CandidateSummary, "…") {
-		ctx.CandidateSummary = summarizeText(content, 180)
-	}
+	ctx.CandidateSummary = summarizeText(content, 180)
 	if ctx.Topic == "" {
 		ctx.Topic = deriveTopic(ctx.CandidateTitle, content)
 	}

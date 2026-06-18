@@ -399,7 +399,7 @@ func (p *LocalRefineProvider) BuildCaptureContext(ctx context.Context, req Captu
 		Conflicts:         normalizeList(append(req.Existing.Conflicts, localConflicts(text)...)),
 		CandidateTitle:    firstNonEmpty(req.Existing.CandidateTitle, title),
 		CandidateTags:     normalizeList(append(req.Existing.CandidateTags, inferTags(text)...)),
-		CandidateSummary:  firstNonEmpty(req.Existing.CandidateSummary, summarize(text)),
+		CandidateSummary:  summarize(text),
 		CandidateBody:     text,
 		SourceLinks:       normalizeList(append(req.Existing.SourceLinks, localURLs(text)...)),
 		RelatedThoughtIDs: normalizeList(req.Existing.RelatedThoughtIDs),

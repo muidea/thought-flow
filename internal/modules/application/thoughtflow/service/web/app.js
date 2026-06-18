@@ -2551,8 +2551,7 @@ function captureConversationTracksThought(thoughtId) {
   return (state.capture.messages || []).some((msg) => msg.thoughtId === id);
 }
 
-async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650 } = {}) {
-  const sessionId = state.capture.sessionId;
+async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650, sessionId = state.capture.sessionId, messageKey = "", expectedMessageCount = 0 } = {}) {
   if (!sessionId) return;
   for (let attempt = 0; attempt < attempts; attempt++) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -2562,10 +2561,11 @@ async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650 } = 
     } catch (_) {
       return;
     }
-    if (!detail || detail.session_id !== sessionId) return;
+    if (!detail || detail.session_id !== sessionId || state.capture.sessionId !== sessionId) return;
+    if (expectedMessageCount > 0 && Array.isArray(detail.messages) && detail.messages.length !== expectedMessageCount) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
-    upsertCaptureContextMessage();
+    upsertCaptureContextMessage({ scratchpad: detail, sessionId, messageKey });
     upsertArchivePreviewMessage();
   }
 }
@@ -2615,6 +2615,7 @@ async function stageScratchpadTurn(text) {
 }
 
 async function appendSessionMessage(text) {
+  const turnMessageKey = latestCaptureUserTurnKey();
   let scratchpad;
   if (!state.capture.activeScratchpad || !state.capture.activeScratchpad.session_id) {
     const headers = state.capture.sessionId ? { "X-Session-Id": state.capture.sessionId } : {};
@@ -2636,9 +2637,14 @@ async function appendSessionMessage(text) {
   state.capture.archivePreview = scratchpad.archive_preview || null;
   const linkedThoughtId = scratchpad.committed_thought_id || "";
   state.capture.activeThoughtId = linkedThoughtId;
-  upsertCaptureContextMessage({ scratchpad, pending: true });
+  const expectedMessageCount = Array.isArray(scratchpad.messages) ? scratchpad.messages.length : 0;
+  upsertCaptureContextMessage({ scratchpad, pending: true, messageKey: turnMessageKey });
   upsertArchivePreviewMessage();
-  refreshActiveScratchpadContext().catch(() => {});
+  refreshActiveScratchpadContext({
+    sessionId: scratchpad.session_id,
+    messageKey: turnMessageKey,
+    expectedMessageCount,
+  }).catch(() => {});
   // When the scratchpad transitions from "no committed thought" to
   // "anchored to thought-X" (e.g. reopening a previously-archived
   // session and then dropping another message, or the legacy
