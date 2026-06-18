@@ -1961,17 +1961,17 @@ function renderCaptureBubbleBody(msg) {
         && state.capture.activeSnapshot.thought.id === msg.thoughtId
         ? state.capture.activeSnapshot
         : null);
-    if (snap) return renderPlainMessage(thoughtSnapshotPlainText(snap, msg));
+    if (snap) return renderMarkdownMessage(thoughtSnapshotPlainText(snap, msg));
   }
-  if (msg.kind === "context") return renderPlainMessage(captureContextPlainText(msg));
-  if (msg.kind === "archive_preview") return renderPlainMessage(archivePreviewPlainText(msg));
+  if (msg.kind === "context") return renderMarkdownMessage(captureContextPlainText(msg));
+  if (msg.kind === "archive_preview") return renderMarkdownMessage(archivePreviewPlainText(msg));
   if (msg.html) return msg.html;
-  if (msg.text) return renderPlainMessage(msg.text);
+  if (msg.text) return renderMarkdownMessage(msg.text);
   return "";
 }
 
-function renderPlainMessage(text) {
-  return `<div class="tf-msg-body">${escapeHTML(text || "")}</div>`;
+function renderMarkdownMessage(text) {
+  return `<div class="tf-msg-body tf-msg-body-markdown markdown-rendered">${renderMarkdown(text || "")}</div>`;
 }
 
 function thoughtSnapshotPlainText(snapshot, msg = {}) {
@@ -1979,20 +1979,31 @@ function thoughtSnapshotPlainText(snapshot, msg = {}) {
   const content = (snapshot && snapshot.content) || {};
   const original = content.original || content.Original || "";
   const fallback = msg.text || thought.display_title || thought.user_title || thought.extracted_title || thought.id || "";
-  return compactPlainTextParts([original])[0] || fallback;
+  const builder = createConversationTextBuilder();
+  builder.addText(original);
+  builder.addSection("capture.conversation.summary", [thought.summary]);
+  builder.addSection("capture.conversation.key_points", thought.key_points, { limit: 5 });
+  builder.addSection("capture.conversation.followups", Array.isArray(thought.url_followups)
+    ? thought.url_followups.map((item) => [item.title, item.url].filter(Boolean).join(" "))
+    : [], { limit: 3 });
+  builder.addSection("capture.conversation.expansion_plan", [thought.expansion_plan]);
+  return builder.text() || fallback;
 }
 
 function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
-  const primary = compactPlainTextParts([
-    ctx.candidate_body,
-    ctx.candidate_summary,
-    ctx.candidate_title,
-    ctx.topic,
-  ]);
-  return primary[0] || t("capture.context.empty");
+  const builder = createConversationTextBuilder();
+  builder.addText(ctx.candidate_body);
+  builder.addSection("capture.conversation.summary", [ctx.candidate_summary]);
+  builder.addSection("capture.conversation.goal", [ctx.goal]);
+  builder.addSection("capture.conversation.title", [ctx.candidate_title]);
+  builder.addSection("capture.conversation.facts", ctx.confirmed_facts, { limit: 5 });
+  builder.addSection("capture.conversation.questions", ctx.open_questions, { limit: 5 });
+  builder.addSection("capture.conversation.conflicts", ctx.conflicts, { limit: 3 });
+  builder.addSection("capture.conversation.sources", ctx.source_links, { limit: 3 });
+  return builder.text() || t("capture.context.empty");
 }
 
 function archivePreviewPlainText(msg = {}) {
@@ -2035,6 +2046,48 @@ function compactPlainTextParts(parts) {
     deduped.push(item);
   }
   return deduped;
+}
+
+function createConversationTextBuilder() {
+  const output = [];
+  const seen = [];
+  const includesSeen = (item) => {
+    const key = normalizePlainTextForCompare(item);
+    if (!key) return true;
+    return seen.some((existing) => {
+      const existingKey = normalizePlainTextForCompare(existing);
+      return existingKey === key || existingKey.includes(key);
+    });
+  };
+  const remember = (items) => {
+    for (const item of items) seen.push(item);
+  };
+  return {
+    addText(value) {
+      const items = compactPlainTextParts([value]).filter((item) => !includesSeen(item));
+      if (!items.length) return;
+      remember(items);
+      output.push(...items);
+    },
+    addSection(labelKey, values, options = {}) {
+      const limit = Number.isFinite(options.limit) ? options.limit : 4;
+      const items = compactPlainTextParts(values)
+        .filter((item) => !includesSeen(item))
+        .slice(0, Math.max(1, limit));
+      if (!items.length) return;
+      remember(items);
+      output.push(formatConversationSection(labelKey, items));
+    },
+    text() {
+      return output.join("\n\n");
+    },
+  };
+}
+
+function formatConversationSection(labelKey, items) {
+  const label = t(labelKey);
+  if (items.length === 1) return `**${label}**\n\n${items[0]}`;
+  return `**${label}**\n\n${items.map((item) => `- ${item}`).join("\n")}`;
 }
 
 function splitPlainTextPart(item) {

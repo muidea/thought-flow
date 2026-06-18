@@ -1668,6 +1668,18 @@ textarea:focus-visible {
   white-space: pre-wrap;
 }
 
+.tf-msg-body-markdown {
+  white-space: normal;
+}
+
+.tf-msg-body-markdown > :first-child {
+  margin-top: 0;
+}
+
+.tf-msg-body-markdown > :last-child {
+  margin-bottom: 0;
+}
+
 .tf-msg-meta {
   font-size: 0.75rem;
   color: var(--tf-color-text-tertiary, #888);

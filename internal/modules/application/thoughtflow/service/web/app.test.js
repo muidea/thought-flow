@@ -1009,7 +1009,7 @@ test("renderCaptureThoughtCardFromSnapshot surfaces partial-failure errors", () 
   assert.match(html, /thoughts\.expansion_failed/);
 });
 
-test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text from the active snapshot", () => {
+test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as markdown from the active snapshot", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   // Set up an active thought + a freshly refined snapshot.
   app._state.capture.activeThoughtId = "t1";
@@ -1037,9 +1037,12 @@ test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text f
     },
   };
   const out = app.renderCaptureBubbleBody(message);
-  assert.match(out, /Raw user capture/);
-  assert.doesNotMatch(out, /Refine succeeded/);
-  assert.doesNotMatch(out, /Question one/);
+  assert.match(out, /<p>Raw user capture<\/p>/);
+  assert.match(out, /<strong>capture\.conversation\.summary<\/strong>/);
+  assert.match(out, /<p>Refine succeeded\.<\/p>/);
+  assert.match(out, /<strong>capture\.conversation\.key_points<\/strong>/);
+  assert.match(out, /<li>Question one\?<\/li>/);
+  assert.match(out, /<li>Question two\?<\/li>/);
   assert.doesNotMatch(out, /RAG, LLM/);
   assert.doesNotMatch(out, /tf-suggestion-card/);
   assert.doesNotMatch(out, /tf-capture-status-row/);
@@ -1048,13 +1051,14 @@ test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text f
 
 test("renderCaptureBubbleBody falls back to stored html/text for non-bound messages", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
-  const out = app.renderCaptureBubbleBody({ role: "system", text: "hello" });
-  assert.match(out, /<div class="tf-msg-body">hello<\/div>/);
+  const out = app.renderCaptureBubbleBody({ role: "system", text: "**hello**" });
+  assert.match(out, /<strong>hello<\/strong>/);
+  assert.match(out, /tf-msg-body-markdown/);
   const htmlOut = app.renderCaptureBubbleBody({ role: "ai", html: "<b>static</b>" });
   assert.match(htmlOut, /<b>static<\/b>/);
 });
 
-test("capture context is rendered as plain conversation text", () => {
+test("capture context is rendered as markdown conversation text", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.activeScratchpad = {
@@ -1071,15 +1075,17 @@ test("capture context is rendered as plain conversation text", () => {
   const html = app.renderCaptureBubbleBody(first);
   assert.doesNotMatch(html, /capture\.context\.title/);
   assert.doesNotMatch(html, /tf-capture-message-card/);
-  assert.match(html, /Context summary/);
-  assert.doesNotMatch(html, /RAG capture title/);
+  assert.match(html, /<strong>capture\.conversation\.summary<\/strong>/);
+  assert.match(html, /<p>Context summary<\/p>/);
+  assert.match(html, /<strong>capture\.conversation\.title<\/strong>/);
+  assert.match(html, /<p>RAG capture title<\/p>/);
 
   app._state.capture.activeScratchpad.session_context.candidate_title = "Updated title";
   const updated = app.upsertCaptureContextMessage();
   assert.equal(updated.id, first.id);
   assert.equal(app._state.capture.messages.length, 1);
-  assert.match(app.renderCaptureBubbleBody(updated), /Context summary/);
-  assert.doesNotMatch(app.renderCaptureBubbleBody(updated), /Updated title/);
+  assert.match(app.renderCaptureBubbleBody(updated), /<p>Context summary<\/p>/);
+  assert.match(app.renderCaptureBubbleBody(updated), /<p>Updated title<\/p>/);
 });
 
 test("capture context text can render a pending placeholder and is moved to the latest turn", () => {
@@ -1110,8 +1116,10 @@ test("capture context text can render a pending placeholder and is moved to the 
   assert.equal(resolved.id, pending.id);
   assert.equal(app._state.capture.messages.length, 2);
   assert.match(resolvedHTML, /Updated body draft should stay out of the conversation card/);
-  assert.doesNotMatch(resolvedHTML, /Updated title/);
-  assert.doesNotMatch(resolvedHTML, /Updated summary/);
+  assert.match(resolvedHTML, /<strong>capture\.conversation\.summary<\/strong>/);
+  assert.match(resolvedHTML, /<p>Updated summary<\/p>/);
+  assert.match(resolvedHTML, /<strong>capture\.conversation\.title<\/strong>/);
+  assert.match(resolvedHTML, /<p>Updated title<\/p>/);
   assert.doesNotMatch(resolvedHTML, /tf-capture-context-card/);
 
   app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
@@ -1147,13 +1155,40 @@ test("capture context text drops duplicate and low-signal LLM fields", () => {
   const html = app.renderCaptureBubbleBody(message);
 
   assert.equal((html.match(/我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。/g) || []).length, 1);
-  assert.doesNotMatch(html, /使用什么编程语言/);
-  assert.doesNotMatch(html, /数据存储方式/);
+  assert.match(html, /<strong>capture\.conversation\.questions<\/strong>/);
+  assert.match(html, /<li>使用什么编程语言/);
+  assert.match(html, /数据存储方式/);
   assert.doesNotMatch(html, /持续收集并澄清当前主题/);
   assert.doesNotMatch(html, /web采集, 数据采集, 爬虫开发/);
 });
 
-test("archive preview is rendered as plain conversation text with a stored snapshot", () => {
+test("capture context text keeps richer convergence details beyond the original input", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_body: "我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。",
+      candidate_summary: "目标是设计一个可归档的 Web 数据采集方案，重点明确目标站点、字段范围、调度频率和反爬处理边界。",
+      confirmed_facts: ["需要自动抓取目标网站数据", "产出需要能用于后续归档或继续讨论"],
+      open_questions: ["目标网站 URL 是什么？", "需要采集哪些字段？", "采集频率是多少？"],
+      candidate_tags: ["web采集", "数据采集"],
+    },
+  };
+  const message = app.upsertCaptureContextMessage();
+  const html = app.renderCaptureBubbleBody(message);
+
+  assert.match(html, /我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。/);
+  assert.match(html, /<strong>capture\.conversation\.summary<\/strong>/);
+  assert.match(html, /目标是设计一个可归档的 Web 数据采集方案/);
+  assert.match(html, /<strong>capture\.conversation\.facts<\/strong>/);
+  assert.match(html, /<li>需要自动抓取目标网站数据<\/li>/);
+  assert.match(html, /<strong>capture\.conversation\.questions<\/strong>/);
+  assert.match(html, /<li>目标网站 URL 是什么？<\/li>/);
+  assert.doesNotMatch(html, /web采集, 数据采集/);
+});
+
+test("archive preview is rendered as markdown conversation text with a stored snapshot", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.archivePreview = {
