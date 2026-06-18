@@ -1977,56 +1977,22 @@ function renderPlainMessage(text) {
 function thoughtSnapshotPlainText(snapshot, msg = {}) {
   const thought = (snapshot && snapshot.thought) || {};
   const content = (snapshot && snapshot.content) || {};
-  const parts = [];
-  const fallback = msg.text || "";
   const original = content.original || content.Original || "";
-  if (original) parts.push(original);
-  if (thought.summary) parts.push(thought.summary);
-  if (Array.isArray(thought.key_points) && thought.key_points.length) {
-    parts.push(thought.key_points.filter(Boolean).join("\n"));
-  }
-  if (Array.isArray(thought.ai_tags) && thought.ai_tags.length) {
-    parts.push(thought.ai_tags.filter(Boolean).join(", "));
-  }
-  if (Array.isArray(thought.related_thought_ids) && thought.related_thought_ids.length) {
-    parts.push(thought.related_thought_ids.filter(Boolean).join("\n"));
-  }
-  if (Array.isArray(thought.suggested_topic_ids) && thought.suggested_topic_ids.length) {
-    parts.push(thought.suggested_topic_ids.filter(Boolean).join("\n"));
-  }
-  if (Array.isArray(thought.url_followups) && thought.url_followups.length) {
-    parts.push(thought.url_followups
-      .map((item) => [item.title, item.url].filter(Boolean).join(" "))
-      .filter(Boolean)
-      .join("\n"));
-  }
-  if (thought.expansion_plan) parts.push(thought.expansion_plan);
-  if (parts.length === 0) {
-    const title = thought.display_title || thought.user_title || thought.extracted_title || thought.id || "";
-    if (title) parts.push(title);
-  }
-  return parts.filter(Boolean).join("\n\n") || fallback;
+  const fallback = msg.text || thought.display_title || thought.user_title || thought.extracted_title || thought.id || "";
+  return compactPlainTextParts([original])[0] || fallback;
 }
 
 function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
-  const parts = [
+  const primary = compactPlainTextParts([
     ctx.candidate_body,
     ctx.candidate_summary,
     ctx.candidate_title,
     ctx.topic,
-    ctx.goal,
-    ...(Array.isArray(ctx.confirmed_facts) ? ctx.confirmed_facts : []),
-    ...(Array.isArray(ctx.open_questions) ? ctx.open_questions : []),
-    ...(Array.isArray(ctx.conflicts) ? ctx.conflicts : []),
-    ...(Array.isArray(ctx.source_links) ? ctx.source_links : []),
-    ...(Array.isArray(ctx.related_thought_ids) ? ctx.related_thought_ids : []),
-    ...(Array.isArray(ctx.suggested_topic_ids) ? ctx.suggested_topic_ids : []),
-    ...(Array.isArray(ctx.candidate_tags) && ctx.candidate_tags.length ? [ctx.candidate_tags.join(", ")] : []),
-  ];
-  return parts.filter((item) => typeof item === "string" && item.trim()).join("\n\n") || t("capture.context.empty");
+  ]);
+  return primary[0] || t("capture.context.empty");
 }
 
 function archivePreviewPlainText(msg = {}) {
@@ -2042,7 +2008,60 @@ function archivePreviewPlainText(msg = {}) {
     if (preview.diff.before) parts.push(preview.diff.before);
     if (preview.diff.after) parts.push(preview.diff.after);
   }
-  return parts.filter((item) => typeof item === "string" && item.trim()).join("\n\n") || t("capture.archive.preview_empty");
+  return compactPlainTextParts(parts).join("\n\n") || t("capture.archive.preview_empty");
+}
+
+function compactPlainTextParts(parts) {
+  const cleaned = (parts || [])
+    .flatMap((item) => splitPlainTextPart(item))
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => !isLowSignalCaptureText(item));
+  const deduped = [];
+  for (const item of cleaned) {
+    const key = normalizePlainTextForCompare(item);
+    if (!key) continue;
+    const coveredByExisting = deduped.some((existing) => {
+      const existingKey = normalizePlainTextForCompare(existing);
+      return existingKey === key || (existingKey.length > key.length && existingKey.includes(key));
+    });
+    if (coveredByExisting) continue;
+    for (let index = deduped.length - 1; index >= 0; index--) {
+      const existingKey = normalizePlainTextForCompare(deduped[index]);
+      if (key.length > existingKey.length && key.includes(existingKey)) {
+        deduped.splice(index, 1);
+      }
+    }
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function splitPlainTextPart(item) {
+  if (Array.isArray(item)) return item.flatMap((entry) => splitPlainTextPart(entry));
+  if (typeof item !== "string") return [];
+  return item
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function normalizePlainTextForCompare(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[\s，。、“”‘’：:；;,.!?！？()[\]{}<>《》【】"'`~\-_*#]+/g, "");
+}
+
+function isLowSignalCaptureText(text) {
+  const normalized = normalizePlainTextForCompare(text);
+  if (!normalized) return true;
+  const generic = new Set([
+    "持续收集并澄清当前主题",
+    "持续收集澄清当前主题",
+    "继续收集并澄清当前主题",
+    "继续收集澄清当前主题",
+  ]);
+  return generic.has(normalized);
 }
 
 function renderCaptureConversation() {
@@ -2102,25 +2121,6 @@ function renderCaptureContextRows(ctx, options = {}) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.conflicts"))}</span><ul>${ctx.conflicts.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
   }
   return rows;
-}
-
-function renderCaptureContextCard(message) {
-  if (message?.pending) {
-    return `<article class="tf-capture-message-card tf-capture-context-card">
-      <header>${escapeHTML(t("capture.context.title"))}</header>
-      <div class="tf-capture-context">${escapeHTML(t("capture.context.pending"))}</div>
-    </article>`;
-  }
-  const sp = state.capture.activeScratchpad || {};
-  const ctx = sp.session_context || sp.SessionContext || {};
-  const rows = renderCaptureContextRows(ctx);
-  if (rows.length === 0 && ctx.candidate_body) {
-    rows.push(`<div><span>${escapeHTML(t("capture.context.body"))}</span><p>${escapeHTML(ctx.candidate_body)}</p></div>`);
-  }
-  return `<article class="tf-capture-message-card tf-capture-context-card">
-    <header>${escapeHTML(t("capture.context.title"))}</header>
-    <div class="tf-capture-context">${rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"))}</div>
-  </article>`;
 }
 
 function renderCaptureContextPanel() {

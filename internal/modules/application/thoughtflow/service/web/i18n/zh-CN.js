@@ -85,7 +85,7 @@ export const messages = {
   "capture.session.saved": "已写入 {path}",
   "capture.session.saved_path": "已保存到笔记 {id}",
   "capture.session.closed": "会话已结束。",
-  "capture.composer.label": "输入框",
+  "capture.composer.aria_label": "Capture 输入",
   "capture.composer.placeholder": "输入想法、URL 或命令（如：把标题改为 RAG 笔记）",
   "capture.composer.hint": "可用命令：rename to · add tag · move to topic · append note · refine again",
   "capture.composer.send": "发送",

@@ -148,7 +148,6 @@ function loadAppFunctionsWith(opts = {}) {
       formatPatchFeedback,
       upsertCaptureContextMessage,
       upsertArchivePreviewMessage,
-      renderCaptureContextCard,
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
       handleCaptureEvent,
@@ -1030,6 +1029,8 @@ test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text f
       display_title: "After refine",
       refine_status: "refined",
       summary: "Refine succeeded.",
+      key_points: ["Question one?", "Question two?"],
+      ai_tags: ["RAG", "LLM"],
     },
     content: {
       original: "Raw user capture",
@@ -1037,7 +1038,9 @@ test("renderCaptureBubbleBody re-renders thoughtId-bound bubbles as plain text f
   };
   const out = app.renderCaptureBubbleBody(message);
   assert.match(out, /Raw user capture/);
-  assert.match(out, /Refine succeeded/);
+  assert.doesNotMatch(out, /Refine succeeded/);
+  assert.doesNotMatch(out, /Question one/);
+  assert.doesNotMatch(out, /RAG, LLM/);
   assert.doesNotMatch(out, /tf-suggestion-card/);
   assert.doesNotMatch(out, /tf-capture-status-row/);
   assert.doesNotMatch(out, /<stale\/>/);
@@ -1068,14 +1071,15 @@ test("capture context is rendered as plain conversation text", () => {
   const html = app.renderCaptureBubbleBody(first);
   assert.doesNotMatch(html, /capture\.context\.title/);
   assert.doesNotMatch(html, /tf-capture-message-card/);
-  assert.match(html, /RAG capture title/);
   assert.match(html, /Context summary/);
+  assert.doesNotMatch(html, /RAG capture title/);
 
   app._state.capture.activeScratchpad.session_context.candidate_title = "Updated title";
   const updated = app.upsertCaptureContextMessage();
   assert.equal(updated.id, first.id);
   assert.equal(app._state.capture.messages.length, 1);
-  assert.match(app.renderCaptureBubbleBody(updated), /Updated title/);
+  assert.match(app.renderCaptureBubbleBody(updated), /Context summary/);
+  assert.doesNotMatch(app.renderCaptureBubbleBody(updated), /Updated title/);
 });
 
 test("capture context text can render a pending placeholder and is moved to the latest turn", () => {
@@ -1105,9 +1109,9 @@ test("capture context text can render a pending placeholder and is moved to the 
   const resolvedHTML = app.renderCaptureBubbleBody(resolved);
   assert.equal(resolved.id, pending.id);
   assert.equal(app._state.capture.messages.length, 2);
-  assert.match(resolvedHTML, /Updated title/);
-  assert.match(resolvedHTML, /Updated summary/);
   assert.match(resolvedHTML, /Updated body draft should stay out of the conversation card/);
+  assert.doesNotMatch(resolvedHTML, /Updated title/);
+  assert.doesNotMatch(resolvedHTML, /Updated summary/);
   assert.doesNotMatch(resolvedHTML, /tf-capture-context-card/);
 
   app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
@@ -1118,6 +1122,35 @@ test("capture context text can render a pending placeholder and is moved to the 
   const moved = app.upsertCaptureContextMessage();
   assert.equal(app._state.capture.messages[app._state.capture.messages.length - 1].id, moved.id);
   assert.equal(app._state.capture.messages[app._state.capture.messages.length - 2].id, "u2");
+});
+
+test("capture context text drops duplicate and low-signal LLM fields", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_body: "我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。\n\n我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。",
+      candidate_summary: "我需要开发一个web采集程序",
+      candidate_title: "我需要开发一个web采集程序",
+      topic: "我需要开发一个web采集程序",
+      goal: "持续收集并澄清当前主题",
+      open_questions: [
+        "使用什么编程语言或框架（Python/Node.js/Go 等）？",
+        "数据存储方式（数据库/文件/API 推送）？",
+      ],
+      conflicts: ["持续收集并澄清当前主题"],
+      candidate_tags: ["web采集", "数据采集", "爬虫开发"],
+    },
+  };
+  const message = app.upsertCaptureContextMessage();
+  const html = app.renderCaptureBubbleBody(message);
+
+  assert.equal((html.match(/我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。/g) || []).length, 1);
+  assert.doesNotMatch(html, /使用什么编程语言/);
+  assert.doesNotMatch(html, /数据存储方式/);
+  assert.doesNotMatch(html, /持续收集并澄清当前主题/);
+  assert.doesNotMatch(html, /web采集, 数据采集, 爬虫开发/);
 });
 
 test("archive preview is rendered as plain conversation text with a stored snapshot", () => {

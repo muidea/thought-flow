@@ -85,7 +85,7 @@ export const messages = {
   "capture.session.saved": "Saved to {path}",
   "capture.session.saved_path": "Saved to thought {id}",
   "capture.session.closed": "Session closed.",
-  "capture.composer.label": "Composer",
+  "capture.composer.aria_label": "Capture input",
   "capture.composer.placeholder": "Type a thought, URL, or command (e.g. rename to RAG notes)",
   "capture.composer.hint": "Commands: rename to · add tag · move to topic · append note · refine again",
   "capture.composer.send": "Send",
