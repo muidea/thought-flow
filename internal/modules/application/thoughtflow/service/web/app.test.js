@@ -1064,9 +1064,9 @@ test("capture context is rendered as markdown conversation text", () => {
   app._state.capture.activeScratchpad = {
     session_id: "s1",
     session_context: {
-      candidate_title: "RAG capture title",
-      candidate_tags: ["rag", "llm"],
-      candidate_summary: "Context summary",
+      candidate_title: "Draft title",
+      candidate_tags: ["draft"],
+      candidate_summary: "**当前收敛结论**\n\n主题已经形成可继续推进的整理方向。",
     },
   };
   const first = app.upsertCaptureContextMessage();
@@ -1075,17 +1075,16 @@ test("capture context is rendered as markdown conversation text", () => {
   const html = app.renderCaptureBubbleBody(first);
   assert.doesNotMatch(html, /capture\.context\.title/);
   assert.doesNotMatch(html, /tf-capture-message-card/);
-  assert.match(html, /<strong>capture\.conversation\.summary<\/strong>/);
-  assert.match(html, /<p>Context summary<\/p>/);
-  assert.match(html, /<strong>capture\.conversation\.title<\/strong>/);
-  assert.match(html, /<p>RAG capture title<\/p>/);
+  assert.match(html, /<strong>当前收敛结论<\/strong>/);
+  assert.match(html, /主题已经形成可继续推进的整理方向/);
+  assert.doesNotMatch(html, /Draft title/);
 
   app._state.capture.activeScratchpad.session_context.candidate_title = "Updated title";
   const updated = app.upsertCaptureContextMessage();
   assert.equal(updated.id, first.id);
   assert.equal(app._state.capture.messages.length, 1);
-  assert.match(app.renderCaptureBubbleBody(updated), /<p>Context summary<\/p>/);
-  assert.match(app.renderCaptureBubbleBody(updated), /<p>Updated title<\/p>/);
+  assert.match(app.renderCaptureBubbleBody(updated), /主题已经形成可继续推进的整理方向/);
+  assert.doesNotMatch(app.renderCaptureBubbleBody(updated), /Updated title/);
 });
 
 test("capture context text can render a pending placeholder and is moved to the latest turn", () => {
@@ -1116,10 +1115,8 @@ test("capture context text can render a pending placeholder and is moved to the 
   assert.equal(resolved.id, pending.id);
   assert.equal(app._state.capture.messages.length, 2);
   assert.doesNotMatch(resolvedHTML, /Updated body draft should stay out of the conversation card/);
-  assert.match(resolvedHTML, /<strong>capture\.conversation\.summary<\/strong>/);
   assert.match(resolvedHTML, /<p>Updated summary<\/p>/);
-  assert.match(resolvedHTML, /<strong>capture\.conversation\.title<\/strong>/);
-  assert.match(resolvedHTML, /<p>Updated title<\/p>/);
+  assert.doesNotMatch(resolvedHTML, /Updated title/);
   assert.doesNotMatch(resolvedHTML, /tf-capture-context-card/);
 
   app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
@@ -1176,54 +1173,63 @@ test("capture context text drops duplicate and low-signal LLM fields", () => {
   app._state.capture.activeScratchpad = {
     session_id: "s1",
     session_context: {
-      candidate_body: "我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。\n\n我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。",
-      candidate_summary: "我需要开发一个web采集程序",
-      candidate_title: "我需要开发一个web采集程序",
-      topic: "我需要开发一个web采集程序",
+      candidate_body: "我想整理一个主题方向，用于后续继续讨论。\n\n我想整理一个主题方向，用于后续继续讨论。",
+      candidate_summary: "我想整理一个主题方向",
+      candidate_title: "我想整理一个主题方向",
+      topic: "我想整理一个主题方向",
       goal: "持续收集并澄清当前主题",
       open_questions: [
-        "使用什么编程语言或框架（Python/Node.js/Go 等）？",
-        "数据存储方式（数据库/文件/API 推送）？",
+        "最终产出更适合作为说明、提纲、草稿、方案还是行动清单？",
+        "当前主题最重要的成功标准是什么？",
       ],
       conflicts: ["持续收集并澄清当前主题"],
-      candidate_tags: ["web采集", "数据采集", "爬虫开发"],
+      candidate_tags: ["整理", "主题"],
     },
   };
   const message = app.upsertCaptureContextMessage();
   const html = app.renderCaptureBubbleBody(message);
 
-  assert.doesNotMatch(html, /我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。/);
+  assert.doesNotMatch(html, /我想整理一个主题方向，用于后续继续讨论。/);
   assert.match(html, /<strong>capture\.conversation\.questions<\/strong>/);
-  assert.match(html, /<li>使用什么编程语言/);
-  assert.match(html, /数据存储方式/);
+  assert.match(html, /最终产出更适合/);
+  assert.match(html, /当前主题最重要的成功标准/);
   assert.doesNotMatch(html, /持续收集并澄清当前主题/);
-  assert.doesNotMatch(html, /web采集, 数据采集, 爬虫开发/);
+  assert.doesNotMatch(html, /整理, 主题/);
 });
 
-test("capture context text keeps richer convergence details beyond the original input", () => {
+test("capture context text prefers synthesized summary over mechanical context fields", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.activeScratchpad = {
     session_id: "s1",
     session_context: {
-      candidate_body: "我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。",
-      candidate_summary: "目标是设计一个可归档的 Web 数据采集方案，重点明确目标站点、字段范围、调度频率和反爬处理边界。",
-      confirmed_facts: ["需要自动抓取目标网站数据", "产出需要能用于后续归档或继续讨论"],
-      open_questions: ["目标网站 URL 是什么？", "需要采集哪些字段？", "采集频率是多少？"],
-      candidate_tags: ["web采集", "数据采集"],
+      candidate_body: "我想整理一个主题方向，用于后续继续讨论。",
+      candidate_summary: [
+        "## 当前收敛结论",
+        "",
+        "正在形成一个可继续讨论、加工或归档的主题材料。",
+        "",
+        "## 下一轮建议补充",
+        "",
+        "- 补充背景、边界和预期产出。",
+      ].join("\n"),
+      confirmed_facts: ["原始输入已经提供主题方向", "产出需要能用于后续归档或继续讨论"],
+      open_questions: ["最终产出更适合作为说明、提纲、草稿、方案还是行动清单？"],
+      candidate_tags: ["整理", "主题"],
     },
   };
   const message = app.upsertCaptureContextMessage();
   const html = app.renderCaptureBubbleBody(message);
 
-  assert.doesNotMatch(html, /我需要开发一个web采集程序，用于从目标网站自动抓取所需数据。/);
-  assert.match(html, /<strong>capture\.conversation\.summary<\/strong>/);
-  assert.match(html, /目标是设计一个可归档的 Web 数据采集方案/);
-  assert.match(html, /<strong>capture\.conversation\.facts<\/strong>/);
-  assert.match(html, /<li>需要自动抓取目标网站数据<\/li>/);
-  assert.match(html, /<strong>capture\.conversation\.questions<\/strong>/);
-  assert.match(html, /<li>目标网站 URL 是什么？<\/li>/);
-  assert.doesNotMatch(html, /web采集, 数据采集/);
+  assert.doesNotMatch(html, /我想整理一个主题方向，用于后续继续讨论。/);
+  assert.match(html, /当前收敛结论/);
+  assert.match(html, /正在形成一个可继续讨论、加工或归档的主题材料/);
+  assert.match(html, /下一轮建议补充/);
+  assert.doesNotMatch(html, /capture\.conversation\.facts/);
+  assert.doesNotMatch(html, /capture\.conversation\.questions/);
+  assert.doesNotMatch(html, /原始输入已经提供主题方向/);
+  assert.doesNotMatch(html, /最终产出更适合/);
+  assert.doesNotMatch(html, /整理, 主题/);
 });
 
 test("capture context text strips raw input embedded in synthesized sections", () => {
@@ -1248,7 +1254,7 @@ test("capture context text strips raw input embedded in synthesized sections", (
   assert.doesNotMatch(html, /我想整理一个主题方向/);
   assert.doesNotMatch(html, /补充背景、目标和预期产出/);
   assert.match(html, /明确主题边界、受众、产出形式和判断标准/);
-  assert.match(html, /最终产出更适合/);
+  assert.doesNotMatch(html, /最终产出更适合/);
 });
 
 test("archive preview is rendered as markdown conversation text with a stored snapshot", () => {

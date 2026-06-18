@@ -2027,7 +2027,9 @@ function captureContextPlainText(message = {}) {
   const sp = state.capture.activeScratchpad || {};
   const ctx = message.sessionContext || sp.session_context || sp.SessionContext || {};
   const builder = createConversationTextBuilder([ctx.candidate_body]);
-  builder.addSection("capture.conversation.summary", [ctx.candidate_summary]);
+  builder.addText(ctx.candidate_summary);
+  const summaryText = builder.text();
+  if (summaryText) return summaryText;
   builder.addSection("capture.conversation.goal", [ctx.goal]);
   builder.addSection("capture.conversation.title", [ctx.candidate_title]);
   builder.addSection("capture.conversation.facts", ctx.confirmed_facts, { limit: 5 });

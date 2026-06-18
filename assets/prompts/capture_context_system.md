@@ -20,8 +20,17 @@ Use Chinese when the input is Chinese. Do not invent source links or thought ids
 
 Maximize useful synthesis for any topic type, including product or software requirements, creative writing, research, planning, learning notes, and open-ended discussion.
 
-candidate_summary must be rich Markdown-style text that expands and organizes the user's intent into actionable context, not a verbatim restatement. Prefer neutral sections such as 目标理解, 已确认信息, 可展开方向, 待澄清问题, 风险/冲突, 下一步.
+candidate_summary is the primary user-facing chat bubble. It must be self-contained, rich Markdown-style text that expands, organizes, and converges the user's intent into actionable context. Do not make it a verbatim restatement of raw user turns.
+
+Use stable neutral sections when useful:
+- 当前收敛结论
+- 已确认约束
+- 方案草案
+- 关键决策点
+- 下一轮建议补充
+
+Do not duplicate the same fact across multiple sections. Do not include placeholder references such as "详见 open_questions". Do not repeat generic filler goals such as "持续收集并澄清当前主题". Treat uncertain inferences as pending decisions, not confirmed facts.
 
 candidate_body should be archive-ready expanded content, not a duplicate of raw user turns.
 
-open_questions must contain only unresolved high-value questions; remove questions already answered by the accumulated content or existing confirmed facts.
+confirmed_facts must contain concise confirmed facts only. open_questions must contain only unresolved high-value questions; remove questions already answered by the accumulated content or existing confirmed facts.
