@@ -1132,6 +1132,45 @@ test("capture context text can render a pending placeholder and is moved to the 
   assert.equal(app._state.capture.messages[app._state.capture.messages.length - 2].id, "u2");
 });
 
+test("capture context messages stay interleaved with their user turn snapshots", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.messages = [
+    { id: "u1", role: "user", text: "first user turn" },
+  ];
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_body: "First body",
+      candidate_summary: "First summary",
+    },
+  };
+  const first = app.upsertCaptureContextMessage();
+
+  app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
+  app._state.capture.activeScratchpad.session_context = {
+    candidate_body: "Second body",
+    candidate_summary: "Second summary",
+  };
+  const secondPending = app.upsertCaptureContextMessage({ pending: true });
+  const second = app.upsertCaptureContextMessage();
+
+  assert.equal(first.id, app._state.capture.messages[1].id);
+  assert.equal(app._state.capture.messages[0].id, "u1");
+  assert.equal(app._state.capture.messages[1].kind, "context");
+  assert.equal(app._state.capture.messages[2].id, "u2");
+  assert.equal(app._state.capture.messages[3].id, second.id);
+  assert.equal(secondPending.id, second.id);
+
+  const firstHTML = app.renderCaptureBubbleBody(app._state.capture.messages[1]);
+  const secondHTML = app.renderCaptureBubbleBody(app._state.capture.messages[3]);
+  assert.match(firstHTML, /First body/);
+  assert.match(firstHTML, /First summary/);
+  assert.doesNotMatch(firstHTML, /Second body/);
+  assert.match(secondHTML, /Second body/);
+  assert.match(secondHTML, /Second summary/);
+});
+
 test("capture context text drops duplicate and low-signal LLM fields", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";

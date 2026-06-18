@@ -1900,15 +1900,19 @@ function upsertCaptureContextMessage(options = {}) {
   const sp = options.scratchpad || state.capture.activeScratchpad || {};
   const ctx = sp.session_context || sp.SessionContext || {};
   const sessionId = options.sessionId || state.capture.sessionId || "";
+  const messageKey = options.messageKey || latestCaptureUserTurnKey() || "session";
   const pending = Boolean(options.pending);
   if (!sessionId) return null;
   if (!pending && !hasCaptureSessionContext(ctx)) return null;
-  return upsertCaptureMessage("context", {
+  const message = {
     role: "ai",
     sessionId,
+    messageKey,
     pending,
-    moveToEnd: true,
-  });
+    moveToEnd: false,
+  };
+  if (!pending) message.sessionContext = cloneSessionContext(ctx);
+  return upsertCaptureMessage("context", message);
 }
 
 function upsertArchivePreviewMessage() {
@@ -1937,6 +1941,36 @@ function hasCaptureSessionContext(ctx) {
     (Array.isArray(ctx.related_thought_ids) && ctx.related_thought_ids.length) ||
     (Array.isArray(ctx.suggested_topic_ids) && ctx.suggested_topic_ids.length)
   );
+}
+
+function latestCaptureUserTurnKey() {
+  const messages = state.capture.messages || [];
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const msg = messages[index];
+    if (!msg || msg.role !== "user") continue;
+    return msg.id || msg.at || `user-${index}`;
+  }
+  return "";
+}
+
+function cloneSessionContext(ctx) {
+  if (!ctx || typeof ctx !== "object") return {};
+  return {
+    topic: ctx.topic || "",
+    goal: ctx.goal || "",
+    confirmed_facts: Array.isArray(ctx.confirmed_facts) ? ctx.confirmed_facts.slice() : [],
+    open_questions: Array.isArray(ctx.open_questions) ? ctx.open_questions.slice() : [],
+    conflicts: Array.isArray(ctx.conflicts) ? ctx.conflicts.slice() : [],
+    candidate_title: ctx.candidate_title || "",
+    candidate_tags: Array.isArray(ctx.candidate_tags) ? ctx.candidate_tags.slice() : [],
+    candidate_summary: ctx.candidate_summary || "",
+    candidate_body: ctx.candidate_body || "",
+    source_links: Array.isArray(ctx.source_links) ? ctx.source_links.slice() : [],
+    related_thought_ids: Array.isArray(ctx.related_thought_ids) ? ctx.related_thought_ids.slice() : [],
+    suggested_topic_ids: Array.isArray(ctx.suggested_topic_ids) ? ctx.suggested_topic_ids.slice() : [],
+    archive_intent: ctx.archive_intent || "",
+    archive_strategy: ctx.archive_strategy || "",
+  };
 }
 
 function captureRoleClass(role) {
@@ -1993,7 +2027,7 @@ function thoughtSnapshotPlainText(snapshot, msg = {}) {
 function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
-  const ctx = sp.session_context || sp.SessionContext || {};
+  const ctx = message.sessionContext || sp.session_context || sp.SessionContext || {};
   const builder = createConversationTextBuilder();
   builder.addText(ctx.candidate_body);
   builder.addSection("capture.conversation.summary", [ctx.candidate_summary]);
