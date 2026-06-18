@@ -305,6 +305,31 @@ func TestLocalProviderExpandCoversFiveSections(t *testing.T) {
 	}
 }
 
+func TestLocalProviderBuildCaptureContextReturnsStructuredSummary(t *testing.T) {
+	provider := NewLocalRefineProvider()
+	result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{
+		SessionID: "s1",
+		Content:   "我需要整理一个主题方向\n\n补充背景、目标和预期产出",
+	})
+	if err != nil {
+		t.Fatalf("BuildCaptureContext() error = %v", err)
+	}
+	for _, want := range []string{
+		"**目标理解**",
+		"**已确认信息**",
+		"**可展开方向**",
+		"需求说明、创作设定、调研提纲、方案草案或行动清单",
+		"**下一步**",
+	} {
+		if !strings.Contains(result.CandidateSummary, want) {
+			t.Fatalf("summary missing %q:\n%s", want, result.CandidateSummary)
+		}
+	}
+	if strings.TrimSpace(result.CandidateSummary) == strings.TrimSpace(result.CandidateBody) {
+		t.Fatalf("summary should not be a verbatim body replay")
+	}
+}
+
 func TestOpenAICompatibleProviderExpandStripsFence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")

@@ -395,11 +395,11 @@ func (p *LocalRefineProvider) BuildCaptureContext(ctx context.Context, req Captu
 		Topic:             firstNonEmpty(req.Existing.Topic, title),
 		Goal:              firstNonEmpty(req.Existing.Goal, deriveLocalCaptureGoal(text)),
 		ConfirmedFacts:    normalizeList(append(req.Existing.ConfirmedFacts, title)),
-		OpenQuestions:     normalizeList(append(req.Existing.OpenQuestions, localQuestions(text)...)),
+		OpenQuestions:     normalizeList(localQuestions(text)),
 		Conflicts:         normalizeList(append(req.Existing.Conflicts, localConflicts(text)...)),
 		CandidateTitle:    firstNonEmpty(req.Existing.CandidateTitle, title),
 		CandidateTags:     normalizeList(append(req.Existing.CandidateTags, inferTags(text)...)),
-		CandidateSummary:  summarize(text),
+		CandidateSummary:  buildLocalCaptureSummary(text),
 		CandidateBody:     text,
 		SourceLinks:       normalizeList(append(req.Existing.SourceLinks, localURLs(text)...)),
 		RelatedThoughtIDs: normalizeList(req.Existing.RelatedThoughtIDs),
@@ -664,7 +664,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 		return CaptureContextResult{}, errors.New("capture context content is empty")
 	}
 	content, err := p.chatCompletion(ctx,
-		"You maintain ThoughtFlow capture session context. Return strict JSON only with fields topic string, goal string, confirmed_facts string array, open_questions string array, conflicts string array, candidate_title string, candidate_tags string array, candidate_summary string, candidate_body string, source_links string array, related_thought_ids string array, suggested_topic_ids string array, archive_intent string, archive_strategy string. Use Chinese when the input is Chinese. Do not invent source links or thought ids.",
+		"You maintain ThoughtFlow capture session context. Return strict JSON only with fields topic string, goal string, confirmed_facts string array, open_questions string array, conflicts string array, candidate_title string, candidate_tags string array, candidate_summary string, candidate_body string, source_links string array, related_thought_ids string array, suggested_topic_ids string array, archive_intent string, archive_strategy string. Use Chinese when the input is Chinese. Do not invent source links or thought ids. Maximize useful synthesis for any topic type, including product or software requirements, creative writing, research, planning, learning notes, and open-ended discussion. candidate_summary must be rich Markdown-style text that expands and organizes the user's intent into actionable context, not a verbatim restatement. Prefer neutral sections such as 目标理解, 已确认信息, 可展开方向, 待澄清问题, 风险/冲突, 下一步. candidate_body should be archive-ready expanded content, not a duplicate of raw user turns. open_questions must contain only unresolved high-value questions; remove questions already answered by the accumulated content or existing confirmed facts.",
 		"Session ID: "+req.SessionID+
 			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
 			"\n\nConversation:\n"+renderCaptureContextMessages(req.Messages)+
@@ -898,6 +898,44 @@ func summarize(text string) string {
 		return text
 	}
 	return text[:240]
+}
+
+func buildLocalCaptureSummary(text string) string {
+	normalized := strings.Join(strings.Fields(text), " ")
+	if normalized == "" {
+		return ""
+	}
+	keypoints := keyPoints(text)
+	clueCount := len(keypoints)
+	if clueCount == 0 {
+		clueCount = 1
+	}
+	lines := []string{
+		"**目标理解**",
+		"- 当前内容正在形成一个可继续讨论、加工或归档的主题。",
+		"- 需要把零散输入收敛为清晰的背景、目标、范围、约束和产出形式。",
+		"",
+		"**已确认信息**",
+		fmt.Sprintf("- 已捕获 %d 条有效线索，可作为后续扩展和归档依据。", clueCount),
+		"- 当前阶段应区分事实、假设、偏好、限制条件和仍待确认的问题。",
+	}
+	lines = append(lines,
+		"",
+		"**可展开方向**",
+		"- 背景与动机：说明为什么要整理这个主题，以及它要解决或表达什么。",
+		"- 目标与边界：明确需要达成的结果、暂不处理的范围和关键约束。",
+		"- 产出结构：根据主题类型整理为需求说明、创作设定、调研提纲、方案草案或行动清单。",
+		"- 评价标准：补充判断内容是否足够完整、可执行或可归档的标准。",
+		"",
+		"**待澄清问题**",
+		"- 当前主题最重要的成功标准是什么？",
+		"- 哪些内容必须纳入，哪些内容需要明确排除？",
+		"- 最终产出更适合作为说明、提纲、草稿、方案还是行动清单？",
+		"",
+		"**下一步**",
+		"- 优先补齐背景、限制和预期产出；信息足够时归档为结构化 Thought。",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func keyPoints(text string) []string {

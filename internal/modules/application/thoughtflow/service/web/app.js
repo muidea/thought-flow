@@ -2011,10 +2011,8 @@ function renderMarkdownMessage(text) {
 function thoughtSnapshotPlainText(snapshot, msg = {}) {
   const thought = (snapshot && snapshot.thought) || {};
   const content = (snapshot && snapshot.content) || {};
-  const original = content.original || content.Original || "";
   const fallback = msg.text || thought.display_title || thought.user_title || thought.extracted_title || thought.id || "";
-  const builder = createConversationTextBuilder();
-  builder.addText(original);
+  const builder = createConversationTextBuilder([content.original, content.Original]);
   builder.addSection("capture.conversation.summary", [thought.summary]);
   builder.addSection("capture.conversation.key_points", thought.key_points, { limit: 5 });
   builder.addSection("capture.conversation.followups", Array.isArray(thought.url_followups)
@@ -2028,8 +2026,7 @@ function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
   const ctx = message.sessionContext || sp.session_context || sp.SessionContext || {};
-  const builder = createConversationTextBuilder();
-  builder.addText(ctx.candidate_body);
+  const builder = createConversationTextBuilder([ctx.candidate_body]);
   builder.addSection("capture.conversation.summary", [ctx.candidate_summary]);
   builder.addSection("capture.conversation.goal", [ctx.goal]);
   builder.addSection("capture.conversation.title", [ctx.candidate_title]);
@@ -2082,12 +2079,20 @@ function compactPlainTextParts(parts) {
   return deduped;
 }
 
-function createConversationTextBuilder() {
+function createConversationTextBuilder(referenceParts = []) {
   const output = [];
   const seen = [];
+  const references = compactPlainTextParts(referenceParts);
+  const referenceFragments = references.flatMap((reference) => extractReferenceFragments(reference));
   const includesSeen = (item) => {
     const key = normalizePlainTextForCompare(item);
     if (!key) return true;
+    if (references.some((reference) => {
+      const referenceKey = normalizePlainTextForCompare(reference);
+      return referenceKey === key || referenceKey.includes(key);
+    })) {
+      return true;
+    }
     return seen.some((existing) => {
       const existingKey = normalizePlainTextForCompare(existing);
       return existingKey === key || existingKey.includes(key);
@@ -2098,7 +2103,10 @@ function createConversationTextBuilder() {
   };
   return {
     addText(value) {
-      const items = compactPlainTextParts([value]).filter((item) => !includesSeen(item));
+      const items = compactPlainTextParts([value])
+        .map((item) => stripConversationReferences(item, referenceFragments))
+        .flatMap((item) => compactPlainTextParts([item]))
+        .filter((item) => !includesSeen(item));
       if (!items.length) return;
       remember(items);
       output.push(...items);
@@ -2106,6 +2114,8 @@ function createConversationTextBuilder() {
     addSection(labelKey, values, options = {}) {
       const limit = Number.isFinite(options.limit) ? options.limit : 4;
       const items = compactPlainTextParts(values)
+        .map((item) => stripConversationReferences(item, referenceFragments))
+        .flatMap((item) => compactPlainTextParts([item]))
         .filter((item) => !includesSeen(item))
         .slice(0, Math.max(1, limit));
       if (!items.length) return;
@@ -2116,6 +2126,48 @@ function createConversationTextBuilder() {
       return output.join("\n\n");
     },
   };
+}
+
+function extractReferenceFragments(text) {
+  if (typeof text !== "string") return [];
+  const fragments = text
+    .split(/[\n。.!?！？]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (text.trim()) fragments.push(text.trim());
+  const seen = new Set();
+  return fragments.filter((item) => {
+    const key = normalizePlainTextForCompare(item);
+    if (key.length < 8 || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => right.length - left.length);
+}
+
+function stripConversationReferences(text, references) {
+  if (typeof text !== "string" || !text.trim() || !Array.isArray(references) || references.length === 0) {
+    return text;
+  }
+  let cleaned = text;
+  for (const reference of references) {
+    const referenceKey = normalizePlainTextForCompare(reference);
+    if (!referenceKey) continue;
+    const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cleaned = cleaned.replace(new RegExp(escaped, "g"), "");
+  }
+  return cleaned
+    .split("\n")
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
+    .filter((line) => {
+      const key = normalizePlainTextForCompare(line);
+      if (!key) return false;
+      return !references.some((reference) => {
+        const referenceKey = normalizePlainTextForCompare(reference);
+        return referenceKey === key || referenceKey.includes(key);
+      });
+    })
+    .join("\n")
+    .trim();
 }
 
 function formatConversationSection(labelKey, items) {

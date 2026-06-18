@@ -357,7 +357,7 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		Topic:             firstNonEmptyString(result.Topic, current.SessionContext.Topic),
 		Goal:              firstNonEmptyString(result.Goal, current.SessionContext.Goal),
 		ConfirmedFacts:    mergeContextStrings(current.SessionContext.ConfirmedFacts, result.ConfirmedFacts),
-		OpenQuestions:     mergeContextStrings(current.SessionContext.OpenQuestions, result.OpenQuestions),
+		OpenQuestions:     trimNonEmpty(result.OpenQuestions),
 		Conflicts:         mergeContextStrings(current.SessionContext.Conflicts, result.Conflicts),
 		CandidateTitle:    firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
 		CandidateTags:     mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),

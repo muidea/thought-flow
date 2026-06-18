@@ -274,8 +274,8 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 	if !containsStrings(sp.SessionContext.SourceLinks, "https://old.example", "https://new.example") {
 		t.Fatalf("SourceLinks = %+v", sp.SessionContext.SourceLinks)
 	}
-	if !containsStrings(sp.SessionContext.OpenQuestions, "old question?") {
-		t.Fatalf("OpenQuestions = %+v", sp.SessionContext.OpenQuestions)
+	if len(sp.SessionContext.OpenQuestions) != 0 {
+		t.Fatalf("OpenQuestions should be replaced by provider output, got %+v", sp.SessionContext.OpenQuestions)
 	}
 	if !containsStrings(sp.SessionContext.Conflicts, "old conflict") {
 		t.Fatalf("Conflicts = %+v", sp.SessionContext.Conflicts)
@@ -285,6 +285,38 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 	}
 	if !containsStrings(sp.SessionContext.SuggestedTopicIDs, "topic-old") {
 		t.Fatalf("SuggestedTopicIDs = %+v", sp.SessionContext.SuggestedTopicIDs)
+	}
+}
+
+func TestScratchpadServiceAppendMessageReplacesOpenQuestionsFromProvider(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			OpenQuestions: []string{"old unresolved question?"},
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			OpenQuestions: []string{"new unresolved question?"},
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithBackgroundRoutine(syncBackground{}),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp, err := store.Get("s1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !sameStringSet(sp.SessionContext.OpenQuestions, []string{"new unresolved question?"}) {
+		t.Fatalf("OpenQuestions = %+v", sp.SessionContext.OpenQuestions)
 	}
 }
 
