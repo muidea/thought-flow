@@ -104,8 +104,6 @@ export const Key = Object.freeze({
   CaptureArchiveDiffAfter: "capture.archive.diff_after",
 
   // Thoughts page
-  ThoughtsIDPlaceholder: "thoughts.id_placeholder",
-  ThoughtsLoadButton: "thoughts.load_button",
   ThoughtsPreviewEmpty: "thoughts.preview_empty",
   ThoughtsDrawerTitle: "thoughts.drawer_title",
   ThoughtsDrawerClose: "thoughts.drawer_close",
@@ -367,7 +365,6 @@ export const Key = Object.freeze({
   ToastTopicRulesSaved: "toast.topic_rules_saved",
   ToastCaptureContentRequired: "toast.capture_content_required",
   ToastCaptureURLRequired: "toast.capture_url_required",
-  ToastThoughtIDRequired: "toast.thought_id_required",
   ToastOpenThoughtFirst: "toast.open_thought_first",
   ToastRetryRefineQueued: "toast.retry_refine_queued",
   ToastAddSourcesFirst: "toast.add_sources_first",

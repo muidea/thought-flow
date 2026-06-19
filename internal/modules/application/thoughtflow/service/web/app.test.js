@@ -26,7 +26,7 @@ function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-topic-id", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
-    "thought-id", "thought-filter"];
+    "thought-filter"];
   // Side-effect nodes (toast, basket list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
@@ -908,13 +908,13 @@ test("computeSidebarBadgeCounts only shows badges for surfaces with a real enume
   assert.equal(JSON.stringify(zeros), JSON.stringify({ notes: "", topics: "", compose: "" }));
 });
 
-test("restoreRoutePage hydrates notes deep-link input from query", () => {
+test("restoreRoutePage keeps notes deep-link state without a manual ID input", () => {
   const dom = makeDomStub();
   const app = loadAppFunctionsWith({ dom });
 
   app.restoreRoutePage("thoughts", { id: "thought-123" });
 
-  assert.equal(dom.store["thought-id"], "thought-123");
+  assert.equal(Object.prototype.hasOwnProperty.call(dom.store, "thought-id"), false);
 });
 
 test("appendExpansionSections renders the 4 expansion fields when present", () => {

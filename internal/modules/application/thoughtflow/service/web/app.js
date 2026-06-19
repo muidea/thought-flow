@@ -177,7 +177,7 @@ const PAGE_SERIALIZERS = {
   },
   thoughts: () => {
     const q = {};
-    const id = $("#thought-id")?.value.trim();
+    const id = state.activeThoughtId || state.route?.params?.thoughtId || "";
     if (id) q.id = id;
     const active = document.querySelector(`#page-thoughts .tab.active`);
     if (active && active.dataset.tab && active.dataset.tab !== "notes-all") q.tab = active.dataset.tab;
@@ -205,7 +205,6 @@ function restoreRoutePage(page, query) {
       activateTab(tab, $("#page-topics"));
     }
   } else if (page === "thoughts") {
-    if (typeof query.id === "string") $("#thought-id").value = query.id;
     if (typeof query.tab === "string") activateTab(query.tab, $("#page-thoughts"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
@@ -1151,12 +1150,11 @@ function renderThoughtListItem(thought) {
   return `
     <article class="result-item${active}" data-thought-id="${escapeHTML(thought.id || "")}">
       <div>
-        <strong><button class="link-button" data-note-open="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(title)}</button></strong>
+        <strong>${escapeHTML(title)}</strong>
         <div class="result-meta">${escapeHTML(updatedAt)}${thought.path ? ` · ${escapeHTML(thought.path)}` : ""}</div>
         ${summary ? `<div class="result-meta">${escapeHTML(summary)}</div>` : ""}
         ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
         <div class="tf-action-row">
-          <button class="mini-button" data-note-open="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.open"))}</button>
           <button class="mini-button" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
           <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
           ${thought.path ? `<button class="mini-button" data-copy-path="${escapeHTML(thought.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button>` : ""}
@@ -1202,9 +1200,6 @@ function renderThoughtsList() {
     return;
   }
   list.innerHTML = filtered.map((thought) => renderThoughtListItem(thought)).join("");
-  list.querySelectorAll("[data-note-open]").forEach((button) => {
-    button.addEventListener("click", () => previewThought(button.dataset.noteOpen, { syncRoute: true }).catch((error) => toast(error.message)));
-  });
   list.querySelectorAll(".result-item[data-thought-id]").forEach((item) => {
     item.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
@@ -3684,7 +3679,6 @@ async function previewThought(thoughtId, options = {}) {
   const snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`);
   state.activeThoughtId = thoughtId;
   state.activeThoughtSnapshot = snapshot;
-  $("#thought-id").value = thoughtId;
   upsertThoughtRecord(snapshot.thought, { render: false });
   renderThoughtPanels(snapshot);
   if (options.syncRoute) {
@@ -3789,16 +3783,6 @@ function appendExpansionSections(thought) {
     blocks.push(`*${t("thoughts.expansion_failed")}*`);
   }
   return blocks.join("\n\n");
-}
-
-async function loadThoughtByID(event) {
-  if (event) event.preventDefault();
-  const thoughtID = $("#thought-id").value.trim();
-  if (!thoughtID) {
-    toast(t("toast.thought_id_required"));
-    return;
-  }
-  await previewThought(thoughtID, { syncRoute: true });
 }
 
 async function retryRefine() {
@@ -4216,7 +4200,6 @@ async function applyRoute(hash = window.location.hash) {
     if (route.query.tab === "proposals") await loadWeaveProposals(route.params.topicId);
   }
   if (route.page === "thoughts" && route.params.thoughtId) {
-    $("#thought-id").value = route.params.thoughtId;
     await previewThought(route.params.thoughtId);
   }
   // Live routes: capture, search, topics (incl. detail), notes, compose.
@@ -4250,8 +4233,6 @@ function bind() {
   $("#search-topic-id").addEventListener("input", persistRouteDebounced);
   $("#search-tags").addEventListener("input", persistRouteDebounced);
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
-  $("#thought-form").addEventListener("submit", (event) => loadThoughtByID(event).catch((error) => toast(error.message)));
-  $("#thought-id").addEventListener("input", persistRouteDebounced);
   $("#thought-filter")?.addEventListener("input", () => renderThoughtsList());
   $("#refresh-thoughts")?.addEventListener("click", () => loadThoughts().catch((error) => toast(error.message)));
   $("#compose-form").addEventListener("submit", (event) => createComposeDraft(event).catch((error) => toast(error.message)));

@@ -113,7 +113,7 @@ async function runBrowserSmoke(browser, url) {
     };
     const routes = [
       ["capture", "#/capture", "#page-capture", "#capture-composer"],
-      ["notes", "#/notes", "#page-thoughts", "#thought-form"],
+      ["notes", "#/notes", "#page-thoughts", "#thought-list"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
       ["compose", "#/compose", "#page-compose", "#compose-drafts"],
