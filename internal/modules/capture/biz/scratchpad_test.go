@@ -1657,11 +1657,11 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 	if captureStub.patchReq.Body == nil || *captureStub.patchReq.Body != "## New Body\n\n- updated synthesis" {
 		t.Fatalf("Body = %v", captureStub.patchReq.Body)
 	}
-	// scratchpad's CommittedThoughtID must NOT be set (the user
-	// is still iterating against the source thought).
+	// The update lands on the source file, so the scratchpad is marked
+	// committed to that same thought instead of remaining a draft.
 	sp, _ := store.Get("s1")
-	if sp.CommittedThoughtID != "" {
-		t.Fatalf("update_thought should not stamp CommittedThoughtID, got %q", sp.CommittedThoughtID)
+	if sp.CommittedThoughtID != "thought-source" || sp.CommittedAt == nil {
+		t.Fatalf("update_thought should stamp source as committed, got %+v", sp)
 	}
 }
 
@@ -1865,8 +1865,8 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	if len(sp.Tags) != 2 {
 		t.Fatalf("Tags = %v (UserTags ∪ AITags, deduplicated)", sp.Tags)
 	}
-	if sp.ArchiveStrategy != scratchpad.ArchiveStrategySupplement {
-		t.Fatalf("ArchiveStrategy = %q, want supplement", sp.ArchiveStrategy)
+	if sp.ArchiveStrategy != scratchpad.ArchiveStrategyUpdate {
+		t.Fatalf("ArchiveStrategy = %q, want update_thought", sp.ArchiveStrategy)
 	}
 	if sp.ArchiveIntent != scratchpad.ArchiveIntentMenu {
 		t.Fatalf("ArchiveIntent = %q, want menu", sp.ArchiveIntent)
@@ -1888,6 +1888,59 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	}
 	if sp.SessionContext.CandidateSummary != wantBody {
 		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
+	}
+}
+
+func TestScratchpadServiceReopenCommitUpdatesSourceThought(t *testing.T) {
+	store := newMemoryScratchpad()
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{
+				ID:        "thought-1",
+				UserTitle: "Original Title",
+				UserTags:  []string{"alpha"},
+			},
+			Content: models.ThoughtContent{Original: "previous archive"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub))
+	sp, err := svc.ReopenFromThought(context.Background(), "thought-1", "reopen-session")
+	if err != nil {
+		t.Fatalf("ReopenFromThought: %v", err)
+	}
+	sp.SessionContext.CandidateTitle = "Updated Title"
+	sp.SessionContext.CandidateTags = []string{"alpha", "updated"}
+	sp.SessionContext.CandidateBody = "latest conversation"
+	sp.SessionContext.CandidateSummary = "## Final\n\n- latest synthesis"
+	if _, err := store.Save(sp); err != nil {
+		t.Fatalf("Save reopened scratchpad: %v", err)
+	}
+
+	result, err := svc.Commit(context.Background(), "reopen-session")
+	if err != nil {
+		t.Fatalf("Commit reopened scratchpad: %v", err)
+	}
+	if result.Thought.ID != "thought-1" {
+		t.Fatalf("result thought id = %q, want thought-1", result.Thought.ID)
+	}
+	if captureStub.captureCalls != 0 {
+		t.Fatalf("reopen commit should not create a new thought, Capture called %d", captureStub.captureCalls)
+	}
+	if captureStub.patchCalls != 1 {
+		t.Fatalf("reopen commit should patch source thought, PatchThought called %d", captureStub.patchCalls)
+	}
+	if captureStub.patchReq.Body == nil || *captureStub.patchReq.Body != "## Final\n\n- latest synthesis" {
+		t.Fatalf("patched body = %v", captureStub.patchReq.Body)
+	}
+	if captureStub.patchReq.Title == nil || *captureStub.patchReq.Title != "Updated Title" {
+		t.Fatalf("patched title = %v", captureStub.patchReq.Title)
+	}
+	committed, _ := store.Get("reopen-session")
+	if committed.CommittedThoughtID != "thought-1" || committed.CommittedAt == nil {
+		t.Fatalf("reopen update should mark original thought committed, got %+v", committed)
+	}
+	if committed.Content != "" || len(committed.Messages) != 0 {
+		t.Fatalf("reopen update should reset volatile fields, got %+v", committed)
 	}
 }
 

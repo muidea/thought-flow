@@ -2081,10 +2081,10 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 // the front end then reuses the normal capture flow to chat
 // against the seeded context.
 //
-// The default archive strategy is "supplement" so a subsequent
-// commit creates a sibling thought with a backlink. The user
-// can switch to "update_thought" / "new" via
-// /api/capture/sessions/{new_id}/strategy before committing.
+// The default archive strategy is "update_thought" so a subsequent
+// archive saves back to the source thought file. The user can switch
+// to "supplement" / "new" via /api/capture/sessions/{new_id}/strategy
+// before committing.
 //
 //	POST /api/thoughts/{id}/reopen-session
 //	body: {session_id?: string}

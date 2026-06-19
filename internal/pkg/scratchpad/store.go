@@ -94,8 +94,9 @@ const (
 
 // ArchiveStrategy routes the commit to the correct landing path
 // (PRD §3.1). The session-default is "new"; a scratchpad created by
-// ReopenFromThought defaults to "supplement"; the user can opt
-// into "update_thought" or "new" explicitly.
+// ReopenFromThought defaults to "update_thought" so archive saves
+// back to the source thought unless the user explicitly chooses a new
+// or supplement thought.
 type ArchiveStrategy string
 
 const (

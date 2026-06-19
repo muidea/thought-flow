@@ -91,7 +91,7 @@ Handler 不直接操作 Markdown、DuckDB、Git 或外部 LLM/Embedding API；�
 
 1. **会话式采集**：维护 scratchpad 持久化层；接收多轮对话、URL 草稿、文本片段；维护 `session_context` 结构化字段。
 2. **归档路由**：仅在用户显式"保存/归档/提交"时，将 scratchpad 落 Thought；走 `archive_strategy` 路由。
-3. **归档预览**：生成归档预览 payload（标题、正文、标签、来源、策略），不写 Thought，等用户确认。
+3. **归档预览**：生成归档预览 payload（标题、正文、标签、来源、策略），展示后由归档动作自动写入。
 4. **Thought 重新整理**：从已归档 Thought 加载上下文，生成"补充/修订/另存"会话。
 5. **去重与告警**：基于 `content_hash` 检测疑似重复，注入 `ErrorRef`，默认不静默丢弃。
 6. **事件发布**：`scratchpad.message_appended`、`scratchpad.draft_updated`、`scratchpad.committed`（fresh/repeat）、`thought.captured`、`thought.patched`、`thought.supplemented`。
@@ -190,7 +190,7 @@ type ThoughtDiff struct {
 | `SetArchiveIntent(sessionID, intent)` | none / menu / llm | UI 触发 / LLM 识别 |
 | `SetArchiveStrategy(sessionID, strategy)` | new / update_thought / supplement | UI 选择 / LLM 建议 |
 | `BuildArchivePreview(sessionID)` | 渲染 `ArchivePreview`，update_thought 时计算 `Diff` | UI 点"归档"时 |
-| `Commit(sessionID)` | 真正落地：fresh → `Capture`+`applyDraftToThought`；repeat → `ApplyDraftInternal`（锁自由）；supplement → 创建新 Thought + backlink；update_thought → `PatchThought`（带 diff 确认） | UI 确认归档 |
+| `Commit(sessionID)` | 真正落地：fresh → `Capture`+`applyDraftToThought`；repeat → `ApplyDraftInternal`（锁自由）；supplement → 创建新 Thought + backlink；update_thought → `PatchThought`（带 diff 预览） | UI 或 LLM 归档 |
 | `ReopenFromThought(thoughtID)` | 从已归档 Thought 加载上下文到新 scratchpad，置 `SourceThoughtID` | UI 点"重新整理" |
 | `LastActive()` | 返回最近活跃的未归档 scratchpad（已存在） | UI 页面恢复 |
 | `MarkCommitted / Reset` | 已存在，commit 流程使用 | 内部 |
@@ -386,10 +386,10 @@ UI 发送消息
         └─ LLM 维护 session_context（异步，事件：scratchpad.context_updated）
               └─ topic 订阅 → 命中候选
 
-UI 点击"归档" / LLM 识别"保存"意图
+UI 点击"归档" / 可选 `/save` 命令 / LLM 识别自然语言"保存"意图
    └─ POST /api/capture/sessions/{id}/archive/preview
         └─ capture.BuildArchivePreview → 返回 ArchivePreview（含 Diff）
-   └─ UI 展示预览 → 用户确认
+   └─ UI 展示预览 → 自动提交归档
         └─ POST /api/capture/sessions/{id}/archive  body.strategy
               ├─ new         → Capture + applyDraftToThought
               ├─ supplement  → Capture(标注 parent) + 双向 backlink
@@ -412,9 +412,9 @@ UI Thought 详情 → "重新整理"
               └─ RelatedThoughtIDs ← 原 RelatedThoughtIDs
    └─ UI 进入采集页编辑
    └─ 提交归档
-        ├─ 默认 strategy = supplement（PRD §3.1）
-        ├─ 显式选择 update_thought → 走 diff 确认
-        └─ 显式选择 new → 创建新 Thought 失去 backlink
+        ├─ 默认 strategy = update_thought → 预览 diff 后写回原 Thought
+        ├─ 显式选择 supplement → 创建补充 Thought
+        └─ 显式选择 new → 创建新 Thought
 ```
 
 ### 4.3 专题候选消费
@@ -612,7 +612,7 @@ type SearchResultView struct {
 专题候选统一使用 `TopicCandidateImpact` 表达：
 
 - `capture_session`：未归档 Capture 会话。
-- `thought_reopen_session`：从 Thought 重新整理的补充会话。
+- `thought_reopen_session`：从 Thought 重新打开后的整理会话，默认归档回原 Thought，仍可显式选择另存新 Thought 或补充 Thought。
 - `thought`：已归档但未确认纳入专题的新 Thought。
 - `compose_draft`：整理草稿对专题的建议影响。
 
@@ -669,7 +669,7 @@ PRD §5 要求显式标识外部请求并允许禁用。约束：
 
 ### 8.1 已确定
 
-- `archive_strategy` 路由必须以 UI 显式选择或 reopen 会话默认 `supplement` 为准，LLM 不能直接 override。
+- `archive_strategy` 路由以 UI 显式选择、可选 `/save` 命令、reopen 默认策略或 LLM 对自然语言保存目标的判断为准；普通自然语言不走前端关键词硬编码。
 - `update_thought` 走 `thoughtlock`；`new` / `supplement` 走 `ApplyDraftInternal`（与现有 refiner/expander 兼容）。
 - 专题候选仅展示在候选区，不写专题主文档；用户在 UI 上"确认"后走对应 scratchpad 的 commit 流程。
 - Web 采集入口不再调用旧 scratchpad 路径（详见 §5.6）。

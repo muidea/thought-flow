@@ -1999,7 +1999,7 @@ async function maybeAutoPreviewArchiveFromContext(sp = {}) {
   await previewArchive({
     intent: "llm",
     strategy: scratchpadArchiveStrategy(sp),
-    confirmAfterPreview: true,
+    commitAfterPreview: true,
   });
   return true;
 }
@@ -2973,13 +2973,10 @@ const CAPTURE_COMMANDS = [
   },
   {
     name: "commit",
-    // Explicit archive commands, including short commands ("归档")
-    // and clear natural-language requests ("将上述内容进行归档").
-    // Keep this anchored so discussion such as "我想讨论归档策略" is
-    // still captured as normal user content.
-    match: (text) => (isCaptureCommitCommand(text)
-      ? { kind: "commit" }
-      : null),
+    // `/save` is the explicit command channel. Natural language requests
+    // such as "归档至新文件" stay in the conversation so the LLM can decide
+    // archive_intent/archive_strategy from full context.
+    match: (text) => parseSaveCommand(text),
   },
   {
     name: "new_session",
@@ -2992,14 +2989,22 @@ const CAPTURE_COMMANDS = [
   },
 ];
 
-function isCaptureCommitCommand(text) {
+function parseSaveCommand(text) {
   const value = String(text || "").trim();
-  if (!value) return false;
-  if (/^(归档|保存|提交|落档|commit|save|存档)\s*$/i.test(value)) return true;
-  if (/^(?:请|麻烦)?(?:将|把)(?:上述|以上|当前|这些|全部|本轮|前面)?(?:内容|信息|结果|会话|记录|材料|整理结果)?(?:进行)?(?:归档|保存|提交|存档|落档)(?:为|成)?(?:\s*(?:thought|Thought|笔记|记录))?[。.!！]?\s*$/.test(value)) return true;
-  if (/^(?:请|麻烦)?(?:归档|保存|提交|存档|落档)(?:上述|以上|当前|这些|全部|本轮|前面)?(?:内容|信息|结果|会话|记录|材料|整理结果)(?:为|成)?(?:\s*(?:thought|Thought|笔记|记录))?[。.!！]?\s*$/.test(value)) return true;
-  if (/^(?:archive|save|commit)\s+(?:this|current|the current)\s+(?:content|session|result|conversation|notes?)(?:\s+as\s+(?:thought|note|record))?\s*[.!]?\s*$/i.test(value)) return true;
-  return false;
+  const match = /^\/save(?:\s+(.+))?$/i.exec(value);
+  if (!match) return null;
+  const args = String(match[1] || "").trim().toLowerCase();
+  if (!args) return { kind: "commit" };
+  if (/^(new|file|note|thought|as\s+new|new\s+(?:file|note|thought|record))$/.test(args)) {
+    return { kind: "commit", strategy: "new" };
+  }
+  if (/^(update|original|current|same|overwrite|replace|update_thought)$/.test(args)) {
+    return { kind: "commit", strategy: "update_thought" };
+  }
+  if (/^(supplement|appendix|followup|follow-up|linked)$/.test(args)) {
+    return { kind: "commit", strategy: "supplement" };
+  }
+  return { kind: "commit" };
 }
 
 function parseCaptureCommand(text) {
@@ -3044,7 +3049,7 @@ async function dispatchCaptureCommand(text) {
 // into Title / Tags so the chat UI can render them immediately.
 async function dispatchScratchpadCommand(parsed, text) {
   if (parsed.kind === "commit") {
-    await previewArchive({ intent: "llm", confirmAfterPreview: true });
+    await previewArchive({ intent: "llm", strategy: parsed.strategy || "", commitAfterPreview: true });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -3120,7 +3125,7 @@ async function dispatchThoughtCommand(parsed) {
     return;
   }
   if (parsed.kind === "commit") {
-    await previewArchive({ intent: "llm", confirmAfterPreview: true });
+    await previewArchive({ intent: "llm", strategy: parsed.strategy || "", commitAfterPreview: true });
     return;
   }
   if (parsed.kind === "new_session") {
@@ -3213,7 +3218,7 @@ async function resolveScratchpadTopic(topicRef) {
     null;
 }
 
-async function previewArchive({ intent = "menu", strategy = "", confirmAfterPreview = false } = {}) {
+async function previewArchive({ intent = "menu", strategy = "", commitAfterPreview = false } = {}) {
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
@@ -3234,9 +3239,8 @@ async function previewArchive({ intent = "menu", strategy = "", confirmAfterPrev
     appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
     upsertArchivePreviewMessage();
     renderCaptureConversation();
-    if (confirmAfterPreview) {
-      const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
-      if (ok) await commitScratchpad();
+    if (commitAfterPreview) {
+      await commitScratchpad();
     }
   } catch (error) {
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
@@ -4214,8 +4218,7 @@ function bind() {
   $("#capture-new-session")?.addEventListener("click", () => newCaptureSession());
   $("#capture-refresh-preview")?.addEventListener("click", () => previewArchive({ intent: "menu" }));
   $("#capture-archive-commit")?.addEventListener("click", async () => {
-    const ok = await confirmAction(t("capture.archive.confirm_title"), t("capture.archive.confirm_message"));
-    if (ok) await commitScratchpad();
+    await commitScratchpad();
   });
   $("#capture-sessions-toggle")?.addEventListener("click", () => {
     const drawer = $("#capture-sessions-drawer");

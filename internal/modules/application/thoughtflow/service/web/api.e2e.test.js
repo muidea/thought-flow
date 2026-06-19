@@ -712,7 +712,7 @@ test("API e2e", async (t) => {
     assert.equal(envelope(commit).data.thought.id, sourceID, "update strategy must return the original thought id");
   });
 
-  await t.test("reopen-session seeds supplement strategy and commit lands a sibling thought", async () => {
+  await t.test("reopen-session defaults to updating the source thought", async () => {
     // Land a real thought first so reopen has a source.
     const create = await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "reopen source", content: "Source content for reopen flow." },
@@ -720,7 +720,7 @@ test("API e2e", async (t) => {
     const sourceID = envelope(create).data.thought.id;
 
     // POST /api/thoughts/{id}/reopen-session → new session id,
-    // scratchpad seeded from the thought, default strategy=supplement.
+    // scratchpad seeded from the thought, default strategy=update_thought.
     const reopen = await request(server.baseURL, `/api/thoughts/${sourceID}/reopen-session`, "POST", {
       body: {},
     });
@@ -728,25 +728,31 @@ test("API e2e", async (t) => {
     const reopenData = envelope(reopen).data;
     const newSession = reopenData.session_id;
     assert.ok(newSession, "reopen must return a new session_id");
-    assert.equal(reopenData.scratchpad.archive_strategy, "supplement", "default strategy must be supplement");
+    assert.equal(reopenData.scratchpad.archive_strategy, "update_thought", "default strategy must update the source thought");
     assert.equal(reopenData.scratchpad.source_thought_id, sourceID, "scratchpad must remember the source thought");
     assert.equal(reopenData.scratchpad.title, "reopen source", "scratchpad.title seeded from source thought");
 
-    // Append a follow-up message and commit; the commit path
-    // should land a sibling thought and emit the supplement
-    // event so the topic can wire a backlink.
+    // Append a follow-up message and commit; the default commit path
+    // should patch the source thought instead of creating a sibling.
     const followup = await request(server.baseURL, `/api/capture/sessions/${newSession}/messages`, "POST", {
       body: { role: "user", text: "Adding a follow-up angle." },
     });
     assert.equal(followup.status, 200, `followup status=${followup.status} body=${followup.text}`);
 
-    const commit = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive`, "POST", {
-      body: { strategy: "supplement", thought_id: sourceID, confirmed: true },
-    });
+    const commitDeadline = Date.now() + 5000;
+    let commit;
+    for (;;) {
+      commit = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive`, "POST", {
+        body: { strategy: "update_thought", thought_id: sourceID, confirmed: true },
+      });
+      if (commit.status !== 409) break;
+      if (Date.now() > commitDeadline) break;
+      await sleep(100);
+    }
     assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);
     const commitData = envelope(commit).data;
-    assert.ok(commitData.thought && commitData.thought.id, "supplement commit must return thought.id");
-    assert.notEqual(commitData.thought.id, sourceID, "supplement must create a sibling thought, not overwrite");
+    assert.ok(commitData.thought && commitData.thought.id, "update commit must return thought.id");
+    assert.equal(commitData.thought.id, sourceID, "update strategy must save back to the source thought");
   });
 
   await t.test("topic candidates list returns matching unarchived sessions", async () => {

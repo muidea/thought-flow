@@ -22,7 +22,7 @@
 - [x] `GET /api/capture/sessions/active` 必须跨服务重启恢复最后一个未归档会话。
 - [x] `POST /api/capture/sessions` 未显式新建时必须复用最后一个未归档会话。
 - [x] `POST /api/capture/sessions/{id}/messages` 每轮 user message 后刷新 `session_context` 并发布 `scratchpad.context_updated`。
-- [x] 归档必须先走 preview；确认前不得写 Thought。
+- [x] 归档必须先走 preview；预览生成后由归档动作自动写 Thought。
 
 ### 2.2 Search
 
@@ -75,10 +75,10 @@
 ### 4.2 Capture 页面
 
 - [x] 页面打开即加载最后一个未归档会话。
-- [x] 输入框、上下文卡、系统追问、归档预览、确认保存都集成在对话流中。
+- [x] 输入框、上下文卡、系统追问、归档预览、自动保存都集成在对话流中。
 - [x] 不再展示 Text / URL 表单式采集页。
 - [x] “新建会话”必须是显式动作。
-- [x] 对话触发保存和菜单触发保存走同一 preview/confirm 流程。
+- [x] 对话触发保存和菜单触发保存走同一 preview/archive 流程；`/save` 是可选命令前缀。
 
 ### 4.3 Search 页面
 
@@ -115,7 +115,7 @@
 
 ### 6.1 Go / API
 
-- [x] Capture 会话恢复、默认复用最后会话、归档 preview、归档确认、reopen-session e2e 覆盖。
+- [x] Capture 会话恢复、默认复用最后会话、归档 preview、自动保存、reopen-session e2e 覆盖。
 - [x] Search API 覆盖 keyword-only 请求、tag/topic 筛选和 `SearchResultView` 投影。
 - [x] Topics 覆盖 `refresh`、`candidates`、候选确认不直接写正式文档。
 - [x] Compose API 覆盖创建草稿、查询草稿、保存为 Thought、source links 回溯。

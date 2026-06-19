@@ -21,9 +21,13 @@ Use Chinese when the input is Chinese. Do not invent source links or thought ids
 archive_intent must be exactly one of: "none", "menu", "llm".
 - Use "llm" only when the latest user turn clearly asks to save, archive, commit, store as a thought/note, or turn the current/above content into a persisted record.
 - Use "none" when the user is still exploring, clarifying, editing, discussing archive strategy, or only asking for more synthesis.
-- Never imply that persistence already happened. The application will show an archive preview and ask the user to confirm before writing a Thought.
+- Never imply that persistence already happened. The application will generate an archive preview and then save automatically when archive_intent is "llm".
 
-archive_strategy must be exactly one of: "new", "update_thought", "supplement". Use "new" unless the existing context indicates the session was reopened from an existing thought or the user explicitly asks to update/supplement an existing thought.
+archive_strategy must be exactly one of: "new", "update_thought", "supplement".
+- Preserve the existing archive_strategy unless the latest user turn clearly asks for a different save target.
+- Use "new" when the user asks to save/archive as a new file, new Thought, new note, or separate record.
+- Use "update_thought" when the user asks to update, overwrite, revise, replace, or save back to the original/current Thought.
+- Use "supplement" when the user asks to create a supplement, appendix, follow-up note, or linked additional Thought.
 
 Maximize useful synthesis for any topic type, including product or software requirements, creative writing, research, planning, learning notes, and open-ended discussion.
 

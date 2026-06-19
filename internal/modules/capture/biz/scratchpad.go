@@ -1075,6 +1075,9 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 	if _, err := s.capture.PatchThought(ctx, thoughtID, sessionID, *patch, rawBody); err != nil {
 		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
 	}
+	if _, err := s.store.MarkCommitted(sp.SessionID, thoughtID); err != nil {
+		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
+	}
 	s.publishCommittedEvent(thoughtID, sp.SessionID, "update")
 	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
 		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
@@ -1128,10 +1131,10 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 //   - SessionContext is pre-populated from the thought's
 //     metadata so the LLM can resume the conversation without
 //     re-reading the file;
-//   - ArchiveStrategy defaults to "supplement" so the next commit
-//     lands as a sibling thought with a backlink. The user can
-//     override via /api/capture/sessions/{id}/strategy before
-//     committing.
+//   - ArchiveStrategy defaults to "update_thought" so the next
+//     archive saves back to the source thought file. The user can
+//     still explicitly choose "supplement" or "new" via
+//     /api/capture/sessions/{id}/strategy before committing.
 //
 // The function generates a new sessionID if the caller did not
 // supply one (the common case — the front end wants a clean
@@ -1205,9 +1208,9 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 			SourceLinks:       sourceLinks,
 			RelatedThoughtIDs: related,
 			ArchiveIntent:     scratchpad.ArchiveIntentMenu,
-			ArchiveStrategy:   scratchpad.ArchiveStrategySupplement,
+			ArchiveStrategy:   scratchpad.ArchiveStrategyUpdate,
 		},
-		ArchiveStrategy: scratchpad.ArchiveStrategySupplement,
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
 	}
 	return s.store.Save(sp)

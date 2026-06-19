@@ -394,12 +394,12 @@ make e2e-test                          # 18 个 e2e 测试通过（含 1 个新 
 - 已移除旧采集兼容 handler、旧路由测试和 `CaptureSessionStart` DTO，Web 与 e2e 均只走正式 session API。
 - 专题候选刷新不再依赖手工 `/context`：消息追加后自动触发 topic candidate match，未归档会话只进入候选区。
 - `update_thought` 增加 e2e：归档预览必须带 diff，确认写入时 thought lock 返回 409 并由测试等待锁释放。
-- Web 采集页保留工作台导航和布局，主视图改为“当前对话 + 会话上下文 + 归档预览”；发送、重命名、新建会话、菜单预览和确认归档均走新 session API。
+- Web 采集页保留工作台导航和布局，主视图改为“当前对话 + 会话上下文 + 归档预览”；发送、重命名、新建会话、菜单预览和自动归档均走新 session API。
 - topic Notify 测试改用同步 BackgroundRoutine stub，消除候选文件写入与 `t.TempDir` 清理的竞态。
 
 **遗留项状态**：
 
-- 已收口：会话恢复、结构化上下文持久化、菜单/对话触发归档预览、普通归档、Thought 重新发起补充会话、更新原 Thought diff 保护、专题候选刷新、Web 采集主流程。
+- 已收口：会话恢复、结构化上下文持久化、菜单/对话触发归档预览、普通归档、Thought 重新发起整理会话、默认保存回原 Thought、更新原 Thought diff 保护、专题候选刷新、Web 采集主流程。
 - 仍需后续增强：LLM 驱动的深度发散/收敛策略、用户可编辑的完整上下文字段表单、专题候选确认后写入正式专题文档、搜索/专题/整理页进一步精简交互。
 
 **验证**：

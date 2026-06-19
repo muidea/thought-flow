@@ -184,7 +184,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 追加用户输入、URL、补充说明和 LLM 回复。
 3. 每轮消息后刷新 `SessionContext`，支持先发散再收敛。
 4. 只有用户通过对话或菜单明确触发保存时才生成 `ArchivePreview`。
-5. 从已归档 Thought 重新发起补充会话。
+5. 从已归档 Thought 重新发起整理会话；默认归档回原 Thought，可显式切换为另存或补充。
 
 ### 3.5 SessionContext
 
@@ -218,7 +218,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 ### 3.6 ArchivePreview
 
-`ArchivePreview` 是归档前的确认视图，不等同于已保存 Thought。
+`ArchivePreview` 是归档前的预览视图，不等同于已保存 Thought。
 
 字段：
 
@@ -237,8 +237,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 功能定义：
 
 1. 在对话流内以卡片形式展示归档内容。
-2. `update_thought` 必须展示 diff 并要求确认。
-3. 用户确认后才落地为 Thought 或 patch。
+2. `update_thought` 必须展示 diff。
+3. 用户触发归档后，预览展示完成即落地为 Thought 或 patch；自然语言保存目标由 LLM 判断，`/save` 仅作为可选显式命令前缀。
 
 ### 3.7 Topic
 

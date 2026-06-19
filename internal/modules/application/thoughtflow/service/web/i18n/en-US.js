@@ -135,8 +135,6 @@ export const messages = {
   "capture.archive.save_action": "Archive",
   "capture.archive.preview_empty": "Preview appears before saving.",
   "capture.archive.preview_ready": "Archive preview is ready. Review it, then archive.",
-  "capture.archive.confirm_title": "Confirm archive",
-  "capture.archive.confirm_message": "This will write the current session into a Thought.",
   "capture.archive.untitled": "Untitled Thought",
   "capture.archive.strategy": "Strategy",
   "capture.archive.target": "Target",

@@ -407,10 +407,10 @@
 
 ### 6.1 Go / API (5 项)
 
-- [x] Capture 会话恢复、默认复用最后会话、归档 preview、归档确认、reopen-session e2e 覆盖。
+- [x] Capture 会话恢复、默认复用最后会话、归档 preview、自动归档、reopen-session e2e 覆盖。
   - **impl-grep**: `rg "capture session recovery|archive preview" internal/modules/application/thoughtflow/service/web/api.e2e.test.js` 命中
   - **impl**: `api.e2e.test.js` capture session block
-  - **test**: `make e2e-test` 5 个 capture test: "capture session recovery" / "session survives service restart" / "session_context update persists" / "session messages auto-refresh" / "archive preview then commit" / "reopen-session seeds supplement" (6 个相关 test,含 reopen-session)
+  - **test**: `make e2e-test` capture 相关测试覆盖 "capture session recovery" / "session survives service restart" / "session_context update persists" / "session messages auto-refresh" / "archive preview then commit" / "reopen-session defaults to updating the source thought"
   - **commit**: `91f0f8d`、`73d69ea`
 
 - [x] Search API 覆盖 keyword-only 请求、tag/topic 筛选和 `SearchResultView` 投影。
