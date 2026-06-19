@@ -325,7 +325,7 @@ func (s *Service) expandRelated(ctx context.Context, thought models.Thought, con
 	if searchSvc == nil {
 		return nil, nil
 	}
-	query := strings.TrimSpace(thought.UserTitle + " " + thought.Summary + " " + firstLine(content.Original))
+	query := strings.TrimSpace(thought.UserTitle + " " + thought.Summary + " " + firstLine(primaryThoughtText(content)))
 	if query == "" {
 		return nil, nil
 	}
@@ -439,6 +439,15 @@ func firstLine(value string) string {
 		return strings.TrimSpace(value[:idx])
 	}
 	return value
+}
+
+func primaryThoughtText(content models.ThoughtContent) string {
+	for _, value := range []string{content.AINotes, content.ExtractedContent, content.Original} {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func replaceErrorRef(errors []models.ErrorRef, next models.ErrorRef) []models.ErrorRef {

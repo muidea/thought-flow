@@ -44,7 +44,7 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
-	content := models.ThoughtContent{Original: "DuckDB and markdown search should work."}
+	content := models.ThoughtContent{AINotes: "DuckDB and markdown search should work."}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
@@ -77,8 +77,8 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	if !contains(gotThought.AITags, "engineering") {
 		t.Fatalf("expected engineering tag, got %#v", gotThought.AITags)
 	}
-	if !strings.Contains(gotContent.AINotes, "Summary:") {
-		t.Fatalf("expected AI notes summary, got %q", gotContent.AINotes)
+	if gotContent.AINotes != content.AINotes {
+		t.Fatalf("AI Notes should preserve archived body, got %q", gotContent.AINotes)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestRefineNowScratchpadCommitDoesNotDuplicateAINotes(t *testing.T) {
 		IndexStatus:   models.IndexStatusPending,
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
-	content := models.ThoughtContent{Original: "## 当前收敛结论\n\n- 最终归档正文"}
+	content := models.ThoughtContent{AINotes: "## 当前收敛结论\n\n- 最终归档正文"}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
@@ -124,8 +124,8 @@ func TestRefineNowScratchpadCommitDoesNotDuplicateAINotes(t *testing.T) {
 	if gotThought.RefineStatus != models.RefineStatusRefined || gotThought.Summary == "" || len(gotThought.KeyPoints) == 0 {
 		t.Fatalf("expected refined front matter, got thought=%+v", gotThought)
 	}
-	if strings.TrimSpace(gotContent.AINotes) != "" {
-		t.Fatalf("scratchpad commit should not render duplicate AI Notes, got %q", gotContent.AINotes)
+	if gotContent.AINotes != content.AINotes {
+		t.Fatalf("scratchpad commit should preserve archived AI Notes, got %q", gotContent.AINotes)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestRefineNowSkipsUnchangedRefinedThought(t *testing.T) {
 		IndexStatus:   models.IndexStatusIndexed,
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
-	content := models.ThoughtContent{Original: original, AINotes: "Summary: existing summary"}
+	content := models.ThoughtContent{AINotes: original}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
@@ -528,9 +528,18 @@ func (p *countingRefineProvider) Refine(ctx context.Context, req ai.RefineReques
 		KeyPoints:   []string{"counted"},
 		AITags:      []string{"counted"},
 		Model:       "counting",
-		InputHash:   models.ContentHash(req.Content.Original),
+		InputHash:   models.ContentHash(firstNonEmpty(req.Content.AINotes, req.Content.ExtractedContent, req.Content.Original)),
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func contains(values []string, expected string) bool {

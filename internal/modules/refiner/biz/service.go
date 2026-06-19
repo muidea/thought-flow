@@ -151,7 +151,7 @@ func (s *Service) Suggest(ctx context.Context, thoughtID string) (models.Thought
 			Model:     "refined",
 		}, nil
 	}
-	fallback := strings.SplitN(strings.TrimSpace(content.Original), "\n", 2)[0]
+	fallback := strings.SplitN(primaryThoughtText(content), "\n", 2)[0]
 	if len(fallback) > 80 {
 		fallback = fallback[:80]
 	}
@@ -308,34 +308,17 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	thought.RefineStatus = models.RefineStatusRefined
 	thought.Errors = nil
 	thought.UpdatedAt = time.Now().UTC()
-	if shouldRenderAINotes(thought) {
-		content.AINotes = renderAINotes(refinement)
-	} else {
-		content.AINotes = ""
-	}
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
 }
 
-func shouldRenderAINotes(thought models.Thought) bool {
-	switch strings.TrimSpace(thought.Source) {
-	case models.ThoughtSourceScratchpadCommit, models.ThoughtSourceScratchpadSupplement:
-		return false
-	default:
-		return true
-	}
-}
-
 func unchangedRefinement(thought models.Thought, content models.ThoughtContent) (models.ThoughtRefinement, bool) {
 	if thought.RefineStatus != models.RefineStatusRefined {
 		return models.ThoughtRefinement{}, false
 	}
-	if shouldRenderAINotes(thought) && strings.TrimSpace(content.AINotes) == "" {
-		return models.ThoughtRefinement{}, false
-	}
-	inputHash := models.ContentHash(content.Original)
+	inputHash := models.ContentHash(primaryThoughtText(content))
 	if thought.ContentHash == "" || thought.ContentHash != inputHash {
 		return models.ThoughtRefinement{}, false
 	}
@@ -376,24 +359,13 @@ func replaceErrorRef(errors []models.ErrorRef, next models.ErrorRef) []models.Er
 	return append(ret, next)
 }
 
-func renderAINotes(refinement models.ThoughtRefinement) string {
-	var builder strings.Builder
-	if refinement.Summary != "" {
-		builder.WriteString("Summary: ")
-		builder.WriteString(refinement.Summary)
-		builder.WriteString("\n")
+func primaryThoughtText(content models.ThoughtContent) string {
+	for _, value := range []string{content.AINotes, content.ExtractedContent, content.Original} {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
 	}
-	for _, point := range refinement.KeyPoints {
-		builder.WriteString("- ")
-		builder.WriteString(point)
-		builder.WriteString("\n")
-	}
-	if len(refinement.AITags) > 0 {
-		builder.WriteString("Tags: ")
-		builder.WriteString(strings.Join(refinement.AITags, ", "))
-		builder.WriteString("\n")
-	}
-	return strings.TrimSpace(builder.String())
+	return ""
 }
 
 func jobEvent(workspaceID string, job models.Job) models.DomainEvent {

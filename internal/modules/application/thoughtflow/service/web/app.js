@@ -45,6 +45,7 @@ const state = {
     thoughtSnapshots: new Map(),
     activeScratchpad: null,
     archivePreview: null,
+    autoArchiveInFlight: false,
     messages: [],
     sessions: [],
     suggestion: null,
@@ -1989,6 +1990,7 @@ function scratchpadArchiveStrategy(sp = {}) {
 
 function shouldAutoPreviewArchive(sp = {}) {
   if (!sp || !sp.session_id) return false;
+  if (state.capture.autoArchiveInFlight) return false;
   if (state.capture.activeThoughtId || sp.committed_thought_id) return false;
   if (state.capture.archivePreview || sp.archive_preview) return false;
   return scratchpadArchiveIntent(sp) === "llm";
@@ -1996,11 +1998,16 @@ function shouldAutoPreviewArchive(sp = {}) {
 
 async function maybeAutoPreviewArchiveFromContext(sp = {}) {
   if (!shouldAutoPreviewArchive(sp)) return false;
-  await previewArchive({
-    intent: "llm",
-    strategy: scratchpadArchiveStrategy(sp),
-    commitAfterPreview: true,
-  });
+  state.capture.autoArchiveInFlight = true;
+  try {
+    await previewArchive({
+      intent: "llm",
+      strategy: scratchpadArchiveStrategy(sp),
+      commitAfterPreview: true,
+    });
+  } finally {
+    state.capture.autoArchiveInFlight = false;
+  }
   return true;
 }
 

@@ -201,6 +201,7 @@ type CaptureCommand struct {
 type ThoughtPatchRequest struct {
 	Title         *string   `json:"title,omitempty"`
 	Body          *string   `json:"body,omitempty"`
+	AINotes       *string   `json:"ai_notes,omitempty"`
 	Tags          *[]string `json:"tags,omitempty"`
 	AINotesAppend *string   `json:"ai_notes_append,omitempty"`
 	TopicIDs      *[]string `json:"topic_ids,omitempty"`

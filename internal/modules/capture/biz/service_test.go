@@ -62,8 +62,21 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThought() error = %v", err)
 	}
-	if snapshot.Content.Original != "Remember to design from the source markdown first." {
-		t.Fatalf("original content = %q", snapshot.Content.Original)
+	if snapshot.Content.Original != "" {
+		t.Fatalf("original content = %q, want empty", snapshot.Content.Original)
+	}
+	if snapshot.Content.AINotes != "Remember to design from the source markdown first." {
+		t.Fatalf("ai notes = %q", snapshot.Content.AINotes)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(result.Thought.Path)))
+	if err != nil {
+		t.Fatalf("ReadFile markdown: %v", err)
+	}
+	if strings.Contains(string(raw), "## Original") {
+		t.Fatalf("capture should not render Original section:\n%s", string(raw))
+	}
+	if !strings.Contains(string(raw), "## AI Notes") {
+		t.Fatalf("capture should render AI Notes section:\n%s", string(raw))
 	}
 }
 
@@ -265,12 +278,9 @@ func TestPatchThought_AppendsAINotesTimestamped(t *testing.T) {
 	if !strings.Contains(updated.Content.AINotes, "Captured an additional point.") {
 		t.Fatalf("AINotes missing new paragraph: %q", updated.Content.AINotes)
 	}
-	if !strings.Contains(updated.Content.AINotes, "## AI Notes") {
-		t.Fatalf("expected AI Notes section header, got %q", updated.Content.AINotes)
-	}
 }
 
-func TestPatchThought_ReplacesBodyAndContentHash(t *testing.T) {
+func TestPatchThought_ReplacesBodyAsAINotesAndContentHash(t *testing.T) {
 	service, snapshot := patchServiceForTest(t)
 	body := "## 当前收敛结论\n\n- 已形成最终归档正文"
 	req := models.ThoughtPatchRequest{Body: &body}
@@ -279,8 +289,11 @@ func TestPatchThought_ReplacesBodyAndContentHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchThought() error = %v", err)
 	}
-	if updated.Content.Original != body {
-		t.Fatalf("Original = %q", updated.Content.Original)
+	if updated.Content.Original != "" {
+		t.Fatalf("Original = %q, want empty", updated.Content.Original)
+	}
+	if updated.Content.AINotes != body {
+		t.Fatalf("AINotes = %q", updated.Content.AINotes)
 	}
 	if updated.Thought.ContentHash != models.ContentHash(body) {
 		t.Fatalf("ContentHash = %q, want %q", updated.Thought.ContentHash, models.ContentHash(body))

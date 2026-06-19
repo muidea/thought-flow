@@ -132,7 +132,7 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
 	thought.DisplayTitle = displayTitle(thought, original)
-	content := models.ThoughtContent{Original: original}
+	content := models.ThoughtContent{AINotes: original}
 
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.CaptureResult{}, err
@@ -271,8 +271,18 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 		if body == "" {
 			return models.ThoughtSnapshot{}, errors.New("body must not be empty")
 		}
-		content.Original = body
+		content.AINotes = body
+		content.Original = ""
 		thought.ContentHash = models.ContentHash(body)
+	}
+	if request.AINotes != nil {
+		notes := strings.TrimSpace(*request.AINotes)
+		if notes == "" {
+			return models.ThoughtSnapshot{}, errors.New("ai_notes must not be empty")
+		}
+		content.AINotes = notes
+		content.Original = ""
+		thought.ContentHash = models.ContentHash(notes)
 	}
 	if request.Tags != nil {
 		thought.UserTags = normalizeTags(*request.Tags)
@@ -362,6 +372,9 @@ func patchKeys(request models.ThoughtPatchRequest) []string {
 	}
 	if request.Body != nil {
 		keys = append(keys, "body")
+	}
+	if request.AINotes != nil {
+		keys = append(keys, "ai_notes")
 	}
 	if request.Tags != nil {
 		keys = append(keys, "tags")

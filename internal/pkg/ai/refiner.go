@@ -250,10 +250,7 @@ func (p observedCaptureContextProvider) BuildCaptureContext(ctx context.Context,
 
 func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
 	_ = ctx
-	text := strings.TrimSpace(req.Content.ExtractedContent)
-	if text == "" {
-		text = strings.TrimSpace(req.Content.Original)
-	}
+	text := primaryThoughtText(req.Content)
 	embedding, _ := p.Embed(ctx, EmbedRequest{ThoughtID: req.Thought.ID, Text: text})
 	return models.ThoughtRefinement{
 		ThoughtID:   req.Thought.ID,
@@ -333,10 +330,7 @@ func (p *LocalRefineProvider) Expand(ctx context.Context, req ExpandRequest) (Ex
 	_ = ctx
 	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
 	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
-	body := strings.TrimSpace(req.Content.Original)
-	if body == "" {
-		body = strings.TrimSpace(req.Content.ExtractedContent)
-	}
+	body := primaryThoughtText(req.Content)
 	var plan strings.Builder
 	plan.WriteString("## 背景与现状分析\n\n")
 	if summary != "" {
@@ -620,10 +614,7 @@ func ctxError(err error) error {
 }
 
 func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
-	text := strings.TrimSpace(req.Content.ExtractedContent)
-	if text == "" {
-		text = strings.TrimSpace(req.Content.Original)
-	}
+	text := primaryThoughtText(req.Content)
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
@@ -819,7 +810,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 // the raw content directly.
 func (p *OpenAICompatibleProvider) Expand(ctx context.Context, req ExpandRequest) (ExpandResult, error) {
 	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
-	original := firstNonEmpty(strings.TrimSpace(req.Content.Original), strings.TrimSpace(req.Content.ExtractedContent))
+	original := primaryThoughtText(req.Content)
 	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
 	content, err := p.chatCompletion(ctx,
 		expandSystemPrompt(),
@@ -1264,9 +1255,9 @@ func chooseOutlineSection(req models.TopicWeaveRequest) string {
 		req.Thought.UserTitle,
 		req.Thought.ExtractedTitle,
 		req.Thought.Summary,
-		req.Content.Original,
-		req.Content.ExtractedContent,
 		req.Content.AINotes,
+		req.Content.ExtractedContent,
+		req.Content.Original,
 		strings.Join(req.Membership.Reasons, " "),
 	}, "\n"))
 	bestTitle := ""
@@ -1332,4 +1323,12 @@ func firstLine(value string) string {
 		line = line[:240]
 	}
 	return line
+}
+
+func primaryThoughtText(content models.ThoughtContent) string {
+	return firstNonEmpty(
+		strings.TrimSpace(content.AINotes),
+		strings.TrimSpace(content.ExtractedContent),
+		strings.TrimSpace(content.Original),
+	)
 }

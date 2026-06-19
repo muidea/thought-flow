@@ -668,6 +668,13 @@ func displayTitle(thought models.Thought, content models.ThoughtContent) string 
 	if thought.ExtractedTitle != "" {
 		return thought.ExtractedTitle
 	}
+	if content.AINotes != "" {
+		firstLine := strings.TrimSpace(strings.Split(content.AINotes, "\n")[0])
+		if len(firstLine) > 80 {
+			return firstLine[:80]
+		}
+		return firstLine
+	}
 	if content.Original != "" {
 		firstLine := strings.TrimSpace(strings.Split(content.Original, "\n")[0])
 		if len(firstLine) > 80 {

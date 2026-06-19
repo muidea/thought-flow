@@ -458,9 +458,13 @@ func appendContextReplyMessage(messages []scratchpad.Message, reply string, at t
 	if reply == "" {
 		return messages
 	}
-	if len(messages) > 0 {
-		last := messages[len(messages)-1]
-		if strings.TrimSpace(last.Role) == "ai" && strings.TrimSpace(last.Text) == reply {
+	replyKey := compactText(reply)
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		msg := messages[idx]
+		if strings.TrimSpace(msg.Role) != "ai" {
+			continue
+		}
+		if compactText(msg.Text) == replyKey {
 			return messages
 		}
 	}
@@ -656,7 +660,7 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 		before := ""
 		if currentThought != nil {
 			thought := currentThought.Thought
-			before = thoughtBodyForDiff(thought, currentThought.Content.Original)
+			before = thoughtBodyForDiff(thought, currentThought.Content.AINotes)
 		}
 		diff, changed := buildThoughtDiff(before, body, tags, currentThought)
 		preview.Diff = &diff
@@ -680,16 +684,16 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 // thoughtBodyForDiff picks the string used as the "before" side
 // of a diff. UserTitle / ExtractedTitle / DisplayTitle are tried
 // in order (the same priority displayTitle() uses) so the diff
-// compares apples to apples; falling back to the raw content when
+// compares apples to apples; falling back to the AI Notes body when
 // the thought has no surfaced title.
-func thoughtBodyForDiff(thought models.Thought, original string) string {
+func thoughtBodyForDiff(thought models.Thought, aiNotes string) string {
 	if title := strings.TrimSpace(thought.UserTitle); title != "" {
 		return title
 	}
 	if title := strings.TrimSpace(thought.ExtractedTitle); title != "" {
 		return title
 	}
-	return strings.TrimSpace(original)
+	return strings.TrimSpace(aiNotes)
 }
 
 // buildThoughtDiff computes the field-level diff between the
@@ -1217,15 +1221,7 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 }
 
 func reopenThoughtBody(content models.ThoughtContent) string {
-	primary := stripLeadingMarkdownHeading(firstNonEmptyString(content.Original, content.ExtractedContent), "Original")
-	notes := stripLeadingMarkdownHeading(content.AINotes, "AI Notes")
-	if primary != "" && notes != "" {
-		return primary + "\n\n## AI Notes\n\n" + notes
-	}
-	if primary != "" {
-		return primary
-	}
-	return notes
+	return stripLeadingMarkdownHeading(content.AINotes, "AI Notes")
 }
 
 func stripLeadingMarkdownHeading(value, heading string) string {
@@ -1265,11 +1261,11 @@ func (s *ScratchpadService) applyDraftToThought(ctx context.Context, sp scratchp
 // buildPatchFromScratchpad converts a scratchpad's accumulated
 // state into a ThoughtPatchRequest. Capture sessions treat the LLM
 // synthesis as the archive body: when the user continues an already
-// committed session, the latest synthesized body replaces Original
-// instead of being appended to AI Notes. User raw input remains
+// committed session, the latest synthesized body replaces AI Notes.
+// User raw input remains
 // scratchpad-only. includeBody is false for the fresh-commit
 // post-capture draft application because Capture already wrote the
-// body to Original.
+// body to AI Notes.
 //
 // Returns (nil, nil, nil) when the scratchpad carries nothing new
 // beyond the original commit — the caller should treat that as a
@@ -1338,7 +1334,7 @@ func mergedTagSet(sp scratchpad.Scratchpad) []string {
 // The merge rule:
 //   - title  ← sp.SessionContext.CandidateTitle | sp.Draft.TitleSet
 //   - tags   ← sp.SessionContext.CandidateTags | sp.Tags
-//   - body   ← archiveBody(sp) as replacement Original
+//   - ai_notes ← archiveBody(sp) as the archived synthesis body
 func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest, []byte, error) {
 	hasAny := false
 	req := models.ThoughtPatchRequest{}
@@ -1359,7 +1355,7 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		hasAny = true
 	}
 	if body := archiveBody(sp); body != "" {
-		req.Body = &body
+		req.AINotes = &body
 		hasAny = true
 	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {

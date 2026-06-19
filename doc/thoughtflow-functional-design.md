@@ -115,7 +115,7 @@ type Scratchpad struct {
     TopicHints  []string      `json:"topic_hints"`
     URL         string        `json:"url,omitempty"`
 
-    // 累积内容（用户原始输入，commit 时作为 CaptureCommand.Content）
+    // 会话期用户输入，仅用于 LLM 上下文；归档时不直接写入 Thought 正文
     Content     string        `json:"content"`
     Messages    []Message     `json:"messages"`
 
@@ -405,7 +405,7 @@ UI Thought 详情 → "重新整理"
         ├─ SourceThoughtID = 原 thought.id
         └─ SessionContext.* 加载自原 Thought 元数据
               ├─ Topic ← 关联专题名
-              ├─ CandidateBody ← 原 Original
+              ├─ CandidateBody ← 原 AI Notes
               ├─ CandidateTitle ← 原 UserTitle 或 ExtractedTitle
               ├─ CandidateTags ← 原 UserTags ∪ AITags
               ├─ SourceLinks ← 原 URL + URLFollowups

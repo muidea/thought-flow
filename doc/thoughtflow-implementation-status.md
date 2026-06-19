@@ -94,11 +94,11 @@ go build ./cmd/thoughtflow
    - 本地抓取失败、非 2xx 或正文为空时回退 Jina Reader。
    - 两段抓取都失败时保留原始笔记、写入 `ErrorRef` 并发布失败事件。
 7. `thought.refine_started`、`thought.refined`、`thought.refine_failed` 事件。
-8. refined 结果回写原子 Markdown 的 front matter 和 `AI Notes` 分区。
+8. refined 结果回写原子 Markdown 的 front matter；`AI Notes` 作为归档正文保留，不由 refiner 覆盖。
 9. `thought.refined` payload 携带 `EmbeddingRecord`，供 search 写入索引层。
    - SSE 事件流会保留 embedding 元数据但移除 vector，避免向前端推送大向量 payload。
 10. refiner 后台 Job 使用 `max_attempts=3`，retryable 的 URL 抓取失败或 AI transient provider 错误会进入 `retrying` 状态并再次 `running`；最终失败才发布 `thought.refine_failed`。
-    - 自动 refine 遇到已 refined 且 `content_hash` 与当前 Original 内容一致的 Thought 时，会跳过重复 AI/provider 调用并将 Job 标记为成功。
+    - 自动 refine 遇到已 refined 且 `content_hash` 与当前归档正文一致的 Thought 时，会跳过重复 AI/provider 调用并将 Job 标记为成功。
     - `POST /api/thoughts/{id}/retry-refine` 走强制 refine 路径，即使输入 hash 未变化也会重新执行。
 11. `search` 运行单元。
 12. `thought.captured` / `thought.refined` 触发后台 index Job。

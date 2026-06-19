@@ -106,7 +106,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `path` | string | 是 | 相对工作区 Markdown 路径 | capture |
 | `created_at` | time | 是 | 采集时间 | capture |
 | `updated_at` | time | 是 | 最近一次文件内容更新时间 | 写入方 |
-| `content_hash` | string | 是 | 原始输入 hash，用于去重提示 | capture |
+| `content_hash` | string | 是 | 归档正文 hash，用于去重提示 | capture |
 | `user_tags` | []string | 否 | 用户显式标签 | capture |
 | `ai_tags` | []string | 否 | AI 标签 | refiner |
 | `topic_ids` | []string | 否 | 已关联专题摘要 | topic |
@@ -135,7 +135,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 不做：
 
 1. 不在 Thought 内直接保存不可读的二进制向量。
-2. 不让 AI 改写 `Original` 分区。
+2. 不让后台 refine 覆盖归档正文；refine 结果写入 front matter。
 3. 不把专题主文档内容嵌入 Thought。
 
 ### 3.3 ThoughtContent
@@ -146,9 +146,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 | 分区 | 说明 | Owner | 可重写 |
 | --- | --- | --- | --- |
-| `Original` | 用户原始输入或 URL | capture | 否，只追加纠错记录 |
 | `Extracted Content` | URL 抓取正文或清洗内容 | refiner | 是，重抓取可更新 |
-| `AI Notes` | 摘要、观点、标签说明 | refiner | 是，可重新生成 |
+| `AI Notes` | Thought 的正式归档正文；由 capture / reopen-session 写入 | capture | 是，reopen/update 可整体替换 |
 | `Links` | 关联专题、来源、反向链接 | topic/search | 是 |
 
 功能定义：

@@ -1480,6 +1480,19 @@ func TestScratchpadServiceCommitFreshPersistsFinalLLMSynthesis(t *testing.T) {
 	}
 }
 
+func TestAppendContextReplyMessageDedupesExistingAIReply(t *testing.T) {
+	at := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)
+	messages := []scratchpad.Message{
+		{Role: "user", Text: "将上述内容归档", At: at},
+		{Role: "ai", Text: "## 当前收敛结论\n\n- 最终整理结果", At: at},
+		{Role: "user", Text: "归档", At: at},
+	}
+	got := appendContextReplyMessage(messages, "## 当前收敛结论\n\n- 最终整理结果", at)
+	if len(got) != len(messages) {
+		t.Fatalf("message count = %d, want %d", len(got), len(messages))
+	}
+}
+
 func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	store := newMemoryScratchpad()
 	// Pre-stage: scratchpad already committed to thought-1.
@@ -1654,8 +1667,11 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 	if captureStub.patchReq.Tags == nil || len(*captureStub.patchReq.Tags) != 1 || (*captureStub.patchReq.Tags)[0] != "updated" {
 		t.Fatalf("Tags = %v, want [updated]", captureStub.patchReq.Tags)
 	}
-	if captureStub.patchReq.Body == nil || *captureStub.patchReq.Body != "## New Body\n\n- updated synthesis" {
-		t.Fatalf("Body = %v", captureStub.patchReq.Body)
+	if captureStub.patchReq.Body != nil {
+		t.Fatalf("Body should be empty for AI Notes update, got %v", captureStub.patchReq.Body)
+	}
+	if captureStub.patchReq.AINotes == nil || *captureStub.patchReq.AINotes != "## New Body\n\n- updated synthesis" {
+		t.Fatalf("AINotes = %v", captureStub.patchReq.AINotes)
 	}
 	// The update lands on the source file, so the scratchpad is marked
 	// committed to that same thought instead of remaining a draft.
@@ -1835,7 +1851,6 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 				},
 			},
 			Content: models.ThoughtContent{
-				Original:         "original body",
 				ExtractedContent: "extracted body",
 				AINotes:          "AI-generated notes",
 			},
@@ -1858,7 +1873,7 @@ func TestScratchpadServiceReopenFromThoughtSeedsContext(t *testing.T) {
 	if sp.Content != "" {
 		t.Fatalf("Content = %q (reopen should not restore archived content as user input)", sp.Content)
 	}
-	wantBody := "original body\n\n## AI Notes\n\nAI-generated notes"
+	wantBody := "AI-generated notes"
 	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != wantBody {
 		t.Fatalf("Messages = %+v (should restore final archived content as an ai bubble)", sp.Messages)
 	}
@@ -1900,7 +1915,7 @@ func TestScratchpadServiceReopenCommitUpdatesSourceThought(t *testing.T) {
 				UserTitle: "Original Title",
 				UserTags:  []string{"alpha"},
 			},
-			Content: models.ThoughtContent{Original: "previous archive"},
+			Content: models.ThoughtContent{AINotes: "previous archive"},
 		},
 	}
 	svc := NewScratchpadService(store, WithCapture(captureStub))
@@ -1929,8 +1944,11 @@ func TestScratchpadServiceReopenCommitUpdatesSourceThought(t *testing.T) {
 	if captureStub.patchCalls != 1 {
 		t.Fatalf("reopen commit should patch source thought, PatchThought called %d", captureStub.patchCalls)
 	}
-	if captureStub.patchReq.Body == nil || *captureStub.patchReq.Body != "## Final\n\n- latest synthesis" {
-		t.Fatalf("patched body = %v", captureStub.patchReq.Body)
+	if captureStub.patchReq.Body != nil {
+		t.Fatalf("patched body should be empty for AI Notes update, got %v", captureStub.patchReq.Body)
+	}
+	if captureStub.patchReq.AINotes == nil || *captureStub.patchReq.AINotes != "## Final\n\n- latest synthesis" {
+		t.Fatalf("patched ai notes = %v", captureStub.patchReq.AINotes)
 	}
 	if captureStub.patchReq.Title == nil || *captureStub.patchReq.Title != "Updated Title" {
 		t.Fatalf("patched title = %v", captureStub.patchReq.Title)
@@ -1949,7 +1967,7 @@ func TestScratchpadServiceReopenFromThoughtUsesSuppliedSessionID(t *testing.T) {
 	captureStub := &stubCapture{
 		getThoughtResult: models.ThoughtSnapshot{
 			Thought: models.Thought{ID: "thought-1"},
-			Content: models.ThoughtContent{Original: "x"},
+			Content: models.ThoughtContent{AINotes: "x"},
 		},
 	}
 	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("scratchpad"))
@@ -1962,13 +1980,12 @@ func TestScratchpadServiceReopenFromThoughtUsesSuppliedSessionID(t *testing.T) {
 	}
 }
 
-func TestScratchpadServiceReopenFromThoughtFallsBackThroughContentLayers(t *testing.T) {
+func TestScratchpadServiceReopenFromThoughtRestoresAINotes(t *testing.T) {
 	store := newMemoryScratchpad()
 	captureStub := &stubCapture{
 		getThoughtResult: models.ThoughtSnapshot{
 			Thought: models.Thought{ID: "thought-1"},
 			Content: models.ThoughtContent{
-				// No Original, no ExtractedContent, but AINotes set
 				AINotes: "from ai notes",
 			},
 		},
@@ -1982,7 +1999,7 @@ func TestScratchpadServiceReopenFromThoughtFallsBackThroughContentLayers(t *test
 		t.Fatalf("Content = %q (reopen should keep user input empty)", sp.Content)
 	}
 	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != "from ai notes" {
-		t.Fatalf("Messages = %+v (should fall back to AINotes as an ai bubble)", sp.Messages)
+		t.Fatalf("Messages = %+v (should restore AINotes as an ai bubble)", sp.Messages)
 	}
 }
 
@@ -1992,8 +2009,7 @@ func TestScratchpadServiceReopenFromThoughtNormalizesSectionHeadings(t *testing.
 		getThoughtResult: models.ThoughtSnapshot{
 			Thought: models.Thought{ID: "thought-1"},
 			Content: models.ThoughtContent{
-				Original: "## Original\n\nfinal archived body",
-				AINotes:  "## AI Notes\n\n### 2026-06-18 00:00:00 UTC\nextra note",
+				AINotes: "## AI Notes\n\n### 2026-06-18 00:00:00 UTC\nextra note",
 			},
 		},
 	}
@@ -2002,7 +2018,7 @@ func TestScratchpadServiceReopenFromThoughtNormalizesSectionHeadings(t *testing.
 	if err != nil {
 		t.Fatalf("ReopenFromThought: %v", err)
 	}
-	want := "final archived body\n\n## AI Notes\n\n### 2026-06-18 00:00:00 UTC\nextra note"
+	want := "### 2026-06-18 00:00:00 UTC\nextra note"
 	if len(sp.Messages) != 1 || sp.Messages[0].Role != "ai" || sp.Messages[0].Text != want {
 		t.Fatalf("Messages = %+v, want ai bubble %q", sp.Messages, want)
 	}
