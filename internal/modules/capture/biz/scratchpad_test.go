@@ -520,6 +520,21 @@ func TestScratchpadServiceAppendMessageRejectsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestScratchpadServiceCaptureContextTimeoutCanBeConfigured(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	if svc.contextTimeout != defaultCaptureContextEnrichTimeout {
+		t.Fatalf("default context timeout = %v, want %v", svc.contextTimeout, defaultCaptureContextEnrichTimeout)
+	}
+	svc = NewScratchpadService(newMemoryScratchpad(), WithCaptureContextTimeout(9*time.Minute))
+	if svc.contextTimeout != 9*time.Minute {
+		t.Fatalf("configured context timeout = %v, want 9m", svc.contextTimeout)
+	}
+	svc = NewScratchpadService(newMemoryScratchpad(), WithCaptureContextTimeout(0))
+	if svc.contextTimeout != defaultCaptureContextEnrichTimeout {
+		t.Fatalf("zero timeout should keep default, got %v", svc.contextTimeout)
+	}
+}
+
 type syncBackground struct{}
 
 func (syncBackground) AsyncFunction(fn func()) error {
@@ -757,7 +772,7 @@ func TestScratchpadServiceBuildCaptureCommandFlattens(t *testing.T) {
 	if len(cmd.Tags) != 1 || cmd.Tags[0] != "a" {
 		t.Fatalf("Tags = %v", cmd.Tags)
 	}
-	if cmd.Source != "scratchpad-commit" {
+	if cmd.Source != models.ThoughtSourceScratchpadCommit {
 		t.Fatalf("Source = %q", cmd.Source)
 	}
 }
@@ -1412,16 +1427,11 @@ func TestScratchpadServiceCommitFreshFiresCaptureAndMarksCommitted(t *testing.T)
 	if captureStub.captureCalls != 1 {
 		t.Fatalf("Capture called %d times, want 1", captureStub.captureCalls)
 	}
-	// Fresh commit must apply the draft through the lock-free
-	// ApplyDraftInternal path; going through PatchThought would
-	// hold the thought lock for the whole write, and the async
-	// refiner / expander jobs that the Capture step just enqueued
-	// would then see the lock and MarkSucceeded("skipped: thought
-	// is locked by an active session") without retrying — the
-	// thought would permanently lose its summary / ai_tags /
-	// key_points / expansion_plan.
-	if captureStub.applyCalls != 1 {
-		t.Fatalf("ApplyDraftInternal called %d, want 1", captureStub.applyCalls)
+	// The final body was already written by Capture, so a fresh
+	// commit with no extra draft commands should not patch the
+	// thought again.
+	if captureStub.applyCalls != 0 {
+		t.Fatalf("ApplyDraftInternal called %d, want 0", captureStub.applyCalls)
 	}
 	if captureStub.patchCalls != 0 {
 		t.Fatalf("PatchThought should not be called on fresh commit, got %d", captureStub.patchCalls)
@@ -1518,8 +1528,8 @@ func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	if captureStub.applyReq.Tags == nil || len(*captureStub.applyReq.Tags) != 1 {
 		t.Fatalf("Tags = %v", captureStub.applyReq.Tags)
 	}
-	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "final more thoughts" {
-		t.Fatalf("AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
+	if captureStub.applyReq.Body == nil || *captureStub.applyReq.Body != "final more thoughts" {
+		t.Fatalf("Body = %v", captureStub.applyReq.Body)
 	}
 	if captureStub.lastApplySessionID != "s1" {
 		t.Fatalf("session id = %q, want s1", captureStub.lastApplySessionID)
@@ -1546,8 +1556,8 @@ func TestScratchpadServiceCommitRepeatAppendsFinalLLMSynthesis(t *testing.T) {
 	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if captureStub.applyReq.AINotesAppend == nil || *captureStub.applyReq.AINotesAppend != "## 后续整理\n\n- 新增内容已经合并\n- 待办事项已经收口" {
-		t.Fatalf("AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
+	if captureStub.applyReq.Body == nil || *captureStub.applyReq.Body != "## 后续整理\n\n- 新增内容已经合并\n- 待办事项已经收口" {
+		t.Fatalf("Body = %v", captureStub.applyReq.Body)
 	}
 }
 
@@ -1644,8 +1654,8 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 	if captureStub.patchReq.Tags == nil || len(*captureStub.patchReq.Tags) != 1 || (*captureStub.patchReq.Tags)[0] != "updated" {
 		t.Fatalf("Tags = %v, want [updated]", captureStub.patchReq.Tags)
 	}
-	if captureStub.patchReq.AINotesAppend == nil || *captureStub.patchReq.AINotesAppend != "## New Body\n\n- updated synthesis" {
-		t.Fatalf("AINotesAppend = %v", captureStub.patchReq.AINotesAppend)
+	if captureStub.patchReq.Body == nil || *captureStub.patchReq.Body != "## New Body\n\n- updated synthesis" {
+		t.Fatalf("Body = %v", captureStub.patchReq.Body)
 	}
 	// scratchpad's CommittedThoughtID must NOT be set (the user
 	// is still iterating against the source thought).
@@ -1718,7 +1728,7 @@ func TestScratchpadServiceCommitUpdateThoughtNoChangesDegradesToReset(t *testing
 	}
 }
 
-func TestScratchpadServiceCommitSupplementFiresCaptureAndStampsBacklinkNote(t *testing.T) {
+func TestScratchpadServiceCommitSupplementFiresCaptureWithoutAINotesBacklink(t *testing.T) {
 	store := newMemoryScratchpad()
 	_, _ = store.Save(scratchpad.Scratchpad{
 		SessionID: "s1",
@@ -1751,13 +1761,11 @@ func TestScratchpadServiceCommitSupplementFiresCaptureAndStampsBacklinkNote(t *t
 	if !strings.HasPrefix(captureStub.captureResult.Thought.ID, "thought-new") {
 		t.Fatalf("result thought = %+v", captureStub.captureResult)
 	}
-	// After Capture, the apply path should fire to write the
-	// backlink marker AINotes — using ApplyDraftInternal (lock-free).
-	if captureStub.applyCalls != 1 {
-		t.Fatalf("ApplyDraftInternal for backlink marker called %d, want 1", captureStub.applyCalls)
+	if !strings.HasPrefix(captureStub.captureCmd.Content, "[补充] 前置 thought-thought-parent") {
+		t.Fatalf("capture content missing supplement prefix: %q", captureStub.captureCmd.Content)
 	}
-	if captureStub.applyReq.AINotesAppend == nil || !strings.Contains(*captureStub.applyReq.AINotesAppend, "thought-parent") {
-		t.Fatalf("Backlink marker AINotesAppend = %v", captureStub.applyReq.AINotesAppend)
+	if captureStub.applyCalls != 0 {
+		t.Fatalf("ApplyDraftInternal should not write duplicate AI Notes, got %d", captureStub.applyCalls)
 	}
 	// scratchpad's CommittedThoughtID should point at the new thought.
 	sp, _ := store.Get("s1")

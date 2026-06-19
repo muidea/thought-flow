@@ -308,18 +308,31 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	thought.RefineStatus = models.RefineStatusRefined
 	thought.Errors = nil
 	thought.UpdatedAt = time.Now().UTC()
-	content.AINotes = renderAINotes(refinement)
+	if shouldRenderAINotes(thought) {
+		content.AINotes = renderAINotes(refinement)
+	} else {
+		content.AINotes = ""
+	}
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
 }
 
+func shouldRenderAINotes(thought models.Thought) bool {
+	switch strings.TrimSpace(thought.Source) {
+	case models.ThoughtSourceScratchpadCommit, models.ThoughtSourceScratchpadSupplement:
+		return false
+	default:
+		return true
+	}
+}
+
 func unchangedRefinement(thought models.Thought, content models.ThoughtContent) (models.ThoughtRefinement, bool) {
 	if thought.RefineStatus != models.RefineStatusRefined {
 		return models.ThoughtRefinement{}, false
 	}
-	if strings.TrimSpace(content.AINotes) == "" {
+	if shouldRenderAINotes(thought) && strings.TrimSpace(content.AINotes) == "" {
 		return models.ThoughtRefinement{}, false
 	}
 	inputHash := models.ContentHash(content.Original)

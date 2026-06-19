@@ -138,6 +138,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		capturebiz.WithEventHub(eventHub),
 		capturebiz.WithBackgroundRoutine(backgroundRoutine),
 		capturebiz.WithCaptureContextProvider(ai.NewCaptureContextProvider(cfg.LLM)),
+		capturebiz.WithCaptureContextTimeout(cfg.LLM.Timeout),
 	)
 	topic.InjectScratchpadProvider(scratchpadStore)
 	topic.InjectComposeDraftProvider(compose.Current())

@@ -270,6 +270,34 @@ func TestPatchThought_AppendsAINotesTimestamped(t *testing.T) {
 	}
 }
 
+func TestPatchThought_ReplacesBodyAndContentHash(t *testing.T) {
+	service, snapshot := patchServiceForTest(t)
+	body := "## 当前收敛结论\n\n- 已形成最终归档正文"
+	req := models.ThoughtPatchRequest{Body: &body}
+	rawBody := []byte(`{"body":"## 当前收敛结论\n\n- 已形成最终归档正文"}`)
+	updated, err := service.PatchThought(context.Background(), snapshot.Thought.ID, "session-A", req, rawBody)
+	if err != nil {
+		t.Fatalf("PatchThought() error = %v", err)
+	}
+	if updated.Content.Original != body {
+		t.Fatalf("Original = %q", updated.Content.Original)
+	}
+	if updated.Thought.ContentHash != models.ContentHash(body) {
+		t.Fatalf("ContentHash = %q, want %q", updated.Thought.ContentHash, models.ContentHash(body))
+	}
+}
+
+func TestPatchThought_RejectsEmptyBody(t *testing.T) {
+	service, snapshot := patchServiceForTest(t)
+	body := "   "
+	req := models.ThoughtPatchRequest{Body: &body}
+	rawBody := []byte(`{"body":"   "}`)
+	_, err := service.PatchThought(context.Background(), snapshot.Thought.ID, "session-A", req, rawBody)
+	if err == nil {
+		t.Fatalf("expected error for empty body")
+	}
+}
+
 func TestPatchThought_ReplacesTags(t *testing.T) {
 	service, snapshot := patchServiceForTest(t)
 	tags := []string{"c", "b", "a", ""}

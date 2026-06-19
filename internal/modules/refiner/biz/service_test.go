@@ -82,6 +82,53 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	}
 }
 
+func TestRefineNowScratchpadCommitDoesNotDuplicateAINotes(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("mkdir jobs: %v", err)
+	}
+	now := time.Date(2026, 6, 19, 1, 0, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID:            "20260619-010000-scratch",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceScratchpadCommit,
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260619-010000-scratch")),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   models.ContentHash("## 当前收敛结论\n\n- 最终归档正文"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	content := models.ThoughtContent{Original: "## 当前收敛结论\n\n- 最终归档正文"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	service := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, ai.NewLocalRefineProvider(), webfetch.New(time.Second))
+	if _, err := service.RefineNow(context.Background(), thought.ID); err != nil {
+		t.Fatalf("RefineNow() error = %v", err)
+	}
+	gotThought, gotContent, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if gotThought.RefineStatus != models.RefineStatusRefined || gotThought.Summary == "" || len(gotThought.KeyPoints) == 0 {
+		t.Fatalf("expected refined front matter, got thought=%+v", gotThought)
+	}
+	if strings.TrimSpace(gotContent.AINotes) != "" {
+		t.Fatalf("scratchpad commit should not render duplicate AI Notes, got %q", gotContent.AINotes)
+	}
+}
+
 func TestRefineNowSkipsUnchangedRefinedThought(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

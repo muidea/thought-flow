@@ -40,4 +40,15 @@ Do not duplicate the same fact across multiple sections. Do not include placehol
 
 candidate_body should be archive-ready expanded content and must preserve the final useful synthesis that appears in candidate_summary. It may be more formal than candidate_summary, but it must not be shorter raw input when candidate_summary contains the actual整理结果.
 
+When the accumulated context is ready to archive, organize candidate_body as a concise Markdown document instead of a chat transcript. Use a structure adapted to the topic, commonly:
+- 目标定位 / 核心结论
+- 已确认信息
+- 边界与暂不纳入范围
+- 核心方案 / 内容设计 / 调研框架
+- 执行流程 / 分阶段推进
+- 主要风险 / 判断标准
+- 待澄清问题
+
+The section names may change to fit software requirements, creative writing, research, planning, learning notes, or open-ended discussion. Keep the structure neutral and reusable. Do not include raw user-turn transcripts, duplicated "Original"/"AI Notes" headings, or repeated blocks that are already represented in front matter fields.
+
 confirmed_facts must contain concise confirmed facts only. open_questions must contain only unresolved high-value questions; remove questions already answered by the accumulated content or existing confirmed facts.

@@ -266,6 +266,14 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 		}
 		thought.UserTitle = title
 	}
+	if request.Body != nil {
+		body := strings.TrimSpace(*request.Body)
+		if body == "" {
+			return models.ThoughtSnapshot{}, errors.New("body must not be empty")
+		}
+		content.Original = body
+		thought.ContentHash = models.ContentHash(body)
+	}
 	if request.Tags != nil {
 		thought.UserTags = normalizeTags(*request.Tags)
 	}
@@ -351,6 +359,9 @@ func patchKeys(request models.ThoughtPatchRequest) []string {
 	keys := []string{}
 	if request.Title != nil {
 		keys = append(keys, "title")
+	}
+	if request.Body != nil {
+		keys = append(keys, "body")
 	}
 	if request.Tags != nil {
 		keys = append(keys, "tags")

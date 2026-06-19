@@ -6,9 +6,11 @@ const (
 	ThoughtTypeText = "text"
 	ThoughtTypeURL  = "url"
 
-	ThoughtSourceManual  = "manual"
-	ThoughtSourceAPI     = "api"
-	ThoughtSourceCompose = "compose"
+	ThoughtSourceManual               = "manual"
+	ThoughtSourceAPI                  = "api"
+	ThoughtSourceCompose              = "compose"
+	ThoughtSourceScratchpadCommit     = "scratchpad-commit"
+	ThoughtSourceScratchpadSupplement = "scratchpad-supplement"
 
 	ComposeSourceTypeThought        = "thought"
 	ComposeSourceTypeSearchResult   = "search_result"
@@ -198,6 +200,7 @@ type CaptureCommand struct {
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
 	Title         *string   `json:"title,omitempty"`
+	Body          *string   `json:"body,omitempty"`
 	Tags          *[]string `json:"tags,omitempty"`
 	AINotesAppend *string   `json:"ai_notes_append,omitempty"`
 	TopicIDs      *[]string `json:"topic_ids,omitempty"`

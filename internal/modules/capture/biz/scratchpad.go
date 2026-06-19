@@ -42,16 +42,17 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
-	store      ScratchpadStore
-	capture    CaptureCommitter
-	eventHub   eventHub
-	background task.BackgroundRoutine
-	contextAI  ai.CaptureContextProvider
-	sessionID  string
-	now        func() time.Time
+	store          ScratchpadStore
+	capture        CaptureCommitter
+	eventHub       eventHub
+	background     task.BackgroundRoutine
+	contextAI      ai.CaptureContextProvider
+	contextTimeout time.Duration
+	sessionID      string
+	now            func() time.Time
 }
 
-const captureContextEnrichTimeout = 2 * time.Minute
+const defaultCaptureContextEnrichTimeout = 2 * time.Minute
 
 // ScratchpadStore is the subset of scratchpad.Store this package
 // depends on. The HTTP layer uses the same interface, which keeps
@@ -108,6 +109,14 @@ func WithCaptureContextProvider(provider ai.CaptureContextProvider) ScratchpadSe
 	return func(s *ScratchpadService) { s.contextAI = provider }
 }
 
+func WithCaptureContextTimeout(timeout time.Duration) ScratchpadServiceOption {
+	return func(s *ScratchpadService) {
+		if timeout > 0 {
+			s.contextTimeout = timeout
+		}
+	}
+}
+
 // WithSessionID sets the sessionID used by PatchThought's
 // locker. The capture service's PatchThought requires a session
 // id; the scratchpad session id is the natural choice.
@@ -120,9 +129,10 @@ func WithSessionID(id string) ScratchpadServiceOption {
 // rather than nil-panicking, so the HTTP layer can return 503 cleanly.
 func NewScratchpadService(store ScratchpadStore, options ...ScratchpadServiceOption) *ScratchpadService {
 	s := &ScratchpadService{
-		store:     store,
-		sessionID: "scratchpad",
-		now:       func() time.Time { return time.Now().UTC() },
+		store:          store,
+		contextTimeout: defaultCaptureContextEnrichTimeout,
+		sessionID:      "scratchpad",
+		now:            func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range options {
 		opt(s)
@@ -319,7 +329,7 @@ func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, 
 		if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), captureContextEnrichTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
 		defer cancel()
 		result, err := s.contextAI.BuildCaptureContext(ctx, ai.CaptureContextRequest{
 			SessionID: sessionID,
@@ -849,7 +859,7 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 		Title:      title,
 		Tags:       tags,
 		TopicHints: topicHints,
-		Source:     "scratchpad-commit",
+		Source:     models.ThoughtSourceScratchpadCommit,
 	}, nil
 }
 
@@ -992,7 +1002,7 @@ func (s *ScratchpadService) commitFresh(ctx context.Context, sp scratchpad.Scrat
 // into a single PATCH and let the existing patch pipeline fire the
 // git commit + emit the events.
 func (s *ScratchpadService) commitRepeat(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
-	patch, rawBody, err := buildPatchFromScratchpad(sp)
+	patch, rawBody, err := buildPatchFromScratchpad(sp, true)
 	if err != nil {
 		return models.CaptureResult{}, err
 	}
@@ -1074,12 +1084,11 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 
 // commitSupplement is the "supplement" path. It captures a new
 // thought whose body is prefixed with "[补充] 前置
-// thought-{parent.ID}" and whose AINotes gets a backlink marker
-// pointing at the parent. Updating the parent's
-// RelatedThoughtIDs is a follow-up: it requires extending
-// ThoughtPatchRequest with a RelatedThoughtIDs field (currently
-// absent), so the parent's backlink is left to the next PR. The
-// new thought is fully readable without the parent update.
+// thought-{parent.ID}". Updating the parent's RelatedThoughtIDs is
+// a follow-up: it requires extending ThoughtPatchRequest with a
+// RelatedThoughtIDs field (currently absent), so the parent's
+// backlink is left to the next PR. The new thought is fully
+// readable without the parent update.
 func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
 	parentID := strings.TrimSpace(sp.SourceThoughtID)
 	if parentID == "" {
@@ -1092,7 +1101,7 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 	if err != nil {
 		return models.CaptureResult{}, err
 	}
-	cmd.Source = "scratchpad-supplement"
+	cmd.Source = models.ThoughtSourceScratchpadSupplement
 	prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
 	if !strings.HasPrefix(cmd.Content, prefix) {
 		cmd.Content = prefix + cmd.Content
@@ -1103,18 +1112,6 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 	}
 	if _, err := s.store.MarkCommitted(sp.SessionID, result.Thought.ID); err != nil {
 		return result, err
-	}
-	// AINotes backlink marker on the new thought. We use the
-	// lock-free apply path so the refiner job the Capture step
-	// just enqueued doesn't see a "thought is locked" skip.
-	sessionID := s.sessionID
-	if sessionID == "" {
-		sessionID = sp.SessionID
-	}
-	marker := fmt.Sprintf("[补充] 关联前置 thought-%s", parentID)
-	patch := &models.ThoughtPatchRequest{AINotesAppend: &marker}
-	if rawBody, mErr := patchRequestToRawBody(*patch); mErr == nil {
-		_, _ = s.capture.ApplyDraftInternal(ctx, result.Thought.ID, sessionID, *patch, rawBody)
 	}
 	s.publishCommittedEvent(result.Thought.ID, sp.SessionID, "supplement")
 	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
@@ -1247,7 +1244,7 @@ func stripLeadingMarkdownHeading(value, heading string) string {
 // the just-committed thought. Each non-empty draft field becomes
 // one PATCH field.
 func (s *ScratchpadService) applyDraftToThought(ctx context.Context, sp scratchpad.Scratchpad, thoughtID string) error {
-	patch, rawBody, err := buildPatchFromScratchpad(sp)
+	patch, rawBody, err := buildPatchFromScratchpad(sp, false)
 	if err != nil {
 		return err
 	}
@@ -1263,16 +1260,18 @@ func (s *ScratchpadService) applyDraftToThought(ctx context.Context, sp scratchp
 }
 
 // buildPatchFromScratchpad converts a scratchpad's accumulated
-// state into a ThoughtPatchRequest. The Content field is appended
-// to AINotes (rather than the original) because the original
-// content was already committed as part of the thought's
-// `original` field by the capture pipeline. AINotes is the natural
-// place for "the user added more text after committing".
+// state into a ThoughtPatchRequest. Capture sessions treat the LLM
+// synthesis as the archive body: when the user continues an already
+// committed session, the latest synthesized body replaces Original
+// instead of being appended to AI Notes. User raw input remains
+// scratchpad-only. includeBody is false for the fresh-commit
+// post-capture draft application because Capture already wrote the
+// body to Original.
 //
 // Returns (nil, nil, nil) when the scratchpad carries nothing new
 // beyond the original commit — the caller should treat that as a
 // no-op.
-func buildPatchFromScratchpad(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest, []byte, error) {
+func buildPatchFromScratchpad(sp scratchpad.Scratchpad, includeBody bool) (*models.ThoughtPatchRequest, []byte, error) {
 	hasAny := false
 	req := models.ThoughtPatchRequest{}
 	if title := strings.TrimSpace(sp.Draft.TitleSet); title != "" {
@@ -1288,17 +1287,12 @@ func buildPatchFromScratchpad(sp scratchpad.Scratchpad) (*models.ThoughtPatchReq
 		req.Tags = &mergedTags
 		hasAny = true
 	}
-	// Build the AINotesAppend from any new content the user added
-	// after commit. We can't fully separate "what was committed
-	// before" from "what was added after" because Content is a
-	// single cumulative field, but the post-commit content lives
-	// in scratchpad.Content while the original commit's content
-	// is in the thought's `original`. We just append Content as a
-	// note — duplicates are not catastrophic because AINotes is
-	// additive and the user can edit them down.
-	if note := archiveBody(sp); note != "" {
-		req.AINotesAppend = &note
-		hasAny = true
+	if includeBody {
+		body := archiveBody(sp)
+		if body != "" {
+			req.Body = &body
+			hasAny = true
+		}
 	}
 	if topics := uniqueStrings(sp.Draft.TopicIDs); len(topics) > 0 {
 		req.TopicIDs = &topics
@@ -1331,20 +1325,17 @@ func mergedTagSet(sp scratchpad.Scratchpad) []string {
 }
 
 // buildPatchForUpdate produces a ThoughtPatchRequest for the
-// "update_thought" path. Unlike buildPatchFromScratchpad (which
-// treats Content as AINotesAppend because the original was
-// already captured), this path projects the scratchpad's
+// "update_thought" path. It projects the scratchpad's
 // CandidateTitle / CandidateBody / CandidateTags — the
-// session_context fields the user (or LLM) staged for the
-// update — and emits them as the patch payload. Returns
-// (nil, nil, nil) when the scratchpad carries no projected
-// changes, so the caller can degrade to a no-op.
+// session_context fields the user (or LLM) staged for the update —
+// and emits them as the patch payload. Returns (nil, nil, nil)
+// when the scratchpad carries no projected changes, so the caller
+// can degrade to a no-op.
 //
 // The merge rule:
 //   - title  ← sp.SessionContext.CandidateTitle | sp.Draft.TitleSet
 //   - tags   ← sp.SessionContext.CandidateTags | sp.Tags
-//   - body   ← sp.SessionContext.CandidateBody  (as AINotesAppend;
-//     the existing original stays untouched)
+//   - body   ← archiveBody(sp) as replacement Original
 func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest, []byte, error) {
 	hasAny := false
 	req := models.ThoughtPatchRequest{}
@@ -1365,12 +1356,7 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		hasAny = true
 	}
 	if body := archiveBody(sp); body != "" {
-		// AINotesAppend is additive: the user's new body goes in
-		// the AINotes block rather than overwriting the original
-		// content. A future PR can add a Body patch field to
-		// ThoughtPatchRequest so the update actually replaces
-		// `original`; for now the visible diff is in AINotes.
-		req.AINotesAppend = &body
+		req.Body = &body
 		hasAny = true
 	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {
