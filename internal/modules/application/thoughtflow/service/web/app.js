@@ -199,14 +199,25 @@ function restoreRoutePage(page, query) {
     if (typeof query.keyword === "string") $("#topic-filter").value = query.keyword;
     if (query.auto_weave === "true") $("#topic-auto-filter").checked = true;
     if (state.route?.params?.topicId) {
-      const tab = typeof query.tab === "string" ? query.tab : "topics-detail";
-      activateTab(tab, $("#page-topics"));
+      activateTab(normalizeTopicsTabName(query.tab), $("#page-topics"));
     }
   } else if (page === "thoughts") {
     if (typeof query.tab === "string") activateTab(query.tab, $("#page-thoughts"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
+}
+
+function normalizeTopicsTabName(tab) {
+  const value = typeof tab === "string" && tab.trim() ? tab.trim() : "detail";
+  if (value.startsWith("topics-")) return value;
+  const aliases = {
+    list: "topics-list",
+    detail: "topics-detail",
+    proposals: "topics-proposals",
+    rules: "topics-rules",
+  };
+  return aliases[value] || "topics-detail";
 }
 
 function buildRouteHash(page, params = {}, query = {}) {
@@ -1705,15 +1716,7 @@ function populateTopicEditor(topic) {
     "edit-topic-name",
     "edit-topic-description",
     "edit-keywords-any",
-    "edit-keywords-all",
-    "edit-keywords-exclude",
     "edit-tags-any",
-    "edit-manual-include",
-    "edit-manual-exclude",
-    "edit-semantic",
-    "edit-threshold",
-    "edit-auto-weave",
-    "edit-outline",
     "save-topic-rules",
   ];
   const enabled = Boolean(topic);
@@ -1725,19 +1728,10 @@ function populateTopicEditor(topic) {
   const rules = topic.rules || {};
   const keywords = rules.keywords || {};
   const tags = rules.tags || {};
-  const semantic = rules.semantic || {};
   $("#edit-topic-name").value = topic.name || "";
   $("#edit-topic-description").value = topic.description || "";
   $("#edit-keywords-any").value = joinCSV(keywords.any);
-  $("#edit-keywords-all").value = joinCSV(keywords.all);
-  $("#edit-keywords-exclude").value = joinCSV(keywords.exclude);
   $("#edit-tags-any").value = joinCSV(tags.any);
-  $("#edit-manual-include").value = joinCSV(rules.manual_include);
-  $("#edit-manual-exclude").value = joinCSV(rules.manual_exclude);
-  $("#edit-semantic").checked = Boolean(semantic.enabled);
-  $("#edit-threshold").value = Number.isFinite(semantic.threshold) && semantic.threshold > 0 ? semantic.threshold : 0.75;
-  $("#edit-auto-weave").checked = topic.auto_weave !== false;
-  $("#edit-outline").value = outlineText(topic.outline);
 }
 
 async function createTopic(event) {
@@ -1780,7 +1774,10 @@ async function saveTopicRules(event) {
     toast(t("toast.select_topic_first"));
     return;
   }
-  const threshold = Number.parseFloat($("#edit-threshold").value || "0.75");
+  const currentTopic = state.activeTopicDetail?.topic || {};
+  const currentRules = currentTopic.rules || {};
+  const currentKeywords = currentRules.keywords || {};
+  const currentSemantic = currentRules.semantic || {};
   const topic = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}`, {
     method: "PUT",
     body: JSON.stringify({
@@ -1789,16 +1786,19 @@ async function saveTopicRules(event) {
       rules: {
         keywords: {
           any: csv($("#edit-keywords-any").value),
-          all: csv($("#edit-keywords-all").value),
-          exclude: csv($("#edit-keywords-exclude").value),
+          all: Array.isArray(currentKeywords.all) ? currentKeywords.all : [],
+          exclude: Array.isArray(currentKeywords.exclude) ? currentKeywords.exclude : [],
         },
         tags: { any: csv($("#edit-tags-any").value) },
-        semantic: { enabled: $("#edit-semantic").checked, threshold },
-        manual_include: csv($("#edit-manual-include").value),
-        manual_exclude: csv($("#edit-manual-exclude").value),
+        semantic: {
+          enabled: Boolean(currentSemantic.enabled),
+          threshold: Number.isFinite(currentSemantic.threshold) && currentSemantic.threshold > 0 ? currentSemantic.threshold : 0.75,
+        },
+        manual_include: Array.isArray(currentRules.manual_include) ? currentRules.manual_include : [],
+        manual_exclude: Array.isArray(currentRules.manual_exclude) ? currentRules.manual_exclude : [],
       },
-      outline: outlineFromText($("#edit-outline").value),
-      auto_weave: $("#edit-auto-weave").checked,
+      outline: Array.isArray(currentTopic.outline) ? currentTopic.outline : outlineFromText("Notes\nOpen Questions"),
+      auto_weave: currentTopic.auto_weave !== false,
     }),
   });
   toast(t("toast.topic_rules_saved"));
@@ -4275,6 +4275,7 @@ async function applyRoute(hash = window.location.hash) {
     if (state.activeTopicId !== route.params.topicId || !state.activeTopicDetail) {
       await openTopic(route.params.topicId);
     }
+    activateTab(normalizeTopicsTabName(route.query.tab), $("#page-topics"));
     if (route.query.tab === "proposals") await loadWeaveProposals(route.params.topicId);
   }
   if (route.page === "thoughts" && route.params.thoughtId) {

@@ -183,6 +183,8 @@ async function runBrowserSmoke(browser, url) {
     await settleRoute("#/topics/demo?tab=detail");
     await waitUntil(() => document.querySelector("#topics-tab-proposals")?.disabled === false);
     const topicRouteActive = document.querySelector("#page-topics")?.classList.contains("active");
+    const topicDetailActive = document.querySelector("#tab-topics-detail")?.classList.contains("active");
+    const topicDocumentText = document.querySelector("#topic-document")?.textContent || "";
     const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
     document.querySelector("[data-tab='topics-proposals']").click();
     const proposalsActive = document.querySelector("#tab-topics-proposals")?.classList.contains("active");
@@ -255,6 +257,8 @@ async function runBrowserSmoke(browser, url) {
       composeDrawerOpen,
       createTopicDrawerOpen,
       topicRouteActive,
+      topicDetailActive,
+      topicDocumentText,
       topicsNavActive,
       proposalsActive,
       rulesText,
@@ -303,6 +307,8 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.composeDrawerOpen, true);
   assert.equal(state.createTopicDrawerOpen, true);
   assert.equal(state.topicRouteActive, true);
+  assert.equal(state.topicDetailActive, true);
+  assert.match(state.topicDocumentText, /Demo Topic/);
   assert.equal(state.topicsNavActive, true);
   assert.equal(state.proposalsActive, true);
   assert.match(state.rulesText, /Semantic/);

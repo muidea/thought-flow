@@ -156,6 +156,7 @@ function loadAppFunctionsWith(opts = {}) {
       outlineFromText,
       outlineText,
       parseRoute,
+      normalizeTopicsTabName,
       navItemClass,
       navItemAriaCurrent,
       statusBadge,
@@ -639,6 +640,17 @@ test("restoreRoutePage hydrates topic state from query", () => {
   app.restoreRoutePage("topics", { keyword: "ai", auto_weave: "true" });
   assert.equal(dom.store["topic-filter"], "ai");
   assert.equal(dom.store["topic-auto-filter_checked"], true);
+});
+
+test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
+  const app = loadAppFunctions();
+
+  assert.equal(app.normalizeTopicsTabName("detail"), "topics-detail");
+  assert.equal(app.normalizeTopicsTabName("proposals"), "topics-proposals");
+  assert.equal(app.normalizeTopicsTabName("rules"), "topics-rules");
+  assert.equal(app.normalizeTopicsTabName("topics-detail"), "topics-detail");
+  assert.equal(app.normalizeTopicsTabName("unknown"), "topics-detail");
+  assert.equal(app.normalizeTopicsTabName(""), "topics-detail");
 });
 
 test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => {

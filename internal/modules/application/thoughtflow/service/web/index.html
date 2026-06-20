@@ -480,23 +480,27 @@
     <aside class="tf-drawer" id="topic-rules-drawer" aria-hidden="true">
       <div class="tf-drawer-panel">
         <div class="tf-drawer-header">
-          <h2 data-i18n="topics.edit_drawer_title">Edit Topic Rules</h2>
+          <h2 data-i18n="topics.edit_drawer_title">Edit Topic</h2>
           <button class="tf-btn tf-drawer-close" data-close-drawer="topic-rules-drawer" type="button" data-i18n="topics.edit.close">Close</button>
         </div>
         <form id="topic-edit-form" class="tf-form stack-form">
-          <input id="edit-topic-name" type="text" data-i18n-attr="topics.edit.name" data-i18n-attr-target="placeholder" placeholder="Name" disabled>
-          <textarea id="edit-topic-description" data-i18n-attr="topics.edit.description" data-i18n-attr-target="placeholder" placeholder="Description" disabled></textarea>
-          <input id="edit-keywords-any" type="text" data-i18n-attr="topics.edit.keywords_any" data-i18n-attr-target="placeholder" placeholder="keywords any" disabled>
-          <input id="edit-keywords-all" type="text" data-i18n-attr="topics.edit.keywords_all" data-i18n-attr-target="placeholder" placeholder="keywords all" disabled>
-          <input id="edit-keywords-exclude" type="text" data-i18n-attr="topics.edit.keywords_exclude" data-i18n-attr-target="placeholder" placeholder="keywords exclude" disabled>
-          <input id="edit-tags-any" type="text" data-i18n-attr="topics.edit.tags_any" data-i18n-attr-target="placeholder" placeholder="tags any" disabled>
-          <input id="edit-manual-include" type="text" data-i18n-attr="topics.edit.manual_include" data-i18n-attr-target="placeholder" placeholder="manual include thought ids" disabled>
-          <input id="edit-manual-exclude" type="text" data-i18n-attr="topics.edit.manual_exclude" data-i18n-attr-target="placeholder" placeholder="manual exclude thought ids" disabled>
-          <label class="toggle-row"><input id="edit-semantic" type="checkbox" disabled> <span data-i18n="topics.edit.semantic">Semantic</span></label>
-          <input id="edit-threshold" type="number" min="0" max="1" step="0.05" value="0.75" data-i18n-attr="topics.edit.threshold" data-i18n-attr-target="aria-label" aria-label="Semantic threshold" disabled>
-          <label class="toggle-row"><input id="edit-auto-weave" type="checkbox" disabled> <span data-i18n="topics.edit.auto_weave">Auto weave</span></label>
-          <textarea id="edit-outline" data-i18n-attr="topics.edit.outline" data-i18n-attr-target="placeholder" placeholder="outline, one heading per line" disabled></textarea>
-          <button class="tf-btn tf-btn-primary" id="save-topic-rules" type="submit" disabled data-i18n="topics.edit.save">Save rules</button>
+          <label class="tf-form-item">
+            <span class="tf-label" data-i18n="topics.edit.name">Name</span>
+            <input id="edit-topic-name" type="text" data-i18n-attr="topics.edit.name" data-i18n-attr-target="placeholder" placeholder="Name" disabled>
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label" data-i18n="topics.edit.description">Description</span>
+            <textarea id="edit-topic-description" data-i18n-attr="topics.edit.description" data-i18n-attr-target="placeholder" placeholder="Description" disabled></textarea>
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label" data-i18n="topics.edit.keywords_any">Keywords</span>
+            <input id="edit-keywords-any" type="text" data-i18n-attr="topics.edit.keywords_any" data-i18n-attr-target="placeholder" placeholder="Keywords" disabled>
+          </label>
+          <label class="tf-form-item">
+            <span class="tf-label" data-i18n="topics.edit.tags_any">Tags</span>
+            <input id="edit-tags-any" type="text" data-i18n-attr="topics.edit.tags_any" data-i18n-attr-target="placeholder" placeholder="Tags" disabled>
+          </label>
+          <button class="tf-btn tf-btn-primary" id="save-topic-rules" type="submit" disabled data-i18n="topics.edit.save">Save</button>
         </form>
       </div>
     </aside>

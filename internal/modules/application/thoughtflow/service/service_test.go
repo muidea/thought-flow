@@ -65,14 +65,25 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), `id="weave-review-title"`) {
 		t.Fatalf("expected weave review title target in embedded index")
 	}
-	for _, removed := range []string{`id="topic-keywords-all"`, `id="topic-keywords-exclude"`, `id="topic-manual-include"`, `id="topic-semantic"`, `id="topic-outline"`} {
+	for _, removed := range []string{`id="topic-keywords-all"`, `id="topic-keywords-exclude"`, `id="topic-manual-include"`, `id="topic-manual-exclude"`, `id="topic-semantic"`, `id="topic-threshold"`, `id="topic-auto-weave"`, `id="topic-outline"`} {
 		if strings.Contains(res.Body.String(), removed) {
 			t.Fatalf("create topic drawer should not expose advanced control %s", removed)
 		}
 	}
-	if !strings.Contains(res.Body.String(), `id="edit-keywords-all"`) ||
-		!strings.Contains(res.Body.String(), `id="edit-semantic"`) {
-		t.Fatalf("advanced topic controls should remain available in edit rules drawer")
+	for _, removed := range []string{`id="edit-keywords-all"`, `id="edit-keywords-exclude"`, `id="edit-manual-include"`, `id="edit-manual-exclude"`, `id="edit-semantic"`, `id="edit-threshold"`, `id="edit-auto-weave"`, `id="edit-outline"`} {
+		if strings.Contains(res.Body.String(), removed) {
+			t.Fatalf("edit topic drawer should not expose advanced control %s", removed)
+		}
+	}
+	for _, expected := range []string{`id="topic-name"`, `id="topic-description"`, `id="topic-keywords"`, `id="topic-tags"`, `id="edit-topic-name"`, `id="edit-topic-description"`, `id="edit-keywords-any"`, `id="edit-tags-any"`} {
+		if !strings.Contains(res.Body.String(), expected) {
+			t.Fatalf("expected topic drawer control %s", expected)
+		}
+	}
+	for _, removedText := range []string{"Edit Topic Rules", "Save rules"} {
+		if strings.Contains(res.Body.String(), removedText) {
+			t.Fatalf("edit topic drawer should not expose rules-only wording %q", removedText)
+		}
 	}
 }
 
