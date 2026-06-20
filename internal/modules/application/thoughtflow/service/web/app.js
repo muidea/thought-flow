@@ -190,19 +190,23 @@ const PAGE_SERIALIZERS = {
 function restoreRoutePage(page, query) {
   if (!query || typeof query !== "object") return;
   if (page === "search") {
-    if (typeof query.q === "string") $("#search-query").value = query.q;
-    if (typeof query.tags === "string") $("#search-tags").value = query.tags;
+    $("#search-query").value = typeof query.q === "string" ? query.q : "";
+    $("#search-tags").value = typeof query.tags === "string" ? query.tags : "";
     if (typeof query.selected === "string" && query.selected) {
       state.selectedThoughts = new Set(query.selected.split(",").filter(Boolean));
+    } else {
+      state.selectedThoughts = new Set();
     }
   } else if (page === "topics") {
-    if (typeof query.keyword === "string") $("#topic-filter").value = query.keyword;
-    if (query.auto_weave === "true") $("#topic-auto-filter").checked = true;
+    $("#topic-filter").value = typeof query.keyword === "string" ? query.keyword : "";
+    $("#topic-auto-filter").checked = query.auto_weave === "true";
     if (state.route?.params?.topicId) {
       activateTab(normalizeTopicsTabName(query.tab), $("#page-topics"));
+    } else {
+      activateTab("topics-list", $("#page-topics"));
     }
   } else if (page === "thoughts") {
-    if (typeof query.tab === "string") activateTab(query.tab, $("#page-thoughts"));
+    activateTab(typeof query.tab === "string" ? query.tab : "notes-all", $("#page-thoughts"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
@@ -258,6 +262,7 @@ function replaceHashSilently(hash) {
 }
 
 let persistRouteTimer = null;
+let routeApplySerial = 0;
 function persistRouteDebounced() {
   if (typeof window === "undefined") return;
   window.clearTimeout(persistRouteTimer);
@@ -279,6 +284,48 @@ function persistRouteNow() {
 // without waiting for the debounce.
 function syncHash() {
   persistRouteNow();
+}
+
+async function refreshRouteData(route, options = {}) {
+  if (!route || !route.page) return;
+  switch (route.page) {
+    case "dashboard":
+      await Promise.all([loadStatus(), loadMetrics()]);
+      break;
+    case "capture":
+      renderCaptureConversation();
+      if (options.force && typeof rehydrateActiveScratchpad === "function") {
+        await rehydrateActiveScratchpad();
+      }
+      break;
+    case "thoughts":
+      await loadThoughts();
+      break;
+    case "search":
+      await runSearch();
+      break;
+    case "topics":
+      await loadTopics();
+      break;
+    case "compose":
+      await loadComposeDrafts();
+      renderComposeBasket();
+      break;
+    default:
+      break;
+  }
+}
+
+function handleNavClick(event) {
+  const link = event.currentTarget || event.target?.closest?.("[data-nav]");
+  const rawHref = link?.getAttribute?.("href") || "";
+  if (!rawHref.startsWith("#/")) return;
+  event.preventDefault();
+  if (window.location.hash === rawHref) {
+    applyRoute(rawHref, { force: true }).catch((error) => toast(error.message));
+    return;
+  }
+  window.location.hash = rawHref;
 }
 
 // Minimal localStorage wrapper that survives blocked storage and absent
@@ -4264,17 +4311,21 @@ function renderRoute(route = state.route) {
   });
 }
 
-async function applyRoute(hash = window.location.hash) {
+async function applyRoute(hash = window.location.hash, options = {}) {
+  const serial = ++routeApplySerial;
   const route = parseRoute(hash);
   state.route = route;
   // Restore DOM inputs / state from the URL query before rendering, so the
   // first render of the page reflects the URL — no flicker of defaults.
   restoreRoutePage(route.page, route.query);
   renderRoute(route);
+  await refreshRouteData(route, options);
+  if (serial !== routeApplySerial) return;
   if (route.page === "topics" && route.params.topicId) {
     if (state.activeTopicId !== route.params.topicId || !state.activeTopicDetail) {
       await openTopic(route.params.topicId);
     }
+    if (serial !== routeApplySerial) return;
     activateTab(normalizeTopicsTabName(route.query.tab), $("#page-topics"));
     if (route.query.tab === "proposals") await loadWeaveProposals(route.params.topicId);
   }
@@ -4287,6 +4338,9 @@ async function applyRoute(hash = window.location.hash) {
 }
 
 function bind() {
+  document.querySelectorAll("[data-nav]").forEach((item) => {
+    item.addEventListener("click", handleNavClick);
+  });
   $("#capture-form")?.addEventListener("submit", (event) => captureThought(event).catch((error) => toast(error.message)));
   $("#capture-composer")?.addEventListener("submit", (event) => submitCaptureComposer(event).catch((error) => toast(error.message)));
   $("#capture-composer-input")?.addEventListener("keydown", handleCaptureComposerKeydown);
@@ -4509,9 +4563,6 @@ async function boot() {
   await loadThoughts();
   await loadMetrics();
   await applyRoute();
-  if (state.route?.page === "search") {
-    await runSearch();
-  }
   // Land the user back in the most recent uncommitted capture
   // session if there is one, so a refresh doesn't dump them onto
   // an empty composer. The server's last_active_session_id is the

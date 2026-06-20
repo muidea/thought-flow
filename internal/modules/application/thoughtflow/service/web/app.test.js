@@ -172,6 +172,8 @@ function loadAppFunctionsWith(opts = {}) {
       displayRuntimePath,
       buildRouteHash,
       restoreRoutePage,
+      refreshRouteData,
+      applyRoute,
       PAGE_SERIALIZERS,
       persistBasket,
       restoreBasket,
@@ -620,13 +622,14 @@ test("restoreRoutePage ignores unknown / malformed keys without throwing", () =>
   const dom = makeDomStub();
   const app = loadAppFunctionsWith({ dom, exposeState: true });
 
-  // Non-string where a string is expected, plus unknown keys — must not throw
-  // and must not corrupt existing state.
+  // Non-string where a string is expected, plus unknown keys — must not throw.
+  // Route restoration treats the URL as authoritative, so absent recognized
+  // keys reset their controls to defaults instead of preserving stale UI.
   app._state.selectedThoughts = new Set(["keep"]);
   app.restoreRoutePage("search", { q: 7, mode: null, random: "thing" });
   assert.equal(dom.store["search-query"] ?? "", "");
   assert.equal(dom.store["search-mode"] ?? "", "");
-  assert.deepEqual(Array.from(app._state.selectedThoughts), ["keep"]);
+  assert.deepEqual(Array.from(app._state.selectedThoughts), []);
 
   // Unknown page identifier is a no-op.
   app.restoreRoutePage("nope", { q: "rag" });
@@ -640,6 +643,10 @@ test("restoreRoutePage hydrates topic state from query", () => {
   app.restoreRoutePage("topics", { keyword: "ai", auto_weave: "true" });
   assert.equal(dom.store["topic-filter"], "ai");
   assert.equal(dom.store["topic-auto-filter_checked"], true);
+
+  app.restoreRoutePage("topics", {});
+  assert.equal(dom.store["topic-filter"], "");
+  assert.equal(dom.store["topic-auto-filter_checked"], false);
 });
 
 test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
@@ -651,6 +658,27 @@ test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
   assert.equal(app.normalizeTopicsTabName("topics-detail"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName("unknown"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName(""), "topics-detail");
+});
+
+test("applyRoute refreshes the target page data when navigation enters search", async () => {
+  const dom = makeDomStub();
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    dom,
+    fetch: async (url) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({ data: { results: [] } }),
+      };
+    },
+  });
+
+  await app.applyRoute("#/search?q=rg");
+
+  assert.equal(dom.store["search-query"], "rg");
+  assert.ok(calls.some((url) => url.startsWith("/api/search?")));
+  assert.match(dom.store["search-results_innerHTML"], /empty\.no_matching/);
 });
 
 test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => {
