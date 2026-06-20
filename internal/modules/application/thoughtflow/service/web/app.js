@@ -1782,17 +1782,19 @@ function renderTopicRules(topic) {
   const keywords = rules.keywords || {};
   const tags = rules.tags || {};
   const semantic = rules.semantic || {};
-  node.innerHTML = renderDescription([
+  const rows = [
     [t("topics.rule.keywords_any"), joinCSV(keywords.any) || t("topics.rule.none")],
-    [t("topics.rule.keywords_all"), joinCSV(keywords.all) || t("topics.rule.none")],
-    [t("topics.rule.keywords_exclude"), joinCSV(keywords.exclude) || t("topics.rule.none")],
     [t("topics.rule.tags_any"), joinCSV(tags.any) || t("topics.rule.none")],
-    [t("topics.rule.manual_include"), joinCSV(rules.manual_include) || t("topics.rule.none")],
-    [t("topics.rule.manual_exclude"), joinCSV(rules.manual_exclude) || t("topics.rule.none")],
-    [t("topics.rule.semantic"), semantic.enabled ? t("topics.rule.semantic_enabled", { threshold: semantic.threshold || 0.75 }) : t("topics.rule.semantic_disabled")],
     [t("topics.rule.auto_weave"), topic.auto_weave === false ? t("topics.rule.auto_weave_disabled") : t("topics.rule.auto_weave_enabled")],
-    [t("topics.rule.outline"), outlineText(topic.outline) || t("topics.rule.none")],
-  ]);
+  ];
+  if ((keywords.all || []).length > 0) rows.push([t("topics.rule.keywords_all"), joinCSV(keywords.all)]);
+  if ((keywords.exclude || []).length > 0) rows.push([t("topics.rule.keywords_exclude"), joinCSV(keywords.exclude)]);
+  if ((rules.manual_include || []).length > 0) rows.push([t("topics.rule.manual_include"), joinCSV(rules.manual_include)]);
+  if ((rules.manual_exclude || []).length > 0) rows.push([t("topics.rule.manual_exclude"), joinCSV(rules.manual_exclude)]);
+  if (semantic.enabled) rows.push([t("topics.rule.semantic"), t("topics.rule.semantic_enabled", { threshold: semantic.threshold || 0.75 })]);
+  const outline = outlineText(topic.outline);
+  if (outline && outline !== outlineText(outlineFromText("Notes\nOpen Questions"))) rows.push([t("topics.rule.outline"), outline]);
+  node.innerHTML = renderDescription(rows);
 }
 
 async function loadWeaveProposals(topicId = state.activeTopicId) {

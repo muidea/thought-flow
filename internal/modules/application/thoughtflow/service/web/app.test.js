@@ -32,7 +32,8 @@ function makeDomStub(initial = {}) {
   // when the test doesn't drive them.
   const sideEffectNodes = new Set(["toast", "compose-source-count", "compose-source-list",
     "clear-compose-basket", "compose-basket-list", "compose-source-count-basket",
-    "clear-compose-basket-tab", "selected-count", "add-selected-compose", "clear-selected"]);
+    "clear-compose-basket-tab", "selected-count", "add-selected-compose", "clear-selected",
+    "topic-rules-summary"]);
   // Each control is a live proxy over the store: reads go to store, writes
   // (and `checked` toggles) flow back into the store so assertions can see them.
   const nodes = Object.fromEntries(controls.map((id) => {
@@ -166,6 +167,7 @@ function loadAppFunctionsWith(opts = {}) {
       renderSearchIdle,
       renderTopicCandidateImpact,
       renderTopicCandidates,
+      renderTopicRules,
       createComposeBasket,
       addToComposeBasket,
       clearComposeBasket,
@@ -193,6 +195,7 @@ function loadAppFunctionsWith(opts = {}) {
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
       handleCaptureComposerKeydown,
+      handleTabClick,
       openCaptureSessionsDrawer,
       closeCaptureSessionsDrawer,
       renderCaptureSessionItem,
@@ -668,6 +671,74 @@ test("topicTabRouteValue writes stable URL aliases instead of DOM tab ids", () =
   assert.equal(app.topicTabRouteValue("topics-proposals"), "proposals");
   assert.equal(app.topicTabRouteValue("topics-rules"), "rules");
   assert.equal(app.topicTabRouteValue("detail"), "detail");
+});
+
+test("renderTopicRules shows the simplified rule summary and hides inactive internals", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom });
+
+  app.renderTopicRules({
+    rules: {
+      keywords: { any: ["web"], all: [], exclude: [] },
+      tags: { any: ["crawler"] },
+      semantic: { enabled: false, threshold: 0.75 },
+      manual_include: [],
+      manual_exclude: [],
+    },
+    outline: [{ title: "Notes" }, { title: "Open Questions" }],
+    auto_weave: true,
+  });
+
+  const html = dom.find("#topic-rules-summary").innerHTML;
+  assert.match(html, /topics\.rule\.keywords_any/);
+  assert.match(html, /web/);
+  assert.match(html, /topics\.rule\.tags_any/);
+  assert.match(html, /crawler/);
+  assert.match(html, /topics\.rule\.auto_weave/);
+  assert.doesNotMatch(html, /topics\.rule\.keywords_all/);
+  assert.doesNotMatch(html, /topics\.rule\.keywords_exclude/);
+  assert.doesNotMatch(html, /topics\.rule\.manual_include/);
+  assert.doesNotMatch(html, /topics\.rule\.manual_exclude/);
+  assert.doesNotMatch(html, /topics\.rule\.semantic/);
+  assert.doesNotMatch(html, /topics\.rule\.outline/);
+});
+
+test("handleTabClick scopes ordinary page tabs to their own page", () => {
+  const app = loadAppFunctions();
+  const classes = (initial = []) => {
+    const set = new Set(initial);
+    return {
+      has: (name) => set.has(name),
+      toggle: (name, enabled) => {
+        if (enabled) set.add(name);
+        else set.delete(name);
+      },
+    };
+  };
+  const tabA = { dataset: { tab: "compose-drafts" }, classList: classes(["active"]) };
+  const tabB = { dataset: { tab: "compose-basket" }, classList: classes() };
+  const panelA = { id: "tab-compose-drafts", classList: classes(["active"]) };
+  const panelB = { id: "tab-compose-basket", classList: classes() };
+  const outsideTab = { dataset: { tab: "notes-all" }, classList: classes(["active"]) };
+  const page = {
+    dataset: { page: "compose" },
+    querySelectorAll: (selector) => {
+      if (selector === ".tab") return [tabA, tabB];
+      if (selector === ".tab-panel") return [panelA, panelB];
+      return [];
+    },
+  };
+  tabB.closest = (selector) => (selector === ".tf-page" ? page : null);
+  tabA.closest = tabB.closest;
+  outsideTab.closest = () => null;
+
+  app.handleTabClick({ currentTarget: tabB });
+
+  assert.equal(tabA.classList.has("active"), false);
+  assert.equal(tabB.classList.has("active"), true);
+  assert.equal(panelA.classList.has("active"), false);
+  assert.equal(panelB.classList.has("active"), true);
+  assert.equal(outsideTab.classList.has("active"), true);
 });
 
 test("applyRoute refreshes the target page data when navigation enters search", async () => {
