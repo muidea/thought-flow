@@ -157,6 +157,7 @@ function loadAppFunctionsWith(opts = {}) {
       outlineText,
       parseRoute,
       normalizeTopicsTabName,
+      topicTabRouteValue,
       navItemClass,
       navItemAriaCurrent,
       statusBadge,
@@ -658,6 +659,15 @@ test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
   assert.equal(app.normalizeTopicsTabName("topics-detail"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName("unknown"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName(""), "topics-detail");
+});
+
+test("topicTabRouteValue writes stable URL aliases instead of DOM tab ids", () => {
+  const app = loadAppFunctions();
+
+  assert.equal(app.topicTabRouteValue("topics-detail"), "detail");
+  assert.equal(app.topicTabRouteValue("topics-proposals"), "proposals");
+  assert.equal(app.topicTabRouteValue("topics-rules"), "rules");
+  assert.equal(app.topicTabRouteValue("detail"), "detail");
 });
 
 test("applyRoute refreshes the target page data when navigation enters search", async () => {

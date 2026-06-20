@@ -164,13 +164,10 @@ const PAGE_SERIALIZERS = {
     return q;
   },
   topics: () => {
-    const q = {};
-    const f = $("#topic-filter")?.value.trim();
-    if (f) q.keyword = f;
-    if ($("#topic-auto-filter")?.checked) q.auto_weave = "true";
+    const q = topicFilterRouteQuery();
     if (state.route?.params?.topicId) {
       const active = document.querySelector(`#page-topics .tab.active`);
-      if (active && active.dataset.tab && active.dataset.tab !== "topics-list") q.tab = active.dataset.tab;
+      if (active && active.dataset.tab && active.dataset.tab !== "topics-list") q.tab = topicTabRouteValue(active.dataset.tab);
     }
     return q;
   },
@@ -183,6 +180,19 @@ const PAGE_SERIALIZERS = {
     return q;
   },
 };
+
+function topicFilterRouteQuery() {
+  const q = {};
+  const f = $("#topic-filter")?.value.trim();
+  if (f) q.keyword = f;
+  if ($("#topic-auto-filter")?.checked) q.auto_weave = "true";
+  return q;
+}
+
+function topicTabRouteValue(tab) {
+  const normalized = normalizeTopicsTabName(tab);
+  return normalized.startsWith("topics-") ? normalized.slice("topics-".length) : normalized;
+}
 
 // Reverse of PAGE_SERIALIZERS — read a query object and apply it to inputs /
 // state. Unknown keys are silently ignored so older URLs don't crash on a
@@ -321,11 +331,48 @@ function handleNavClick(event) {
   const rawHref = link?.getAttribute?.("href") || "";
   if (!rawHref.startsWith("#/")) return;
   event.preventDefault();
-  if (window.location.hash === rawHref) {
-    applyRoute(rawHref, { force: true }).catch((error) => toast(error.message));
+  navigateHash(rawHref, { force: true });
+}
+
+function navigateHash(hash, options = {}) {
+  if (window.location.hash === hash) {
+    applyRoute(hash, options).catch((error) => toast(error.message));
     return;
   }
-  window.location.hash = rawHref;
+  window.location.hash = hash;
+}
+
+function tabScope(tab) {
+  return tab.closest(".tf-drawer") || tab.closest(".tf-page") || tab.closest(".tf-card") || document;
+}
+
+function handleTopicsTabClick(tabName) {
+  const normalized = normalizeTopicsTabName(tabName);
+  activateTab(normalized, $("#page-topics"));
+  const query = topicFilterRouteQuery();
+  if (normalized === "topics-list") {
+    navigateHash(buildRouteHash("topics", {}, query), { force: true });
+    return;
+  }
+  if (!state.activeTopicId) return;
+  query.tab = topicTabRouteValue(normalized);
+  navigateHash(buildRouteHash("topics", { topicId: state.activeTopicId }, query), { force: true });
+}
+
+function handleTabClick(event) {
+  const tab = event.currentTarget;
+  const tabName = tab?.dataset?.tab;
+  if (!tabName) return;
+  const page = tab.closest(".tf-page");
+  if (page?.dataset?.page === "topics") {
+    handleTopicsTabClick(tabName);
+    return;
+  }
+  activateTab(tabName, tabScope(tab));
+  persistRouteDebounced();
+  if (tabName === "notes-runtime") {
+    refreshNotesRuntime().catch(() => {});
+  }
 }
 
 // Minimal localStorage wrapper that survives blocked storage and absent
@@ -1603,7 +1650,7 @@ function navigateTopic(topicId, review = false) {
   // /review segment is preserved in parseRoute for back-compat, but new
   // navigation writes ?tab=proposals into the same /topics/{id} URL.
   const tab = review ? "proposals" : "detail";
-  window.location.hash = `#/topics/${encodeURIComponent(topicId)}?tab=${tab}`;
+  navigateHash(`#/topics/${encodeURIComponent(topicId)}?tab=${tab}`, { force: true });
 }
 
 async function openTopic(topicId) {
@@ -4322,12 +4369,11 @@ async function applyRoute(hash = window.location.hash, options = {}) {
   await refreshRouteData(route, options);
   if (serial !== routeApplySerial) return;
   if (route.page === "topics" && route.params.topicId) {
-    if (state.activeTopicId !== route.params.topicId || !state.activeTopicDetail) {
-      await openTopic(route.params.topicId);
-    }
+    await openTopic(route.params.topicId);
     if (serial !== routeApplySerial) return;
-    activateTab(normalizeTopicsTabName(route.query.tab), $("#page-topics"));
-    if (route.query.tab === "proposals") await loadWeaveProposals(route.params.topicId);
+    const topicTab = normalizeTopicsTabName(route.query.tab);
+    activateTab(topicTab, $("#page-topics"));
+    if (topicTab === "topics-proposals") await loadWeaveProposals(route.params.topicId);
   }
   if (route.page === "thoughts" && route.params.thoughtId) {
     await previewThought(route.params.thoughtId);
@@ -4410,16 +4456,7 @@ function bind() {
   document.querySelectorAll("[data-close-drawer]").forEach((button) => {
     button.addEventListener("click", () => closeDrawer(button.dataset.closeDrawer));
   });
-  document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
-    activateTab(tab.dataset.tab, tab.closest(".tf-card"));
-    persistRouteDebounced();
-    // PR3: the notes runtime card lives behind a collapsible details
-    // element on the Runtime tab. Refresh its data the first time the
-    // tab opens, then again on the explicit Refresh button.
-    if (tab.dataset.tab === "notes-runtime") {
-      refreshNotesRuntime().catch(() => {});
-    }
-  }));
+  document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", handleTabClick));
   document.querySelectorAll("#settings-language [data-locale]").forEach((button) => {
     button.addEventListener("click", () => {
       tSetLocale(button.dataset.locale);
