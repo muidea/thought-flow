@@ -2182,10 +2182,16 @@ function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
   const ctx = message.sessionContext || sp.session_context || sp.SessionContext || {};
-  const builder = createConversationTextBuilder([ctx.candidate_body]);
-  builder.addText(ctx.candidate_summary);
-  const summaryText = builder.text();
+  const rawBodyText = compactPlainTextParts([ctx.candidate_body]).join("\n\n");
+  const summaryReferences = rawBodyText && !isStructuredCaptureContextBody(rawBodyText, "") ? [rawBodyText] : [];
+  const summaryBuilder = createConversationTextBuilder(summaryReferences);
+  summaryBuilder.addText(ctx.candidate_summary);
+  const summaryText = summaryBuilder.text();
+  const bodyText = captureContextBodySupplement(ctx.candidate_body, summaryText);
+  if (summaryText && bodyText) return `${summaryText}\n\n${bodyText}`;
   if (summaryText) return summaryText;
+  if (bodyText) return bodyText;
+  const builder = createConversationTextBuilder();
   builder.addSection("capture.conversation.goal", [ctx.goal]);
   builder.addSection("capture.conversation.title", [ctx.candidate_title]);
   builder.addSection("capture.conversation.facts", ctx.confirmed_facts, { limit: 5 });
@@ -2193,6 +2199,27 @@ function captureContextPlainText(message = {}) {
   builder.addSection("capture.conversation.conflicts", ctx.conflicts, { limit: 3 });
   builder.addSection("capture.conversation.sources", ctx.source_links, { limit: 3 });
   return builder.text() || t("capture.context.empty");
+}
+
+function captureContextBodySupplement(body, summary) {
+  const bodyText = compactPlainTextParts([body]).join("\n\n");
+  if (!bodyText) return "";
+  if (!summary) return isStructuredCaptureContextBody(bodyText, "") ? bodyText : "";
+  if (!isStructuredCaptureContextBody(bodyText, summary)) return "";
+  const builder = createConversationTextBuilder([summary]);
+  builder.addText(bodyText);
+  return builder.text();
+}
+
+function isStructuredCaptureContextBody(bodyText, summary) {
+  const bodyKey = normalizePlainTextForCompare(bodyText);
+  const summaryKey = normalizePlainTextForCompare(summary);
+  if (!bodyKey || (summaryKey && (bodyKey === summaryKey || summaryKey.includes(bodyKey)))) return false;
+  const bodyLooksStructured = /(^|\n)\s*(#{1,4}\s+|\*\*[^*\n]+?\*\*|[-*]\s+|\d+[.)]\s+)/.test(bodyText);
+  if (!summaryKey) return bodyLooksStructured;
+  const bodyIsRicher = bodyKey.length > Math.max(summaryKey.length * 1.6, summaryKey.length + 120);
+  const summaryIsThin = summaryKey.length < 260;
+  return (summaryIsThin || bodyIsRicher) && bodyLooksStructured;
 }
 
 function archivePreviewPlainText(msg = {}) {

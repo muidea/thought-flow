@@ -1675,6 +1675,41 @@ test("capture context text prefers synthesized summary over mechanical context f
   assert.doesNotMatch(html, /整理, 主题/);
 });
 
+test("capture context text supplements thin summary with richer candidate body", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeScratchpad = {
+    session_id: "s1",
+    session_context: {
+      candidate_summary: "可以按一个可配置的采集工具继续收敛。",
+      candidate_body: [
+        "## 当前收敛结论",
+        "",
+        "这个需求更像是一个面向命令行和配置文件的 Web 采集工具，需要先明确目标输入、字段抽取、存储格式和运行边界。",
+        "",
+        "## 已确认约束",
+        "",
+        "- 使用 Golang 实现。",
+        "- 目标站点可以通过配置文件或命令行输入。",
+        "- 数据采用文件方式落盘。",
+        "",
+        "## 下一轮建议补充",
+        "",
+        "- 明确目标网站是否需要登录、验证码或 JS 渲染。",
+        "- 确认输出文件格式采用 JSONL、CSV 还是分目录文件。",
+      ].join("\n"),
+    },
+  };
+
+  const message = app.upsertCaptureContextMessage();
+  const html = app.renderCaptureBubbleBody(message);
+
+  assert.match(html, /可以按一个可配置的采集工具继续收敛/);
+  assert.match(html, /当前收敛结论/);
+  assert.match(html, /Golang 实现/);
+  assert.match(html, /JSONL、CSV/);
+});
+
 test("capture context text strips raw input embedded in synthesized sections", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";

@@ -1041,9 +1041,39 @@ type captureContextJSON struct {
 func extractJSONObject(value string) string {
 	value = strings.TrimSpace(value)
 	start := strings.Index(value, "{")
-	end := strings.LastIndex(value, "}")
-	if start >= 0 && end >= start {
-		return value[start : end+1]
+	if start < 0 {
+		return value
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for idx := start; idx < len(value); idx++ {
+		ch := value[idx]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return value[start : idx+1]
+			}
+		}
 	}
 	return value
 }
