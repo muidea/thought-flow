@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/searchdb"
 )
@@ -106,6 +108,64 @@ func TestGetSearchPreviewReturnsIndexedSnippet(t *testing.T) {
 	if preview.ThoughtID != thought.ID || preview.Snippet == "" || preview.Path != thought.Path {
 		t.Fatalf("preview = %#v", preview)
 	}
+}
+
+func TestReindexWorkspaceBackfillsEmbeddings(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "local",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	store, err := searchdb.Open(context.Background(), filepath.Join(root, ".thoughtflow", "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	thought := models.Thought{
+		ID:           "20260620-120000-vector",
+		DisplayTitle: "Vector backfill note",
+		Path:         "thoughts/2026/06/20260620-120000-vector.md",
+		UpdatedAt:    time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
+	}
+	content := models.ThoughtContent{Original: "Semantic backfill should recreate embeddings after reindex."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	jobs := jobstore.New(ws.JobsPath)
+	service := NewService(ws, jobs, store, nil, nil, fixedEmbeddingProvider{
+		record: models.EmbeddingRecord{Model: "test-embedding", Dimension: 3, Vector: []float64{1, 0, 0}},
+	}, "")
+	job, err := jobs.Create(models.JobTypeReindex, models.ResourceTypeWorkspace, ws.ID, "reindex queued")
+	if err != nil {
+		t.Fatalf("Create(job) error = %v", err)
+	}
+
+	service.reindexJob(job)
+
+	record, ok := store.GetEmbedding(context.Background(), thought.ID, "test-embedding")
+	if !ok {
+		t.Fatal("expected embedding after reindex")
+	}
+	if record.Dimension != 3 || len(record.Vector) != 3 {
+		t.Fatalf("embedding = %#v", record)
+	}
+	status := service.RuntimeStatus(context.Background())
+	if status.Vector.EmbeddingRecords != 1 || status.Vector.VectorRows != 1 {
+		t.Fatalf("runtime vector status = %#v", status.Vector)
+	}
+}
+
+type fixedEmbeddingProvider struct {
+	record models.EmbeddingRecord
+}
+
+func (p fixedEmbeddingProvider) Embed(ctx context.Context, req ai.EmbedRequest) (models.EmbeddingRecord, error) {
+	_ = ctx
+	record := p.record
+	record.ThoughtID = req.ThoughtID
+	record.Vector = append([]float64{}, p.record.Vector...)
+	return record, nil
 }
 
 func TestNormalizeIndexPathUsesWorkspaceDefault(t *testing.T) {

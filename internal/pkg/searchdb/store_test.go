@@ -207,6 +207,15 @@ func TestReindexWorkspaceBuildsIndexFromMarkdown(t *testing.T) {
 	if err := store.IndexThought(ctx, stale, models.ThoughtContent{Original: "stale content"}); err != nil {
 		t.Fatalf("IndexThought(stale) error = %v", err)
 	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID: stale.ID,
+		Model:     "test-embedding",
+		Dimension: 3,
+		Vector:    []float64{1, 0, 0},
+		CreatedAt: time.Date(2026, 6, 9, 16, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("IndexEmbedding(stale) error = %v", err)
+	}
 	thought := searchRangeThought("20260609-160500-reindex", "Reindexed note", time.Date(2026, 6, 9, 16, 5, 0, 0, time.UTC))
 	thought.TopicIDs = []string{"reindex-topic"}
 	content := models.ThoughtContent{Original: "Workspace reindex should rebuild search from Markdown."}
@@ -234,6 +243,13 @@ func TestReindexWorkspaceBuildsIndexFromMarkdown(t *testing.T) {
 	}
 	if staleResult.Total != 0 {
 		t.Fatalf("stale result = %#v", staleResult)
+	}
+	if _, ok := store.GetEmbedding(ctx, stale.ID, "test-embedding"); ok {
+		t.Fatal("stale embedding should be removed during reindex")
+	}
+	status := store.VectorRuntimeStatus(ctx)
+	if status.Status != "ready" || status.EmbeddingRecords != 0 || status.VectorRows != 0 {
+		t.Fatalf("vector status after reindex = %#v", status)
 	}
 }
 
@@ -330,6 +346,42 @@ func TestSearchSortWeightsAndExplain(t *testing.T) {
 	}
 	if explain.Components.Semantic <= 0 {
 		t.Fatalf("semantic component = %v", explain.Components.Semantic)
+	}
+}
+
+func TestVectorRuntimeStatusReportsEmbeddingCoverage(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	status := store.VectorRuntimeStatus(ctx)
+	if status.Status != "ready" || status.EmbeddingRecords != 0 || status.SemanticSource != "none" {
+		t.Fatalf("empty vector status = %#v", status)
+	}
+
+	thought := searchRangeThought("20260620-130000-vector-status", "Vector status note", time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC))
+	if err := store.IndexThought(ctx, thought, models.ThoughtContent{Original: "Vector runtime status fixture."}); err != nil {
+		t.Fatalf("IndexThought() error = %v", err)
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID: thought.ID,
+		Model:     "test-embedding",
+		Dimension: 3,
+		Vector:    []float64{1, 0, 0},
+		CreatedAt: thought.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("IndexEmbedding() error = %v", err)
+	}
+
+	status = store.VectorRuntimeStatus(ctx)
+	if status.Status != "ready" || status.EmbeddingRecords != 1 || status.VectorTables != 1 || status.VectorRows != 1 {
+		t.Fatalf("vector status = %#v", status)
+	}
+	if status.SemanticSource != "duckdb_array" && status.SemanticSource != "duckdb_hnsw" {
+		t.Fatalf("semantic source = %q", status.SemanticSource)
 	}
 }
 

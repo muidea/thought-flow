@@ -318,6 +318,7 @@ scratchpad.context_updated ──┘                │
 3. 后端可使用 FTS、Embedding 或重排提升召回，但不把 semantic/hybrid mode、score explain、时间范围或运行状态暴露为 Search 主流程控件。
 4. 结果回溯：每条命中带 `source_thought_id`、`source_session_id`（如果是 scratchpad 候选命中）、`backlink`。
 5. 命中 scratchpad 候选的条目标注 `candidate=true`，区分正式与候选。
+6. 工作区重建必须同时恢复关键词索引和当前 embedding/vector rows；向量统计和 HNSW/array 路径通过系统状态暴露，不进入 Search 主页面。
 
 #### 3.4.2 API
 

@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,105 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) VectorRuntimeStatus(ctx context.Context) models.SearchVectorRuntimeStatus {
+	status := models.SearchVectorRuntimeStatus{Status: "ready", SemanticSource: "none"}
+	if s == nil || s.db == nil {
+		status.Status = "degraded"
+		status.Error = "search index store is not ready"
+		return status
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM thought_embeddings`).Scan(&status.EmbeddingRecords); err != nil {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		status.Status = "degraded"
+		status.Error = err.Error()
+		return status
+	}
+	status.VectorTables = len(tables)
+	for _, table := range tables {
+		count, err := s.countRows(ctx, table.name)
+		if err != nil {
+			status.Status = "degraded"
+			status.Error = err.Error()
+			return status
+		}
+		status.VectorRows += count
+	}
+	if len(tables) > 0 {
+		status.SemanticSource = "duckdb_array"
+		for _, table := range tables {
+			if s.ensureHNSWIndex(ctx, table.dimension) {
+				status.HNSWAvailable = true
+				status.SemanticSource = "duckdb_hnsw"
+				break
+			}
+		}
+	} else if status.EmbeddingRecords > 0 {
+		status.SemanticSource = "json_cosine"
+	}
+	return status
+}
+
+type embeddingVectorTable struct {
+	name      string
+	dimension int
+}
+
+func (s *Store) embeddingVectorTables(ctx context.Context) ([]embeddingVectorTable, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = 'main' AND table_name LIKE 'thought_embedding_vectors_%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tables := []embeddingVectorTable{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		dimension, ok := embeddingVectorTableDimension(name)
+		if !ok {
+			continue
+		}
+		tables = append(tables, embeddingVectorTable{name: name, dimension: dimension})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tables, nil
+}
+
+func embeddingVectorTableDimension(name string) (int, bool) {
+	raw := strings.TrimPrefix(name, "thought_embedding_vectors_")
+	if raw == name || raw == "" {
+		return 0, false
+	}
+	dimension, err := strconv.Atoi(raw)
+	if err != nil || dimension <= 0 {
+		return 0, false
+	}
+	return dimension, true
+}
+
+func (s *Store) countRows(ctx context.Context, tableName string) (int, error) {
+	if _, ok := embeddingVectorTableDimension(tableName); !ok {
+		return 0, errors.New("invalid embedding vector table")
+	}
+	row := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, tableName))
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (s *Store) Init(ctx context.Context) error {
@@ -300,10 +400,22 @@ func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, err
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM thoughts`); err != nil {
 		return 0, err
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_embeddings`); err != nil {
+		return 0, err
+	}
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, table := range tables {
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s`, table.name)); err != nil {
+			return 0, err
+		}
+	}
 	s.markFTSDirty()
 	count := 0
 	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	err := filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

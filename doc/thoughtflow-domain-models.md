@@ -406,6 +406,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 按模型和维度隔离索引。
 3. 内容变化后重新生成。
 4. 缺失时搜索降级。
+5. 工作区重建时由 search 运行单元基于 Markdown 回填当前 Thought 的 embedding，并清理已删除 Thought 的旧向量。
 
 ### 4.3 SearchIndex
 
@@ -758,6 +759,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. Web API 必须接受关键词查询；语义召回只能作为后端增强，不暴露为主流程模式开关。
 3. 搜索结果必须包含原子笔记回跳路径。
 4. 时间范围、运行状态和 score explain 不进入 Search 主接口投影。
+5. `/api/system/status` 必须能反映向量记录数、vector table 行数以及当前语义检索路径（`duckdb_hnsw` / `duckdb_array` / `json_cosine` / `none`）。
 
 ### 7.4 topic
 

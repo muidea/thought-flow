@@ -386,10 +386,21 @@ type WorkspaceRuntimeStatus struct {
 }
 
 type DuckDBRuntimeStatus struct {
-	Status string `json:"status"`
-	Path   string `json:"path"`
-	Exists bool   `json:"exists"`
-	Error  string `json:"error,omitempty"`
+	Status string                    `json:"status"`
+	Path   string                    `json:"path"`
+	Exists bool                      `json:"exists"`
+	Vector SearchVectorRuntimeStatus `json:"vector"`
+	Error  string                    `json:"error,omitempty"`
+}
+
+type SearchVectorRuntimeStatus struct {
+	Status           string `json:"status"`
+	EmbeddingRecords int    `json:"embedding_records"`
+	VectorTables     int    `json:"vector_tables"`
+	VectorRows       int    `json:"vector_rows"`
+	HNSWAvailable    bool   `json:"hnsw_available"`
+	SemanticSource   string `json:"semantic_source,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
 type LLMRuntimeStatus struct {

@@ -177,6 +177,11 @@ func (s *Service) RuntimeStatus(ctx context.Context) models.DuckDBRuntimeStatus 
 		status.Error = "search index store is not ready"
 		return status
 	}
+	status.Vector = s.store.VectorRuntimeStatus(ctx)
+	if status.Vector.Status == "degraded" {
+		status.Status = "degraded"
+		status.Error = status.Vector.Error
+	}
 	if _, err := os.Stat(status.Path); err == nil {
 		status.Exists = true
 		return status
@@ -281,10 +286,66 @@ func (s *Service) reindexJob(job models.Job) {
 		eventutil.Post(s.eventHub, searchEvent(models.EventSearchIndexFailed, s.workspace.ID, s.workspace.ID, errRef))
 		return
 	}
+	embeddingCount, err := s.backfillWorkspaceEmbeddings(context.Background())
+	if err != nil {
+		errRef := models.NewErrorRef("thoughtflow.search.embedding_reindex_failed", err.Error(), true)
+		job, _ = s.jobs.MarkFailed(job, errRef)
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+		eventutil.Post(s.eventHub, searchEvent(models.EventSearchIndexFailed, s.workspace.ID, s.workspace.ID, errRef))
+		return
+	}
 	job.Message = "reindexed workspace"
 	job, _ = s.jobs.MarkSucceeded(job, "reindexed workspace")
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	eventutil.Post(s.eventHub, searchEvent(models.EventSearchReindexFinished, s.workspace.ID, s.workspace.ID, map[string]any{"count": count, "job": job}))
+	eventutil.Post(s.eventHub, searchEvent(models.EventSearchReindexFinished, s.workspace.ID, s.workspace.ID, map[string]any{"count": count, "embedding_count": embeddingCount, "job": job}))
+}
+
+func (s *Service) backfillWorkspaceEmbeddings(ctx context.Context) (int, error) {
+	if s == nil || s.embedder == nil || s.workspace == nil || s.store == nil {
+		return 0, nil
+	}
+	thoughtsPath := filepath.Join(s.workspace.RootPath, "thoughts")
+	count := 0
+	err := filepath.WalkDir(thoughtsPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		thoughtID := strings.TrimSuffix(filepath.Base(path), ".md")
+		thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+		if err != nil {
+			return err
+		}
+		text := buildEmbeddingText(thought, content)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		embedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: text})
+		if err != nil {
+			return err
+		}
+		if len(embedding.Vector) == 0 {
+			return nil
+		}
+		embedding.ThoughtID = thought.ID
+		if embedding.ContentHash == "" {
+			embedding.ContentHash = models.ContentHash(text)
+		}
+		if embedding.CreatedAt.IsZero() {
+			embedding.CreatedAt = time.Now().UTC()
+		}
+		if err := s.store.IndexEmbedding(ctx, embedding); err != nil {
+			return err
+		}
+		count++
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return count, err
 }
 
 func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
