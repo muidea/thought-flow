@@ -359,7 +359,7 @@ func (s *Store) List() []Summary {
 		}
 		out = append(out, Summary{
 			SessionID:          sp.SessionID,
-			Title:              sp.Title,
+			Title:              summaryTitle(*sp),
 			CommittedThoughtID: sp.CommittedThoughtID,
 			SourceThoughtID:    sp.SourceThoughtID,
 			ArchiveStrategy:    sp.ArchiveStrategy,
@@ -375,6 +375,59 @@ func (s *Store) List() []Summary {
 		return out[left].UpdatedAt.After(out[right].UpdatedAt)
 	})
 	return out
+}
+
+func summaryTitle(sp Scratchpad) string {
+	for _, value := range []string{
+		sp.SessionContext.CandidateTitle,
+		sp.SessionContext.Topic,
+		sp.Title,
+		archivePreviewTitle(sp.ArchivePreview),
+		sp.SessionContext.Goal,
+		firstMessageText(sp.Messages, "ai"),
+		firstMessageText(sp.Messages, "user"),
+	} {
+		if title := compactSummaryTitle(value); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func archivePreviewTitle(preview *ArchivePreview) string {
+	if preview == nil {
+		return ""
+	}
+	return preview.Title
+}
+
+func firstMessageText(messages []Message, role string) string {
+	for _, msg := range messages {
+		if strings.TrimSpace(msg.Role) == role {
+			return msg.Text
+		}
+	}
+	return ""
+}
+
+func compactSummaryTitle(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#-*0123456789. "))
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		const maxTitleRunes = 48
+		if len(runes) > maxTitleRunes {
+			return strings.TrimSpace(string(runes[:maxTitleRunes])) + "..."
+		}
+		return line
+	}
+	return ""
 }
 
 // LastActive returns the most recently updated uncommitted

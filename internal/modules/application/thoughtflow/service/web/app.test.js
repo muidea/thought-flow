@@ -56,6 +56,37 @@ function makeDomStub(initial = {}) {
       style: {},
     };
   }
+  const sessionsPanel = {
+    dataset: {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    querySelectorAll: () => [],
+    focus: () => {},
+  };
+  const sessionsDrawerClasses = new Set();
+  nodes["capture-sessions-drawer"] = {
+    hidden: true,
+    attributes: {},
+    classList: {
+      add: (name) => sessionsDrawerClasses.add(name),
+      remove: (name) => sessionsDrawerClasses.delete(name),
+      contains: (name) => sessionsDrawerClasses.has(name),
+    },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return this.attributes[name]; },
+    querySelector: (selector) => selector === ".tf-drawer-panel" ? sessionsPanel : null,
+    querySelectorAll: () => [],
+  };
+  nodes["capture-sessions-toggle"] = {
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return this.attributes[name]; },
+    focus: () => {},
+  };
+  nodes["capture-sessions-list"] = {
+    innerHTML: "",
+    querySelectorAll: () => [],
+  };
   function find(selector) {
     const m = selector.match(/^#([\w-]+)$/);
     if (!m) return null;
@@ -151,6 +182,10 @@ function loadAppFunctionsWith(opts = {}) {
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
       handleCaptureComposerKeydown,
+      openCaptureSessionsDrawer,
+      closeCaptureSessionsDrawer,
+      renderCaptureSessionItem,
+      deleteCaptureSession,
       handleCaptureEvent,
       formatBadgeCount,
       computeSidebarBadgeCounts,
@@ -1542,6 +1577,69 @@ test("archive preview is rendered as markdown conversation text with a stored sn
 
   app._state.capture.archivePreview = null;
   assert.match(app.renderCaptureBubbleBody(message), /Preview title/);
+});
+
+test("capture session history drawer opens with visible drawer state", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async () => ({ ok: true, json: async () => ({ data: { summaries: [] } }) }),
+  });
+  const drawer = dom.find("#capture-sessions-drawer");
+  const toggle = dom.find("#capture-sessions-toggle");
+
+  app.openCaptureSessionsDrawer();
+
+  assert.equal(drawer.hidden, false);
+  assert.equal(drawer.classList.contains("open"), true);
+  assert.equal(drawer.getAttribute("aria-hidden"), "false");
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+  app.closeCaptureSessionsDrawer();
+
+  assert.equal(drawer.hidden, true);
+  assert.equal(drawer.classList.contains("open"), false);
+  assert.equal(drawer.getAttribute("aria-hidden"), "true");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+});
+
+test("capture session history item uses session title and includes delete action", () => {
+  const app = loadAppFunctions();
+  const html = app.renderCaptureSessionItem({
+    sessionId: "20260620-abcdef",
+    title: "Web 采集程序需求收敛",
+    updatedAt: "2026-06-20T10:20:30Z",
+  });
+
+  assert.match(html, /Web 采集程序需求收敛/);
+  assert.doesNotMatch(html, /<span class="tf-sessions-label">20260620-abcdef<\/span>/);
+  assert.match(html, /tf-sessions-delete/);
+  assert.match(html, /data-session-id="20260620-abcdef"/);
+});
+
+test("deleteCaptureSession removes one session and calls backend delete", async () => {
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push(`${options.method || "GET"} ${url}`);
+      return { ok: true, json: async () => ({ data: { deleted: true } }) };
+    },
+  });
+  app._state.capture.sessionId = "s2";
+  app._state.capture.messages = [{ role: "user", text: "active" }];
+  app._state.capture.sessions = [
+    { sessionId: "s1", title: "保留的会话" },
+    { sessionId: "s2", title: "删除的会话" },
+  ];
+
+  await app.deleteCaptureSession("s2");
+
+  assert.deepEqual(calls, ["DELETE /api/capture/sessions/s2"]);
+  assert.deepEqual(app._state.capture.sessions.map((item) => item.sessionId), ["s1"]);
+  assert.equal(app._state.capture.sessionId, "");
+  assert.equal(app._state.capture.messages.length, 0);
 });
 
 test("handleCaptureEvent ignores unrelated thought events for the current capture conversation", async () => {

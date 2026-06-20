@@ -2445,7 +2445,45 @@ function rememberCaptureSession(session) {
   filtered.unshift({ ...session, updatedAt: new Date().toISOString() });
   state.capture.sessions = filtered.slice(0, 12);
   saveCaptureSessions();
-  renderCaptureSessionsDrawer();
+  if (isCaptureSessionsDrawerOpen()) {
+    renderCaptureSessionsDrawer();
+  }
+}
+
+function isCaptureSessionsDrawerOpen() {
+  const drawer = $("#capture-sessions-drawer");
+  return Boolean(drawer && !drawer.hidden && drawer.classList.contains("open"));
+}
+
+function captureSessionLabel(session) {
+  return session.title || session.topic || session.thoughtId || t("capture.drawer.untitled_session");
+}
+
+function renderCaptureSessionItem(session) {
+  const label = captureSessionLabel(session);
+  const archived = session.thoughtId ? `<span class="tf-pill tf-pill--success">${escapeHTML(t("capture.drawer.archived"))}</span>` : `<span class="tf-pill tf-pill--draft">${escapeHTML(t("capture.drawer.draft"))}</span>`;
+  return `<li class="tf-sessions-item" data-session-id="${escapeHTML(session.sessionId)}">
+    <button class="tf-btn tf-sessions-open" type="button" data-session-id="${escapeHTML(session.sessionId)}">
+      <span class="tf-sessions-label">${escapeHTML(label)}</span>
+      <span class="tf-sessions-meta">${archived} <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span></span>
+    </button>
+    <button class="tf-btn tf-sessions-delete" type="button" data-session-id="${escapeHTML(session.sessionId)}" aria-label="${escapeHTML(t("capture.drawer.delete"))}" title="${escapeHTML(t("capture.drawer.delete"))}">
+      <span aria-hidden="true">×</span>
+    </button>
+  </li>`;
+}
+
+function bindCaptureSessionListActions(list) {
+  if (!list) return;
+  list.querySelectorAll(".tf-sessions-open").forEach((button) => {
+    button.addEventListener("click", () => switchCaptureSession(button.dataset.sessionId));
+  });
+  list.querySelectorAll(".tf-sessions-delete").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      deleteCaptureSession(button.dataset.sessionId).catch((error) => toast(error.message));
+    });
+  });
 }
 
 function renderCaptureSessionsDrawer() {
@@ -2462,20 +2500,9 @@ function renderCaptureSessionsDrawer() {
   if (local.length === 0) {
     list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
   } else {
-    list.innerHTML = local.map((session) => {
-      const label = session.title || session.thoughtId || session.sessionId;
-      const archived = session.thoughtId ? `<span class="tf-pill tf-pill--success">${escapeHTML(t("capture.drawer.archived"))}</span>` : `<span class="tf-pill tf-pill--draft">${escapeHTML(t("capture.drawer.draft"))}</span>`;
-      return `<li class="tf-sessions-item" data-session-id="${escapeHTML(session.sessionId)}">
-        <button class="tf-btn tf-sessions-open" type="button" data-session-id="${escapeHTML(session.sessionId)}">
-          <span class="tf-sessions-label">${escapeHTML(label)}</span>
-          <span class="tf-sessions-meta">${archived} <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span></span>
-        </button>
-      </li>`;
-    }).join("");
+    list.innerHTML = local.map(renderCaptureSessionItem).join("");
   }
-  list.querySelectorAll(".tf-sessions-open").forEach((button) => {
-    button.addEventListener("click", () => switchCaptureSession(button.dataset.sessionId));
-  });
+  bindCaptureSessionListActions(list);
   // Always re-fetch the server-side list to keep the drawer in
   // sync with cross-tab scratchpads and crashes that left orphan
   // files behind. The fetch is best-effort: failure leaves the
@@ -2490,6 +2517,7 @@ async function refreshCaptureSessionsFromServer() {
   } catch (_) {
     return null;
   }
+  response = response || {};
   const summaries = response.summaries || response.Summaries || [];
   if (Array.isArray(summaries) && summaries.length > 0) {
     // Project server summaries into the local session shape so the
@@ -2499,14 +2527,18 @@ async function refreshCaptureSessionsFromServer() {
     for (const summary of summaries) {
       if (!summary || !summary.session_id) continue;
       const id = summary.session_id;
-      if (existing.has(id)) continue;
-      state.capture.sessions.unshift({
+      const next = {
         sessionId: id,
         thoughtId: summary.committed_thought_id || "",
-        title: summary.title || id,
+        title: summary.title || "",
         updatedAt: summary.updated_at || new Date().toISOString(),
         source: "server",
-      });
+      };
+      if (existing.has(id)) {
+        Object.assign(existing.get(id), next);
+        continue;
+      }
+      state.capture.sessions.unshift(next);
     }
     state.capture.sessions = (state.capture.sessions || []).slice(0, 24);
     saveCaptureSessions();
@@ -2573,25 +2605,16 @@ function redrawCaptureSessionsList() {
     list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
     return;
   }
-  list.innerHTML = sessions.map((session) => {
-    const label = session.title || session.thoughtId || session.sessionId;
-    const archived = session.thoughtId ? `<span class="tf-pill tf-pill--success">${escapeHTML(t("capture.drawer.archived"))}</span>` : `<span class="tf-pill tf-pill--draft">${escapeHTML(t("capture.drawer.draft"))}</span>`;
-    return `<li class="tf-sessions-item" data-session-id="${escapeHTML(session.sessionId)}">
-      <button class="tf-btn tf-sessions-open" type="button" data-session-id="${escapeHTML(session.sessionId)}">
-        <span class="tf-sessions-label">${escapeHTML(label)}</span>
-        <span class="tf-sessions-meta">${archived} <span class="tf-text-secondary">${escapeHTML((session.updatedAt || "").slice(0, 19).replace("T", " "))}</span></span>
-      </button>
-    </li>`;
-  }).join("");
-  list.querySelectorAll(".tf-sessions-open").forEach((button) => {
-    button.addEventListener("click", () => switchCaptureSession(button.dataset.sessionId));
-  });
+  list.innerHTML = sessions.map(renderCaptureSessionItem).join("");
+  bindCaptureSessionListActions(list);
 }
 
 function openCaptureSessionsDrawer() {
   const drawer = $("#capture-sessions-drawer");
   if (!drawer) return;
   drawer.hidden = false;
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
   const toggle = $("#capture-sessions-toggle");
   if (toggle) toggle.setAttribute("aria-expanded", "true");
   const panel = drawer.querySelector(".tf-drawer-panel");
@@ -2602,6 +2625,8 @@ function openCaptureSessionsDrawer() {
 function closeCaptureSessionsDrawer() {
   const drawer = $("#capture-sessions-drawer");
   if (!drawer) return;
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
   drawer.hidden = true;
   const toggle = $("#capture-sessions-toggle");
   if (toggle) toggle.setAttribute("aria-expanded", "false");
@@ -2635,6 +2660,29 @@ function switchCaptureSession(sessionId) {
   }
   renderCaptureConversation();
   refreshActiveCaptureThought();
+}
+
+async function deleteCaptureSession(sessionId) {
+  const id = (sessionId || "").trim();
+  if (!id) return;
+  await api(`/api/capture/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const deleted = (state.capture.sessions || []).find((item) => item.sessionId === id);
+  state.capture.sessions = (state.capture.sessions || []).filter((item) => item.sessionId !== id);
+  saveCaptureSessions();
+  if (state.capture.sessionId === id) {
+    if (state.capture.activeThoughtId && window.tflowSessionLock) {
+      window.tflowSessionLock.release(state.capture.activeThoughtId, id);
+    }
+    state.capture.sessionId = "";
+    state.capture.activeThoughtId = "";
+    state.capture.activeSnapshot = null;
+    state.capture.activeScratchpad = null;
+    state.capture.archivePreview = null;
+    state.capture.messages = [];
+    renderCaptureConversation();
+  }
+  redrawCaptureSessionsList();
+  toast(t("capture.drawer.deleted", { title: captureSessionLabel(deleted || { sessionId: id }) }));
 }
 
 function refreshActiveCaptureThought() {

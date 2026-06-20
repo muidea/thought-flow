@@ -1883,6 +1883,10 @@ textarea:focus-visible {
 
 .tf-sessions-item {
   margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: var(--tf-space-2, 0.5rem);
+  align-items: stretch;
 }
 
 .tf-sessions-open {
@@ -1901,4 +1905,26 @@ textarea:focus-visible {
 .tf-sessions-open:hover,
 .tf-sessions-open:focus-visible {
   border-color: var(--tf-color-primary, #1677ff);
+}
+
+.tf-sessions-label {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.tf-sessions-delete {
+  min-width: 32px;
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+  align-self: stretch;
+  color: var(--tf-color-text-secondary, #666);
+  border-color: var(--tf-color-border, #e5e5e5);
+  background: var(--tf-color-surface, #fff);
+}
+
+.tf-sessions-delete:hover,
+.tf-sessions-delete:focus-visible {
+  color: var(--tf-color-danger, #d4380d);
+  border-color: var(--tf-color-danger, #d4380d);
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/muidea/magicCommon/event"
-	"github.com/muidea/magicCommon/task"
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/eventutil"
@@ -45,7 +44,6 @@ type ScratchpadService struct {
 	store          ScratchpadStore
 	capture        CaptureCommitter
 	eventHub       eventHub
-	background     task.BackgroundRoutine
 	contextAI      ai.CaptureContextProvider
 	contextTimeout time.Duration
 	sessionID      string
@@ -53,6 +51,13 @@ type ScratchpadService struct {
 }
 
 const defaultCaptureContextEnrichTimeout = 2 * time.Minute
+const captureContextEnricherObserverID = "capture.context-enricher"
+
+type captureContextEnrichRequest struct {
+	SessionID         string
+	ContentAtSchedule string
+	ExistingContext   scratchpad.SessionContext
+}
 
 // ScratchpadStore is the subset of scratchpad.Store this package
 // depends on. The HTTP layer uses the same interface, which keeps
@@ -77,10 +82,10 @@ type CaptureCommitter interface {
 	GetThought(ctx context.Context, thoughtID string) (models.ThoughtSnapshot, error)
 }
 
-// eventHub is the minimal publish/subscribe surface the commit
-// pipeline needs (used to fire the scratchpad-committed event). We
-// use the upstream event.Hub type so the existing eventutil.Post
-// helper can publish DomainEvents without further adaptation.
+// eventHub is the publish/subscribe surface the scratchpad commit
+// and context-enrichment flows use. Context enrichment is queued on
+// a per-session EventHub lane so multi-turn capture updates are
+// processed in a deterministic order.
 type eventHub = event.Hub
 
 // ScratchpadServiceOption configures optional dependencies on
@@ -95,14 +100,10 @@ func WithCapture(c CaptureCommitter) ScratchpadServiceOption {
 	return func(s *ScratchpadService) { s.capture = c }
 }
 
-// WithEventHub wires in the event hub so Commit can fire the
-// scratchpad-committed domain event.
+// WithEventHub wires in the event hub so Commit can fire domain events
+// and capture context enrichment can run through per-session lanes.
 func WithEventHub(h eventHub) ScratchpadServiceOption {
 	return func(s *ScratchpadService) { s.eventHub = h }
-}
-
-func WithBackgroundRoutine(background task.BackgroundRoutine) ScratchpadServiceOption {
-	return func(s *ScratchpadService) { s.background = background }
 }
 
 func WithCaptureContextProvider(provider ai.CaptureContextProvider) ScratchpadServiceOption {
@@ -137,6 +138,7 @@ func NewScratchpadService(store ScratchpadStore, options ...ScratchpadServiceOpt
 	for _, opt := range options {
 		opt(s)
 	}
+	s.subscribeContextEnricher()
 	return s
 }
 
@@ -186,7 +188,7 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 		return scratchpad.Scratchpad{}, err
 	}
 	if role == "user" {
-		s.enrichSessionContextAsync(saved, existingContext)
+		s.requestSessionContextEnrichment(saved, existingContext)
 	}
 	return saved, nil
 }
@@ -311,7 +313,45 @@ func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpa
 	return saved, nil
 }
 
-func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, existingContext scratchpad.SessionContext) {
+func (s *ScratchpadService) ID() string {
+	return captureContextEnricherObserverID
+}
+
+func (s *ScratchpadService) Notify(ev event.Event, result event.Result) {
+	if ev == nil {
+		if result != nil {
+			result.Set(nil, nil)
+		}
+		return
+	}
+	if ev.ID() != models.EventScratchpadContextEnrichRequested {
+		if result != nil {
+			result.Set(nil, nil)
+		}
+		return
+	}
+	req, ok := ev.Data().(captureContextEnrichRequest)
+	if !ok {
+		slog.Warn("capture context enrichment event has invalid payload", "event_id", ev.ID())
+		if result != nil {
+			result.Set(nil, nil)
+		}
+		return
+	}
+	s.handleCaptureContextEnrichRequest(req)
+	if result != nil {
+		result.Set(nil, nil)
+	}
+}
+
+func (s *ScratchpadService) subscribeContextEnricher() {
+	if s == nil || s.eventHub == nil || s.contextAI == nil {
+		return
+	}
+	s.eventHub.Subscribe(models.EventScratchpadContextEnrichRequested, s)
+}
+
+func (s *ScratchpadService) requestSessionContextEnrichment(sp scratchpad.Scratchpad, existingContext scratchpad.SessionContext) {
 	if s == nil || s.contextAI == nil || s.store == nil {
 		return
 	}
@@ -320,40 +360,60 @@ func (s *ScratchpadService) enrichSessionContextAsync(sp scratchpad.Scratchpad, 
 	if sessionID == "" || strings.TrimSpace(contentAtSchedule) == "" {
 		return
 	}
-	if s.background == nil {
-		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, errors.New("capture: background routine is not configured"))
+	if s.eventHub == nil {
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, errors.New("capture: event hub is not configured"))
 		return
 	}
-	run := func() {
-		current, err := s.store.Get(sessionID)
-		if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
-		defer cancel()
-		result, err := s.contextAI.BuildCaptureContext(ctx, ai.CaptureContextRequest{
-			SessionID: sessionID,
-			Content:   current.Content,
-			Messages:  captureContextMessages(current.Messages),
-			Existing:  captureContextFromScratchpad(existingContext),
-		})
-		if err != nil {
-			s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err)
-			return
-		}
-		latest, err := s.store.Get(sessionID)
-		if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
-			return
-		}
-		contextBase := latest
-		if !hasSessionContext(contextBase.SessionContext) {
-			contextBase.SessionContext = existingContext
-		}
-		_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
+	ev := event.NewEvent(
+		models.EventScratchpadContextEnrichRequested,
+		"capture",
+		captureContextEnricherObserverID,
+		event.NewHeader(),
+		captureContextEnrichRequest{
+			SessionID:         sessionID,
+			ContentAtSchedule: contentAtSchedule,
+			ExistingContext:   existingContext,
+		},
+	)
+	ev.BindLaneKey(captureContextLaneKey(sessionID))
+	s.eventHub.Post(ev)
+}
+
+func captureContextLaneKey(sessionID string) string {
+	return "capture.context." + strings.TrimSpace(sessionID)
+}
+
+func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContextEnrichRequest) {
+	sessionID := strings.TrimSpace(req.SessionID)
+	contentAtSchedule := req.ContentAtSchedule
+	if sessionID == "" || strings.TrimSpace(contentAtSchedule) == "" {
+		return
 	}
-	if err := s.background.AsyncFunction(run); err != nil {
-		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, fmt.Errorf("capture: enqueue context enrichment: %w", err))
+	current, err := s.store.Get(sessionID)
+	if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
+	defer cancel()
+	result, err := s.contextAI.BuildCaptureContext(ctx, ai.CaptureContextRequest{
+		SessionID: sessionID,
+		Content:   current.Content,
+		Messages:  captureContextMessages(current.Messages),
+		Existing:  captureContextFromScratchpad(req.ExistingContext),
+	})
+	if err != nil {
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err)
+		return
+	}
+	latest, err := s.store.Get(sessionID)
+	if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
+		return
+	}
+	contextBase := latest
+	if !hasSessionContext(contextBase.SessionContext) {
+		contextBase.SessionContext = req.ExistingContext
+	}
+	_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
 }
 
 func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error) {
@@ -747,21 +807,71 @@ func sameTagSet(a, b []string) bool {
 // archiveBody returns the body that should be shown in archive
 // preview and persisted on commit. The LLM-facing contract treats
 // CandidateSummary as the primary user-visible synthesis and
-// CandidateBody as the archive-ready body, but providers can return
-// an empty or lower-signal body. In that case, prefer the richer
-// synthesized text. Never fall back to scratchpad.Content here:
+// CandidateBody as the archive body, but providers can return an
+// incomplete final body. In that case, keep the richest final
+// candidate and append any prior AI synthesis bubbles that are not
+// already represented. Never fall back to scratchpad.Content here:
 // Content is the user's raw capture-session input and must not be
 // persisted into a Thought after archive.
 func archiveBody(sp scratchpad.Scratchpad) string {
+	if sp.ArchivePreview != nil &&
+		strings.TrimSpace(sp.ArchivePreview.Body) != "" &&
+		(sp.ArchivePreview.Strategy == "" || sp.ArchivePreview.Strategy == sp.ArchiveStrategy) {
+		return strings.TrimSpace(sp.ArchivePreview.Body)
+	}
 	summary := strings.TrimSpace(sp.SessionContext.CandidateSummary)
 	body := strings.TrimSpace(sp.SessionContext.CandidateBody)
+	base := ""
 	if body == "" {
-		return summary
+		base = summary
+	} else if summary == "" {
+		base = body
+	} else {
+		base = richerArchiveText(body, summary)
 	}
-	if summary == "" {
-		return body
+	return completeArchiveBodyWithAIHistory(base, sp.Messages)
+}
+
+func completeArchiveBodyWithAIHistory(base string, messages []scratchpad.Message) string {
+	base = strings.TrimSpace(base)
+	additions := []string{}
+	seen := map[string]struct{}{}
+	covered := compactText(base)
+	seenUserTurn := false
+	for _, msg := range messages {
+		switch strings.TrimSpace(msg.Role) {
+		case "user":
+			seenUserTurn = true
+			continue
+		case "ai":
+			if !seenUserTurn {
+				continue
+			}
+		default:
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		key := compactText(text)
+		if text == "" || key == "" {
+			continue
+		}
+		if covered != "" && strings.Contains(covered, key) {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		additions = append(additions, text)
+		covered = compactText(strings.Join(append([]string{covered}, additions...), "\n\n"))
 	}
-	return richerArchiveText(body, summary)
+	if len(additions) == 0 {
+		return base
+	}
+	if base == "" {
+		return strings.Join(additions, "\n\n")
+	}
+	return base + "\n\n## 补充整理信息\n\n" + strings.Join(additions, "\n\n")
 }
 
 func richerArchiveText(body, summary string) string {

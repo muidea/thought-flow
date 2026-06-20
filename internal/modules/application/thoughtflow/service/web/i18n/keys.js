@@ -91,6 +91,9 @@ export const Key = Object.freeze({
   CaptureFeedbackNoteAppended: "capture.feedback.note_appended",
   CaptureFeedbackMovedToTopic: "capture.feedback.moved_to_topic",
   CaptureFeedbackRefineQueued: "capture.feedback.refine_queued",
+  CaptureDrawerDelete: "capture.drawer.delete",
+  CaptureDrawerDeleted: "capture.drawer.deleted",
+  CaptureDrawerUntitledSession: "capture.drawer.untitled_session",
   // SSE-derived chat feedback (not from a user command).
   CaptureSessionExpanded: "capture.session.expanded",
   CaptureSessionThoughtCommitted: "capture.session.thought_committed",

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	mcevent "github.com/muidea/magicCommon/event"
-	"github.com/muidea/magicCommon/task"
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/models"
@@ -179,7 +178,7 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	}
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(syncBackground{}),
+		WithEventHub(newRecordingEventHub(true)),
 	)
 
 	if _, err := svc.AppendMessage("s1", "user", "raw capture message"); err != nil {
@@ -226,11 +225,9 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 		ArchiveIntent:    "none",
 		ArchiveStrategy:  "new",
 	}}
-	background := &queuedBackground{}
-	hub := &recordingEventHub{}
+	hub := newRecordingEventHub(false)
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(background),
 		WithEventHub(hub),
 	)
 
@@ -238,9 +235,12 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	if provider.callCount() != 0 {
-		t.Fatalf("provider should wait for framework background execution, calls = %d", provider.callCount())
+		t.Fatalf("provider should wait for EventHub dispatch, calls = %d", provider.callCount())
 	}
-	if len(hub.events) != 0 {
+	if hub.Count(models.EventScratchpadContextEnrichRequested) != 1 || hub.events[0].LaneKey() != "capture.context.s1" {
+		t.Fatalf("enrich request event not queued on session lane: %+v", hub.events)
+	}
+	if hub.Count(models.EventScratchpadContextUpdated) != 0 {
 		t.Fatalf("context update event should not be published before provider completes, got %d", len(hub.events))
 	}
 	sp, err := store.Get("s1")
@@ -251,7 +251,7 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 		t.Fatalf("SessionContext should stay empty while pending, got %+v", sp.SessionContext)
 	}
 
-	background.Run()
+	hub.DispatchAll()
 	sp = waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
 		return sp.SessionContext.CandidateSummary == "new summary"
 	})
@@ -261,7 +261,7 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" || sp.Messages[1].Text != "new summary" {
 		t.Fatalf("Messages = %+v", sp.Messages)
 	}
-	if len(hub.events) != 1 || hub.events[0].ID() != models.EventScratchpadContextUpdated {
+	if hub.Count(models.EventScratchpadContextUpdated) != 1 {
 		t.Fatalf("events = %+v", hub.events)
 	}
 }
@@ -273,10 +273,10 @@ func TestScratchpadServiceAppendMessageAllowsConsecutiveUserTurnsBeforeContextRe
 		ArchiveIntent:    "none",
 		ArchiveStrategy:  "new",
 	}}
-	background := &queuedBackground{}
+	hub := newRecordingEventHub(false)
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(background),
+		WithEventHub(hub),
 	)
 
 	if _, err := svc.AppendMessage("s1", "user", "first user turn"); err != nil {
@@ -293,7 +293,7 @@ func TestScratchpadServiceAppendMessageAllowsConsecutiveUserTurnsBeforeContextRe
 		t.Fatalf("Messages before reply = %+v", beforeReply.Messages)
 	}
 
-	background.Run()
+	hub.DispatchAll()
 	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
 		return len(sp.Messages) == 3
 	})
@@ -382,7 +382,7 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 	}
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(syncBackground{}),
+		WithEventHub(newRecordingEventHub(true)),
 	)
 
 	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
@@ -437,7 +437,7 @@ func TestScratchpadServiceAppendMessageReplacesOpenQuestionsFromProvider(t *test
 	}
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(syncBackground{}),
+		WithEventHub(newRecordingEventHub(true)),
 	)
 
 	if _, err := svc.AppendMessage("s1", "user", "follow-up note"); err != nil {
@@ -456,10 +456,9 @@ func TestScratchpadServiceAppendMessageSurfacesProviderFailure(t *testing.T) {
 	provider := &stubCaptureContextProvider{
 		err: ai.ProviderError{Code: "thoughtflow.ai.http_status", StatusCode: 401, Message: "invalid key"},
 	}
-	hub := &recordingEventHub{}
+	hub := newRecordingEventHub(true)
 	svc := NewScratchpadService(store,
 		WithCaptureContextProvider(provider),
-		WithBackgroundRoutine(syncBackground{}),
 		WithEventHub(hub),
 	)
 
@@ -475,7 +474,7 @@ func TestScratchpadServiceAppendMessageSurfacesProviderFailure(t *testing.T) {
 	if sp.Messages[1].Role != "ai" || !strings.Contains(sp.Messages[1].Text, "鉴权失败") {
 		t.Fatalf("failure message = %+v", sp.Messages[1])
 	}
-	if len(hub.events) != 1 || hub.events[0].ID() != models.EventScratchpadContextUpdated {
+	if hub.Count(models.EventScratchpadContextUpdated) != 1 {
 		t.Fatalf("events = %+v", hub.events)
 	}
 }
@@ -535,87 +534,95 @@ func TestScratchpadServiceCaptureContextTimeoutCanBeConfigured(t *testing.T) {
 	}
 }
 
-type syncBackground struct{}
-
-func (syncBackground) AsyncFunction(fn func()) error {
-	fn()
-	return nil
+type recordingEventHub struct {
+	events       []mcevent.Event
+	observers    map[string][]mcevent.Observer
+	autoDispatch bool
+	dispatched   int
 }
 
-func (syncBackground) AsyncTask(task.Task) error { return nil }
-
-func (syncBackground) SyncTask(task.Task) error { return nil }
-
-func (syncBackground) SyncTaskWithTimeOut(task.Task, time.Duration) error { return nil }
-
-func (syncBackground) SyncFunction(fn func()) error {
-	fn()
-	return nil
-}
-
-func (syncBackground) SyncFunctionWithTimeOut(fn func(), _ time.Duration) error {
-	fn()
-	return nil
-}
-
-func (syncBackground) Timer(context.Context, task.Task, time.Duration, time.Duration) error {
-	return nil
-}
-
-func (syncBackground) Shutdown(context.Context) bool { return true }
-
-type queuedBackground struct {
-	fn func()
-}
-
-func (q *queuedBackground) AsyncFunction(fn func()) error {
-	q.fn = fn
-	return nil
-}
-
-func (q *queuedBackground) Run() {
-	if q.fn != nil {
-		q.fn()
+func newRecordingEventHub(autoDispatch bool) *recordingEventHub {
+	return &recordingEventHub{
+		observers:    map[string][]mcevent.Observer{},
+		autoDispatch: autoDispatch,
 	}
 }
 
-func (q *queuedBackground) AsyncTask(task.Task) error { return nil }
-
-func (q *queuedBackground) SyncTask(task.Task) error { return nil }
-
-func (q *queuedBackground) SyncTaskWithTimeOut(task.Task, time.Duration) error { return nil }
-
-func (q *queuedBackground) SyncFunction(fn func()) error {
-	fn()
-	return nil
+func (h *recordingEventHub) Subscribe(eventID string, observer mcevent.Observer) {
+	if h.observers == nil {
+		h.observers = map[string][]mcevent.Observer{}
+	}
+	h.observers[eventID] = append(h.observers[eventID], observer)
 }
 
-func (q *queuedBackground) SyncFunctionWithTimeOut(fn func(), _ time.Duration) error {
-	fn()
-	return nil
+func (h *recordingEventHub) Unsubscribe(eventID string, observer mcevent.Observer) {
+	observers := h.observers[eventID]
+	next := observers[:0]
+	for _, candidate := range observers {
+		if candidate.ID() != observer.ID() {
+			next = append(next, candidate)
+		}
+	}
+	if len(next) == 0 {
+		delete(h.observers, eventID)
+		return
+	}
+	h.observers[eventID] = next
 }
-
-func (q *queuedBackground) Timer(context.Context, task.Task, time.Duration, time.Duration) error {
-	return nil
-}
-
-func (q *queuedBackground) Shutdown(context.Context) bool { return true }
-
-type recordingEventHub struct {
-	events []mcevent.Event
-}
-
-func (h *recordingEventHub) Subscribe(string, mcevent.Observer) {}
-
-func (h *recordingEventHub) Unsubscribe(string, mcevent.Observer) {}
 
 func (h *recordingEventHub) Post(ev mcevent.Event) {
 	h.events = append(h.events, ev)
+	if h.autoDispatch {
+		h.DispatchAll()
+	}
 }
 
-func (h *recordingEventHub) Send(mcevent.Event) mcevent.Result { return nil }
+func (h *recordingEventHub) Send(ev mcevent.Event) mcevent.Result {
+	h.events = append(h.events, ev)
+	result := mcevent.NewResult(ev.ID(), ev.Source(), ev.Destination())
+	h.dispatch(ev, result)
+	return result
+}
 
 func (h *recordingEventHub) Terminate(context.Context) {}
+
+func (h *recordingEventHub) DispatchAll() {
+	for h.dispatched < len(h.events) {
+		ev := h.events[h.dispatched]
+		h.dispatched++
+		h.dispatch(ev, nil)
+	}
+}
+
+func (h *recordingEventHub) Count(eventID string) int {
+	count := 0
+	for _, ev := range h.events {
+		if ev.ID() == eventID {
+			count++
+		}
+	}
+	return count
+}
+
+func (h *recordingEventHub) dispatch(ev mcevent.Event, result mcevent.Result) {
+	for eventID, observers := range h.observers {
+		if !ev.Match(eventID) {
+			continue
+		}
+		for _, observer := range observers {
+			if !recordingEventMatchesDestination(ev, observer) {
+				continue
+			}
+			observer.Notify(ev, result)
+		}
+	}
+}
+
+func recordingEventMatchesDestination(ev mcevent.Event, observer mcevent.Observer) bool {
+	destination := ev.Destination()
+	observerID := observer.ID()
+	return mcevent.MatchValue(destination, observerID) || mcevent.MatchValue(observerID, destination)
+}
 
 type stubCaptureContextProvider struct {
 	mu      sync.Mutex
@@ -1115,6 +1122,40 @@ func TestScratchpadServiceBuildArchivePreviewUsesRicherSummaryWhenBodyIsRaw(t *t
 	}
 }
 
+func TestScratchpadServiceBuildArchivePreviewIncludesMissingAIHistory(t *testing.T) {
+	store := newMemoryScratchpad()
+	svc := NewScratchpadService(store)
+	sp := scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "用户第一轮输入\n\n用户第二轮输入",
+		Messages: []scratchpad.Message{
+			{Role: "user", Text: "用户第一轮输入"},
+			{Role: "ai", Text: "第一轮整理：需要保留的背景和目标。"},
+			{Role: "user", Text: "用户第二轮输入"},
+			{Role: "ai", Text: "第二轮整理：需要保留的约束和风险。"},
+		},
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "previewed title",
+			CandidateBody:    "## 最终整理\n\n- 第二轮整理：需要保留的约束和风险。",
+			CandidateSummary: "## 最终整理\n\n- 第二轮整理：需要保留的约束和风险。",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+	}
+	preview, err := svc.BuildArchivePreview(sp, nil)
+	if err != nil {
+		t.Fatalf("BuildArchivePreview: %v", err)
+	}
+	if !strings.Contains(preview.Body, "第二轮整理：需要保留的约束和风险。") {
+		t.Fatalf("Body missing latest synthesis: %q", preview.Body)
+	}
+	if !strings.Contains(preview.Body, "第一轮整理：需要保留的背景和目标。") {
+		t.Fatalf("Body missing prior AI synthesis: %q", preview.Body)
+	}
+	if strings.Contains(preview.Body, "用户第一轮输入") || strings.Contains(preview.Body, "用户第二轮输入") {
+		t.Fatalf("Body should not archive raw user input: %q", preview.Body)
+	}
+}
+
 func TestScratchpadServiceBuildArchivePreviewDoesNotUseRawScratchpadContent(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
@@ -1477,6 +1518,73 @@ func TestScratchpadServiceCommitFreshPersistsFinalLLMSynthesis(t *testing.T) {
 	}
 	if len(captureStub.captureCmd.Tags) != 1 || captureStub.captureCmd.Tags[0] != "llm" {
 		t.Fatalf("captured tags = %v", captureStub.captureCmd.Tags)
+	}
+}
+
+func TestScratchpadServiceCommitFreshUsesPersistedArchivePreviewBody(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw request",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "LLM title",
+			CandidateBody:    "candidate body that should not win",
+			CandidateSummary: "candidate summary that should not win",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Title:    "preview title",
+			Body:     "preview body shown to the user",
+			Strategy: scratchpad.ArchiveStrategyNew,
+		},
+	})
+	captureStub := &stubCapture{
+		captureResult: models.CaptureResult{
+			Thought: models.Thought{ID: "thought-1", Type: models.ThoughtTypeText},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.captureCmd.Content != "preview body shown to the user" {
+		t.Fatalf("captured content = %q", captureStub.captureCmd.Content)
+	}
+}
+
+func TestScratchpadServiceCommitUpdateUsesPersistedArchivePreviewBody(t *testing.T) {
+	store := newMemoryScratchpad()
+	_, _ = store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		Content:   "raw request",
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "Updated Title",
+			CandidateTags:    []string{"updated"},
+			CandidateBody:    "candidate body that should not win",
+			CandidateSummary: "candidate summary that should not win",
+		},
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		SourceThoughtID: "thought-source",
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Title:    "preview title",
+			Body:     "preview body shown to the user",
+			Strategy: scratchpad.ArchiveStrategyUpdate,
+		},
+	})
+	captureStub := &stubCapture{
+		getThoughtResult: models.ThoughtSnapshot{
+			Thought: models.Thought{ID: "thought-source", UserTitle: "Original Title"},
+		},
+	}
+	svc := NewScratchpadService(store, WithCapture(captureStub), WithSessionID("s1"))
+	if _, err := svc.Commit(context.Background(), "s1"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.patchReq.AINotes == nil || *captureStub.patchReq.AINotes != "preview body shown to the user" {
+		t.Fatalf("patched ai notes = %v", captureStub.patchReq.AINotes)
+	}
+	if captureStub.patchReq.Body != nil {
+		t.Fatalf("patched body should be empty for AI Notes update, got %v", captureStub.patchReq.Body)
 	}
 }
 

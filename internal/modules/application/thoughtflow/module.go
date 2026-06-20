@@ -136,7 +136,6 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	scratchpadSvc := capture.NewScratchpadService(scratchpadStore,
 		capture.WithCapture(captureService),
 		capturebiz.WithEventHub(eventHub),
-		capturebiz.WithBackgroundRoutine(backgroundRoutine),
 		capturebiz.WithCaptureContextProvider(ai.NewCaptureContextProvider(cfg.LLM)),
 		capturebiz.WithCaptureContextTimeout(cfg.LLM.Timeout),
 	)

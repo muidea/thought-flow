@@ -386,6 +386,34 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 	}
 }
 
+func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T) {
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{}, appconfig.EmbeddingConfig{})
+	prompt, err := provider.captureContextSystemPrompt()
+	if err != nil {
+		t.Fatalf("captureContextSystemPrompt: %v", err)
+	}
+	for _, want := range []string{
+		"Everyday conversation style",
+		"archive_intent is \"none\"",
+		"not like a complete requirements document",
+		"not a formal Thought document",
+		"First-turn expansion rule",
+		"only one user turn",
+		"several concrete expansion points",
+		"初步推断",
+		"Multi-turn convergence rule",
+		"reduce ambiguity",
+		"remove obsolete open_questions",
+		"Only when archive_intent is \"llm\"",
+		"complete formal Thought document",
+		"final information already converged",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("default prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestOpenAICompatibleProviderExpandStripsFence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")

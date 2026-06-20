@@ -409,6 +409,49 @@ func TestStoreListSummariesReflectContent(t *testing.T) {
 	}
 }
 
+func TestStoreListSummaryTitleUsesSessionTheme(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	if _, err := store.Save(Scratchpad{
+		SessionID: "candidate",
+		Title:     "raw title",
+		SessionContext: SessionContext{
+			CandidateTitle: "LLM 收敛主题",
+			Topic:          "主题字段",
+		},
+	}); err != nil {
+		t.Fatalf("Save(candidate): %v", err)
+	}
+	if _, err := store.Save(Scratchpad{
+		SessionID: "topic",
+		SessionContext: SessionContext{
+			Topic: "调研计划",
+		},
+	}); err != nil {
+		t.Fatalf("Save(topic): %v", err)
+	}
+	if _, err := store.Save(Scratchpad{
+		SessionID: "message",
+		Messages:  []Message{{Role: "user", Text: "需要规划一套 capture 历史会话管理能力，包含恢复和删除"}},
+	}); err != nil {
+		t.Fatalf("Save(message): %v", err)
+	}
+
+	byID := map[string]Summary{}
+	for _, summary := range store.List() {
+		byID[summary.SessionID] = summary
+	}
+	if byID["candidate"].Title != "LLM 收敛主题" {
+		t.Fatalf("candidate title = %q", byID["candidate"].Title)
+	}
+	if byID["topic"].Title != "调研计划" {
+		t.Fatalf("topic title = %q", byID["topic"].Title)
+	}
+	if byID["message"].Title == "" || strings.Contains(byID["message"].Title, "message") {
+		t.Fatalf("message fallback title = %q", byID["message"].Title)
+	}
+}
+
 func TestStorePersistsDraftOnSave(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
