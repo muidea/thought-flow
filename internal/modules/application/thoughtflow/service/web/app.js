@@ -158,8 +158,6 @@ const PAGE_SERIALIZERS = {
     const q = {};
     const v = $("#search-query")?.value.trim();
     if (v) q.q = v;
-    const tid = $("#search-topic-id")?.value.trim();
-    if (tid) q.topic_id = tid;
     const tags = $("#search-tags")?.value.trim();
     if (tags) q.tags = tags;
     if (state.selectedThoughts.size > 0) q.selected = Array.from(state.selectedThoughts).join(",");
@@ -193,7 +191,6 @@ function restoreRoutePage(page, query) {
   if (!query || typeof query !== "object") return;
   if (page === "search") {
     if (typeof query.q === "string") $("#search-query").value = query.q;
-    if (typeof query.topic_id === "string") $("#search-topic-id").value = query.topic_id;
     if (typeof query.tags === "string") $("#search-tags").value = query.tags;
     if (typeof query.selected === "string" && query.selected) {
       state.selectedThoughts = new Set(query.selected.split(",").filter(Boolean));
@@ -1750,8 +1747,6 @@ async function createTopic(event) {
     toast(t("toast.topic_name_required"));
     return;
   }
-  const semanticEnabled = $("#topic-semantic").checked;
-  const threshold = Number.parseFloat($("#topic-threshold").value || "0.75");
   const topic = await api("/api/topics", {
     method: "POST",
     body: JSON.stringify({
@@ -1760,22 +1755,19 @@ async function createTopic(event) {
       rules: {
         keywords: {
           any: csv($("#topic-keywords").value),
-          all: csv($("#topic-keywords-all").value),
-          exclude: csv($("#topic-keywords-exclude").value),
+          all: [],
+          exclude: [],
         },
         tags: { any: csv($("#topic-tags").value) },
-        semantic: { enabled: semanticEnabled, threshold },
-        manual_include: csv($("#topic-manual-include").value),
-        manual_exclude: csv($("#topic-manual-exclude").value),
+        semantic: { enabled: false, threshold: 0.75 },
+        manual_include: [],
+        manual_exclude: [],
       },
-      outline: outlineFromText($("#topic-outline").value),
-      auto_weave: $("#topic-auto-weave").checked,
+      outline: outlineFromText("Notes\nOpen Questions"),
+      auto_weave: true,
     }),
   });
   event.target.reset();
-  $("#topic-threshold").value = "0.75";
-  $("#topic-auto-weave").checked = true;
-  $("#topic-outline").value = "Notes\nOpen Questions";
   toast(t("toast.topic_created"));
   closeDrawer("topic-create-drawer");
   await loadTopics();
@@ -3533,9 +3525,8 @@ function bindCaptureSessionLock() {
 async function runSearch(event) {
   if (event) event.preventDefault();
   const queryText = $("#search-query").value.trim();
-  const topicID = $("#search-topic-id").value.trim();
   const tags = csv($("#search-tags").value);
-  if (!queryText && !topicID && tags.length === 0) {
+  if (!queryText && tags.length === 0) {
     state.lastResults = [];
     renderSearchIdle();
     if (state.route?.page === "search") syncHash();
@@ -3545,7 +3536,6 @@ async function runSearch(event) {
   query.set("q", queryText);
   query.set("page", "1");
   query.set("page_size", "20");
-  if (topicID) query.set("topic_id", topicID);
   if (tags.length > 0) query.set("tags", tags.join(","));
   const response = await api(`/api/search?${query.toString()}`);
   state.lastResults = response.results || [];
@@ -3556,7 +3546,6 @@ async function runSearch(event) {
 
 function resetSearchFilters() {
   $("#search-tags").value = "";
-  $("#search-topic-id").value = "";
   runSearch().catch((error) => toast(error.message));
 }
 
@@ -4318,7 +4307,6 @@ function bind() {
   $("#topic-edit-form").addEventListener("submit", (event) => saveTopicRules(event).catch((error) => toast(error.message)));
   $("#search-form").addEventListener("submit", (event) => runSearch(event).catch((error) => toast(error.message)));
   $("#search-query").addEventListener("input", persistRouteDebounced);
-  $("#search-topic-id").addEventListener("input", persistRouteDebounced);
   $("#search-tags").addEventListener("input", persistRouteDebounced);
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
   $("#thought-filter")?.addEventListener("input", () => renderThoughtsList());

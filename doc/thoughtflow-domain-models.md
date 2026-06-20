@@ -451,7 +451,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 功能定义：
 
 1. 关键词搜索。
-2. 仅支持内容相关筛选，例如 tag、topic。
+2. Web 搜索仅支持关键词与 tag 筛选；专题关联由 Topics/Notes 流程处理，不在 Search 主页面按专题 ID 搜索。
 3. 提供预览、打开 Notes、加入 Compose 和专题影响预览。
 4. 默认隐藏 `score`、`keyword_score`、`semantic_score`、`recency_score`、score explain、DuckDB 调试字段和绝对路径。
 5. 索引重建和运行状态放到 Settings，不在 Search 主页面展示。
@@ -750,7 +750,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 | 查询 | 输入 | 输出 |
 | --- | --- | --- |
-| `SearchThoughts` | keyword/tags?/topic?/page | SearchResultView 列表 |
+| `SearchThoughts` | keyword/tags?/page | SearchResultView 列表 |
 | `GetSearchPreview` | thought_id | 预览片段 |
 
 必须校验：

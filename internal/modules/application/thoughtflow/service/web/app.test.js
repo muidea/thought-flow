@@ -24,7 +24,7 @@ const stubTflow = {
 // inspect and mutate inputs between operations. Other selectors return null.
 function makeDomStub(initial = {}) {
   const store = { ...initial };
-  const controls = ["search-query", "search-topic-id", "search-tags",
+  const controls = ["search-query", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
     "thought-filter"];
   // Side-effect nodes (toast, basket list, etc.) only need the methods the
@@ -540,7 +540,7 @@ test("buildRouteHash omits empty query fields and keeps the path clean", () => {
 });
 
 test("PAGE_SERIALIZERS.search captures only the non-default state of inputs", () => {
-  const dom = makeDomStub({ "search-query": "rag", "search-topic-id": "topic-1" });
+  const dom = makeDomStub({ "search-query": "rag", "search-tags": "ai,notes" });
   const app = loadAppFunctionsWith({ dom, exposeState: true });
 
   // Seed the global Set used by the serializer.
@@ -548,7 +548,8 @@ test("PAGE_SERIALIZERS.search captures only the non-default state of inputs", ()
   const result = app.PAGE_SERIALIZERS.search();
 
   assert.equal(result.q, "rag");
-  assert.equal(result.topic_id, "topic-1");
+  assert.equal(result.tags, "ai,notes");
+  assert.equal(result.topic_id, undefined);
   assert.equal(result.selected, "t-1,t-2");
   // Search 主流程不再携带 mode/explain/from/to/sort 等可调参数。
   assert.equal(result.mode, undefined);
@@ -607,8 +608,8 @@ test("restoreRoutePage populates search inputs from the query object", () => {
   });
 
   assert.equal(dom.store["search-query"], "vector store");
-  assert.equal(dom.store["search-topic-id"], "t-1");
   assert.equal(dom.store["search-tags"], "rag,llm");
+  assert.equal(dom.store["search-topic-id"] ?? "", "");
   assert.equal(dom.store["search-mode"] ?? "", "");
   assert.equal(dom.store["search-explain_checked"] ?? false, false);
   assert.deepEqual(Array.from(app._state.selectedThoughts), ["thought-7", "thought-8"]);

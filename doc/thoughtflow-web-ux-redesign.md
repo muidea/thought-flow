@@ -401,8 +401,7 @@ SearchBar
 └── 搜索按钮
 
 ContentFilters
-├── tags（可选）
-└── topic（可选）
+└── tags（可选）
 
 ResultLayout
 ├── Result table/list

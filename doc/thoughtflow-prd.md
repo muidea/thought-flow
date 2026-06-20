@@ -46,7 +46,7 @@
     *   `POST /api/capture/sessions/{id}/messages`：向采集会话追加对话消息并刷新上下文。
     *   `POST /api/capture/sessions/{id}/archive`：通过菜单或对话意图将会话归档为 Thought。
     *   `POST /api/thoughts/{id}/reopen-session`：基于已归档 Thought 发起补充完善会话。
-    *   `GET /api/search`：执行关键词搜索，可附带标签、专题等内容相关筛选。
+    *   `GET /api/search`：执行关键词搜索，可附带标签筛选；专题关联在 Topics/Notes 流程中处理。
     *   `POST /api/topics` / `PUT /api/topics/{id}`：创建与维护专题规则。
     *   `POST /api/topics/{id}/refresh`：基于 Thought 和采集会话信息刷新专题候选与正式视图。
     *   `POST /api/compose/drafts` / `GET /api/compose/drafts` / `POST /api/compose/drafts/{id}/save`：生成、查询并保存整理草稿。

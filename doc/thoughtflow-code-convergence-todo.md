@@ -26,7 +26,7 @@
 
 ### 2.2 Search
 
-- [x] `GET /api/search` 请求模型收敛为 `q`、`tags?`、`topic_id?`、`limit?`、`include_candidates?`。
+- [x] `GET /api/search` 请求模型收敛为 `q`、`tags?`、`limit?`、`include_candidates?`；Web/API 不再暴露专题 ID 搜索。
 - [x] 移除或隐藏 Web-facing `mode`、`sort`、`from`、`to`、`explain`、权重参数。
 - [x] 返回投影统一为 `SearchResultView{results,candidates?}`。
 - [x] 响应默认不暴露 `keyword_score`、`semantic_score`、`recency_score`、score formula、DuckDB 调试字段和绝对路径。
@@ -83,7 +83,7 @@
 ### 4.3 Search 页面
 
 - [x] 搜索框只表达关键词。
-- [x] 筛选仅保留 tag/topic 等内容相关项。
+- [x] 筛选仅保留 tag 等轻量内容相关项，专题关联回到 Topics/Notes 流程。
 - [x] 移除时间范围、状态、排序、score explain、mode 切换和 reindex 入口。
 - [x] 结果操作保留打开 Notes、预览、加入整理篮、专题影响预览。
 - [x] 多选结果加入 Compose basket。
@@ -116,7 +116,7 @@
 ### 6.1 Go / API
 
 - [x] Capture 会话恢复、默认复用最后会话、归档 preview、自动保存、reopen-session e2e 覆盖。
-- [x] Search API 覆盖 keyword-only 请求、tag/topic 筛选和 `SearchResultView` 投影。
+- [x] Search API 覆盖 keyword-only 请求、tag 筛选和 `SearchResultView` 投影。
 - [x] Topics 覆盖 `refresh`、`candidates`、候选确认不直接写正式文档。
 - [x] Compose API 覆盖创建草稿、查询草稿、保存为 Thought、source links 回溯。
 - [x] 删除或改写 `/api/synthesis*`、`/api/topics/{id}/rebuild` 新测试依赖。

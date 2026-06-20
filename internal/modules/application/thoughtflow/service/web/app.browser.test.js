@@ -511,15 +511,15 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     // stripping the query from the fragment.
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/search?q=rag&topic_id=demo&selected=thought-1"; });
+    await page.evaluate(() => { window.location.hash = "#/search?q=rag&selected=thought-1"; });
     await page.waitForExpression(() => document.querySelector("#page-search")?.classList.contains("active"));
     await page.waitForExpression(() => document.querySelector("#search-query")?.value === "rag");
     const restored = await page.evaluate(() => ({
       q: document.querySelector("#search-query")?.value,
-      topic: document.querySelector("#search-topic-id")?.value,
+      hasTopicInput: Boolean(document.querySelector("#search-topic-id")),
     }));
     assert.equal(restored.q, "rag");
-    assert.equal(restored.topic, "demo");
+    assert.equal(restored.hasTopicInput, false);
 
     // Typing into the search box updates the hash via the debounced serializer.
     await page.evaluate(() => {

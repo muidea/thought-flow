@@ -448,7 +448,7 @@ make e2e-test                          # 26 个 e2e 测试通过，含默认复�
 
 - **后端 API**：旧版合成/草稿类 API 整体下线（具体接口名与目录名见**附录 A**），迁移到 compose drafts 系列；草稿落盘目录改为新版目录，Thought `source` 枚举改为新版枚举值。
 - **专题刷新**：旧版专题刷新动作下线（具体接口名见**附录 A**），统一为新版刷新动作；候选影响通过新接口返回 `[]TopicCandidateImpact`，覆盖 `capture_session` / `thought_reopen_session` / `thought` / `compose_draft` 4 个 source。
-- **Search 投影**：`SearchResultView{results,candidates?}` 替代 `items + explain` 形状；`mode`、`sort`、`from`、`to`、`explain`、权重参数从 Web-facing 表单中移除，仅保留 `q` / `tags?` / `topic_id?` / `limit?` / `include_candidates?`。
+- **Search 投影**：`SearchResultView{results,candidates?}` 替代 `items + explain` 形状；`mode`、`sort`、`from`、`to`、`explain`、专题 ID、权重参数从 Web-facing 表单中移除，仅保留 `q` / `tags?` / `limit?` / `include_candidates?`。
 - **Web 路由**：`DEPRECATED_HASH_REDIRECTS` 重定向表与 `parseRoute` 中旧 sidebar / drawer 解析回退全部移除；5 类旧 sidebar / drawer hash 路径不再被识别，访问时统一回退到 Overview（具体名单见**附录 A**）。
 - **i18n**：6 个旧 sidebar / drawer 导航 i18n key 清理（具体 key 名见 PR #123 描述）；旧合成词 → 整理、旧重建词 → 刷新 全文更名。
 - **Web Compose 来源篮**：`state.composeBasket` 由 `Set<string>` 重构为 `Map<key, {source_type, source_id, title}>`（key = `${source_type}::${source_id}`），按 todo 4.5 要求同时支持 Thought / Search / Topic section / Capture session 4 种来源；持久化 envelope 改为 `sources` 数组，legacy `ids` payload 拒绝读取。`createComposeBasket` 工厂与 `addToComposeBasket` 同步切换到复合源语义，新增 `compose.source_type.thought` / `search_result` / `topic_section` / `capture_session` 4 个 i18n key。
@@ -616,7 +616,7 @@ stop hook feedback #4 指出前轮 transcript 仅有 grep + node test 命中,缺
 ### 端到端证据要点
 
 - **Capture (9 步)**:active session 复用 + reuse_last 命中 + messages/context 自动刷新 + archive preview/commit + reopen-session 二次落盘
-- **Search (5 步)**:SearchResultView DTO 字段齐 (thought_id/title/snippet/score/path/tags) + tag/topic 筛选 + 非法 mode 降级
+- **Search (5 步)**:SearchResultView DTO 字段齐 (thought_id/title/snippet/score/path/tags) + tag 筛选 + 非法 mode 降级
 - **Topics (7 步)**:create/list/get/update/refresh/candidates/weave-proposals 全链路,KeywordRule JSON 形如 `keywords.all` / `tags.any` 正确持久化
 - **Compose (4 步)**:drafts list/create/get/save + 4 类 sources (search_result / capture_session / thought / topic_section) 完整
 - **Web (5 步)**:SPA HTML 6 主导航齐全 + `compose-templates` 0 命中 + 36 个旧 i18n key 在 app.js / en-US.js / zh-CN.js 中 0 命中

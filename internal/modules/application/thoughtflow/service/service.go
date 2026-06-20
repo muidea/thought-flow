@@ -464,7 +464,6 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	searchQuery := models.SearchQuery{
 		Query:             query.Get("q"),
 		Mode:              "keyword",
-		TopicID:           query.Get("topic_id"),
 		Tags:              splitCSV(query.Get("tags")),
 		Page:              intQuery(query.Get("page"), 1),
 		PageSize:          limit,

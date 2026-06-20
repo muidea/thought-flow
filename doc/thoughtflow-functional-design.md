@@ -314,7 +314,7 @@ scratchpad.context_updated ──┘                │
 #### 3.4.1 职责
 
 1. 订阅 `thought.captured` / `thought.patched` / `thought.supplemented` / `refiner.succeeded` → 更新 DuckDB 索引（FTS + 向量）。
-2. `GET /api/search` 面向 Web 暴露关键词检索，支持 tag/topic 等内容相关筛选。
+2. `GET /api/search` 面向 Web 暴露关键词检索，支持 tag 等内容相关筛选；专题关联与专题影响预览留在 Topics/Notes 流程中处理。
 3. 后端可使用 FTS、Embedding 或重排提升召回，但不把 semantic/hybrid mode、score explain、时间范围或运行状态暴露为 Search 主流程控件。
 4. 结果回溯：每条命中带 `source_thought_id`、`source_session_id`（如果是 scratchpad 候选命中）、`backlink`。
 5. 命中 scratchpad 候选的条目标注 `candidate=true`，区分正式与候选。
@@ -322,7 +322,7 @@ scratchpad.context_updated ──┘                │
 
 #### 3.4.2 API
 
-- `GET /api/search?q=...&tags=...&topic_id=...&limit=...&include_candidates=...`
+- `GET /api/search?q=...&tags=...&limit=...&include_candidates=...`
 - 响应投影为 `SearchResultView{results,candidates?}`，默认只包含标题、片段、标签、专题、来源和操作入口。
 
 ---
@@ -511,7 +511,7 @@ Web 端按 `Overview / Capture / Notes / Search / Topics / Compose` 六个主入
 
 | Method | Path | Query / Body | 200 Response | 说明 |
 |---|---|---|---|---|
-| `GET` | `/api/search` | `q`, `tags?`, `topic_id?`, `limit?`, `include_candidates?` | `SearchResultView{results,candidates?}` | 关键词搜索；不暴露时间筛选、模式切换或 score explain |
+| `GET` | `/api/search` | `q`, `tags?`, `limit?`, `include_candidates?` | `SearchResultView{results,candidates?}` | 关键词搜索；不暴露专题 ID、时间筛选、模式切换或 score explain |
 | `POST` | `/api/compose/drafts` | `{sources[], selected_thought_ids?, prompt?, goal?, format?}` | `ComposeDraft` | 创建整理草稿 |
 | `GET` | `/api/compose/drafts` | — | `[]ComposeDraft` | 查询整理草稿列表 |
 | `GET` | `/api/compose/drafts/{id}` | — | `ComposeDraft` | 查询整理草稿详情 |

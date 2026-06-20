@@ -238,7 +238,6 @@
               <form id="search-form" class="search-form">
                 <input id="search-query" type="search" data-i18n-attr="search.query_placeholder" data-i18n-attr-target="placeholder" placeholder="Search thoughts">
                 <input id="search-tags" type="text" data-i18n-attr="search.tags_placeholder" data-i18n-attr-target="placeholder" placeholder="filter tags">
-                <input id="search-topic-id" type="text" data-i18n-attr="search.topic_placeholder" data-i18n-attr-target="placeholder" placeholder="topic id">
                 <button class="tf-btn tf-btn-primary" type="submit" data-i18n="search.submit">Search</button>
                 <button class="tf-btn" id="reset-search" type="button" data-i18n="search.reset_filters">Reset filters</button>
               </form>
@@ -296,6 +295,7 @@
                 <div class="tf-two-column">
                   <div id="weave-proposals" class="approval-list" data-i18n-template="topics.weave_proposals_none" data-empty="true">No weave proposals.</div>
                   <div>
+                    <h3 id="weave-review-title" data-i18n="topics.weave_proposals_empty_title">No pending weave review.</h3>
                     <div id="weave-diff" class="diff-view" data-i18n-template="topics.weave_diff_empty" data-empty="true">Select a proposal to review.</div>
                     <textarea id="weave-document" class="markdown-preview" spellcheck="false" data-i18n-attr="topics.weave_proposed_placeholder" data-i18n-attr-target="placeholder" placeholder="Proposed topic document" style="margin-top: 12px;"></textarea>
                     <div style="margin-top: 12px; text-align: right;">
@@ -463,34 +463,13 @@
             <textarea id="topic-description" data-i18n-attr="topics.create.description_placeholder" data-i18n-attr-target="placeholder" placeholder="Description"></textarea>
           </label>
           <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.keywords_any">Keywords any</span>
+            <span class="tf-label" data-i18n="topics.create.keywords_any">Keywords</span>
             <input id="topic-keywords" type="text" data-i18n-attr="topics.create.keywords_any" data-i18n-attr-target="placeholder" placeholder="keywords any">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.keywords_all">Keywords all</span>
-            <input id="topic-keywords-all" type="text" data-i18n-attr="topics.create.keywords_all" data-i18n-attr-target="placeholder" placeholder="keywords all">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.keywords_exclude">Keywords exclude</span>
-            <input id="topic-keywords-exclude" type="text" data-i18n-attr="topics.create.keywords_exclude" data-i18n-attr-target="placeholder" placeholder="keywords exclude">
           </label>
           <label class="tf-form-item">
             <span class="tf-label" data-i18n="topics.create.tags">Tags</span>
             <input id="topic-tags" type="text" placeholder="tags">
           </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.manual_include">Manual include</span>
-            <input id="topic-manual-include" type="text" placeholder="thought ids">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.manual_exclude">Manual exclude</span>
-            <input id="topic-manual-exclude" type="text" placeholder="thought ids">
-          </label>
-          <label class="toggle-row"><input id="topic-semantic" type="checkbox"> <span data-i18n="topics.create.semantic">Semantic</span></label>
-          <input id="topic-threshold" type="number" min="0" max="1" step="0.05" value="0.75" data-i18n-attr="topics.create.threshold" data-i18n-attr-target="aria-label" aria-label="Semantic threshold">
-          <label class="toggle-row"><input id="topic-auto-weave" type="checkbox" checked> <span data-i18n="topics.create.auto_weave">Auto weave</span></label>
-          <textarea id="topic-outline" data-i18n-attr="topics.create.outline" data-i18n-attr-target="placeholder" placeholder="outline, one heading per line">Notes
-Open Questions</textarea>
           <div class="tf-form-actions">
             <button class="tf-btn tf-btn-primary" type="submit" data-i18n="topics.create.submit">Create</button>
           </div>

@@ -735,10 +735,6 @@ p {
   padding-inline: 8px;
 }
 
-.search-form input[type="text"] {
-  grid-column: 1 / -1;
-}
-
 .result-row {
   display: grid;
   grid-template-columns: 20px 1fr;
@@ -1114,9 +1110,14 @@ textarea.markdown-preview {
 
 .tf-page .search-form {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 160px minmax(180px, 260px) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
   gap: 10px;
-  align-items: start;
+  align-items: stretch;
+}
+
+.tf-page .search-form input {
+  min-width: 0;
+  height: var(--tf-control-height-lg);
 }
 
 .tf-filter-grid {
@@ -1365,7 +1366,7 @@ textarea.markdown-preview {
   }
 
   .tf-page .search-form {
-    grid-template-columns: 1fr 140px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .tf-filter-grid {

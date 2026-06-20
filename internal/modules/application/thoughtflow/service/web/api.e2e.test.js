@@ -372,11 +372,10 @@ test("API e2e", async (t) => {
     }
   });
 
-  await t.test("search filters by tag and topic_id, returns SearchResultView shape", async () => {
+  await t.test("search filters by tag and returns SearchResultView shape", async () => {
     // The Web-facing search surface (per convergence todo 6.1) only emits
-    // q / tags / topic_id; assertions here pin the API contract to that
-    // surface and verify SearchResultView projects results without an
-    // explain block.
+    // q / tags; assertions here pin the API contract to that surface and
+    // verify SearchResultView projects results without an explain block.
     await request(server.baseURL, "/api/thoughts", "POST", {
       body: {
         type: "text",

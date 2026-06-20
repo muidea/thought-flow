@@ -62,6 +62,18 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	if !strings.Contains(res.Body.String(), `data-tab="topics-proposals"`) {
 		t.Fatalf("expected weave review tab under topics page in embedded index")
 	}
+	if !strings.Contains(res.Body.String(), `id="weave-review-title"`) {
+		t.Fatalf("expected weave review title target in embedded index")
+	}
+	for _, removed := range []string{`id="topic-keywords-all"`, `id="topic-keywords-exclude"`, `id="topic-manual-include"`, `id="topic-semantic"`, `id="topic-outline"`} {
+		if strings.Contains(res.Body.String(), removed) {
+			t.Fatalf("create topic drawer should not expose advanced control %s", removed)
+		}
+	}
+	if !strings.Contains(res.Body.String(), `id="edit-keywords-all"`) ||
+		!strings.Contains(res.Body.String(), `id="edit-semantic"`) {
+		t.Fatalf("advanced topic controls should remain available in edit rules drawer")
+	}
 }
 
 func TestHandleWebServesEmbeddedScript(t *testing.T) {
@@ -274,7 +286,7 @@ func TestHandleSearchUsesKeywordModeForWebSearch(t *testing.T) {
 		workspace:     ws,
 		searchService: searchbiz.NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, staticEmbeddingProvider{vector: []float64{1, 0, 0}, model: "test-embedding"}, filepath.Join(ws.RuntimePath, "thoughtflow.duckdb")),
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rg&page=1&page_size=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rg&topic_id=other&page=1&page_size=20", nil)
 	res := httptest.NewRecorder()
 	service.handleSearch(ctx, res, req)
 	if res.Code != http.StatusOK {
