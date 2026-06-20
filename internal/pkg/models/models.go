@@ -487,13 +487,12 @@ type SearchResponse struct {
 }
 
 // SearchResultView is the Web-facing search response. Internal score
-// components (KeywordScore/SemanticScore/RecencyScore) and the
-// DuckDB debug fields are intentionally omitted: the single
-// SearchResultSummary.Score is the only numeric signal exposed to
-// the UI. SearchResultView.Candidates is only populated when the
-// caller asked for it via SearchQuery.IncludeCandidates; the field
-// stays out of the JSON when no candidates were produced so clients
-// do not have to special-case empty slices.
+// components, aggregate score and DuckDB debug fields are intentionally
+// omitted from the projection; they only drive backend ranking.
+// SearchResultView.Candidates is only populated when the caller asked
+// for it via SearchQuery.IncludeCandidates; the field stays out of the
+// JSON when no candidates were produced so clients do not have to
+// special-case empty slices.
 type SearchResultView struct {
 	Results    []SearchResultSummary   `json:"results"`
 	Candidates []SearchResultCandidate `json:"candidates,omitempty"`
@@ -502,18 +501,20 @@ type SearchResultView struct {
 	Total      int                     `json:"total"`
 }
 
-// SearchResultSummary is the per-thought projection embedded in
-// SearchResultView. Path is repo-relative (no absolute filesystem
-// location) so the Web never accidentally renders a host-local
-// path that the user has no way to dereference.
+// SearchResultSummary is the per-result projection embedded in
+// SearchResultView. PathHint is repo-relative (no absolute filesystem
+// location) so the Web never accidentally renders a host-local path
+// that the user has no way to dereference.
 type SearchResultSummary struct {
 	ThoughtID string   `json:"thought_id"`
 	Title     string   `json:"title"`
 	Snippet   string   `json:"snippet"`
-	Score     float64  `json:"score"`
-	Path      string   `json:"path"`
-	Topics    []string `json:"topics,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
+	Topics    []string `json:"topics,omitempty"`
+	Source    string   `json:"source"`
+	SourceID  string   `json:"source_id"`
+	PathHint  string   `json:"path_hint,omitempty"`
+	Actions   []string `json:"actions,omitempty"`
 }
 
 // SearchResultCandidate is a topic-level candidate surfaced

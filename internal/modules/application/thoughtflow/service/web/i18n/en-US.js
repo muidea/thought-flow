@@ -212,6 +212,7 @@ export const messages = {
   "search.reset_filters": "Reset filters",
   "search.results_title": "Results",
   "search.results_hint": "Select thoughts for compose or topic weaving.",
+  "search.idle": "Enter a keyword or filter to start searching.",
   "search.selected_count": "{n} selected",
   "search.add_selected": "Add to compose",
   "search.clear_selected": "Clear",

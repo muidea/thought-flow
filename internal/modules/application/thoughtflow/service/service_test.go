@@ -173,6 +173,155 @@ func TestTimeQueryParsesSearchRangeParameters(t *testing.T) {
 	}
 }
 
+func TestBuildSearchResultViewUsesWebProjection(t *testing.T) {
+	root := t.TempDir()
+	service := &Service{workspace: &models.Workspace{RootPath: root}}
+	view := service.buildSearchResultView(context.Background(), models.SearchQuery{}, models.SearchResponse{
+		Items: []models.SearchResult{{
+			ThoughtID:     "thought-1",
+			Title:         "Search Result",
+			Snippet:       "matching snippet",
+			Score:         0.91,
+			KeywordScore:  0.8,
+			SemanticScore: 0.7,
+			RecencyScore:  0.6,
+			Path:          filepath.Join(root, "thoughts", "2026", "06", "thought-1.md"),
+			Tags:          []string{"ui"},
+			Topics:        []string{"topic-1"},
+		}},
+		Page:     1,
+		PageSize: 20,
+		Total:    1,
+	})
+	if len(view.Results) != 1 {
+		t.Fatalf("results = %#v", view.Results)
+	}
+	result := view.Results[0]
+	if result.Source != models.ComposeSourceTypeThought || result.SourceID != "thought-1" {
+		t.Fatalf("source = %s/%s", result.Source, result.SourceID)
+	}
+	if result.PathHint != "thoughts/2026/06/thought-1.md" {
+		t.Fatalf("path_hint = %q", result.PathHint)
+	}
+	if strings.Join(result.Actions, ",") != "preview,open_note,add_to_compose,topic_impact,copy_path" {
+		t.Fatalf("actions = %#v", result.Actions)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(result) error = %v", err)
+	}
+	for _, forbidden := range []string{"score", "keyword_score", "semantic_score", "recency_score", `"path"`} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("web projection should not expose %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestHandleSearchReportsUnavailableOnUnsetSearchService(t *testing.T) {
+	service := &Service{}
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=demo", nil)
+	res := httptest.NewRecorder()
+	service.handleSearch(context.Background(), res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "search.unavailable") {
+		t.Fatalf("body should carry search.unavailable code: %s", res.Body.String())
+	}
+}
+
+func TestHandleSearchUsesKeywordModeForWebSearch(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		RuntimePath:  filepath.Join(root, ".thoughtflow"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.RuntimePath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	store, err := searchdb.Open(ctx, filepath.Join(ws.RuntimePath, "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open(searchdb) error = %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 20, 12, 42, 0, 0, time.UTC)
+	rgThought := searchHandlerThought("thought-rg", "rg usage", "thoughts/2026/06/thought-rg.md", now)
+	webThought := searchHandlerThought("thought-web", "web capture", "thoughts/2026/06/thought-web.md", now.Add(time.Minute))
+	if err := store.IndexThought(ctx, rgThought, models.ThoughtContent{Original: "rg finds text quickly"}); err != nil {
+		t.Fatalf("IndexThought(rg) error = %v", err)
+	}
+	if err := store.IndexThought(ctx, webThought, models.ThoughtContent{Original: "crawler design notes"}); err != nil {
+		t.Fatalf("IndexThought(web) error = %v", err)
+	}
+	for _, record := range []models.EmbeddingRecord{
+		{ThoughtID: rgThought.ID, Model: "test-embedding", Dimension: 3, Vector: []float64{0, 1, 0}, CreatedAt: now},
+		{ThoughtID: webThought.ID, Model: "test-embedding", Dimension: 3, Vector: []float64{1, 0, 0}, CreatedAt: now},
+	} {
+		if err := store.IndexEmbedding(ctx, record); err != nil {
+			t.Fatalf("IndexEmbedding(%s) error = %v", record.ThoughtID, err)
+		}
+	}
+
+	service := &Service{
+		workspace:     ws,
+		searchService: searchbiz.NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, staticEmbeddingProvider{vector: []float64{1, 0, 0}, model: "test-embedding"}, filepath.Join(ws.RuntimePath, "thoughtflow.duckdb")),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rg&page=1&page_size=20", nil)
+	res := httptest.NewRecorder()
+	service.handleSearch(ctx, res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		Data models.SearchResultView `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode response error = %v", err)
+	}
+	if payload.Data.Total != 1 || len(payload.Data.Results) != 1 {
+		t.Fatalf("search should only return keyword matches, got %#v", payload.Data)
+	}
+	if payload.Data.Results[0].ThoughtID != rgThought.ID {
+		t.Fatalf("thought id = %q, want %q", payload.Data.Results[0].ThoughtID, rgThought.ID)
+	}
+}
+
+type staticEmbeddingProvider struct {
+	vector []float64
+	model  string
+}
+
+func (p staticEmbeddingProvider) Embed(ctx context.Context, req ai.EmbedRequest) (models.EmbeddingRecord, error) {
+	_ = ctx
+	_ = req
+	return models.EmbeddingRecord{Model: p.model, Dimension: len(p.vector), Vector: append([]float64{}, p.vector...)}, nil
+}
+
+func searchHandlerThought(id string, title string, path string, updatedAt time.Time) models.Thought {
+	return models.Thought{
+		ID:            id,
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     title,
+		DisplayTitle:  title,
+		Path:          path,
+		CreatedAt:     updatedAt,
+		UpdatedAt:     updatedAt,
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+}
+
 func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

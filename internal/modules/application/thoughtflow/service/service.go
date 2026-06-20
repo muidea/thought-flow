@@ -452,6 +452,10 @@ func recentJobsByResource(store jobQueryReader, resourceID string, limit int) []
 
 func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	observability.IncrementSearchQuery()
+	if s.searchService == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.search.unavailable", "search service is not ready")
+		return
+	}
 	query := req.URL.Query()
 	limit := intQuery(firstNonEmpty(query.Get("limit"), query.Get("page_size")), 20)
 	if limit <= 0 {
@@ -459,6 +463,7 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	}
 	searchQuery := models.SearchQuery{
 		Query:             query.Get("q"),
+		Mode:              "keyword",
 		TopicID:           query.Get("topic_id"),
 		Tags:              splitCSV(query.Get("tags")),
 		Page:              intQuery(query.Get("page"), 1),
@@ -476,23 +481,26 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 }
 
 // buildSearchResultView narrows the internal SearchResponse down to
-// the Web-facing SearchResultView: the per-thought summaries drop the
-// internal score components, and the candidates array is only filled
-// when SearchQuery.IncludeCandidates is set. The path is normalized
-// to a repo-relative form so the Web never sees a host-local
-// filesystem path; an empty workspace falls back to the path the
-// search store reported.
+// the Web-facing SearchResultView: the per-result summaries drop all
+// ranking/debug score fields, and the candidates array is only filled
+// when SearchQuery.IncludeCandidates is set. PathHint is normalized to
+// a repo-relative form so the Web never sees a host-local filesystem
+// path; an empty workspace falls back to the path the search store
+// reported.
 func (s *Service) buildSearchResultView(ctx context.Context, query models.SearchQuery, response models.SearchResponse) models.SearchResultView {
 	summaries := make([]models.SearchResultSummary, 0, len(response.Items))
 	for _, item := range response.Items {
+		sourceID := firstNonEmpty(item.ThoughtID, item.Path)
 		summaries = append(summaries, models.SearchResultSummary{
 			ThoughtID: item.ThoughtID,
 			Title:     item.Title,
 			Snippet:   item.Snippet,
-			Score:     item.Score,
-			Path:      s.normalizeRelativePath(item.Path),
-			Topics:    item.Topics,
 			Tags:      item.Tags,
+			Topics:    item.Topics,
+			Source:    models.ComposeSourceTypeThought,
+			SourceID:  sourceID,
+			PathHint:  s.normalizeRelativePath(item.Path),
+			Actions:   searchResultActions(item.ThoughtID, item.Path),
 		})
 	}
 	view := models.SearchResultView{
@@ -505,6 +513,18 @@ func (s *Service) buildSearchResultView(ctx context.Context, query models.Search
 		view.Candidates = s.topicService.SearchCandidates(ctx, query.Query, query.Tags, query.TopicID, 5)
 	}
 	return view
+}
+
+func searchResultActions(thoughtID string, path string) []string {
+	actions := []string{}
+	if strings.TrimSpace(thoughtID) != "" {
+		actions = append(actions, "preview", "open_note", "add_to_compose")
+	}
+	actions = append(actions, "topic_impact")
+	if strings.TrimSpace(path) != "" {
+		actions = append(actions, "copy_path")
+	}
+	return actions
 }
 
 // normalizeRelativePath converts a search-result path into a

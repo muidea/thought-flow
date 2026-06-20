@@ -3532,13 +3532,20 @@ function bindCaptureSessionLock() {
 
 async function runSearch(event) {
   if (event) event.preventDefault();
+  const queryText = $("#search-query").value.trim();
+  const topicID = $("#search-topic-id").value.trim();
+  const tags = csv($("#search-tags").value);
+  if (!queryText && !topicID && tags.length === 0) {
+    state.lastResults = [];
+    renderSearchIdle();
+    if (state.route?.page === "search") syncHash();
+    return;
+  }
   const query = new URLSearchParams();
-  query.set("q", $("#search-query").value.trim());
+  query.set("q", queryText);
   query.set("page", "1");
   query.set("page_size", "20");
-  const topicID = $("#search-topic-id").value.trim() || state.activeTopicId;
   if (topicID) query.set("topic_id", topicID);
-  const tags = csv($("#search-tags").value);
   if (tags.length > 0) query.set("tags", tags.join(","));
   const response = await api(`/api/search?${query.toString()}`);
   state.lastResults = response.results || [];
@@ -3551,6 +3558,13 @@ function resetSearchFilters() {
   $("#search-tags").value = "";
   $("#search-topic-id").value = "";
   runSearch().catch((error) => toast(error.message));
+}
+
+function renderSearchIdle() {
+  const list = $("#search-results");
+  if (!list) return;
+  list.innerHTML = `<div class="topic-meta">${escapeHTML(t("search.idle"))}</div>`;
+  updateSelectionControls();
 }
 
 function renderResults(response) {
@@ -3580,7 +3594,13 @@ function renderResults(response) {
     });
   });
   list.querySelectorAll("[data-basket-id]").forEach((button) => {
-    button.addEventListener("click", () => addToComposeBasket([button.dataset.basketId]));
+    button.addEventListener("click", () => {
+      addToComposeBasket([{
+        source_type: "search_result",
+        source_id: button.dataset.basketId,
+        title: button.dataset.basketTitle || "",
+      }], "search_result");
+    });
   });
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
     button.addEventListener("click", () => copyPath(button.dataset.copyPath));
@@ -3598,24 +3618,34 @@ function renderSearchResultItem(item, options = {}) {
     .map((tag) => `<span class="pill">${escapeHTML(tag)}</span>`)
     .join("");
   const thoughtID = item.thought_id || item.id || "";
-  // SearchResultView 投影只暴露 thought_id / title / snippet / score / tags /
-  // topics / path,不再展示 explain 与 keyword/semantic/recency 拆分。
+  const pathHint = item.path_hint || "";
+  const title = item.title || thoughtID;
+  const sourceID = item.source_id || thoughtID;
+  const actions = new Set(Array.isArray(item.actions) && item.actions.length > 0
+    ? item.actions
+    : ["preview", "open_note", "add_to_compose", "topic_impact", "copy_path"]);
+  const canPreview = actions.has("preview") && thoughtID;
+  const canOpen = actions.has("open_note") && thoughtID;
+  const canAddBasket = actions.has("add_to_compose") && sourceID;
+  const canReviewWeave = actions.has("topic_impact") && thoughtID;
+  const canCopyPath = actions.has("copy_path") && pathHint;
+  // SearchResultView 投影只暴露 content-facing 字段: thought_id / title /
+  // snippet / tags / topics / source / source_id / path_hint / actions。
   return `
     <article class="result-item">
       <div class="result-row">
         <input type="checkbox" data-select-id="${escapeHTML(thoughtID)}" ${checked} aria-label="${escapeHTML(t("search.result.select_aria"))}">
         <div>
-          <strong><button class="link-button" data-preview-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(item.title || thoughtID)}</button></strong>
+          <strong>${canPreview ? `<button class="link-button" data-preview-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(title)}</button>` : escapeHTML(title)}</strong>
           <div class="result-meta">${escapeHTML(item.snippet || "")}</div>
           <div class="score-line">
-            ${item.score !== undefined ? `<span class="pill green">${t("search.score_label")} ${score(item.score)}</span>` : ""}
             ${tags}
           </div>
           <div class="tf-action-row">
-            <button class="mini-button" data-open-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.open"))}</button>
-            <button class="mini-button" data-basket-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
-            <button class="mini-button" data-weave-id="${escapeHTML(thoughtID)}" ${options.activeTopicId ? "" : "disabled"} type="button">${escapeHTML(t("search.result.review_weave"))}</button>
-            ${item.path ? `<button class="mini-button" data-copy-path="${escapeHTML(item.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(item.path)}</code>` : ""}
+            ${canOpen ? `<button class="mini-button" data-open-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.open"))}</button>` : ""}
+            ${canAddBasket ? `<button class="mini-button" data-basket-id="${escapeHTML(sourceID)}" data-basket-title="${escapeHTML(title)}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>` : ""}
+            ${canReviewWeave ? `<button class="mini-button" data-weave-id="${escapeHTML(thoughtID)}" ${options.activeTopicId ? "" : "disabled"} type="button">${escapeHTML(t("search.result.review_weave"))}</button>` : ""}
+            ${canCopyPath ? `<button class="mini-button" data-copy-path="${escapeHTML(pathHint)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(pathHint)}</code>` : ""}
           </div>
         </div>
       </div>
@@ -4489,8 +4519,10 @@ async function boot() {
   await loadComposeDrafts();
   await loadThoughts();
   await loadMetrics();
-  await runSearch();
   await applyRoute();
+  if (state.route?.page === "search") {
+    await runSearch();
+  }
   // Land the user back in the most recent uncommitted capture
   // session if there is one, so a refresh doesn't dump them onto
   // an empty composer. The server's last_active_session_id is the

@@ -156,6 +156,7 @@ export const Key = Object.freeze({
   SearchResetFilters: "search.reset_filters",
   SearchResultsTitle: "search.results_title",
   SearchResultsHint: "search.results_hint",
+  SearchIdle: "search.idle",
   SearchSelectedCount: "search.selected_count",
   SearchAddSelected: "search.add_selected",
   SearchClearSelected: "search.clear_selected",

@@ -32,7 +32,7 @@ function makeDomStub(initial = {}) {
   // when the test doesn't drive them.
   const sideEffectNodes = new Set(["toast", "compose-source-count", "compose-source-list",
     "clear-compose-basket", "compose-basket-list", "compose-source-count-basket",
-    "clear-compose-basket-tab"]);
+    "clear-compose-basket-tab", "selected-count", "add-selected-compose", "clear-selected"]);
   // Each control is a live proxy over the store: reads go to store, writes
   // (and `checked` toggles) flow back into the store so assertions can see them.
   const nodes = Object.fromEntries(controls.map((id) => {
@@ -85,6 +85,11 @@ function makeDomStub(initial = {}) {
   };
   nodes["capture-sessions-list"] = {
     innerHTML: "",
+    querySelectorAll: () => [],
+  };
+  nodes["search-results"] = {
+    get innerHTML() { return store["search-results_innerHTML"] || ""; },
+    set innerHTML(v) { store["search-results_innerHTML"] = String(v); },
     querySelectorAll: () => [],
   };
   function find(selector) {
@@ -155,6 +160,8 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
+      runSearch,
+      renderSearchIdle,
       renderTopicCandidateImpact,
       renderTopicCandidates,
       createComposeBasket,
@@ -295,28 +302,28 @@ test("runtime path display avoids leaking absolute workspace paths", () => {
   assert.equal(app.displayRuntimePath(".thoughtflow/thoughtflow.duckdb", root), ".thoughtflow/thoughtflow.duckdb");
 });
 
-test("renderSearchResultItem exposes scores and action targets", () => {
+test("renderSearchResultItem exposes source actions without score details", () => {
   const app = loadAppFunctions();
 
-  // SearchResultView 投影不再下放 keyword/semantic/recency 拆分与 explain,
-  // Web 仅暴露 thought_id / title / snippet / score / tags / path 即可。
+  // SearchResultView 投影不再下放 score / explain 字段，Web 仅暴露
+  // 内容相关字段和可执行动作。
   const html = app.renderSearchResultItem({
     thought_id: "thought-1",
     title: "Search Result",
     snippet: "Snippet",
-    score: 0.91,
     tags: ["ui"],
-    path: "thoughts/demo.md",
+    path_hint: "thoughts/demo.md",
   }, { selected: true, activeTopicId: "topic-1" });
 
   assert.match(html, /data-select-id="thought-1" checked/);
-  assert.match(html, /search\.score_label/);
-  assert.match(html, /0\.91/);
-  // 拆分 score 字段不在主流程展示。
+  assert.doesNotMatch(html, /search\.score_label/);
+  assert.doesNotMatch(html, /0\.91/);
+  // score 字段不在主流程展示。
   assert.doesNotMatch(html, /0\.80/);
   assert.doesNotMatch(html, /0\.70/);
   assert.doesNotMatch(html, /0\.60/);
   assert.match(html, /data-basket-id="thought-1"/);
+  assert.match(html, /data-basket-title="Search Result"/);
   assert.match(html, /data-weave-id="thought-1"/);
   assert.match(html, /thoughts\/demo\.md/);
   assert.doesNotMatch(html, /tf-explain/);
@@ -502,12 +509,12 @@ test("outline helpers preserve one title per line", () => {
 
 test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", () => {
   // The stub above returns the key itself, so the rendered HTML exposes
-  // dotted keys instead of literal English — assert that the score and
-  // the action labels resolve through the i18n helper. The previous split
-  // keyword/semantic/recency labels are gone with the explain block.
+  // dotted keys instead of literal English — assert that the action labels
+  // resolve through the i18n helper. The previous score labels are gone with
+  // the explain block.
   const app = loadAppFunctions();
   const html = app.renderSearchResultItem({ thought_id: "x", title: "t", score: 0.1 }, { selected: false, activeTopicId: "" });
-  assert.match(html, /search\.score_label/);
+  assert.doesNotMatch(html, /search\.score_label/);
   assert.match(html, /search\.result\.add_basket/);
   assert.doesNotMatch(html, /search\.keyword_label/);
   assert.doesNotMatch(html, /search\.semantic_label/);
@@ -556,6 +563,27 @@ test("PAGE_SERIALIZERS omits fields that are at their default value", () => {
   // All inputs at their default state — nothing in the URL.
   assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.search()), "{}");
   assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), "{}");
+});
+
+test("runSearch with empty criteria renders idle state without fetching", async () => {
+  const dom = makeDomStub();
+  let fetched = false;
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async () => {
+      fetched = true;
+      return { ok: true, json: async () => ({ data: { results: [] } }) };
+    },
+  });
+  app._state.activeTopicId = "topic-hidden";
+
+  await app.runSearch({ preventDefault: () => {} });
+
+  assert.equal(fetched, false);
+  assert.match(dom.store["search-results_innerHTML"], /search\.idle/);
+  assert.equal(Array.isArray(app._state.lastResults), true);
+  assert.equal(app._state.lastResults.length, 0);
 });
 
 test("restoreRoutePage populates search inputs from the query object", () => {

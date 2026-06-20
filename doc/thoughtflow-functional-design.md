@@ -593,15 +593,23 @@ related_thought_ids: [<new_thought_id>]
 
 ```go
 type SearchResultView struct {
+    Results    []SearchResultSummary   `json:"results"`
+    Candidates []SearchResultCandidate `json:"candidates,omitempty"`
+    Page       int                     `json:"page"`
+    PageSize   int                     `json:"page_size"`
+    Total      int                     `json:"total"`
+}
+
+type SearchResultSummary struct {
     ThoughtID string   `json:"thought_id"`
     Title     string   `json:"title"`
     Snippet   string   `json:"snippet"`
-    Tags      []string `json:"tags"`
-    Topics    []string `json:"topics"`
+    Tags      []string `json:"tags,omitempty"`
+    Topics    []string `json:"topics,omitempty"`
     Source    string   `json:"source"`     // thought|scratchpad_candidate|compose_draft
     SourceID  string   `json:"source_id"`
     PathHint  string   `json:"path_hint,omitempty"`
-    Actions   []string `json:"actions"`
+    Actions   []string `json:"actions,omitempty"`
 }
 ```
 
