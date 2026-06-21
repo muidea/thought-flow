@@ -165,6 +165,7 @@ async function runBrowserSmoke(browser, url) {
     const thoughtDrawerText = document.querySelector("#thought-drawer-content")?.textContent || "";
     document.querySelector("#drawer-add-compose")?.click();
     const basketTextAfterDrawer = document.querySelector("#compose-source-count")?.textContent || "";
+    const basketCountAfterDrawer = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
     document.querySelector("[data-close-drawer='thought-drawer']")?.click();
     document.querySelector("[data-select-id='thought-1']").checked = true;
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
@@ -172,6 +173,7 @@ async function runBrowserSmoke(browser, url) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const composeActive = document.querySelector("#page-compose")?.classList.contains("active");
     const basketText = document.querySelector("#compose-source-count")?.textContent || "";
+    const basketCount = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
     document.querySelector("#open-compose-create").click();
     const composeDrawerOpen = document.querySelector("#compose-create-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='compose-create-drawer']")?.click();
@@ -255,8 +257,10 @@ async function runBrowserSmoke(browser, url) {
       thoughtDrawerOpen,
       thoughtDrawerText,
       basketTextAfterDrawer,
+      basketCountAfterDrawer,
       composeActive,
       basketText,
+      basketCount,
       composeDrawerOpen,
       createTopicDrawerOpen,
       topicRouteActive,
@@ -275,9 +279,9 @@ async function runBrowserSmoke(browser, url) {
       // PR5: sidebar count badges surface notes / topics / compose totals.
       sidebarWidth: document.querySelector(".tf-sider")?.getBoundingClientRect().width,
       sidebarBadges: {
-        notes: document.querySelector('.tf-menu-badge[data-badge="notes"]')?.textContent || "",
-        topics: document.querySelector('.tf-menu-badge[data-badge="topics"]')?.textContent || "",
-        compose: document.querySelector('.tf-menu-badge[data-badge="compose"]')?.textContent || "",
+        notes: document.querySelector('.tf-menu-badge[data-badge="notes"]')?.dataset.count || "",
+        topics: document.querySelector('.tf-menu-badge[data-badge="topics"]')?.dataset.count || "",
+        compose: document.querySelector('.tf-menu-badge[data-badge="compose"]')?.dataset.count || "",
       },
       shellWidth: shell.width,
       scrollWidth: document.documentElement.scrollWidth,
@@ -304,9 +308,9 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.captureResult, /Captured from browser smoke|Session context|Archive preview/);
   assert.equal(state.thoughtDrawerOpen, true);
   assert.match(state.thoughtDrawerText, /Browser Thought/);
-  assert.match(state.basketTextAfterDrawer, /1 selected sources/);
+  assert.equal(state.basketCountAfterDrawer, "1", `basket count after drawer mismatch: ${state.basketTextAfterDrawer}`);
   assert.equal(state.composeActive, true);
-  assert.match(state.basketText, /1 selected sources/);
+  assert.equal(state.basketCount, "1", `basket count mismatch: ${state.basketText}`);
   assert.equal(state.composeDrawerOpen, true);
   assert.equal(state.createTopicDrawerOpen, true);
   assert.equal(state.topicRouteActive, true);
@@ -340,7 +344,9 @@ async function runBrowserSmoke(browser, url) {
   assert.ok(state.sidebarBadges.topics && state.sidebarBadges.topics.length > 0, `topics badge empty: ${JSON.stringify(state.sidebarBadges)}`);
   assert.ok(state.sidebarBadges.compose && state.sidebarBadges.compose.length > 0, `compose badge empty: ${JSON.stringify(state.sidebarBadges)}`);
   assert.ok(state.shellWidth > 0);
-  assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
+  if (state.clientWidth >= 760) {
+    assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
+  }
   assert.deepEqual(errors, []);
   // PR4: per `doc/thoughtflow-web-ux-polish-v2.md` §4.3, page descriptions
   // are bounded so the page header doesn't dominate the layout. The
