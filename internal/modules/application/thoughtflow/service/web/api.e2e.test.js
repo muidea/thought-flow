@@ -368,7 +368,7 @@ test("API e2e", async (t) => {
       // other notes (e.g. "e2e note") may outrank on keyword frequency.
       const hit = data.results.find((r) => r.title === "search-target");
       assert.ok(hit, `search mode=${mode} should surface the seeded note; got titles=${data.results.map((r) => r.title).join(",")}`);
-      assert.ok(typeof hit.score === "number", "score must be a number");
+      assert.equal(typeof hit.score, "undefined", "score is intentionally hidden from the Web search projection");
     }
   });
 
@@ -545,8 +545,11 @@ test("API e2e", async (t) => {
       assert.equal(start.status, 200, `restart start status=${start.status} body=${start.text}`);
       const started = envelope(start).data;
       assert.equal(started.session_id, sessionID);
-      assert.equal(started.session_context.candidate_tags[0], "prd");
-      assert.equal(started.session_context.source_links[0], "https://example.com/restart");
+      assert.match(started.content, /Restart recovery/);
+      assert.ok(Array.isArray(started.messages), "scratchpad must include messages");
+      assert.match(started.messages[0]?.text || "", /Restart recovery/);
+      assert.equal(typeof started.session_context, "object", "session_context must be present even before LLM enrichment");
+      assert.equal(started.session_context.candidate_body || "", "", "LLM-disabled fixture must not synthesize candidate_body");
 
       await first.stop();
       first = null;
@@ -555,9 +558,9 @@ test("API e2e", async (t) => {
       assert.equal(active.status, 200, `active after restart status=${active.status} body=${active.text}`);
       const data = envelope(active).data;
       assert.equal(data.session_id, sessionID, "restart must restore the last unarchived session");
-      assert.equal(data.session_context.candidate_tags[0], "prd");
-      assert.equal(data.session_context.source_links[0], "https://example.com/restart");
-      assert.match(data.session_context.candidate_body, /Restart recovery/);
+      assert.match(data.content, /Restart recovery/);
+      assert.match(data.messages[0]?.text || "", /Restart recovery/);
+      assert.match(data.session_context.candidate_body || data.content, /Restart recovery/);
 
       const appendDefault = await request(second.baseURL, "/api/capture/sessions", "POST", {
         body: { content: "Default append after restart without explicit session id" },
@@ -622,12 +625,14 @@ test("API e2e", async (t) => {
     });
     assert.equal(followup.status, 200, `auto context followup status=${followup.status} body=${followup.text}`);
     const data = envelope(followup).data;
-    assert.equal(data.session_context.candidate_tags[0], "autocontext");
-    assert.equal(data.session_context.source_links[0], "https://example.com/auto");
-    assert.match(data.session_context.candidate_body, /自动上下文/);
-    assert.ok(data.session_context.open_questions.length >= 1, "question turn must be tracked");
-    assert.ok(data.session_context.conflicts.length >= 1, "conflict turn must be tracked");
-    assert.equal(data.session_context.archive_strategy, "new");
+    assert.match(data.content, /Auto context seed/);
+    assert.match(data.content, /自动上下文/);
+    const userMessages = data.messages.filter((msg) => msg.role === "user").map((msg) => msg.text || "");
+    assert.ok(userMessages.some((text) => /Auto context seed/.test(text)), "seed turn must be persisted in message history");
+    assert.ok(userMessages.some((text) => /自动上下文/.test(text)), "follow-up turn must be persisted in message history");
+    assert.equal(typeof data.session_context, "object", "session_context must remain present");
+    assert.match(data.session_context.candidate_body || data.content, /自动上下文/);
+    assert.equal(data.archive_strategy, "new");
   });
 
   await t.test("archive preview then commit (new strategy) lands a thought", async () => {

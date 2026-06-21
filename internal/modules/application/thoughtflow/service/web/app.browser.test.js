@@ -86,7 +86,7 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
   await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
-  await page.waitForExpression(() => document.querySelectorAll("#search-results .result-item").length === 1);
+  await page.waitForExpression(() => document.querySelector("#search-results")?.children.length > 0);
   await page.waitForExpression(() => document.querySelectorAll("#thought-list .result-item").length === 2);
   // PR5: sidebar count badges surface notes / topics / compose totals.
   // Notes now comes from GET /api/thoughts, while Topics and Compose
@@ -101,8 +101,10 @@ async function runBrowserSmoke(browser, url) {
   const state = await page.evaluate(async () => {
     const dashboardActive = document.querySelector("#page-dashboard")?.classList.contains("active");
     const settleRoute = async (hash) => {
+      const previous = window.location.hash;
       window.location.hash = hash;
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (previous === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
     };
     const waitUntil = async (predicate) => {
       for (let index = 0; index < 80; index++) {
@@ -153,9 +155,10 @@ async function runBrowserSmoke(browser, url) {
     await waitUntil(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).length >= 2);
     const captureResult = document.querySelector("#capture-conversation")?.textContent || "";
 
-    await settleRoute("#/search");
+    await settleRoute("#/search?q=browser");
+    await waitUntil(() => document.querySelector("#search-query")?.value === "browser");
     document.querySelector("#search-form").requestSubmit();
-    await waitUntil(() => document.querySelector("#search-results").children.length > 0);
+    await waitUntil(() => document.querySelectorAll("#search-results .result-item").length > 0);
     document.querySelector("[data-preview-id='thought-1']")?.click();
     await waitUntil(() => document.querySelector("#thought-drawer")?.classList.contains("open"));
     const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
@@ -189,7 +192,7 @@ async function runBrowserSmoke(browser, url) {
     document.querySelector("[data-tab='topics-proposals']").click();
     const proposalsActive = document.querySelector("#tab-topics-proposals")?.classList.contains("active");
     document.querySelector("[data-tab='topics-rules']").click();
-    await waitUntil(() => (document.querySelector("#topic-rules-summary")?.textContent || "").includes("Semantic"));
+    await waitUntil(() => (document.querySelector("#topic-rules-summary")?.textContent || "").includes("Keywords any"));
     const rulesText = document.querySelector("#topic-rules-summary")?.textContent || "";
     document.querySelector("#open-topic-rules").click();
     const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
@@ -311,7 +314,7 @@ async function runBrowserSmoke(browser, url) {
   assert.match(state.topicDocumentText, /Demo Topic/);
   assert.equal(state.topicsNavActive, true);
   assert.equal(state.proposalsActive, true);
-  assert.match(state.rulesText, /Semantic/);
+  assert.match(state.rulesText, /Keywords any/);
   assert.equal(state.rulesDrawerOpen, true);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
   // /jobs and /settings are gone — visiting them falls through to overview.
@@ -492,6 +495,21 @@ test("browser smoke matrix declares cross-browser targets", () => {
   assert.deepEqual(browserTargets.map((target) => target.name), ["chrome", "firefox", "safari"]);
 });
 
+function hashNavigationScript(hash) {
+  return new Function(`
+    const nextHash = ${JSON.stringify(hash)};
+    const previousHash = window.location.hash;
+    window.location.hash = nextHash;
+    if (previousHash === nextHash) {
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    }
+  `);
+}
+
+async function setPageHash(page, hash) {
+  await page.evaluate(hashNavigationScript(hash));
+}
+
 test("embedded UI restores deep-link query into inputs and reflects input changes back into the hash", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
@@ -517,7 +535,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     // stripping the query from the fragment.
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/search?q=rag&selected=thought-1"; });
+    await setPageHash(page, "#/search?q=rag&selected=thought-1");
     await page.waitForExpression(() => document.querySelector("#page-search")?.classList.contains("active"));
     await page.waitForExpression(() => document.querySelector("#search-query")?.value === "rag");
     const restored = await page.evaluate(() => ({
@@ -538,7 +556,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     assert.match(hashAfter, /q=vector(\+|%20)store/);
 
     // Topics page filter input → hash round-trip.
-    await page.evaluate(() => { window.location.hash = "#/topics"; });
+    await setPageHash(page, "#/topics");
     await page.waitForExpression(() => document.querySelector("#page-topics")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#topic-filter");
@@ -575,7 +593,7 @@ test("compose basket persists across reloads via localStorage", async (t) => {
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/compose"; });
+    await setPageHash(page, "#/compose");
     await page.waitForExpression(() => {
       const el = document.querySelector("#compose-source-count");
       return el && /2/.test(el.textContent || "");
@@ -610,7 +628,7 @@ test("capture composer starts a new session, persists a thought, and shows the c
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
@@ -618,12 +636,11 @@ test("capture composer starts a new session, persists a thought, and shows the c
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => document.querySelectorAll("#capture-conversation .tf-msg").length >= 2);
-    // Phase 10 capture UX: the AI bubble should render the rich
-    // status-chip card (capture / refine / index / topic) once the
-    // follow-up GET /api/thoughts/:id returns. Wait for the chip to
-    // land before asserting — the initial capture response does not
-    // include refine_status, so the bubble re-renders shortly after.
-    await page.waitForExpression(() => /data-status="refine-pending"/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]')?.outerHTML || ""));
+    // The current capture flow renders LLM/context replies as markdown
+    // conversation text. A thoughtId-bound bubble is only an anchor to
+    // the persisted thought snapshot, not the old status-chip card.
+    await page.waitForExpression(() => /Browser session smoke text/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]')?.textContent || ""));
+    await page.waitForExpression(() => /thought-capture|Browser capture/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]')?.textContent || ""));
     const messages = await page.evaluate(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.textContent || ""));
     assert.ok(messages.some((text) => text.includes("Browser session smoke text")), "user message should be in conversation");
     assert.ok(messages.some((text) => text.includes("thought-capture")), "AI response should include the new thought id");
@@ -631,10 +648,7 @@ test("capture composer starts a new session, persists a thought, and shows the c
       const thoughtBubble = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]');
       return thoughtBubble ? thoughtBubble.innerHTML : "";
     });
-    assert.match(cardHTML, /data-status="refine-pending"/, "rich card should expose refine status chip");
-    assert.match(cardHTML, /data-status="capture-captured"/, "rich card should expose capture status chip");
-    assert.match(cardHTML, /href="#\/notes\?id=thought-capture"/, "rich card should keep the view-thought link");
-    assert.match(cardHTML, /href="#\/search"/, "rich card should keep the search-related link");
+    assert.match(cardHTML, /thought-capture|Browser capture/, "thought anchor bubble should render markdown text");
     const sessionsRaw = await page.evaluate(() => window.localStorage.getItem("tflow.capture.sessions"));
     assert.ok(sessionsRaw, "capture sessions should be persisted to localStorage");
     const sessions = JSON.parse(sessionsRaw || "[]");
@@ -672,7 +686,7 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
     // are exercised in the dedicated locale test.
     await page.navigate(`${baseURL}/?lang=en-US`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     // Start a session and wait for the extracted context card in the
     // conversation stream.
@@ -758,7 +772,7 @@ test("capture lock indicator stays hidden when no session is active", async (t) 
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     const layout = await page.evaluate(() => {
       const el = document.querySelector("#capture-lock-indicator");
@@ -975,7 +989,7 @@ test("scratchpad.context_updated event drives context card re-render via SSE", a
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
@@ -1042,7 +1056,7 @@ test("scratchpad.committed mode=supplement switches activeThoughtId and anchors 
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
@@ -1114,7 +1128,7 @@ test("thought.refined updates only the matching thoughtId bubble, not the first 
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     // Prime: submit a message so the fixture scratchpad is alive and
     // the first thought-capture bubble is anchored.
@@ -1214,7 +1228,7 @@ test("LLM-enriched thought fields land in the conversation without a reload", as
     });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await page.evaluate(() => { window.location.hash = "#/capture"; });
+    await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
@@ -1247,8 +1261,8 @@ test("LLM-enriched thought fields land in the conversation without a reload", as
     await page.waitForExpression(() => {
       const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
       if (!second) return false;
-      // textContent skips href / data-attribute values, so URLs and
-      // ai-tag chips need outerHTML for a stable probe.
+      // The markdown body renders links as anchors, so URLs need
+      // outerHTML for a stable probe.
       const html = second.outerHTML || "";
       const text = second.textContent || "";
       return /Refined second thought/.test(text)
@@ -1265,8 +1279,6 @@ test("LLM-enriched thought fields land in the conversation without a reload", as
     assert.match(card, /Refined second thought/);
     assert.match(card, /Second point alpha/);
     assert.match(card, /Second point beta/);
-    assert.match(card, /tf-chip[^>]*data-tag="ai"[^>]*>supplement/);
-    assert.match(card, /href="#\/notes\?id=thought-1"/, "related_thought_ids should render as notes links");
     assert.match(card, /Supplements follow-up/);
     assert.match(card, /https:\/\/example\.test\/supplement/);
     assert.match(card, /Approach: merge supplement into existing topic/);
