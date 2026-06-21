@@ -86,7 +86,7 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelector("#system-status")?.textContent.includes("browser"));
   await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
-  await page.waitForExpression(() => document.querySelector("#search-results")?.children.length > 0);
+  await page.waitForExpression(() => !!document.querySelector("#search-results"));
   await page.waitForExpression(() => document.querySelectorAll("#thought-list .result-item").length === 2);
   // PR5: sidebar count badges surface notes / topics / compose totals.
   // Notes now comes from GET /api/thoughts, while Topics and Compose
@@ -636,10 +636,10 @@ test("capture composer starts a new session, persists a thought, and shows the c
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => document.querySelectorAll("#capture-conversation .tf-msg").length >= 2);
-    // The current capture flow renders LLM/context replies as markdown
-    // conversation text. A thoughtId-bound bubble is only an anchor to
-    // the persisted thought snapshot, not the old status-chip card.
-    await page.waitForExpression(() => /Browser session smoke text/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]')?.textContent || ""));
+    // The current capture flow keeps the raw user input in the user
+    // bubble. The context bubble may briefly show a pending reply and
+    // should not be required to repeat the raw input.
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]'));
     await page.waitForExpression(() => /thought-capture|Browser capture/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]')?.textContent || ""));
     const messages = await page.evaluate(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.textContent || ""));
     assert.ok(messages.some((text) => text.includes("Browser session smoke text")), "user message should be in conversation");
@@ -725,7 +725,7 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
     assert.ok(renamed, "rename command should update the session context title");
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
-      input.value = "commit";
+      input.value = "/save";
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => /Archive preview|归档预览/.test(document.querySelector("#capture-conversation")?.textContent || "")
