@@ -991,6 +991,7 @@ test("scratchpad.context_updated event drives context card re-render via SSE", a
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await waitForFixtureEventClient(baseURL);
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "LLM enrichment probe";
@@ -1058,6 +1059,7 @@ test("scratchpad.committed mode=supplement switches activeThoughtId and anchors 
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await waitForFixtureEventClient(baseURL);
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "first thought body";
@@ -1130,6 +1132,7 @@ test("thought.refined updates only the matching thoughtId bubble, not the first 
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await waitForFixtureEventClient(baseURL);
     // Prime: submit a message so the fixture scratchpad is alive and
     // the first thought-capture bubble is anchored.
     await page.evaluate(() => {
@@ -1230,21 +1233,27 @@ test("LLM-enriched thought fields land in the conversation without a reload", as
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/capture");
     await page.waitForExpression(() => document.querySelector("#page-capture")?.classList.contains("active"));
+    await waitForFixtureEventClient(baseURL);
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "dynamic field surface";
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]'), 8000);
-    // Anchor thought-2 via a real supplement archive commit, then
-    // fire thought.refined via /api/test/emit (the latter only needs
-    // a resource_id, so the session guard is bypassed).
+    // Anchor thought-2 via a real supplement archive commit. The
+    // refined event is intentionally sent only after the anchor bubble
+    // exists: handleCaptureEvent ignores thought.* events for thoughts
+    // not yet tracked by the capture conversation, so firing both
+    // requests back-to-back can race on slower CI browsers.
     await page.evaluate(async () => {
       await fetch("/api/capture/sessions/browser-session/archive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy: "supplement" }),
       });
+    });
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]'), 8000);
+    await page.evaluate(async () => {
       await fetch("/api/test/emit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1305,6 +1314,7 @@ function startFixtureServer(options = {}) {
   // receives scratchpad.context_updated / scratchpad.committed without
   // polling.
   const eventBus = new EventEmitter();
+  let activeEventClients = 0;
   // Per-thought PATCH state. The GET response reflects the most recent
   // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
@@ -1822,9 +1832,15 @@ function startFixtureServer(options = {}) {
           res.write(`event: ${type}\n`);
           res.write(`data: ${JSON.stringify(payload)}\n\n`);
         };
+        activeEventClients += 1;
         eventBus.on("event", onEvent);
-        req.on("close", () => eventBus.off("event", onEvent));
+        req.on("close", () => {
+          activeEventClients = Math.max(0, activeEventClients - 1);
+          eventBus.off("event", onEvent);
+        });
         return;
+      case "/api/test/events/clients":
+        return json(res, JSON.stringify({ active: activeEventClients }));
       case "/api/test/emit":
         if (req.method !== "POST") break;
         // Test-only seam: lets the browser test trigger arbitrary
@@ -2017,6 +2033,20 @@ function getJSON(url) {
       });
     }).on("error", reject);
   });
+}
+
+async function waitForFixtureEventClient(baseURL, timeout = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    try {
+      const state = await getJSON(`${baseURL}/api/test/events/clients`);
+      if ((state.active || 0) > 0) return;
+    } catch (_) {
+      // The fixture route may not be ready on the first loop after boot.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("timed out waiting for fixture EventSource client");
 }
 
 class CDPPage {
