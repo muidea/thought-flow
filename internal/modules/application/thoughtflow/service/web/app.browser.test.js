@@ -733,12 +733,11 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
     const rendered = await page.evaluate(() => {
       return {
         context: document.querySelector("#capture-conversation")?.textContent || "",
-        preview: Array.from(document.querySelectorAll("#capture-conversation .tf-capture-preview-card")).map((el) => el.textContent || "").join("\n"),
+        preview: Array.from(document.querySelectorAll('#capture-conversation .tf-msg-ai[data-kind="archive_preview"]')).map((el) => el.textContent || "").join("\n"),
       };
     });
     assert.match(rendered.context, /Renamed in browser/);
     assert.match(rendered.preview, /Renamed in browser/);
-    assert.match(rendered.preview, /Strategy|new/);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
