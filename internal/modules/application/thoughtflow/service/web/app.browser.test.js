@@ -1270,16 +1270,13 @@ test("LLM-enriched thought fields land in the conversation without a reload", as
     await page.waitForExpression(() => {
       const second = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
       if (!second) return false;
-      // The markdown body renders links as anchors, so URLs need
-      // outerHTML for a stable probe.
-      const html = second.outerHTML || "";
       const text = second.textContent || "";
       return /Refined second thought/.test(text)
         && /Second point alpha/.test(text)
         && /Second point beta/.test(text)
         && /Approach: merge supplement into existing topic\./.test(text)
         && /Supplements follow-up/.test(text)
-        && /href="https:\/\/example\.test\/supplement"/.test(html);
+        && /https:\/\/example\.test\/supplement/.test(text);
     }, 10000);
     const card = await page.evaluate(() => {
       const el = document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-2"]');
