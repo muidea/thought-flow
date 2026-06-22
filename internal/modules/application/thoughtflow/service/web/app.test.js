@@ -267,6 +267,7 @@ function loadAppFunctionsWith(opts = {}) {
       escapeHTML,
       renderMarkdown,
       renderTopicDocumentMarkdown,
+      thoughtLinksForDisplay,
       renderDiff,
       renderComposeDraft,
       composeTitleFromContent,
@@ -553,6 +554,23 @@ Topic body`);
   assert.doesNotMatch(html, /<dt>id<\/dt>/);
   assert.match(html, /<h1>AntD<\/h1>/);
   assert.match(html, /Topic body/);
+});
+
+test("thoughtLinksForDisplay hides internal topic backlink metadata", () => {
+  const app = loadAppFunctions();
+
+  const out = app.thoughtLinksForDisplay(`- [Design](https://example.test/design)
+
+Topics:
+- [[../../../topics/antd/index.md|AntD]] <!-- topic:antd -->
+
+- [Source](https://example.test/source)`);
+
+  assert.match(out, /Design/);
+  assert.match(out, /Source/);
+  assert.doesNotMatch(out, /Topics:/);
+  assert.doesNotMatch(out, /topic:antd/);
+  assert.doesNotMatch(out, /AntD/);
 });
 
 test("renderMarkdown uses CommonMark block parsing with GFM extensions", () => {

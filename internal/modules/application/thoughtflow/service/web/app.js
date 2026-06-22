@@ -878,6 +878,33 @@ function renderTopicDocumentMarkdown(value) {
   return renderMarkdown(stripMarkdownFrontMatter(value));
 }
 
+function thoughtLinksForDisplay(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  const out = [];
+  let inTopicBlock = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^Topics:\s*$/i.test(trimmed)) {
+      inTopicBlock = true;
+      continue;
+    }
+    if (/<!--\s*topic:[^>]*-->/i.test(line)) {
+      inTopicBlock = true;
+      continue;
+    }
+    if (inTopicBlock) {
+      if (!trimmed) {
+        inTopicBlock = false;
+        continue;
+      }
+      if (/^[-*]\s+/.test(trimmed) || /^\[\[/.test(trimmed)) continue;
+      inTopicBlock = false;
+    }
+    out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
 function stripMarkdownFrontMatter(value) {
   return splitFrontMatter(value).body;
 }
@@ -1345,6 +1372,7 @@ function renderThoughtDetailPanel(snapshot) {
   const content = snapshot?.content || {};
   const title = thoughtDisplayTitle(thought) || thought.id || "";
   const keyPoints = Array.isArray(thought.key_points) ? thought.key_points.filter((item) => typeof item === "string" && item.trim()) : [];
+  const displayLinks = thoughtLinksForDisplay(content.links || "");
   const sections = [
     `# ${title}`,
     thought.summary ? `## ${t("thoughts.preview_summary")}\n${thought.summary}` : "",
@@ -1352,7 +1380,7 @@ function renderThoughtDetailPanel(snapshot) {
     content.ai_notes ? `## ${t("notes.detail.ai_notes")}\n${content.ai_notes}` : "",
     `## ${t("thoughts.preview_original")}\n${content.original || ""}`,
     content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
-    content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
+    displayLinks ? `## ${t("thoughts.preview_links")}\n${displayLinks}` : "",
     appendExpansionSections(thought),
   ].filter(Boolean);
   const metaRows = [
@@ -1427,6 +1455,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   }
   const thought = snapshot.thought;
   const content = snapshot.content || {};
+  const displayLinks = thoughtLinksForDisplay(content.links || "");
   const sections = [
     `# ${thoughtDisplayTitle(thought) || thought.id}`,
     "",
@@ -1440,7 +1469,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
     content.original || "",
     "",
     content.extracted_content ? `## ${t("thoughts.preview_extracted")}\n${content.extracted_content}` : "",
-    content.links ? `## ${t("thoughts.preview_links")}\n${content.links}` : "",
+    displayLinks ? `## ${t("thoughts.preview_links")}\n${displayLinks}` : "",
     (snapshot.jobs || []).length > 0 ? `## ${t("thoughts.preview_jobs")}\n${(snapshot.jobs || []).map((job) => `- ${job.id} (${job.status})`).join("\n")}` : "",
   ];
   sections.push(appendExpansionSections(thought));
