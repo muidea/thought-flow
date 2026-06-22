@@ -234,7 +234,6 @@ export const messages = {
   "topics.reset_filters": "重置筛选",
   "topics.empty": "暂无专题。",
   "topics.empty_filtered": "没有专题匹配当前筛选。",
-  "topics.open": "打开",
   "topics.detail_title": "专题工作区",
   "topics.detail_description": "当前专题的文档、成员、规则与活动。",
   "topics.edit_rules": "编辑专题",

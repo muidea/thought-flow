@@ -95,6 +95,52 @@ func TestStoreSaveListGetAndMarkSaved(t *testing.T) {
 	}
 }
 
+func TestStoreSaveGetAndClearBasket(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	saved, err := store.SaveBasket(ctx, []models.ComposeSource{
+		{SourceType: models.ComposeSourceTypeThought, SourceID: "thought-1", Title: "One"},
+		{SourceType: models.ComposeSourceTypeThought, SourceID: "thought-1", Title: "Duplicate"},
+		{SourceType: "", SourceID: "skip"},
+	})
+	if err != nil {
+		t.Fatalf("SaveBasket() error = %v", err)
+	}
+	if len(saved.Sources) != 1 || saved.Sources[0].Title != "One" {
+		t.Fatalf("saved sources = %#v", saved.Sources)
+	}
+	if saved.UpdatedAt.IsZero() {
+		t.Fatalf("UpdatedAt zero")
+	}
+
+	path := filepath.Join(root, "compose", "basket.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if !strings.Contains(string(raw), "source_id: thought-1") {
+		t.Fatalf("basket yaml missing source:\n%s", string(raw))
+	}
+
+	loaded, err := store.GetBasket(ctx)
+	if err != nil {
+		t.Fatalf("GetBasket() error = %v", err)
+	}
+	if len(loaded.Sources) != 1 || loaded.Sources[0].SourceID != "thought-1" {
+		t.Fatalf("loaded sources = %#v", loaded.Sources)
+	}
+
+	cleared, err := store.ClearBasket(ctx)
+	if err != nil {
+		t.Fatalf("ClearBasket() error = %v", err)
+	}
+	if len(cleared.Sources) != 0 {
+		t.Fatalf("cleared sources = %#v", cleared.Sources)
+	}
+}
+
 func TestStoreRejectsEmptyID(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

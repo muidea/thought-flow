@@ -451,6 +451,18 @@ func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T)
 		"跨场景禁忌 / Anti-Patterns",
 		"文案与表达规范",
 		"正确做法 / 错误做法",
+		"Missing context must not block useful output",
+		"concrete, opinionated first draft",
+		"not just a proposed outline",
+		"usable v0.1 answer",
+		"8-12 concrete bullets",
+		"structured draft that could later be archived",
+		"shallow framing phrases",
+		"component/process choices",
+		"acceptance criteria",
+		"do not make the first response mostly questions",
+		"open_questions should be limited",
+		"normally 3 or fewer",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("default prompt missing %q:\n%s", want, prompt)

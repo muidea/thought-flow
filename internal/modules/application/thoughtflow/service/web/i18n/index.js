@@ -5,10 +5,9 @@
 //   - tn(key, count, vars?)  → pluralized string. Selects the
 //     {n, plural, =0{...} one{...} other{...}} branch (a tiny CLDR subset) or
 //     falls back to the first defined branch.
-//   - init()         → resolve locale from URL query, then localStorage, then
-//     navigator.language, then default ("zh-CN"). Writes <html lang> and
-//     stores the choice.
-//   - setLocale(loc) → switch and persist; fires "locale:changed" event.
+//   - init()         → resolve locale from URL query, then navigator.language,
+//     then default ("zh-CN"). Writes <html lang>.
+//   - setLocale(loc) → switch locale; fires "locale:changed" event.
 //   - onLocaleChange(handler) → subscribe to switches.
 //
 // Missing keys fall back to en-US, then to the literal `[[key]]` with a
@@ -18,7 +17,6 @@ import enUS from "./en-US.js";
 import zhCN from "./zh-CN.js";
 
 const DEFAULT_LOCALE = "zh-CN";
-const STORAGE_KEY = "tflow.lang";
 
 const locales = {
   "en-US": enUS,
@@ -123,12 +121,6 @@ function detectLocale() {
     // ignore — non-browser context
   }
   try {
-    const fromStorage = typeof window !== "undefined" ? window.localStorage?.getItem(STORAGE_KEY) : null;
-    if (fromStorage && locales[fromStorage]) return fromStorage;
-  } catch (_error) {
-    // ignore — localStorage blocked
-  }
-  try {
     const nav = typeof navigator !== "undefined" ? navigator.language : null;
     if (nav) {
       if (locales[nav]) return nav;
@@ -161,7 +153,6 @@ export function setLocale(locale) {
   currentLocale = locale;
   try {
     if (typeof window !== "undefined") {
-      window.localStorage?.setItem(STORAGE_KEY, locale);
       if (document?.documentElement) {
         document.documentElement.lang = locale;
       }

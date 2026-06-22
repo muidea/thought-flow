@@ -578,7 +578,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
   }
 });
 
-test("compose basket persists across reloads via localStorage", async (t) => {
+test("compose basket loads from the backend", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
@@ -591,12 +591,6 @@ test("compose basket persists across reloads via localStorage", async (t) => {
   try {
     const page = await connectPage(browser);
     await page.send("Page.enable");
-    // Seed localStorage *before* the page boots so restoreBasket sees it.
-    // Basket envelope is the post-PR #122 Map shape; legacy `ids` payloads
-    // are intentionally rejected by restoreBasket.
-    await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: "window.localStorage.setItem('tflow.basket', JSON.stringify({ sources: [{ source_type: 'thought', source_id: 'thought-1', title: 'Browser Thought' }, { source_type: 'thought', source_id: 'thought-2', title: 'Another Thought' }], updated_at: 'seed' }));",
-    });
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/compose");
@@ -606,6 +600,8 @@ test("compose basket persists across reloads via localStorage", async (t) => {
     });
     const count = await page.evaluate(() => document.querySelector("#compose-source-count")?.textContent || "");
     assert.match(count, /2/);
+    const legacy = await page.evaluate(() => window.localStorage.getItem("tflow.basket"));
+    assert.equal(legacy, null);
   } finally {
     await browser.close();
   }
@@ -656,10 +652,7 @@ test("capture composer starts a new session, persists a thought, and shows the c
     });
     assert.match(cardHTML, /thought-capture|Browser capture/, "thought anchor bubble should render markdown text");
     const sessionsRaw = await page.evaluate(() => window.localStorage.getItem("tflow.capture.sessions"));
-    assert.ok(sessionsRaw, "capture sessions should be persisted to localStorage");
-    const sessions = JSON.parse(sessionsRaw || "[]");
-    assert.equal(sessions.length, 1);
-    assert.equal(sessions[0].thoughtId, "thought-capture");
+    assert.equal(sessionsRaw, null, "capture sessions should stay server-side");
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -818,8 +811,8 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     await page.send("Runtime.enable");
     await page.send("Log.enable");
     await page.send("Page.enable");
-    // Force the i18n boot path onto the default locale by clearing any
-    // persisted preference AND overriding navigator.language. Headless
+    // Force the i18n boot path onto the default locale by overriding
+    // navigator.language. Headless
     // Chrome reports en-US as navigator.language by default, which the
     // detect logic would otherwise treat as a positive match and skip
     // the fallback to DEFAULT_LOCALE (zh-CN). fr-FR is not a supported
@@ -827,7 +820,6 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     // through to the default.
     await page.send("Page.addScriptToEvaluateOnNewDocument", {
       source: [
-        "try { window.localStorage.removeItem('tflow.lang'); } catch (_) {}",
         "try {",
         "  Object.defineProperty(navigator, 'language', { value: 'fr-FR', configurable: true });",
         "  Object.defineProperty(navigator, 'languages', { value: ['fr-FR'], configurable: true });",
@@ -1321,6 +1313,13 @@ function startFixtureServer(options = {}) {
   // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
   const captureSessions = new Map();
+  let composeBasket = {
+    sources: [
+      { source_type: "thought", source_id: "thought-1", title: "Browser Thought" },
+      { source_type: "thought", source_id: "thought-2", title: "Another Thought" },
+    ],
+    updated_at: "2026-06-13T00:00:00Z",
+  };
   const makeScratchpad = (id, text = "Captured from browser smoke") => ({
     session_id: id,
     workspace_id: "browser",
@@ -1594,6 +1593,21 @@ function startFixtureServer(options = {}) {
         return json(res, api([
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
         ]));
+      case "/api/compose/basket":
+        if (req.method === "GET") return json(res, api(composeBasket));
+        if (req.method === "PUT") {
+          const body = (await readJson(req)) || {};
+          composeBasket = {
+            sources: Array.isArray(body.sources) ? body.sources : [],
+            updated_at: "2026-06-13T00:00:00Z",
+          };
+          return json(res, api(composeBasket));
+        }
+        if (req.method === "DELETE") {
+          composeBasket = { sources: [], updated_at: "2026-06-13T00:00:00Z" };
+          return json(res, api(composeBasket));
+        }
+        break;
       case "/api/thoughts":
         if (req.method === "GET") {
           return json(res, api([

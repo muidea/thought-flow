@@ -153,6 +153,9 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive", engine.POST, s.handleSessionArchive)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
+	s.registry.AddHandler("/api/compose/basket", engine.GET, s.handleGetComposeBasket)
+	s.registry.AddHandler("/api/compose/basket", engine.PUT, s.handleSaveComposeBasket)
+	s.registry.AddHandler("/api/compose/basket", "DELETE", s.handleClearComposeBasket)
 	s.registry.AddHandler("/api/compose/drafts", engine.GET, s.handleListComposeDrafts)
 	s.registry.AddHandler("/api/compose/drafts", engine.POST, s.handleCreateComposeDraft)
 	s.registry.AddHandler("/api/compose/drafts/:id", engine.GET, s.handleGetComposeDraft)
@@ -579,6 +582,52 @@ func (s *Service) handleListComposeDrafts(ctx context.Context, res http.Response
 		return
 	}
 	writeJSON(res, req, http.StatusOK, drafts)
+}
+
+func (s *Service) handleGetComposeBasket(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	basket, err := s.composeService.GetBasket(ctx)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.basket_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, basket)
+}
+
+func (s *Service) handleSaveComposeBasket(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	var request struct {
+		Sources []models.ComposeSource `json:"sources"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_json", err.Error())
+		return
+	}
+	basket, err := s.composeService.SaveBasket(ctx, request.Sources)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.basket_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, basket)
+}
+
+func (s *Service) handleClearComposeBasket(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	basket, err := s.composeService.ClearBasket(ctx)
+	if err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.basket_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, basket)
 }
 
 func (s *Service) handleGetComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {

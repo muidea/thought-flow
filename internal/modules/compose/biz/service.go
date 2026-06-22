@@ -197,6 +197,27 @@ func (s *Service) GetDraft(ctx context.Context, draftID string) (models.ComposeD
 	return s.draftStore.GetDraft(ctx, draftID)
 }
 
+func (s *Service) GetBasket(ctx context.Context) (models.ComposeBasket, error) {
+	if s == nil || s.draftStore == nil {
+		return models.ComposeBasket{}, errors.New("compose draft store is not ready")
+	}
+	return s.draftStore.GetBasket(ctx)
+}
+
+func (s *Service) SaveBasket(ctx context.Context, sources []models.ComposeSource) (models.ComposeBasket, error) {
+	if s == nil || s.draftStore == nil {
+		return models.ComposeBasket{}, errors.New("compose draft store is not ready")
+	}
+	return s.draftStore.SaveBasket(ctx, sources)
+}
+
+func (s *Service) ClearBasket(ctx context.Context) (models.ComposeBasket, error) {
+	if s == nil || s.draftStore == nil {
+		return models.ComposeBasket{}, errors.New("compose draft store is not ready")
+	}
+	return s.draftStore.ClearBasket(ctx)
+}
+
 // SaveDraft materialises a stored draft as a Thought via the
 // capture sink. The Thought's source is set to "compose" and the
 // user-supplied title/tags override the defaults the LLM produced.

@@ -234,7 +234,6 @@ export const messages = {
   "topics.reset_filters": "Reset filters",
   "topics.empty": "No topics yet.",
   "topics.empty_filtered": "No topics match the current filters.",
-  "topics.open": "Open",
   "topics.detail_title": "Topic Workspace",
   "topics.detail_description": "Document, rules, and activity for the selected topic.",
   "topics.edit_rules": "Edit topic",

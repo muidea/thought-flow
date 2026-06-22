@@ -179,7 +179,6 @@ export const Key = Object.freeze({
   TopicsResetFilters: "topics.reset_filters",
   TopicsEmpty: "topics.empty",
   TopicsEmptyFiltered: "topics.empty_filtered",
-  TopicsOpen: "topics.open",
   TopicsReview: "topics.review",
   TopicDetailTitle: "topics.detail_title",
   TopicDetailDescription: "topics.detail_description",

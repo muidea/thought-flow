@@ -53,9 +53,8 @@ const state = {
   },
 };
 
-// Cross-tab bus built on BroadcastChannel where supported, falling back
-// to a localStorage 'storage' event listener. Used to keep the compose
-// basket and (Phase 9) session locks in sync across tabs.
+// Cross-tab bus built on BroadcastChannel. It never persists business
+// payloads in browser storage; tabs reload shared state from the backend.
 let tflowBus = null;
 function initTflowBus() {
   if (typeof window === "undefined") return null;
@@ -81,39 +80,16 @@ function initTflowBus() {
       };
       return tflowBus;
     } catch (_) {
-      // fall through to storage-event bus
+      return null;
     }
   }
-  // Fallback: piggyback on localStorage 'storage' events. Only fires in
-  // OTHER tabs, which is exactly the cross-tab behaviour we want.
-  const handlers = new Set();
-  const storageHandler = (event) => {
-    if (event.key !== "tflow.bus") return;
-    let payload = null;
-    try { payload = JSON.parse(event.newValue || "null"); } catch (_) { return; }
-    if (!payload) return;
-    for (const handler of handlers) {
-      try { handler(payload); } catch (_) { /* ignore */ }
-    }
-  };
-  window.addEventListener("storage", storageHandler);
-  tflowBus = {
-    post(message) {
-      try { window.localStorage.setItem("tflow.bus", JSON.stringify({ ...message, _ts: Date.now() })); } catch (_) {}
-    },
-    on(handler) {
-      handlers.add(handler);
-      return () => handlers.delete(handler);
-    },
-    close() { window.removeEventListener("storage", storageHandler); },
-  };
-  return tflowBus;
+  return null;
 }
 
 // Wire basket updates onto the bus so other tabs see add/remove/clear.
 function broadcastBasketChange() {
   if (tflowBus) {
-    tflowBus.post({ kind: "basket:changed", sources: Array.from(state.composeBasket.values()) });
+    tflowBus.post({ kind: "basket:changed" });
   }
 }
 
@@ -133,8 +109,7 @@ function parseRoute(hash) {
     return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
   }
   if (parts[0] === "topics" && parts[1]) {
-    const detailQuery = query.tab ? query : { ...query, tab: "detail" };
-    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
+    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query };
   }
   if (parts[0] === "notes") {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
@@ -167,7 +142,7 @@ const PAGE_SERIALIZERS = {
     const q = topicFilterRouteQuery();
     if (state.route?.params?.topicId) {
       const active = document.querySelector(`#page-topics .tab.active`);
-      if (active && active.dataset.tab && active.dataset.tab !== "topics-list") q.tab = topicTabRouteValue(active.dataset.tab);
+      if (active && active.dataset.tab && active.dataset.tab !== defaultTopicsTabForRoute()) q.tab = topicTabRouteValue(active.dataset.tab);
     }
     return q;
   },
@@ -176,7 +151,7 @@ const PAGE_SERIALIZERS = {
     const id = state.activeThoughtId || state.route?.params?.thoughtId || "";
     if (id) q.id = id;
     const active = document.querySelector(`#page-thoughts .tab.active`);
-    if (active && active.dataset.tab && active.dataset.tab !== "notes-all") q.tab = active.dataset.tab;
+    if (active && active.dataset.tab && active.dataset.tab !== defaultNotesTabForQuery(q)) q.tab = active.dataset.tab;
     return q;
   },
   compose: () => {
@@ -198,6 +173,10 @@ function topicFilterRouteQuery() {
 function topicTabRouteValue(tab) {
   const normalized = normalizeTopicsTabName(tab);
   return normalized.startsWith("topics-") ? normalized.slice("topics-".length) : normalized;
+}
+
+function defaultTopicsTabForRoute() {
+  return state.route?.params?.topicId ? "topics-detail" : "topics-list";
 }
 
 // Reverse of PAGE_SERIALIZERS — read a query object and apply it to inputs /
@@ -222,13 +201,31 @@ function restoreRoutePage(page, query) {
       activateTab("topics-list", $("#page-topics"));
     }
   } else if (page === "thoughts") {
-    activateTab(typeof query.tab === "string" ? query.tab : "notes-all", $("#page-thoughts"));
+    activateTab(normalizeNotesTabName(query.tab, query), $("#page-thoughts"));
   } else if (page === "compose") {
     const tab = typeof query.tab === "string" && query.tab.trim() ? query.tab.trim() : "drafts";
     activateTab(tab.startsWith("compose-") ? tab : `compose-${tab}`, $("#page-compose"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
+}
+
+function defaultNotesTabForQuery(query = {}) {
+  return typeof query.id === "string" && query.id.trim() ? "notes-detail" : "notes-all";
+}
+
+function normalizeNotesTabName(tab, query = {}) {
+  const raw = typeof tab === "string" ? tab.trim() : "";
+  if (!raw) return defaultNotesTabForQuery(query);
+  if (raw.startsWith("notes-")) return raw;
+  const aliases = {
+    all: "notes-all",
+    list: "notes-all",
+    detail: "notes-detail",
+    status: "notes-status",
+    runtime: "notes-runtime",
+  };
+  return aliases[raw] || defaultNotesTabForQuery(query);
 }
 
 function normalizeTopicsTabName(tab) {
@@ -364,7 +361,7 @@ function handleTopicsTabClick(tabName) {
     return;
   }
   if (!state.activeTopicId) return;
-  query.tab = topicTabRouteValue(normalized);
+  if (normalized !== "topics-detail") query.tab = topicTabRouteValue(normalized);
   navigateHash(buildRouteHash("topics", { topicId: state.activeTopicId }, query), { force: true });
 }
 
@@ -384,50 +381,42 @@ function handleTabClick(event) {
   }
 }
 
-// Minimal localStorage wrapper that survives blocked storage and absent
-// environments (vm tests). Returns the default if read fails.
-function loadFromStorage(key, fallback) {
+function removeFromStorage(key) {
   try {
-    const raw = window.localStorage?.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw);
+    window.localStorage?.removeItem(key);
   } catch (_error) {
-    return fallback;
-  }
-}
-
-function saveToStorage(key, value) {
-  try {
-    window.localStorage?.setItem(key, JSON.stringify(value));
-    return true;
-  } catch (_error) {
-    return false;
+    /* ignore */
   }
 }
 
 const BASKET_STORAGE_KEY = "tflow.basket";
 
 function persistBasket() {
-  saveToStorage(BASKET_STORAGE_KEY, {
-    sources: Array.from(state.composeBasket.values()),
-    updated_at: new Date().toISOString(),
-  });
+  removeFromStorage(BASKET_STORAGE_KEY);
+  const sources = Array.from(state.composeBasket.values());
+  if (sources.length === 0) {
+    return api("/api/compose/basket", { method: "DELETE" }).catch((error) => toast(error.message));
+  }
+  return api("/api/compose/basket", {
+    method: "PUT",
+    body: JSON.stringify({ sources }),
+  }).catch((error) => toast(error.message));
 }
 
-function restoreBasket() {
-  const stored = loadFromStorage(BASKET_STORAGE_KEY, null);
-  if (stored && Array.isArray(stored.sources)) {
-    const next = new Map();
-    for (const source of stored.sources) {
-      if (!source || !source.source_type || !source.source_id) continue;
-      next.set(`${source.source_type}::${source.source_id}`, {
-        source_type: String(source.source_type),
-        source_id: String(source.source_id),
-        title: source.title ? String(source.title) : "",
-      });
-    }
-    state.composeBasket = next;
+async function restoreBasket() {
+  removeFromStorage(BASKET_STORAGE_KEY);
+  const basket = await api("/api/compose/basket");
+  const next = new Map();
+  for (const source of basket?.sources || []) {
+    if (!source || !source.source_type || !source.source_id) continue;
+    next.set(`${source.source_type}::${source.source_id}`, {
+      source_type: String(source.source_type),
+      source_id: String(source.source_id),
+      title: source.title ? String(source.title) : "",
+    });
   }
+  state.composeBasket = next;
+  renderComposeBasket();
 }
 
 function navItemClass(route, nav) {
@@ -1323,6 +1312,7 @@ function renderThoughtsList() {
   list.querySelectorAll(".result-item[data-thought-id]").forEach((item) => {
     item.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
+      activateTab("notes-detail", $("#page-thoughts"));
       previewThought(item.dataset.thoughtId, { syncRoute: true }).catch((error) => toast(error.message));
     });
   });
@@ -1637,9 +1627,6 @@ function renderTopics() {
           <strong>${escapeHTML(topic.name)}</strong>
           <div class="topic-meta">${topic.member_count || 0} thoughts · ${topic.word_count || 0} words</div>
           <div class="topic-meta">${escapeHTML(topic.description || t("topics.no_description"))}</div>
-          <div class="topic-actions">
-            <button class="mini-button" data-topic-open="${escapeHTML(topic.id)}" type="button">${escapeHTML(t("topics.open"))}</button>
-          </div>
         </article>
       `;
     })
@@ -1649,9 +1636,6 @@ function renderTopics() {
       if (event.target.closest("button")) return;
       navigateTopic(item.dataset.topicId);
     });
-  });
-  list.querySelectorAll("[data-topic-open]").forEach((button) => {
-    button.addEventListener("click", () => navigateTopic(button.dataset.topicOpen));
   });
 }
 
@@ -1663,11 +1647,10 @@ function resetTopicFilters() {
 
 function navigateTopic(topicId, review = false) {
   if (!topicId) return;
-  // PR2: topic detail and review are tabs under #/topics. The legacy
-  // /review segment is preserved in parseRoute for back-compat, but new
-  // navigation writes ?tab=proposals into the same /topics/{id} URL.
-  const tab = review ? "proposals" : "detail";
-  navigateHash(`#/topics/${encodeURIComponent(topicId)}?tab=${tab}`, { force: true });
+  // Topic detail is the default selected-topic view. Review/proposals remain
+  // an explicit tab because it is a secondary workflow.
+  const suffix = review ? "?tab=proposals" : "";
+  navigateHash(`#/topics/${encodeURIComponent(topicId)}${suffix}`, { force: true });
 }
 
 async function openTopic(topicId) {
@@ -2567,29 +2550,34 @@ function renderCaptureLockIndicator() {
 
 function captureSessionStorageKey() { return "tflow.capture.sessions"; }
 
-function loadCaptureSessions() {
+function clearLegacyCaptureSessionStorage() {
   try {
-    const raw = localStorage.getItem(captureSessionStorageKey());
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
-  } catch (_) { return []; }
+    window.localStorage?.removeItem(captureSessionStorageKey());
+  } catch (_) { /* ignore */ }
+}
+
+function loadCaptureSessions() {
+  clearLegacyCaptureSessionStorage();
+  return [];
 }
 
 function saveCaptureSessions() {
-  try {
-    localStorage.setItem(captureSessionStorageKey(), JSON.stringify(state.capture.sessions || []));
-  } catch (_) { /* ignore */ }
+  clearLegacyCaptureSessionStorage();
 }
 
 function rememberCaptureSession(session) {
   if (!session) return;
   const list = state.capture.sessions || [];
   const filtered = list.filter((item) => item.sessionId !== session.sessionId);
-  filtered.unshift({ ...session, updatedAt: new Date().toISOString() });
+  filtered.unshift({
+    sessionId: session.sessionId,
+    thoughtId: session.thoughtId || "",
+    title: session.title || "",
+    topic: session.topic || "",
+    updatedAt: session.updatedAt || new Date().toISOString(),
+    source: session.source || "server",
+  });
   state.capture.sessions = filtered.slice(0, 12);
-  saveCaptureSessions();
   if (isCaptureSessionsDrawerOpen()) {
     renderCaptureSessionsDrawer();
   }
@@ -2634,24 +2622,16 @@ function bindCaptureSessionListActions(list) {
 function renderCaptureSessionsDrawer() {
   const list = $("#capture-sessions-list");
   if (!list) return;
-  // Local "sessions" cache is augmented with the server-side
-  // scratchpad summaries (which may include scratchpads from other
-  // tabs / a prior server lifetime). The remote list is the
-  // source of truth; the local list is for fast client-side
-  // boot. We render them in two sections so the user can see
-  // what's been freshly staged on the server vs what's only in
-  // localStorage.
+  // Capture history is server-owned. The browser keeps only the
+  // in-memory list used by the currently open drawer; no historical
+  // session content or summaries are written to localStorage.
   const local = state.capture.sessions || [];
   if (local.length === 0) {
     list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
   } else {
     list.innerHTML = local.map(renderCaptureSessionItem).join("");
+    bindCaptureSessionListActions(list);
   }
-  bindCaptureSessionListActions(list);
-  // Always re-fetch the server-side list to keep the drawer in
-  // sync with cross-tab scratchpads and crashes that left orphan
-  // files behind. The fetch is best-effort: failure leaves the
-  // local cache rendered.
   refreshCaptureSessionsFromServer();
 }
 
@@ -2664,30 +2644,17 @@ async function refreshCaptureSessionsFromServer() {
   }
   response = response || {};
   const summaries = response.summaries || response.Summaries || [];
-  if (Array.isArray(summaries) && summaries.length > 0) {
-    // Project server summaries into the local session shape so the
-    // existing switchCaptureSession / rememberCaptureSession code
-    // path can route to them.
-    const existing = new Map((state.capture.sessions || []).map((item) => [item.sessionId, item]));
-    for (const summary of summaries) {
-      if (!summary || !summary.session_id) continue;
-      const id = summary.session_id;
-      const next = {
-        sessionId: id,
+  if (Array.isArray(summaries)) {
+    state.capture.sessions = summaries
+      .filter((summary) => summary && summary.session_id)
+      .map((summary) => ({
+        sessionId: summary.session_id,
         thoughtId: summary.committed_thought_id || "",
         title: summary.title || "",
-        updatedAt: summary.updated_at || new Date().toISOString(),
+        updatedAt: summary.updated_at || "",
         source: "server",
-      };
-      if (existing.has(id)) {
-        Object.assign(existing.get(id), next);
-        continue;
-      }
-      state.capture.sessions.unshift(next);
-    }
-    state.capture.sessions = (state.capture.sessions || []).slice(0, 24);
-    saveCaptureSessions();
-    // Re-render only the list (skip the recursive server fetch).
+      }))
+      .slice(0, 24);
     redrawCaptureSessionsList();
   }
   // The server also exposes last_active_session_id — the scratchpad
@@ -3954,7 +3921,7 @@ async function previewThought(thoughtId, options = {}) {
   if (options.syncRoute) {
     const query = { id: thoughtId };
     const activeTab = document.querySelector("#page-thoughts .tab.active")?.dataset.tab || "";
-    if (activeTab && activeTab !== "notes-all") query.tab = activeTab;
+    if (activeTab && activeTab !== defaultNotesTabForQuery(query)) query.tab = activeTab;
     const hash = buildRouteHash("thoughts", { thoughtId }, query);
     if (window.location.hash !== hash) window.location.hash = hash;
     else syncHash();
@@ -4106,12 +4073,18 @@ async function loadComposeDraft(draftId) {
   if (!draftId) return;
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
   state.composeDraft = draft;
+  state.composeBasket = new Map(state.composeBasket);
   for (const source of draft.sources || []) {
     if (source && source.source_type && source.source_id) {
-      addToComposeBasket([source]);
+      state.composeBasket.set(`${source.source_type}::${source.source_id}`, {
+        source_type: source.source_type,
+        source_id: source.source_id,
+        title: source.title || "",
+      });
     }
   }
-  persistBasket();
+  await persistBasket();
+  broadcastBasketChange();
   renderComposeBasket();
   $("#compose-goal").value = draft.goal || "";
   $("#compose-format").value = draft.format || t("compose.format.summary");
@@ -4212,6 +4185,8 @@ async function saveComposeDraft() {
   toast(t("toast.saved", { id: result.thought.id }));
   state.selectedThoughts.clear();
   state.composeBasket.clear();
+  await persistBasket();
+  broadcastBasketChange();
   renderComposeBasket();
   $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/notes?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
   $("#save-compose").disabled = true;
@@ -4655,28 +4630,12 @@ async function boot() {
   if (tflowBus) {
     tflowBus.on((message) => {
       if (!message || typeof message !== "object") return;
-      if (message.kind === "basket:changed" && Array.isArray(message.sources)) {
-        // Another tab updated the basket — adopt the new sources and
-        // re-render if they differ from what we have. Avoids an infinite
-        // ping-pong because addTo/clear do not fire on the receiving side.
-        const current = JSON.stringify(Array.from(state.composeBasket.values()).map((s) => `${s.source_type}::${s.source_id}`).sort());
-        const incoming = JSON.stringify(message.sources.map((s) => `${s.source_type}::${s.source_id}`).sort());
-        if (current === incoming) return;
-        const next = new Map();
-        for (const source of message.sources) {
-          if (!source || !source.source_type || !source.source_id) continue;
-          next.set(`${source.source_type}::${source.source_id}`, {
-            source_type: String(source.source_type),
-            source_id: String(source.source_id),
-            title: source.title ? String(source.title) : "",
-          });
-        }
-        state.composeBasket = next;
-        renderComposeBasket();
+      if (message.kind === "basket:changed") {
+        restoreBasket().catch((error) => toast(error.message));
       }
     });
   }
-  restoreBasket();
+  await restoreBasket().catch((error) => toast(error.message));
   state.capture.sessions = loadCaptureSessions();
   // Sweep any stale cross-tab session locks before we render. Per-key
   // getHolder() only fires for thoughts the user actually opens, but
@@ -4708,8 +4667,7 @@ async function boot() {
   // Land the user back in the most recent uncommitted capture
   // session if there is one, so a refresh doesn't dump them onto
   // an empty composer. The server's last_active_session_id is the
-  // authority — we only fall back to the local cache if the
-  // server explicitly says there's nothing to rehydrate.
+  // authority; the browser does not persist capture session history.
   await rehydrateActiveScratchpad();
   connectEvents();
 }

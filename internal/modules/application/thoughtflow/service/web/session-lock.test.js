@@ -1,7 +1,4 @@
-// Test session-lock.js against a faked localStorage + timer.
-// session-lock.js attaches to `globalThis.tflowSessionLock` and uses
-// localStorage as the shared state. We replace both in a vm context so
-// the production code can run unmodified.
+// Test session-lock.js against an in-memory browser-like context.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -9,21 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function makeStorage() {
-  const data = new Map();
-  return {
-    data,
-    get length() { return data.size; },
-    getItem(key) { return data.has(key) ? data.get(key) : null; },
-    setItem(key, value) { data.set(key, String(value)); },
-    removeItem(key) { data.delete(key); },
-    key(index) { return Array.from(data.keys())[index] ?? null; },
-    clear() { data.clear(); },
-  };
-}
-
-function loadLockModule({ initialStorage = null, now = () => 1000 } = {}) {
-  const storage = initialStorage || makeStorage();
+function loadLockModule({ now = () => 1000 } = {}) {
   const timers = new Map();
   let nextId = 1;
   const code = fs.readFileSync(
@@ -31,7 +14,6 @@ function loadLockModule({ initialStorage = null, now = () => 1000 } = {}) {
     "utf8",
   );
   const context = {
-    localStorage: storage,
     performance: { now },
     setInterval: (fn, ms) => {
       const id = nextId++;
@@ -41,6 +23,7 @@ function loadLockModule({ initialStorage = null, now = () => 1000 } = {}) {
     clearInterval: (id) => { timers.delete(id); },
     addEventListener: () => {},
     removeEventListener: () => {},
+    BroadcastChannel: undefined,
     Math,
     JSON,
     console,
@@ -49,27 +32,19 @@ function loadLockModule({ initialStorage = null, now = () => 1000 } = {}) {
   vm.runInContext(code, context, { filename: "session-lock.js" });
   return {
     lock: context.tflowSessionLock,
-    storage,
     timers,
     fireHeartbeats: () => {
-      for (const [, timer] of timers) {
-        // Advance performance.now to mimic time passage so the writer
-        // stamps a fresh ts.
-        const fn = timer.fn;
-        fn();
-      }
+      for (const [, timer] of timers) timer.fn();
     },
   };
 }
 
-test("acquire grants the lock to a fresh session and persists to localStorage", () => {
+test("acquire grants the lock to a fresh session without browser storage", () => {
   const env = loadLockModule();
   assert.equal(env.lock.acquire("thought-1", "session-A"), true);
-  const stored = env.storage.getItem("tflow.lock.thought-1");
-  assert.ok(stored, "lock entry should be written to localStorage");
-  const parsed = JSON.parse(stored);
-  assert.equal(parsed.sessionId, "session-A");
-  assert.equal(typeof parsed.ts, "number");
+  const holder = env.lock.getHolder("thought-1");
+  assert.equal(holder.sessionId, "session-A");
+  assert.equal(typeof holder.ts, "number");
 });
 
 test("acquire refuses a session that does not own the lock", () => {
@@ -101,7 +76,7 @@ test("heartbeat extends the lease timestamp for the owner only", () => {
   const env = loadLockModule({ now: () => tsValues[i++] ?? 6000 });
   env.lock.acquire("thought-1", "session-A");
   const before = env.lock.getHolder("thought-1").ts;
-  env.lock.heartbeat("thought-1", "session-B"); // wrong session
+  env.lock.heartbeat("thought-1", "session-B");
   assert.equal(env.lock.getHolder("thought-1").ts, before);
   env.lock.heartbeat("thought-1", "session-A");
   assert.ok(env.lock.getHolder("thought-1").ts >= before);
@@ -111,7 +86,7 @@ test("stale lock above TTL is dropped and can be re-acquired", () => {
   let now = 1000;
   const env = loadLockModule({ now: () => now });
   env.lock.acquire("thought-1", "session-A");
-  now = 1000 + 200_000; // well past the 90s TTL
+  now = 1000 + 200_000;
   assert.equal(env.lock.getHolder("thought-1"), null);
   assert.equal(env.lock.acquire("thought-1", "session-B"), true);
 });
@@ -121,23 +96,14 @@ test("sweepStaleLocks drops expired entries and keeps live ones", () => {
   const env = loadLockModule({ now: () => now });
   env.lock.acquire("thought-1", "session-A");
   env.lock.acquire("thought-2", "session-A");
-  // Advance well past TTL for thought-1/2, then keep a live entry that
-  // sits just inside the TTL window when the sweep runs.
   now = 1000 + 200_000;
   env.lock.acquire("thought-3", "session-B");
-  now = now + 10_000; // thought-3 is 10s old, well inside the 90s TTL
+  now += 10_000;
   const removed = env.lock.sweepStaleLocks();
   assert.equal(removed, 2);
-  assert.equal(env.storage.getItem("tflow.lock.thought-1"), null);
-  assert.equal(env.storage.getItem("tflow.lock.thought-2"), null);
-  assert.ok(env.storage.getItem("tflow.lock.thought-3"));
-});
-
-test("sweepStaleLocks removes corrupt entries", () => {
-  const env = loadLockModule();
-  env.storage.setItem("tflow.lock.thought-bad", "not-json{");
-  env.lock.sweepStaleLocks();
-  assert.equal(env.storage.getItem("tflow.lock.thought-bad"), null);
+  assert.equal(env.lock.getHolder("thought-1"), null);
+  assert.equal(env.lock.getHolder("thought-2"), null);
+  assert.equal(env.lock.getHolder("thought-3").sessionId, "session-B");
 });
 
 test("sweepStaleLocks is a no-op on an empty store", () => {

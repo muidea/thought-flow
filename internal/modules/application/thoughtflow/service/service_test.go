@@ -904,6 +904,81 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 	}
 }
 
+func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "test",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	composeService := composebiz.NewService(
+		ws,
+		composedraft.New(root),
+		jobstore.New(ws.JobsPath),
+		nil,
+		fakeComposeProvider{body: "# Draft"},
+		nil,
+	)
+	service := &Service{composeService: composeService, workspace: ws}
+	ctx := context.Background()
+
+	saveBody := strings.NewReader(`{"sources":[
+		{"source_type":"thought","source_id":"thought-1","title":"One"},
+		{"source_type":"thought","source_id":"thought-1","title":"Duplicate"},
+		{"source_type":"search_result","source_id":"search-1","title":"Search"}
+	]}`)
+	saveRes := httptest.NewRecorder()
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/compose/basket", saveBody)
+	service.handleSaveComposeBasket(ctx, saveRes, saveReq)
+	if saveRes.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
+	}
+	var saved struct {
+		Data models.ComposeBasket `json:"data"`
+	}
+	if err := json.Unmarshal(saveRes.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("Unmarshal(save) error = %v", err)
+	}
+	if len(saved.Data.Sources) != 2 {
+		t.Fatalf("saved sources = %#v", saved.Data.Sources)
+	}
+
+	getRes := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/basket", nil)
+	service.handleGetComposeBasket(ctx, getRes, getReq)
+	if getRes.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
+	}
+	var got struct {
+		Data models.ComposeBasket `json:"data"`
+	}
+	if err := json.Unmarshal(getRes.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal(get) error = %v", err)
+	}
+	if len(got.Data.Sources) != 2 || got.Data.Sources[0].SourceID != "thought-1" {
+		t.Fatalf("got sources = %#v", got.Data.Sources)
+	}
+
+	clearRes := httptest.NewRecorder()
+	clearReq := httptest.NewRequest(http.MethodDelete, "/api/compose/basket", nil)
+	service.handleClearComposeBasket(ctx, clearRes, clearReq)
+	if clearRes.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", clearRes.Code, clearRes.Body.String())
+	}
+	var cleared struct {
+		Data models.ComposeBasket `json:"data"`
+	}
+	if err := json.Unmarshal(clearRes.Body.Bytes(), &cleared); err != nil {
+		t.Fatalf("Unmarshal(clear) error = %v", err)
+	}
+	if len(cleared.Data.Sources) != 0 {
+		t.Fatalf("cleared sources = %#v", cleared.Data.Sources)
+	}
+}
+
 func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

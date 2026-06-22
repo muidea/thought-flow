@@ -147,6 +147,59 @@ func (s *Store) Delete(_ context.Context, draftID string) error {
 	return nil
 }
 
+func (s *Store) GetBasket(_ context.Context) (models.ComposeBasket, error) {
+	path, err := s.basketPath()
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return models.ComposeBasket{Sources: []models.ComposeSource{}}, nil
+	}
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	var basket models.ComposeBasket
+	if err := yaml.Unmarshal(raw, &basket); err != nil {
+		return models.ComposeBasket{}, err
+	}
+	basket.Sources = normalizeSources(basket.Sources)
+	return basket, nil
+}
+
+func (s *Store) SaveBasket(_ context.Context, sources []models.ComposeSource) (models.ComposeBasket, error) {
+	path, err := s.basketPath()
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	basket := models.ComposeBasket{
+		Sources:   normalizeSources(sources),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return models.ComposeBasket{}, err
+	}
+	raw, err := yaml.Marshal(basket)
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return models.ComposeBasket{}, err
+	}
+	defer func() {
+		_ = os.Remove(tmp)
+	}()
+	if err := os.Rename(tmp, path); err != nil {
+		return models.ComposeBasket{}, err
+	}
+	return basket, nil
+}
+
+func (s *Store) ClearBasket(ctx context.Context) (models.ComposeBasket, error) {
+	return s.SaveBasket(ctx, []models.ComposeSource{})
+}
+
 func (s *Store) writeDraft(draft models.ComposeDraft) error {
 	path, err := s.draftPath(draft.ID)
 	if err != nil {
@@ -199,6 +252,17 @@ func (s *Store) draftPath(draftID string) (string, error) {
 	return path, nil
 }
 
+func (s *Store) basketPath() (string, error) {
+	if strings.TrimSpace(s.rootPath) == "" {
+		return "", errors.New("root path is required")
+	}
+	path := filepath.Join(s.rootPath, "compose", "basket.yaml")
+	if err := workspace.EnsureInside(s.rootPath, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func normalizeDraft(draft models.ComposeDraft, now time.Time) models.ComposeDraft {
 	if draft.Status == "" {
 		draft.Status = models.ComposeStatusDraft
@@ -213,4 +277,23 @@ func normalizeDraft(draft models.ComposeDraft, now time.Time) models.ComposeDraf
 		draft.UpdatedAt = draft.CreatedAt
 	}
 	return draft
+}
+
+func normalizeSources(sources []models.ComposeSource) []models.ComposeSource {
+	out := []models.ComposeSource{}
+	seen := map[string]struct{}{}
+	for _, source := range sources {
+		source.SourceType = strings.TrimSpace(source.SourceType)
+		source.SourceID = strings.TrimSpace(source.SourceID)
+		if source.SourceType == "" || source.SourceID == "" {
+			continue
+		}
+		key := source.SourceType + "::" + source.SourceID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, source)
+	}
+	return out
 }

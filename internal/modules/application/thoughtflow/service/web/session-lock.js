@@ -1,69 +1,54 @@
 // session-lock.js
 //
-// Process-wide (per-origin) mutex for in-flight Capture sessions editing
-// the same Thought. The backend has a thoughtlock.Locker that serializes
-// PATCH /api/thoughts/:id against the refiner's refineJob, but that lock
-// lives on the server. We also want a client-side check so a second tab
-// opening the same Thought can warn the user before they type.
-//
-// The bus and a small holder map live in localStorage so multiple tabs see
-// each other. The default TTL is 90s; we heartbeat every 20s while a
-// session is active. On pagehide we drop the lock so the other tab is
-// released without waiting for TTL to lapse.
+// Live-tab coordination for Capture sessions editing the same Thought.
+// This module deliberately does not persist holders in browser storage.
+// It keeps only in-memory state for the current document and, when
+// available, uses BroadcastChannel to notify other open tabs. The backend
+// thoughtlock remains the authority for write conflicts.
 
 (function () {
   "use strict";
 
-  const STORAGE_PREFIX = "tflow.lock.";
   const DEFAULT_TTL_MS = 90 * 1000;
   const HEARTBEAT_MS = 20 * 1000;
-  const STORAGE_EVENT = typeof window !== "undefined" ? "storage" : null;
+  const CHANNEL_NAME = "thoughtflow-session-lock";
   const BUS_EVENT_ACQUIRE = "lock:acquired";
   const BUS_EVENT_RELEASE = "lock:released";
   const BUS_EVENT_HEARTBEAT = "lock:heartbeat";
 
   const listeners = new Set();
+  const holders = new Map(); // thoughtId -> { sessionId, ts }
   const owners = new Map(); // thoughtId -> heartbeat timer
   const now = () => (typeof performance !== "undefined" && performance.now)
     ? performance.now()
     : Date.now();
 
-  function storageKey(thoughtId) {
-    return STORAGE_PREFIX + thoughtId;
-  }
-
-  function read(thoughtId) {
-    if (typeof localStorage === "undefined") return null;
+  let channel = null;
+  if (typeof BroadcastChannel === "function") {
     try {
-      const raw = localStorage.getItem(storageKey(thoughtId));
-      if (!raw) return null;
-      const value = JSON.parse(raw);
-      if (!value || typeof value !== "object") return null;
-      if (typeof value.sessionId !== "string" || typeof value.ts !== "number") return null;
-      return value;
+      channel = new BroadcastChannel(CHANNEL_NAME);
+      channel.addEventListener("message", (event) => {
+        const message = event?.data || {};
+        if (!message || !message.event || !message.payload) return;
+        applyRemote(message.event, message.payload);
+      });
     } catch (_) {
-      return null;
+      channel = null;
     }
   }
 
-  function write(thoughtId, value) {
-    if (typeof localStorage === "undefined") return;
-    try {
-      if (value === null) localStorage.removeItem(storageKey(thoughtId));
-      else localStorage.setItem(storageKey(thoughtId), JSON.stringify(value));
-    } catch (_) {
-      /* quota or unavailable — drop the write */
-    }
-  }
-
-  function broadcast(event, payload) {
-    if (listeners.size === 0) return;
-    for (const listener of listeners) {
-      try {
-        listener({ event, payload });
-      } catch (_) {
-        /* ignore listener errors */
+  function broadcast(event, payload, options = {}) {
+    if (!options.remoteOnly) {
+      for (const listener of listeners) {
+        try {
+          listener({ event, payload });
+        } catch (_) {
+          /* ignore listener errors */
+        }
       }
+    }
+    if (!options.localOnly && channel) {
+      try { channel.postMessage({ event, payload }); } catch (_) { /* ignore */ }
     }
   }
 
@@ -73,28 +58,40 @@
   }
 
   function getHolder(thoughtId) {
-    const holder = read(thoughtId);
+    const holder = holders.get(thoughtId);
     if (!holder) return null;
     if (isExpired(holder)) {
-      write(thoughtId, null);
+      holders.delete(thoughtId);
       return null;
     }
-    return holder;
+    return { ...holder };
+  }
+
+  function setHolder(thoughtId, sessionId, ts = now()) {
+    holders.set(thoughtId, { sessionId, ts });
+  }
+
+  function applyRemote(event, payload) {
+    const thoughtId = payload?.thoughtId || "";
+    const sessionId = payload?.sessionId || "";
+    if (!thoughtId || !sessionId) return;
+    if (event === BUS_EVENT_RELEASE) {
+      const current = holders.get(thoughtId);
+      if (current && current.sessionId === sessionId) holders.delete(thoughtId);
+      broadcast(event, payload, { localOnly: true });
+      return;
+    }
+    if (event === BUS_EVENT_ACQUIRE || event === BUS_EVENT_HEARTBEAT) {
+      setHolder(thoughtId, sessionId, typeof payload.ts === "number" ? payload.ts : now());
+      broadcast(event, payload, { localOnly: true });
+    }
   }
 
   function startHeartbeat(thoughtId, sessionId) {
     stopHeartbeat(thoughtId);
     const timer = (typeof window !== "undefined" && window.setInterval) ? window.setInterval : null;
     if (!timer) return;
-    const id = timer(() => {
-      const current = read(thoughtId);
-      if (!current || current.sessionId !== sessionId) {
-        stopHeartbeat(thoughtId);
-        return;
-      }
-      write(thoughtId, { sessionId, ts: now() });
-      broadcast(BUS_EVENT_HEARTBEAT, { thoughtId, sessionId });
-    }, HEARTBEAT_MS);
+    const id = timer(() => heartbeat(thoughtId, sessionId), HEARTBEAT_MS);
     owners.set(thoughtId, id);
   }
 
@@ -109,77 +106,47 @@
     if (!thoughtId || !sessionId) return false;
     const existing = getHolder(thoughtId);
     if (existing && existing.sessionId !== sessionId) return false;
-    write(thoughtId, { sessionId, ts: now() });
+    const ts = now();
+    setHolder(thoughtId, sessionId, ts);
     startHeartbeat(thoughtId, sessionId);
-    broadcast(BUS_EVENT_ACQUIRE, { thoughtId, sessionId });
+    broadcast(BUS_EVENT_ACQUIRE, { thoughtId, sessionId, ts });
     return true;
   }
 
   function heartbeat(thoughtId, sessionId) {
     if (!thoughtId || !sessionId) return;
-    const current = read(thoughtId);
+    const current = holders.get(thoughtId);
     if (!current || current.sessionId !== sessionId) return;
-    write(thoughtId, { sessionId, ts: now() });
-    broadcast(BUS_EVENT_HEARTBEAT, { thoughtId, sessionId });
+    const ts = now();
+    setHolder(thoughtId, sessionId, ts);
+    broadcast(BUS_EVENT_HEARTBEAT, { thoughtId, sessionId, ts });
   }
 
   function release(thoughtId, sessionId) {
     if (!thoughtId) return;
     stopHeartbeat(thoughtId);
-    const current = read(thoughtId);
+    const current = holders.get(thoughtId);
     if (current && current.sessionId === sessionId) {
-      write(thoughtId, null);
+      holders.delete(thoughtId);
       broadcast(BUS_EVENT_RELEASE, { thoughtId, sessionId });
     }
   }
 
   function releaseAll(sessionId) {
-    if (typeof localStorage === "undefined") return;
-    try {
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
-        const value = read(key.slice(STORAGE_PREFIX.length));
-        if (value && value.sessionId === sessionId) {
-          stopHeartbeat(key.slice(STORAGE_PREFIX.length));
-          localStorage.removeItem(key);
-          broadcast(BUS_EVENT_RELEASE, { thoughtId: key.slice(STORAGE_PREFIX.length), sessionId });
-        }
-      }
-    } catch (_) {
-      /* ignore */
+    for (const [thoughtId, holder] of Array.from(holders.entries())) {
+      if (holder.sessionId === sessionId) release(thoughtId, sessionId);
     }
   }
 
-  // sweepStaleLocks drops every localStorage entry whose holder has
-  // outlived the TTL. The per-key read() / getHolder() check only fires
-  // for thoughts the user actually opens; locks for thoughts the user
-  // is not currently editing would otherwise sit in localStorage for
-  // up to 90s after the previous tab crashed. That can briefly show the
-  // "another session is editing" indicator on the next visit if the
-  // user happens to open the same thought — even though the previous
-  // holder is long gone. Sweeping at boot keeps the indicator honest.
   function sweepStaleLocks() {
-    if (typeof localStorage === "undefined") return 0;
     const ms = now();
     let removed = 0;
-    try {
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
-        const value = read(key.slice(STORAGE_PREFIX.length));
-        if (!value) {
-          // Corrupt entry — best-effort remove.
-          localStorage.removeItem(key);
-          continue;
-        }
-        if (isExpired(value, ms)) {
-          localStorage.removeItem(key);
-          removed++;
-        }
+    for (const [thoughtId, holder] of Array.from(holders.entries())) {
+      if (isExpired(holder, ms)) {
+        holders.delete(thoughtId);
+        stopHeartbeat(thoughtId);
+        removed++;
       }
-    } catch (_) {
-      /* ignore */
     }
     return removed;
   }
@@ -189,29 +156,10 @@
     return () => listeners.delete(handler);
   }
 
-  // Cross-tab awareness: another tab acquiring or releasing the same lock
-  // should be visible to listeners without polling. storage event only
-  // fires for *other* tabs, so this catches the case where the bus is
-  // unavailable.
-  function onStorageEvent(event) {
-    if (!event || !event.key) return;
-    if (!event.key.startsWith(STORAGE_PREFIX)) return;
-    const thoughtId = event.key.slice(STORAGE_PREFIX.length);
-    if (event.newValue === null) {
-      broadcast(BUS_EVENT_RELEASE, { thoughtId, sessionId: "" });
-      return;
-    }
-    let parsed = null;
-    try { parsed = JSON.parse(event.newValue); } catch (_) { return; }
-    if (!parsed || !parsed.sessionId) return;
-    broadcast(BUS_EVENT_ACQUIRE, { thoughtId, sessionId: parsed.sessionId });
-  }
-
   if (typeof window !== "undefined") {
-    window.addEventListener(STORAGE_EVENT, onStorageEvent);
     window.addEventListener("pagehide", () => {
       for (const thoughtId of Array.from(owners.keys())) {
-        const holder = read(thoughtId);
+        const holder = holders.get(thoughtId);
         if (holder) release(thoughtId, holder.sessionId);
       }
     });

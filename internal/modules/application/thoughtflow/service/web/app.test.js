@@ -24,6 +24,19 @@ const stubTflow = {
 // inspect and mutate inputs between operations. Other selectors return null.
 function makeDomStub(initial = {}) {
   const store = { ...initial };
+  const classSet = (initialClasses = []) => {
+    const set = new Set(initialClasses);
+    return {
+      add: (name) => set.add(name),
+      remove: (name) => set.delete(name),
+      toggle: (name, enabled) => {
+        if (enabled) set.add(name);
+        else set.delete(name);
+      },
+      contains: (name) => set.has(name),
+      has: (name) => set.has(name),
+    };
+  };
   const controls = ["search-query", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
     "thought-filter"];
@@ -93,7 +106,95 @@ function makeDomStub(initial = {}) {
     set innerHTML(v) { store["search-results_innerHTML"] = String(v); },
     querySelectorAll: () => [],
   };
+  let thoughtListItems = [];
+  nodes["thought-list"] = {
+    get innerHTML() { return store["thought-list_innerHTML"] || ""; },
+    set innerHTML(v) {
+      store["thought-list_innerHTML"] = String(v);
+      thoughtListItems = Array.from(String(v).matchAll(/data-thought-id="([^"]+)"/g)).map((match) => {
+        const item = {
+          dataset: { thoughtId: match[1] },
+          handlers: {},
+          addEventListener(name, handler) { this.handlers[name] = handler; },
+        };
+        return item;
+      });
+    },
+    querySelectorAll: (selector) => {
+      if (selector === ".result-item[data-thought-id]") return thoughtListItems;
+      return [];
+    },
+  };
+  nodes["thought-list-count"] = {
+    textContent: "",
+    setAttribute: (name, value) => { store[`thought-list-count_${name}`] = String(value); },
+  };
+  nodes["thought-detail"] = {
+    get innerHTML() { return store["thought-detail_innerHTML"] || ""; },
+    set innerHTML(v) { store["thought-detail_innerHTML"] = String(v); },
+    classList: classSet(),
+  };
+  nodes["thought-status-detail"] = {
+    get innerHTML() { return store["thought-status-detail_innerHTML"] || ""; },
+    set innerHTML(v) { store["thought-status-detail_innerHTML"] = String(v); },
+    classList: classSet(),
+  };
+  const noteTabs = ["notes-all", "notes-detail", "notes-status", "notes-runtime"].map((tab) => ({
+    dataset: { tab },
+    classList: classSet(tab === "notes-all" ? ["active"] : []),
+  }));
+  const notePanels = ["notes-all", "notes-detail", "notes-status", "notes-runtime"].map((tab) => ({
+    id: `tab-${tab}`,
+    classList: classSet(tab === "notes-all" ? ["active"] : []),
+  }));
+  nodes["page-thoughts"] = {
+    dataset: { page: "thoughts" },
+    querySelectorAll: (selector) => {
+      if (selector === ".tab") return noteTabs;
+      if (selector === ".tab-panel") return notePanels;
+      return [];
+    },
+  };
+  let topicListItems = [];
+  nodes["topic-list"] = {
+    get innerHTML() { return store["topic-list_innerHTML"] || ""; },
+    set innerHTML(v) {
+      store["topic-list_innerHTML"] = String(v);
+      topicListItems = Array.from(String(v).matchAll(/data-topic-id="([^"]+)"/g)).map((match) => ({
+        dataset: { topicId: match[1] },
+        handlers: {},
+        addEventListener(name, handler) { this.handlers[name] = handler; },
+      }));
+    },
+    querySelectorAll: (selector) => {
+      if (selector === ".topic-item") return topicListItems;
+      return [];
+    },
+  };
+  const topicTabs = ["topics-list", "topics-detail", "topics-proposals", "topics-rules"].map((tab) => ({
+    dataset: { tab },
+    classList: classSet(tab === "topics-list" ? ["active"] : []),
+    disabled: tab !== "topics-list",
+  }));
+  const topicPanels = ["topics-list", "topics-detail", "topics-proposals", "topics-rules"].map((tab) => ({
+    id: `tab-${tab}`,
+    classList: classSet(tab === "topics-list" ? ["active"] : []),
+  }));
+  nodes["page-topics"] = {
+    dataset: { page: "topics" },
+    querySelectorAll: (selector) => {
+      if (selector === ".tab") return topicTabs;
+      if (selector === ".tab-panel") return topicPanels;
+      return [];
+    },
+  };
   function find(selector) {
+    if (selector === "#page-thoughts .tab.active") {
+      return noteTabs.find((tab) => tab.classList.contains("active")) || null;
+    }
+    if (selector === "#page-topics .tab.active") {
+      return topicTabs.find((tab) => tab.classList.contains("active")) || null;
+    }
     const m = selector.match(/^#([\w-]+)$/);
     if (!m) return null;
     return nodes[m[1]] || null;
@@ -116,12 +217,24 @@ function makeStorageStub(initial = {}) {
   };
 }
 
+function activeNotesTab(dom) {
+  const tabs = dom.find("#page-thoughts").querySelectorAll(".tab");
+  const active = tabs.find((tab) => tab.classList.contains("active"));
+  return active?.dataset?.tab || "";
+}
+
+function activeTopicsTab(dom) {
+  const tabs = dom.find("#page-topics").querySelectorAll(".tab");
+  const active = tabs.find((tab) => tab.classList.contains("active"));
+  return active?.dataset?.tab || "";
+}
+
 function loadAppFunctionsWith(opts = {}) {
   const appPath = path.join(__dirname, "app.js");
   const parserPath = path.join(__dirname, "vendor", "markdown-it.min.js");
   const parserCode = fs.readFileSync(parserPath, "utf8");
   const code = fs.readFileSync(appPath, "utf8")
-    .replace(/\nboot\(\)\.catch\(\(error\) => toast\(error\.message\)\);\s*$/, "");
+    .replace(/\nboot\(\)\.catch\([\s\S]*$/, "");
   const dom = opts.dom || makeDomStub();
   const storage = opts.storage || makeStorageStub();
   // Note: do NOT override `globalThis` in the context object — the markdown-it
@@ -144,6 +257,7 @@ function loadAppFunctionsWith(opts = {}) {
     URLSearchParams,
     fetch: opts.fetch || (async () => ({ ok: true, json: async () => ({ data: null }) })),
     EventSource: function EventSource() {},
+    BroadcastChannel: opts.BroadcastChannel,
     console,
   };
   const result = vm.runInNewContext(
@@ -166,6 +280,8 @@ function loadAppFunctionsWith(opts = {}) {
       statusBadge,
       renderSearchResultItem,
       renderComposeBasketItem,
+      renderThoughtsList,
+      renderTopics,
       runSearch,
       renderSearchIdle,
       renderTopicCandidateImpact,
@@ -183,8 +299,6 @@ function loadAppFunctionsWith(opts = {}) {
       PAGE_SERIALIZERS,
       persistBasket,
       restoreBasket,
-      saveToStorage,
-      loadFromStorage,
       trapFocus,
       classifyCaptureInput,
       parseCaptureCommand,
@@ -195,6 +309,9 @@ function loadAppFunctionsWith(opts = {}) {
       formatPatchFeedback,
       upsertCaptureContextMessage,
       upsertArchivePreviewMessage,
+      loadCaptureSessions,
+      saveCaptureSessions,
+      rememberCaptureSession,
       renderArchivePreviewCard,
       renderCaptureBubbleBody,
       handleCaptureComposerKeydown,
@@ -213,6 +330,7 @@ function loadAppFunctionsWith(opts = {}) {
     { filename: appPath },
   );
   if (opts.exposeState) result._state = result.appState;
+  if (opts.exposeWindow) result._window = context.window;
   return result;
 }
 
@@ -249,7 +367,7 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   // /topics/{id} opens the detail tab by default; the /review segment
   // is rewritten to ?tab=proposals so the same page section hosts both
   // views.
-  assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
+  assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: {} });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
   // /topics?topic=...&tab=... is an alternate path syntax (no path id);
   // the topic id lives in the query and the page has no in-param topicId.
@@ -625,6 +743,20 @@ test("PAGE_SERIALIZERS omits fields that are at their default value", () => {
   assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), "{}");
 });
 
+test("PAGE_SERIALIZERS.topics omits the selected topic detail default tab", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.route = { page: "topics", params: { topicId: "antd" }, query: {} };
+  app.restoreRoutePage("topics", {});
+
+  assert.equal(activeTopicsTab(dom), "topics-detail");
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), "{}");
+
+  app.restoreRoutePage("topics", { tab: "rules" });
+  assert.equal(activeTopicsTab(dom), "topics-rules");
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.topics()), JSON.stringify({ tab: "rules" }));
+});
+
 test("runSearch with empty criteria renders idle state without fetching", async () => {
   const dom = makeDomStub();
   let fetched = false;
@@ -703,6 +835,18 @@ test("restoreRoutePage hydrates topic state from query", () => {
   app.restoreRoutePage("topics", {});
   assert.equal(dom.store["topic-filter"], "");
   assert.equal(dom.store["topic-auto-filter_checked"], false);
+});
+
+test("topics list item click navigates directly to topic detail", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true, exposeWindow: true });
+  app._state.topics = [{ id: "antd", name: "AntD", description: "Design system", member_count: 1, word_count: 33 }];
+
+  app.renderTopics();
+  const [item] = dom.find("#topic-list").querySelectorAll(".topic-item");
+  item.handlers.click({ target: { closest: () => null } });
+
+  assert.equal(app._window.location.hash, "#/topics/antd");
 });
 
 test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
@@ -814,73 +958,83 @@ test("applyRoute refreshes the target page data when navigation enters search", 
   assert.match(dom.store["search-results_innerHTML"], /empty\.no_matching/);
 });
 
-test("persistBasket writes a JSON envelope; restoreBasket reads it back", () => {
-  const storage = makeStorageStub();
-  const app = loadAppFunctionsWith({ storage, exposeState: true });
+test("persistBasket writes through the backend and clears legacy browser storage", async () => {
+  const storage = makeStorageStub({
+    "tflow.basket": JSON.stringify({ sources: [{ source_type: "thought", source_id: "legacy" }] }),
+  });
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    storage,
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method || "GET", body: options.body || "" });
+      return { ok: true, json: async () => ({ data: { sources: [] } }) };
+    },
+  });
 
-  // Basket is keyed by `${source_type}::${source_id}`; the persisted envelope
-  // carries the source list so the next session can rebuild it.
   app._state.composeBasket = new Map([
     ["thought::t-1", { source_type: "thought", source_id: "t-1", title: "T1" }],
     ["search_result::t-2", { source_type: "search_result", source_id: "t-2", title: "T2" }],
   ]);
-  app.persistBasket();
-  const raw = storage.data["tflow.basket"];
-  assert.ok(raw, "basket should be persisted to localStorage");
-  const envelope = JSON.parse(raw);
-  assert.ok(envelope.sources, "envelope should carry sources array");
-  assert.deepEqual(envelope.sources, [
-    { source_type: "thought", source_id: "t-1", title: "T1" },
-    { source_type: "search_result", source_id: "t-2", title: "T2" },
-  ]);
-  assert.ok(envelope.updated_at, "envelope should carry a timestamp");
-  assert.equal(Array.isArray(envelope.ids), false, "legacy ids field is gone");
+  await app.persistBasket();
 
-  // Simulate a reload: the new module instance has an empty Map, then we
-  // hydrate from storage. JSON round-trip flattens cross-realm Object
-  // prototypes so deepEqual can compare against literals defined here.
-  app._state.composeBasket = new Map();
-  app.restoreBasket();
-  const restored = JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
-  assert.deepEqual(restored, [
+  assert.equal(storage.data["tflow.basket"], undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "PUT");
+  assert.equal(calls[0].url, "/api/compose/basket");
+  assert.deepEqual(JSON.parse(calls[0].body).sources, [
     { source_type: "thought", source_id: "t-1", title: "T1" },
     { source_type: "search_result", source_id: "t-2", title: "T2" },
   ]);
 });
 
-test("restoreBasket is tolerant of missing or corrupt payloads", () => {
-  const storage = makeStorageStub();
-  const app = loadAppFunctionsWith({ storage, exposeState: true });
-
-  const expected = [
-    { source_type: "thought", source_id: "keep", title: "" },
-  ];
-  const flatten = () => JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
-
-  app._state.composeBasket = new Map([
-    ["thought::keep", expected[0]],
-  ]);
-  // No payload at all — basket keeps its current value.
-  app.restoreBasket();
-  assert.deepEqual(flatten(), expected);
-
-  // Garbage payload — basket stays at its current value.
-  storage.data["tflow.basket"] = "not-json";
-  app.restoreBasket();
-  assert.deepEqual(flatten(), expected);
-
-  // Payload missing the sources array — basket stays at its current value.
-  storage.data["tflow.basket"] = JSON.stringify({ updated_at: "now" });
-  app.restoreBasket();
-  assert.deepEqual(flatten(), expected);
-
-  // Legacy ids-only payload is ignored (no backward compat).
-  storage.data["tflow.basket"] = JSON.stringify({
-    ids: ["legacy-1", "legacy-2"],
-    updated_at: "now",
+test("persistBasket clears the backend basket when no sources remain", async () => {
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method || "GET" });
+      return { ok: true, json: async () => ({ data: { sources: [] } }) };
+    },
   });
-  app.restoreBasket();
-  assert.deepEqual(flatten(), expected);
+
+  app._state.composeBasket = new Map();
+  await app.persistBasket();
+
+  assert.deepEqual(calls, [{ url: "/api/compose/basket", method: "DELETE" }]);
+});
+
+test("restoreBasket reads from the backend only", async () => {
+  const storage = makeStorageStub({
+    "tflow.basket": JSON.stringify({ sources: [{ source_type: "thought", source_id: "legacy" }] }),
+  });
+  const app = loadAppFunctionsWith({
+    storage,
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      assert.equal(String(url), "/api/compose/basket");
+      assert.equal(options.method || "GET", "GET");
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            sources: [
+              { source_type: "thought", source_id: "t-1", title: "T1" },
+              { source_type: "search_result", source_id: "t-2", title: "T2" },
+            ],
+          },
+        }),
+      };
+    },
+  });
+
+  await app.restoreBasket();
+  const restored = JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
+  assert.equal(storage.data["tflow.basket"], undefined);
+  assert.deepEqual(restored, [
+    { source_type: "thought", source_id: "t-1", title: "T1" },
+    { source_type: "search_result", source_id: "t-2", title: "T2" },
+  ]);
 });
 
 test("createComposeBasket deduplicates by source_type+source_id and supports clear", () => {
@@ -1162,11 +1316,35 @@ test("computeSidebarBadgeCounts only shows badges for surfaces with a real enume
 
 test("restoreRoutePage keeps notes deep-link state without a manual ID input", () => {
   const dom = makeDomStub();
-  const app = loadAppFunctionsWith({ dom });
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
 
   app.restoreRoutePage("thoughts", { id: "thought-123" });
 
   assert.equal(Object.prototype.hasOwnProperty.call(dom.store, "thought-id"), false);
+  assert.equal(activeNotesTab(dom), "notes-detail");
+  app._state.activeThoughtId = "thought-123";
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.thoughts()), JSON.stringify({ id: "thought-123" }));
+});
+
+test("restoreRoutePage preserves explicit notes tab over detail default", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom });
+
+  app.restoreRoutePage("thoughts", { id: "thought-123", tab: "status" });
+
+  assert.equal(activeNotesTab(dom), "notes-status");
+});
+
+test("notes list item click switches directly to detail tab", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.notes = [{ id: "thought-123", display_title: "Thought 123", summary: "Summary" }];
+
+  app.renderThoughtsList();
+  const [item] = dom.find("#thought-list").querySelectorAll(".result-item[data-thought-id]");
+  item.handlers.click({ target: { closest: () => null } });
+
+  assert.equal(activeNotesTab(dom), "notes-detail");
 });
 
 test("restoreRoutePage hydrates compose basket tab from query", () => {
@@ -1888,6 +2066,28 @@ test("capture session history item uses session title and includes delete action
   assert.doesNotMatch(html, /<span class="tf-sessions-label">20260620-abcdef<\/span>/);
   assert.match(html, /tf-sessions-delete/);
   assert.match(html, /data-session-id="20260620-abcdef"/);
+});
+
+test("capture session history is not persisted in browser storage", () => {
+  const storage = makeStorageStub({
+    "tflow.capture.sessions": JSON.stringify([{ sessionId: "legacy", title: "legacy content" }]),
+  });
+  const app = loadAppFunctionsWith({ storage, exposeState: true });
+
+  const loaded = app.loadCaptureSessions();
+  app._state.capture.sessions = [{ sessionId: "s1", title: "server only" }];
+  app.saveCaptureSessions();
+  app.rememberCaptureSession({
+    sessionId: "s2",
+    title: "in-memory only",
+    messages: [{ role: "user", text: "must not be stored" }],
+  });
+
+  assert.equal(Array.isArray(loaded), true);
+  assert.equal(loaded.length, 0);
+  assert.equal(storage.data["tflow.capture.sessions"], undefined);
+  assert.equal(app._state.capture.sessions[0].sessionId, "s2");
+  assert.equal(app._state.capture.sessions[0].messages, undefined);
 });
 
 test("deleteCaptureSession removes one session and calls backend delete", async () => {

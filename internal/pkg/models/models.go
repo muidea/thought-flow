@@ -776,6 +776,14 @@ type ComposeSource struct {
 	Metadata   map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
+// ComposeBasket is the server-side state for the Web compose basket.
+// It intentionally lives in the workspace instead of browser storage
+// so refreshes, tabs, and devices all read the same source list.
+type ComposeBasket struct {
+	Sources   []ComposeSource `json:"sources" yaml:"sources"`
+	UpdatedAt time.Time       `json:"updated_at" yaml:"updated_at"`
+}
+
 // ComposeRequest is the body of POST /api/compose/drafts. It
 // supersedes the legacy SynthesisRequest (thought_ids[]) shape —
 // sources carry their own type discriminator so the server can
