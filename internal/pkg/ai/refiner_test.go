@@ -443,6 +443,14 @@ func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T)
 		"Only when archive_intent is \"llm\"",
 		"complete formal Thought document",
 		"final information already converged",
+		"High-value research/specification lens",
+		"senior domain expert",
+		"全局原则与价值观",
+		"场景差异化对比",
+		"关键模块深挖",
+		"跨场景禁忌 / Anti-Patterns",
+		"文案与表达规范",
+		"正确做法 / 错误做法",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("default prompt missing %q:\n%s", want, prompt)
