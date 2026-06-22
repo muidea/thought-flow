@@ -125,6 +125,55 @@ func TestStoreCreateMatchAndAddMembership(t *testing.T) {
 	}
 }
 
+func TestStoreMatchThoughtUsesExplicitTopicID(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{Name: "AntD"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	thought := testThought("20260622-025934-aa1470", "Unrelated title", nil)
+	thought.TopicIDs = []string{topic.ID}
+	content := models.ThoughtContent{AINotes: "No keyword rule is required when topic_ids is explicit."}
+
+	membership, ok := store.MatchThought(topic, thought, content)
+	if !ok {
+		t.Fatalf("expected explicit topic_ids match")
+	}
+	if membership.MatchType != "manual" {
+		t.Fatalf("match type = %q, want manual", membership.MatchType)
+	}
+	if !containsString(membership.Reasons, "thought.topic_ids") {
+		t.Fatalf("reasons = %#v, want thought.topic_ids", membership.Reasons)
+	}
+}
+
+func TestStoreMatchThoughtUsesTopicIdentityWhenRulesAreEmpty(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{Name: "AntD"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	thought := testThought("20260622-025934-aa1470", "基于 AntD V5 的设计规范", nil)
+	content := models.ThoughtContent{AINotes: "Ant Design V5 and antd-mobile share design tokens."}
+
+	membership, ok := store.MatchThought(topic, thought, content)
+	if !ok {
+		t.Fatalf("expected empty-rule topic identity match")
+	}
+	if membership.MatchType != "keyword" {
+		t.Fatalf("match type = %q, want keyword", membership.MatchType)
+	}
+	if !containsString(membership.Reasons, "topic:AntD") {
+		t.Fatalf("reasons = %#v, want topic:AntD", membership.Reasons)
+	}
+}
+
 func TestStoreRejectsInvalidSemanticThreshold(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

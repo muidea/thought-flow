@@ -287,9 +287,13 @@
                   <button class="tf-btn" id="refresh-topic" disabled data-i18n="topics.refresh">Refresh</button>
                   <button class="tf-btn" id="open-topic-rules" type="button" disabled data-i18n="topics.edit_rules">Edit rules</button>
                 </div>
-                <div id="topic-document" class="markdown-preview markdown-rendered" data-i18n-template="topics.document_empty" data-empty="true">Select a topic from the list.</div>
-                <div id="topic-members" class="tf-empty" style="margin-top: 12px;" data-i18n="topics.members_empty">No topic members loaded.</div>
-                <div id="topic-candidates" class="tf-card" style="margin-top: 12px;" data-i18n-template="topics.candidates_empty" data-empty="true">No pending candidates.</div>
+                <div class="tf-topic-detail-layout">
+                  <div id="topic-document" class="markdown-preview markdown-rendered tf-topic-document" data-i18n-template="topics.document_empty" data-empty="true">Select a topic from the list.</div>
+                  <aside class="tf-topic-side-panel">
+                    <div id="topic-members" class="tf-topic-members" data-i18n="topics.members_empty">No topic members loaded.</div>
+                    <div id="topic-candidates" class="tf-topic-candidates" data-i18n-template="topics.candidates_empty" data-empty="true">No pending candidates.</div>
+                  </aside>
+                </div>
               </div>
               <div id="tab-topics-proposals" class="tab-panel">
                 <div class="tf-two-column">
@@ -346,11 +350,17 @@
                 </div>
               </div>
               <div id="tab-compose-basket" class="tab-panel">
-                <div class="tf-selection-bar">
-                  <span id="compose-source-count-basket" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
-                  <button class="tf-btn" id="clear-compose-basket-tab" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
+                <div class="tf-selection-bar tf-basket-toolbar">
+                  <div>
+                    <strong data-i18n="compose.basket_title">Basket sources</strong>
+                    <span id="compose-source-count-basket" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
+                  </div>
+                  <div class="tf-action-row">
+                    <button class="tf-btn tf-btn-primary" id="open-compose-create-basket" type="button" data-i18n="compose.create_from_basket">Create draft</button>
+                    <button class="tf-btn" id="clear-compose-basket-tab" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
+                  </div>
                 </div>
-                <div id="compose-basket-list" class="approval-list" data-i18n-template="compose.empty_sources" data-empty="true">No sources selected.</div>
+                <div id="compose-basket-list" class="tf-basket-list" data-i18n-template="compose.empty_sources" data-empty="true">No sources selected.</div>
               </div>
             </section>
           </section>

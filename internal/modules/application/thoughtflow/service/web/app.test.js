@@ -152,8 +152,10 @@ function loadAppFunctionsWith(opts = {}) {
     ({
       escapeHTML,
       renderMarkdown,
+      renderTopicDocumentMarkdown,
       renderDiff,
       renderComposeDraft,
+      composeTitleFromContent,
       outlineFromText,
       outlineText,
       parseRoute,
@@ -163,6 +165,7 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
+      renderComposeBasketItem,
       runSearch,
       renderSearchIdle,
       renderTopicCandidateImpact,
@@ -411,6 +414,29 @@ type: topic
   assert.doesNotMatch(html, /<img src="javascript/);
 });
 
+test("renderTopicDocumentMarkdown hides front matter from topic detail", () => {
+  const app = loadAppFunctions();
+
+  const html = app.renderTopicDocumentMarkdown(`---
+id: antd
+type: topic
+members:
+  - 20260622-025934-aa1470
+
+---
+
+# AntD
+
+## Notes
+
+Topic body`);
+
+  assert.doesNotMatch(html, /front-matter/);
+  assert.doesNotMatch(html, /<dt>id<\/dt>/);
+  assert.match(html, /<h1>AntD<\/h1>/);
+  assert.match(html, /Topic body/);
+});
+
 test("renderMarkdown uses CommonMark block parsing with GFM extensions", () => {
   const app = loadAppFunctions();
 
@@ -452,7 +478,7 @@ test("renderDiff marks added and removed lines", () => {
   assert.match(html, />\+<\/span><code>new<\/code>/);
 });
 
-test("renderComposeDraft appends only missing source links", () => {
+test("renderComposeDraft keeps source links out of the editable body", () => {
   const app = loadAppFunctions();
 
   const content = app.renderComposeDraft({
@@ -461,8 +487,15 @@ test("renderComposeDraft appends only missing source links", () => {
   });
 
   assert.equal((content.match(/\[\[thoughts\/one\.md\]\]/g) || []).length, 1);
-  assert.match(content, /\[\[thoughts\/two\.md\]\]/);
-  assert.match(content, /### Sources/);
+  assert.doesNotMatch(content, /\[\[thoughts\/two\.md\]\]/);
+  assert.doesNotMatch(content, /### Sources/);
+});
+
+test("composeTitleFromContent prefers the first markdown heading", () => {
+  const app = loadAppFunctions();
+
+  assert.equal(app.composeTitleFromContent("## Final Thought\n\nBody", { goal: "Goal title" }), "Final Thought");
+  assert.equal(app.composeTitleFromContent("Body only", { goal: "Goal title\nextra" }), "Goal title");
 });
 
 test("renderTopicCandidateImpact surfaces source discriminator and metadata", () => {
@@ -480,6 +513,7 @@ test("renderTopicCandidateImpact surfaces source discriminator and metadata", ()
   assert.match(html, /data-candidate-source="compose_draft"/);
   assert.match(html, /data-candidate-id="cand-1"/);
   assert.match(html, /data-candidate-ref="draft-1"/);
+  assert.match(html, /data-candidate-thought=""/);
   assert.match(html, /Compose draft 1/);
   assert.match(html, /topics\.candidate_source\.compose_draft/);
   assert.match(html, /topics\.score_label|search\.score_label/);
@@ -502,7 +536,25 @@ test("renderTopicCandidates lists every item and falls back to empty state", () 
   assert.match(html, /data-candidate-source="thought"/);
   assert.match(html, /data-candidate-source="capture_session"/);
   assert.match(html, /data-candidate-ref="t1"/);
+  assert.match(html, /data-candidate-thought="t1"/);
   assert.match(html, /data-candidate-ref="s1"/);
+});
+
+test("renderComposeBasketItem exposes source metadata and actions", () => {
+  const app = loadAppFunctions();
+
+  const html = app.renderComposeBasketItem({
+    source_type: "thought",
+    source_id: "thought-1",
+    title: "Readable title",
+  });
+
+  assert.match(html, /tf-basket-item/);
+  assert.match(html, /Readable title/);
+  assert.match(html, /compose\.source_type\.thought/);
+  assert.match(html, /data-basket-preview="thought-1"/);
+  assert.match(html, /data-basket-remove="thought-1"/);
+  assert.match(html, /compose\.basket_source_id/);
 });
 
 test("outline helpers preserve one title per line", () => {
@@ -1115,6 +1167,41 @@ test("restoreRoutePage keeps notes deep-link state without a manual ID input", (
   app.restoreRoutePage("thoughts", { id: "thought-123" });
 
   assert.equal(Object.prototype.hasOwnProperty.call(dom.store, "thought-id"), false);
+});
+
+test("restoreRoutePage hydrates compose basket tab from query", () => {
+  const classes = (initial = []) => {
+    const set = new Set(initial);
+    return {
+      has: (name) => set.has(name),
+      toggle: (name, enabled) => {
+        if (enabled) set.add(name);
+        else set.delete(name);
+      },
+    };
+  };
+  const tabDrafts = { dataset: { tab: "compose-drafts" }, classList: classes(["active"]) };
+  const tabBasket = { dataset: { tab: "compose-basket" }, classList: classes() };
+  const panelDrafts = { id: "tab-compose-drafts", classList: classes(["active"]) };
+  const panelBasket = { id: "tab-compose-basket", classList: classes() };
+  const composePage = {
+    querySelectorAll: (selector) => {
+      if (selector === ".tab") return [tabDrafts, tabBasket];
+      if (selector === ".tab-panel") return [panelDrafts, panelBasket];
+      return [];
+    },
+  };
+  const dom = makeDomStub();
+  const baseFind = dom.find;
+  dom.find = (selector) => (selector === "#page-compose" ? composePage : baseFind(selector));
+  const app = loadAppFunctionsWith({ dom });
+
+  app.restoreRoutePage("compose", { tab: "basket" });
+
+  assert.equal(tabDrafts.classList.has("active"), false);
+  assert.equal(tabBasket.classList.has("active"), true);
+  assert.equal(panelDrafts.classList.has("active"), false);
+  assert.equal(panelBasket.classList.has("active"), true);
 });
 
 test("appendExpansionSections renders the 4 expansion fields when present", () => {

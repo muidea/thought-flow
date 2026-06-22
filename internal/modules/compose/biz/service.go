@@ -221,9 +221,10 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 	if content == "" {
 		content = draft.Content
 	}
+	content = stripComposeSourceAppendix(content, draft.SourceLinks)
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
-		title = deriveComposeTitle(draft)
+		title = firstNonEmpty(firstMarkdownHeading(content), deriveComposeTitle(draft))
 	}
 	tags := req.Tags
 	if len(tags) == 0 {
@@ -236,6 +237,7 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 		Title:   title,
 		Tags:    tags,
 		Source:  models.ThoughtSourceCompose,
+		Links:   dedupeStrings(append([]string{}, draft.SourceLinks...)),
 	}
 	job, jobErr := s.recordJob(draftID)
 	if jobErr != nil && s.jobs == nil {
@@ -417,6 +419,9 @@ func firstNonEmpty(values ...string) string {
 }
 
 func deriveComposeTitle(draft models.ComposeDraft) string {
+	if heading := firstMarkdownHeading(draft.Content); heading != "" {
+		return heading
+	}
 	goal := strings.TrimSpace(draft.Goal)
 	if goal != "" {
 		first := strings.SplitN(goal, "\n", 2)[0]
@@ -434,6 +439,61 @@ func deriveComposeTitle(draft models.ComposeDraft) string {
 		return strings.TrimSpace(draft.Sources[0].SourceID)
 	}
 	return "Untitled compose"
+}
+
+func firstMarkdownHeading(content string) string {
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		title := strings.TrimSpace(strings.TrimLeft(line, "#"))
+		if title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func stripComposeSourceAppendix(content string, sourceLinks []string) string {
+	content = strings.TrimSpace(content)
+	if content == "" || len(sourceLinks) == 0 {
+		return content
+	}
+	markers := []string{"\n### Sources\n", "\n## Sources\n", "\n### 来源\n", "\n## 来源\n"}
+	for _, marker := range markers {
+		idx := strings.LastIndex(content, marker)
+		if idx < 0 {
+			continue
+		}
+		tail := strings.TrimSpace(content[idx+len(marker):])
+		if sourceAppendixContainsOnlyLinks(tail, sourceLinks) {
+			return strings.TrimSpace(content[:idx])
+		}
+	}
+	return content
+}
+
+func sourceAppendixContainsOnlyLinks(tail string, sourceLinks []string) bool {
+	if strings.TrimSpace(tail) == "" {
+		return false
+	}
+	allowed := map[string]struct{}{}
+	for _, link := range dedupeStrings(sourceLinks) {
+		allowed[link] = struct{}{}
+		allowed[("[[" + link + "]]")] = struct{}{}
+	}
+	for _, line := range strings.Split(tail, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := allowed[line]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func deriveComposeTags(draft models.ComposeDraft) []string {

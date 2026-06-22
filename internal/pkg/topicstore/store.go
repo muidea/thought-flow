@@ -335,6 +335,18 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 			UpdatedAt: now,
 		}, true
 	}
+	if containsFold(thought.TopicIDs, topic.ID) {
+		return models.TopicMembership{
+			TopicID:   topic.ID,
+			ThoughtID: thought.ID,
+			MatchType: "manual",
+			Score:     1,
+			Reasons:   []string{"thought.topic_ids"},
+			Status:    "accepted",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}, true
+	}
 
 	searchText := strings.ToLower(strings.Join([]string{
 		thought.UserTitle,
@@ -361,6 +373,15 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 		if keyword != "" && strings.Contains(searchText, strings.ToLower(keyword)) {
 			reasons = append(reasons, "keyword:"+keyword)
 			score += 0.4
+		}
+	}
+	if topicRulesEmpty(topic.Rules) {
+		for _, keyword := range defaultTopicKeywords(topic) {
+			if containsTopicKeyword(searchText, keyword) {
+				reasons = append(reasons, "topic:"+keyword)
+				score += 0.4
+				break
+			}
 		}
 	}
 	allTags := append(append([]string{}, thought.UserTags...), thought.AITags...)
@@ -403,6 +424,38 @@ func (s *Store) MatchThought(topic models.Topic, thought models.Thought, content
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, true
+}
+
+func topicRulesEmpty(rules models.TopicRule) bool {
+	return len(rules.Keywords.Any) == 0 &&
+		len(rules.Keywords.All) == 0 &&
+		len(rules.Keywords.Exclude) == 0 &&
+		len(rules.Tags.Any) == 0 &&
+		len(rules.ManualInclude) == 0 &&
+		len(rules.ManualExclude) == 0 &&
+		!rules.Semantic.Enabled
+}
+
+func defaultTopicKeywords(topic models.Topic) []string {
+	values := []string{}
+	if name := strings.TrimSpace(topic.Name); name != "" {
+		values = append(values, name)
+	}
+	if id := strings.TrimSpace(topic.ID); id != "" {
+		values = append(values, id)
+	}
+	if slug := strings.TrimSpace(topic.Slug); slug != "" {
+		values = append(values, slug)
+	}
+	return normalizeList(values)
+}
+
+func containsTopicKeyword(searchText, keyword string) bool {
+	keyword = strings.TrimSpace(strings.ToLower(keyword))
+	if keyword == "" {
+		return false
+	}
+	return strings.Contains(searchText, keyword)
 }
 
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {

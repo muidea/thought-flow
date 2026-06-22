@@ -179,6 +179,12 @@ const PAGE_SERIALIZERS = {
     if (active && active.dataset.tab && active.dataset.tab !== "notes-all") q.tab = active.dataset.tab;
     return q;
   },
+  compose: () => {
+    const q = {};
+    const active = document.querySelector(`#page-compose .tab.active`);
+    if (active && active.dataset.tab && active.dataset.tab !== "compose-drafts") q.tab = active.dataset.tab.replace(/^compose-/, "");
+    return q;
+  },
 };
 
 function topicFilterRouteQuery() {
@@ -217,6 +223,9 @@ function restoreRoutePage(page, query) {
     }
   } else if (page === "thoughts") {
     activateTab(typeof query.tab === "string" ? query.tab : "notes-all", $("#page-thoughts"));
+  } else if (page === "compose") {
+    const tab = typeof query.tab === "string" && query.tab.trim() ? query.tab.trim() : "drafts";
+    activateTab(tab.startsWith("compose-") ? tab : `compose-${tab}`, $("#page-compose"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
@@ -874,6 +883,14 @@ function renderMarkdown(value) {
     return `${frontMatter}${parser.render(sanitizeMarkdownInput(body || ""))}`;
   }
   return renderMarkdownFallback(value);
+}
+
+function renderTopicDocumentMarkdown(value) {
+  return renderMarkdown(stripMarkdownFrontMatter(value));
+}
+
+function stripMarkdownFrontMatter(value) {
+  return splitFrontMatter(value).body;
 }
 
 function sanitizeMarkdownInput(value) {
@@ -1666,7 +1683,7 @@ async function openTopic(topicId) {
     const el = document.getElementById(id);
     if (el) el.disabled = false;
   });
-  $("#topic-document").innerHTML = renderMarkdown(detail.document || t("topics.document_empty"));
+  $("#topic-document").innerHTML = renderTopicDocumentMarkdown(detail.document || t("topics.document_empty"));
   $("#refresh-topic").disabled = false;
   $("#open-topic-rules").disabled = false;
   populateTopicEditor(detail.topic);
@@ -1709,11 +1726,20 @@ function renderTopicCandidatesInto(candidates) {
   const node = $("#topic-candidates");
   if (!node) return;
   node.innerHTML = renderTopicCandidates(candidates);
-  // Clicking a candidate jumps to the Weave Proposals tab where the diff
-  // / written content is shown before the user can accept.
+  // Clicking a thought-backed candidate creates a weave preview immediately,
+  // then opens the proposals tab where the diff / written content is shown.
   node.querySelectorAll("[data-candidate-source]").forEach((el) => {
     el.addEventListener("click", () => {
+      const thoughtId = el.dataset.candidateThought || "";
+      if (thoughtId) {
+        previewWeave(thoughtId).catch((error) => toast(error.message));
+        return;
+      }
       activateTab("topics-proposals", $("#page-topics"));
+      $("#weave-review-title").textContent = t("topics.weave_proposals_empty_title");
+      $("#weave-diff").innerHTML = `<div class="tf-empty">${escapeHTML(t("topics.candidate_archive_first"))}</div>`;
+      $("#weave-document").value = "";
+      $("#accept-weave").disabled = true;
       loadWeaveProposals(state.activeTopicId).catch((error) => toast(error.message));
     });
   });
@@ -1726,8 +1752,9 @@ function renderTopicCandidateImpact(candidate) {
     ? `<div class="topic-meta">${candidate.reasons.map((reason) => escapeHTML(reason)).join(" · ")}</div>`
     : "";
   const referenceID = candidate.thought_id || candidate.draft_id || candidate.session_id || candidate.candidate_id || "";
+  const thoughtID = candidate.thought_id || "";
   return `
-    <article class="result-item" data-candidate-source="${escapeHTML(candidate.source)}" data-candidate-id="${escapeHTML(candidate.candidate_id)}" data-candidate-ref="${escapeHTML(referenceID)}" style="cursor: pointer;">
+    <article class="result-item" data-candidate-source="${escapeHTML(candidate.source)}" data-candidate-id="${escapeHTML(candidate.candidate_id)}" data-candidate-ref="${escapeHTML(referenceID)}" data-candidate-thought="${escapeHTML(thoughtID)}" style="cursor: pointer;">
       <div class="result-row">
         <div>
           <strong>${escapeHTML(candidate.title || candidate.candidate_id || t("topics.candidates_empty"))}</strong>
@@ -1771,7 +1798,10 @@ function renderTopicMembers(members) {
     button.addEventListener("click", () => previewThought(button.dataset.previewId, { drawer: true }).catch((error) => toast(error.message)));
   });
   node.querySelectorAll("[data-basket-id]").forEach((button) => {
-    button.addEventListener("click", () => addToComposeBasket([button.dataset.basketId]));
+    button.addEventListener("click", () => {
+      addToComposeBasket([button.dataset.basketId]);
+      openComposeBasket();
+    });
   });
 }
 
@@ -3712,6 +3742,7 @@ function renderResults(response) {
         source_id: button.dataset.basketId,
         title: button.dataset.basketTitle || "",
       }], "search_result");
+      openComposeBasket();
     });
   });
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
@@ -3809,6 +3840,20 @@ function addToComposeBasket(sources, sourceType = "thought") {
   toast(t("toast.basket_add", { n: state.composeBasket.size }));
 }
 
+function openComposeBasket() {
+  navigateHash(buildRouteHash("compose", {}, { tab: "basket" }), { force: true });
+}
+
+function removeComposeBasketSource(sourceType, sourceID) {
+  const key = `${sourceType || "thought"}::${sourceID || ""}`;
+  if (!state.composeBasket.has(key)) return;
+  state.composeBasket = new Map(state.composeBasket);
+  state.composeBasket.delete(key);
+  persistBasket();
+  broadcastBasketChange();
+  renderComposeBasket();
+}
+
 function clearSearchSelection() {
   state.selectedThoughts.clear();
   renderResults({ results: state.lastResults });
@@ -3862,14 +3907,38 @@ function renderComposeBasket() {
     if (sources.length === 0) {
       tabList.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty_sources"))}</div>`;
     } else {
-      tabList.innerHTML = sources
-        .map((source) => {
-          const sourceTypeLabel = t(`compose.source_type.${source.source_type}`) || source.source_type;
-          return `<article class="result-item" data-source-type="${escapeHTML(source.source_type)}" data-source-id="${escapeHTML(source.source_id)}"><div class="result-row"><div><strong>${escapeHTML(source.title || source.source_id)}</strong><div class="topic-meta"><span class="pill">${escapeHTML(sourceTypeLabel)}</span></div></div></div></article>`;
-        })
-        .join("");
+      tabList.innerHTML = sources.map(renderComposeBasketItem).join("");
+      if (typeof tabList.querySelectorAll === "function") {
+        tabList.querySelectorAll("[data-basket-preview]").forEach((button) => {
+          button.addEventListener("click", () => previewThought(button.dataset.basketPreview, { drawer: true }).catch((error) => toast(error.message)));
+        });
+        tabList.querySelectorAll("[data-basket-remove]").forEach((button) => {
+          button.addEventListener("click", () => removeComposeBasketSource(button.dataset.sourceType, button.dataset.sourceId));
+        });
+      }
     }
   }
+}
+
+function renderComposeBasketItem(source) {
+  const sourceType = source?.source_type || "thought";
+  const sourceID = source?.source_id || "";
+  const sourceTypeLabel = t(`compose.source_type.${sourceType}`) || sourceType;
+  const title = source?.title || sourceID;
+  const canPreview = (sourceType === "thought" || sourceType === "search_result") && sourceID;
+  return `<article class="tf-basket-item" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}">
+    <div class="tf-basket-main">
+      <div class="tf-basket-title-row">
+        <strong>${escapeHTML(title)}</strong>
+        <span class="pill">${escapeHTML(sourceTypeLabel)}</span>
+      </div>
+      <div class="topic-meta">${escapeHTML(t("compose.basket_source_id"))}: <code>${escapeHTML(sourceID)}</code></div>
+    </div>
+    <div class="tf-action-row">
+      ${canPreview ? `<button class="mini-button" data-basket-preview="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("search.result.preview"))}</button>` : ""}
+      <button class="mini-button" data-basket-remove="${escapeHTML(sourceID)}" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("compose.basket_remove"))}</button>
+    </div>
+  </article>`;
 }
 
 async function previewThought(thoughtId, options = {}) {
@@ -4024,7 +4093,7 @@ async function createComposeDraft(event) {
   $("#save-compose").disabled = (draft.status || "draft") !== "draft";
   closeDrawer("compose-create-drawer");
   await loadComposeDrafts();
-  window.location.hash = "#/compose";
+  navigateHash(buildRouteHash("compose", {}, {}), { force: true });
 }
 
 async function loadComposeDrafts() {
@@ -4112,11 +4181,16 @@ async function acceptWeave() {
 }
 
 function renderComposeDraft(draft) {
-  const links = (draft.source_links || []).filter(Boolean);
-  let content = draft.content || "";
-  const missing = links.filter((link) => !content.includes(link));
-  if (missing.length === 0) return content;
-  return `${content}\n\n### Sources\n\n${missing.map((link) => `- [[${link}]]`).join("\n")}`;
+  return draft.content || "";
+}
+
+function composeTitleFromContent(content, draft = {}) {
+  const heading = String(content || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^#{1,6}\s+\S/.test(line));
+  if (heading) return heading.replace(/^#{1,6}\s+/, "").trim();
+  return String(draft.goal || "").split("\n", 1)[0].trim();
 }
 
 async function saveComposeDraft() {
@@ -4131,7 +4205,7 @@ async function saveComposeDraft() {
     method: "POST",
     body: JSON.stringify({
       content,
-      title: state.composeDraft.goal || $("#compose-goal").value.trim(),
+      title: composeTitleFromContent(content, state.composeDraft),
       tags: [],
     }),
   });
@@ -4462,13 +4536,15 @@ function bind() {
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
   $("#open-compose-create").addEventListener("click", () => openDrawer("compose-create-drawer"));
+  $("#open-compose-create-basket")?.addEventListener("click", () => openDrawer("compose-create-drawer"));
   $("#refresh-compose").addEventListener("click", () => loadComposeDrafts().catch((error) => toast(error.message)));
   $("#add-selected-compose").addEventListener("click", () => {
     addToComposeBasket(Array.from(state.selectedThoughts));
-    window.location.hash = "#/compose";
+    openComposeBasket();
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
   $("#clear-compose-basket").addEventListener("click", clearComposeBasket);
+  $("#clear-compose-basket-tab").addEventListener("click", clearComposeBasket);
   $("#drawer-add-compose").addEventListener("click", () => addToComposeBasket([state.activeThoughtId]));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));

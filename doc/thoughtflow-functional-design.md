@@ -272,7 +272,7 @@ type CaptureCommitter interface {
 1. 维护专题规则、关键词触发、语义相似度阈值。
 2. 订阅 `thought.refined` / `search.index_updated` / **`scratchpad.context_updated` / `scratchpad.committed`**：将 scratchpad 候选与正式 Thought 同时纳入匹配。
 3. **状态分层**：
-   - 正式成员 = 已 commit 的 Thought + 命中专题规则。
+   - 正式成员 = 已 commit 的 Thought + 命中专题规则 / 显式 `topic_ids` / 空规则专题的名称默认命中。
    - 候选 = 未 commit 的 scratchpad + 命中专题规则或语义近邻。
    - 冲突/待确认 = scratchpad 候选之间或与已正式成员存在矛盾（`SessionContext.Conflicts` 非空）。
 4. **智能缝合**：LLM 负责寻找合适章节插入新成员；只接受正式成员进入 `topics/<name>/index.md`。
@@ -618,11 +618,10 @@ type SearchResultSummary struct {
 
 ### 6.6 TopicCandidateImpact 投影
 
-专题候选统一使用 `TopicCandidateImpact` 表达：
+专题候选统一使用 `TopicCandidateImpact` 表达，候选区只展示尚未落入专题正文的待处理影响；已归档并已命中的 Thought 进入成员区，不再重复显示为待确认影响。
 
 - `capture_session`：未归档 Capture 会话。
 - `thought_reopen_session`：从 Thought 重新打开后的整理会话，默认归档回原 Thought，仍可显式选择另存新 Thought 或补充 Thought。
-- `thought`：已归档但未确认纳入专题的新 Thought。
 - `compose_draft`：整理草稿对专题的建议影响。
 
 候选确认只改变候选状态或触发归档/缝合流程，不直接把未确认正文写入 `topics/{slug}/index.md`。
@@ -654,6 +653,8 @@ type ComposeDraft struct {
 ```
 
 Compose 接口返回结构统一使用 `ComposeDraft`，当前阶段不保留旧 synthesis Web/API 命名。
+
+保存为 Thought 时，`ComposeDraft.Content` 作为最终整理正文写入 Thought 的 `AI Notes` section；`source_links` 统一写入 `Links` section。保存流程不得把来源列表追加到正文中的 `### Sources`，也不得生成 `Original` section；标题优先取最终正文的首个 Markdown 标题，再回退到草稿目标或来源标题。
 
 ---
 

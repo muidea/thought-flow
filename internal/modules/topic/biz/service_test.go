@@ -979,6 +979,60 @@ func TestServiceMatchScratchpadPurgesOnCommit(t *testing.T) {
 	}
 }
 
+func TestServiceMatchScratchpadPromotesCommittedCandidate(t *testing.T) {
+	root := t.TempDir()
+	ws := topicTestWorkspace(root)
+	store := topicstore.New(root)
+	scratchpads := newStubScratchpadProvider()
+	service := NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, nil, nil, scratchpads)
+	ctx := context.Background()
+
+	topic, err := service.CreateTopic(ctx, models.TopicCreateRequest{Name: "AntD"})
+	if err != nil {
+		t.Fatalf("CreateTopic() error = %v", err)
+	}
+	thought := serviceTestThought("20260622-025934-aa1470", "基于 AntD V5 的设计规范")
+	content := models.ThoughtContent{AINotes: "Ant Design V5 and antd-mobile should share design tokens."}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	scratchpads.put(scratchpad.Scratchpad{
+		SessionID:          "sp-antd",
+		CommittedThoughtID: thought.ID,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "基于 AntD V5 的设计规范",
+			CandidateSummary: "AntD V5 跨端 UI/UX 规范",
+			CandidateBody:    "Ant Design V5 and antd-mobile should share design tokens.",
+		},
+		UpdatedAt: time.Now().UTC(),
+	})
+
+	count, err := service.matchScratchpad(ctx, "sp-antd")
+	if err != nil {
+		t.Fatalf("matchScratchpad(committed) error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("promoted count = %d, want 1", count)
+	}
+	detail, err := service.GetTopic(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("GetTopic() error = %v", err)
+	}
+	if detail.Topic.MemberCount != 1 || len(detail.Members) != 1 {
+		t.Fatalf("members = %#v, topic = %#v", detail.Members, detail.Topic)
+	}
+	if detail.Members[0].ThoughtID != thought.ID {
+		t.Fatalf("member thought = %q, want %q", detail.Members[0].ThoughtID, thought.ID)
+	}
+	candidates, err := service.ListSessionCandidates(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("ListSessionCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("committed session candidates len = %d, want 0", len(candidates))
+	}
+}
+
 func TestServiceNotifyDispatchesScratchpadContextUpdated(t *testing.T) {
 	root := t.TempDir()
 	ws := topicTestWorkspace(root)
@@ -1118,7 +1172,8 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 		t.Fatalf("matchScratchpad() error = %v", err)
 	}
 
-	// And seed two thoughts that should appear as thought impacts.
+	// And seed two members. They are loaded through topic detail's
+	// member panel, not duplicated in the pending candidate impacts.
 	thoughtA := models.Thought{
 		ID:        "20260101-100000-aaaa",
 		UserTitle: "Vector search primer",
@@ -1171,8 +1226,8 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 	if sourceCount[models.TopicCandidateSourceThoughtReopen] != 1 {
 		t.Fatalf("thought_reopen_session count = %d, want 1", sourceCount[models.TopicCandidateSourceThoughtReopen])
 	}
-	if sourceCount[models.TopicCandidateSourceThought] != 2 {
-		t.Fatalf("thought count = %d, want 2", sourceCount[models.TopicCandidateSourceThought])
+	if sourceCount[models.TopicCandidateSourceThought] != 0 {
+		t.Fatalf("thought count = %d, want 0", sourceCount[models.TopicCandidateSourceThought])
 	}
 	if sourceCount[models.TopicCandidateSourceComposeDraft] != 1 {
 		t.Fatalf("compose_draft count = %d, want 1", sourceCount[models.TopicCandidateSourceComposeDraft])

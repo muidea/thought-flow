@@ -830,8 +830,8 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 
 	createBody := strings.NewReader(`{
 		"sources":[
-			{"source_type":"thought","source_id":"` + left.Thought.ID + `","title":"Vector notes"},
-			{"source_type":"thought","source_id":"` + right.Thought.ID + `","title":"Topic notes"}
+			{"source_type":"thought","source_id":"` + left.Thought.ID + `","title":"Vector notes","source_link":"` + left.Thought.Path + `"},
+			{"source_type":"thought","source_id":"` + right.Thought.ID + `","title":"Topic notes","source_link":"` + right.Thought.Path + `"}
 		],
 		"goal":"Research outline",
 		"format":"outline"
@@ -850,7 +850,7 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 	}
 
 	saveBody := strings.NewReader(`{
-		"title":"Research outline",
+		"content":"# Saved Research Outline\n\nPicked notes.\n\n### Sources\n\n- [[` + left.Thought.Path + `]]\n- [[` + right.Thought.Path + `]]",
 		"tags":["compose","outline"]
 	}`)
 	res := httptest.NewRecorder()
@@ -873,12 +873,34 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 	if !containsString(payload.Data.Thought.UserTags, "compose") || !containsString(payload.Data.Thought.UserTags, "outline") {
 		t.Fatalf("tags = %#v", payload.Data.Thought.UserTags)
 	}
-	savedThought, _, err := markdown.ReadThought(root, payload.Data.Thought.ID)
+	savedThought, savedContent, err := markdown.ReadThought(root, payload.Data.Thought.ID)
 	if err != nil {
 		t.Fatalf("ReadThought(saved) error = %v", err)
 	}
 	if savedThought.Source != models.ThoughtSourceCompose {
 		t.Fatalf("saved source = %q", savedThought.Source)
+	}
+	if savedThought.UserTitle != "Saved Research Outline" {
+		t.Fatalf("saved title = %q", savedThought.UserTitle)
+	}
+	if savedContent.Original != "" {
+		t.Fatalf("compose save should not write Original, got %q", savedContent.Original)
+	}
+	if !strings.Contains(savedContent.AINotes, "Picked notes.") || strings.Contains(savedContent.AINotes, "### Sources") {
+		t.Fatalf("AI Notes should contain body without source appendix, got %q", savedContent.AINotes)
+	}
+	if !strings.Contains(savedContent.Links, left.Thought.Path) || !strings.Contains(savedContent.Links, right.Thought.Path) {
+		t.Fatalf("Links should contain compose source links, got %q", savedContent.Links)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(savedThought.Path)))
+	if err != nil {
+		t.Fatalf("ReadFile(saved thought): %v", err)
+	}
+	if strings.Contains(string(raw), "## Original") {
+		t.Fatalf("compose thought should not render Original section:\n%s", string(raw))
+	}
+	if !strings.Contains(string(raw), "## AI Notes") || !strings.Contains(string(raw), "## Links") {
+		t.Fatalf("compose thought missing expected sections:\n%s", string(raw))
 	}
 }
 
@@ -975,17 +997,25 @@ type fakeComposeProvider struct {
 	model string
 }
 
-func (fakeComposeProvider) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
+func (p fakeComposeProvider) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
 	_ = ctx
 	now := time.Now().UTC()
+	body := p.body
+	if strings.TrimSpace(body) == "" {
+		body = "# Cloud compose draft\n\nGenerated from provider."
+	}
+	model := p.model
+	if strings.TrimSpace(model) == "" {
+		model = "fake-cloud"
+	}
 	return models.SynthesisDraft{
 		ID:          models.NewJobID("compose", now),
 		ThoughtIDs:  req.ThoughtIDs,
 		Goal:        req.Goal,
 		Format:      req.Format,
-		Content:     "# Cloud compose draft\n\nGenerated from provider.",
+		Content:     body,
 		SourceLinks: req.SourceLinks,
-		Model:       "fake-cloud",
+		Model:       model,
 		Status:      "draft",
 		CreatedAt:   now,
 		UpdatedAt:   now,

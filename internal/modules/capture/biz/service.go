@@ -132,7 +132,10 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		TopicStatus:   models.TopicStatusUnmatched,
 	}
 	thought.DisplayTitle = displayTitle(thought, original)
-	content := models.ThoughtContent{AINotes: original}
+	content := models.ThoughtContent{
+		AINotes: original,
+		Links:   renderLinks(cmd.Links),
+	}
 
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.CaptureResult{}, err
@@ -568,6 +571,18 @@ func normalizeList(values []string) []string {
 		ret = append(ret, value)
 	}
 	return ret
+}
+
+func renderLinks(values []string) string {
+	links := normalizeList(values)
+	if len(links) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(links))
+	for _, link := range links {
+		lines = append(lines, "- [["+link+"]]")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func displayTitle(thought models.Thought, original string) string {

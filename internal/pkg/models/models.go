@@ -193,6 +193,7 @@ type CaptureCommand struct {
 	Tags       []string `json:"tags"`
 	TopicHints []string `json:"topic_hints"`
 	Source     string   `json:"source"`
+	Links      []string `json:"links,omitempty"`
 }
 
 // ThoughtPatchRequest is the body of PATCH /api/thoughts/:id. Pointer

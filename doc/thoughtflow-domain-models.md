@@ -303,6 +303,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 1. 对单条 Thought 计算是否命中。
 2. 返回命中原因和各项分数。
 3. 支持规则变更后全量重算。
+4. 当关键词、标签、语义、手动包含/排除均为空时，专题名称 / ID / slug 作为默认关键词参与命中，保证简化创建的专题仍有可重建匹配口径。
 
 ### 3.9 TopicMembership
 
@@ -327,7 +328,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 2. 支持用户接受或排除。
 3. 支持专题重组后重算。
 4. 为专题文档 source link 提供依据。
-5. 自动命中关系可从规则、Thought 和索引重建；用户手动接受、排除、固定包含必须写入 membership 事实文件，专题规则仍写入 `topic.yaml`。
+5. 自动命中关系可从规则、Thought `topic_ids` 和索引重建；用户手动接受、排除、固定包含必须写入 membership 事实文件，专题规则仍写入 `topic.yaml`。
 
 ### 3.10 TopicCandidateImpact
 
@@ -338,7 +339,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `topic_id` | string | 专题 ID |
-| `source_type` | enum | `capture_session`、`thought_reopen_session`、`thought`、`compose_draft` |
+| `source_type` | enum | `capture_session`、`thought_reopen_session`、`compose_draft` |
 | `source_id` | string | 来源 ID |
 | `title` | string | 候选标题 |
 | `summary` | string | 候选摘要 |
@@ -351,8 +352,8 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 功能定义：
 
-1. 汇总未归档会话、Thought 重新整理会话、新 Thought 和 Compose 草稿的专题影响。
-2. 支持用户确认纳入、忽略、打开来源或生成 weave 预览。
+1. 汇总未归档会话、Thought 重新整理会话和 Compose 草稿的专题影响。
+2. 支持用户确认纳入、忽略、打开来源；已归档 Thought 的 weave 预览从成员区或搜索结果入口触发。
 3. 规则刷新时自动重算候选影响，但不直接改写专题正文。
 
 ## 4. 派生分析模型
@@ -810,8 +811,9 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 必须校验：
 
 1. 来源必须能回跳到 Thought、Topic、Search 或 Capture 会话。
-2. 保存为 Thought 时必须保留来源链接。
+2. 保存为 Thought 时必须保留来源链接，且来源链接进入 `Links` section，不能混入 `AI Notes` 正文。
 3. 草稿保存后不得覆盖来源 Thought。
+4. Compose 保存生成的 Thought 不应包含 `Original` section，最终整理正文只进入 `AI Notes`。
 
 ### 7.6 git-sync
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -316,9 +317,6 @@ func (s *Service) ListSessionCandidates(ctx context.Context, topicID string) ([]
 //     "reopen"; today there is no separate reopen state, so the
 //     same candidate list is rendered with the reopen source label
 //     and the candidate's status field is left to the caller.
-//   - thought: each member of the topic, in topic.Members order,
-//     is exposed as an impact so the Web can show a "currently
-//     associated thoughts" panel.
 //   - compose_draft: unsaved compose drafts that mention or source
 //     the topic, sourced through the injected compose draft provider.
 //
@@ -359,18 +357,6 @@ func (s *Service) ListCandidates(ctx context.Context, topicID string) ([]models.
 				UpdatedAt:   session.UpdatedAt,
 			})
 		}
-	}
-	for _, thoughtID := range topic.Members {
-		candidates = append(candidates, models.TopicCandidateImpact{
-			Source:      models.TopicCandidateSourceThought,
-			CandidateID: thoughtID,
-			ThoughtID:   thoughtID,
-			Title:       thoughtID,
-			MatchType:   "member",
-			Score:       1,
-			Status:      "member",
-			UpdatedAt:   topic.UpdatedAt,
-		})
 	}
 	candidates = append(candidates, s.composeDraftCandidates(ctx, topic)...)
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -637,8 +623,14 @@ func (s *Service) matchScratchpad(ctx context.Context, sessionID string) (int, e
 		return 0, err
 	}
 	if sp.CommittedThoughtID != "" {
-		_ = s.removeSessionFromAllCandidateLists(ctx, sessionID)
-		return 0, nil
+		count, err := s.promoteCommittedScratchpad(ctx, sp)
+		if err != nil {
+			return count, err
+		}
+		if err := s.removeSessionFromAllCandidateLists(ctx, sessionID); err != nil {
+			return count, err
+		}
+		return count, nil
 	}
 	topics, err := s.store.List(ctx)
 	if err != nil {
@@ -657,6 +649,53 @@ func (s *Service) matchScratchpad(ctx context.Context, sessionID string) (int, e
 			return count, err
 		}
 		count++
+	}
+	return count, nil
+}
+
+func (s *Service) promoteCommittedScratchpad(ctx context.Context, sp scratchpad.Scratchpad) (int, error) {
+	thoughtID := strings.TrimSpace(sp.CommittedThoughtID)
+	if thoughtID == "" {
+		return 0, nil
+	}
+	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, topic := range topics {
+		candidate, matched := s.buildSessionCandidate(ctx, sp, topic)
+		if !matched || !topic.AutoWeave {
+			continue
+		}
+		now := time.Now().UTC()
+		membership := models.TopicMembership{
+			TopicID:   topic.ID,
+			ThoughtID: thought.ID,
+			MatchType: candidate.MatchType,
+			Score:     candidate.Score,
+			Reasons:   append([]string(nil), candidate.Reasons...),
+			Status:    "accepted",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		updatedTopic, changed, err := s.store.AddMembership(ctx, topic, thought, content, membership)
+		if err != nil {
+			return count, err
+		}
+		count++
+		if changed {
+			observability.IncrementTopicWeave()
+			eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
+			eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
+		}
 	}
 	return count, nil
 }
@@ -766,6 +805,15 @@ func sessionKeywordScore(topic models.Topic, sp scratchpad.Scratchpad) (float64,
 		if keyword != "" && strings.Contains(searchText, keyword) {
 			reasons = append(reasons, "keyword:"+keyword)
 			score += 0.4
+		}
+	}
+	if topicRulesEmpty(topic.Rules) {
+		for _, keyword := range defaultTopicKeywords(topic) {
+			if containsTopicKeyword(searchText, keyword) {
+				reasons = append(reasons, "topic:"+keyword)
+				score += 0.4
+				break
+			}
 		}
 	}
 	for _, expected := range topic.Rules.Tags.Any {
@@ -880,6 +928,28 @@ func containsStringFold(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func topicRulesEmpty(rules models.TopicRule) bool {
+	return len(rules.Keywords.Any) == 0 &&
+		len(rules.Keywords.All) == 0 &&
+		len(rules.Keywords.Exclude) == 0 &&
+		len(rules.Tags.Any) == 0 &&
+		len(rules.ManualInclude) == 0 &&
+		len(rules.ManualExclude) == 0 &&
+		!rules.Semantic.Enabled
+}
+
+func defaultTopicKeywords(topic models.Topic) []string {
+	return uniqueStrings([]string{topic.Name, topic.ID, topic.Slug})
+}
+
+func containsTopicKeyword(searchText, keyword string) bool {
+	keyword = strings.TrimSpace(strings.ToLower(keyword))
+	if keyword == "" {
+		return false
+	}
+	return strings.Contains(searchText, keyword)
 }
 
 func extractSessionID(payload any) string {

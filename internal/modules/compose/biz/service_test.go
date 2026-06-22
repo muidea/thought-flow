@@ -414,11 +414,47 @@ func TestServiceSaveDraftDefaultTitleAndTags(t *testing.T) {
 	if len(sink.calls) != 1 {
 		t.Fatalf("calls = %d", len(sink.calls))
 	}
-	if sink.calls[0].Title != "Make an outline" {
+	if sink.calls[0].Title != "Compose" {
 		t.Fatalf("title = %q", sink.calls[0].Title)
 	}
 	if len(sink.calls[0].Tags) == 0 || sink.calls[0].Tags[0] != "compose" {
 		t.Fatalf("tags = %v", sink.calls[0].Tags)
+	}
+}
+
+func TestServiceSaveDraftKeepsSourcesOutOfBodyAndPassesLinks(t *testing.T) {
+	svc, sink, _ := newTestService(t)
+	root := svc.workspace.RootPath
+	writeThought(t, root, "20260609-0001-aaaa", "Seed", "body")
+	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{{
+			SourceType: models.ComposeSourceTypeThought,
+			SourceID:   "20260609-0001-aaaa",
+			Title:      "Seed",
+			SourceLink: "thoughts/2026/06/20260609-0001-aaaa.md",
+		}},
+		Goal: "Make an outline",
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	_, err = svc.SaveDraft(context.Background(), draft.ID, models.ComposeSaveRequest{
+		Content: "# Final Compose\n\nBody.\n\n### Sources\n\n- [[thoughts/2026/06/20260609-0001-aaaa.md]]",
+	})
+	if err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if len(sink.calls) != 1 {
+		t.Fatalf("calls = %d", len(sink.calls))
+	}
+	if strings.Contains(sink.calls[0].Content, "### Sources") {
+		t.Fatalf("source appendix should be stripped from content: %q", sink.calls[0].Content)
+	}
+	if sink.calls[0].Title != "Final Compose" {
+		t.Fatalf("title = %q", sink.calls[0].Title)
+	}
+	if len(sink.calls[0].Links) != 1 || sink.calls[0].Links[0] != "thoughts/2026/06/20260609-0001-aaaa.md" {
+		t.Fatalf("links = %v", sink.calls[0].Links)
 	}
 }
 

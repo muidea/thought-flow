@@ -670,6 +670,115 @@ p {
   margin-top: 5px;
 }
 
+.tf-topic-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 12px;
+  align-items: start;
+}
+
+.tf-topic-document {
+  min-height: 520px;
+  max-height: calc(100vh - 260px);
+}
+
+.tf-topic-side-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tf-topic-members,
+.tf-topic-candidates {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+  padding: 10px;
+}
+
+.tf-topic-members {
+  display: grid;
+  gap: 8px;
+}
+
+.tf-topic-candidates .tf-card-header {
+  margin-bottom: 10px;
+}
+
+.tf-topic-candidates .approval-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tf-topic-members .result-item,
+.tf-topic-candidates .result-item,
+.tf-topic-members .result-row,
+.tf-topic-candidates .result-row,
+.tf-topic-members .result-row > div,
+.tf-topic-candidates .result-row > div {
+  width: 100%;
+  min-width: 0;
+}
+
+.tf-topic-members .result-row,
+.tf-topic-candidates .result-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tf-topic-members .score-line,
+.tf-topic-candidates .score-line {
+  width: 100%;
+}
+
+.tf-basket-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tf-basket-toolbar {
+  align-items: center;
+}
+
+.tf-basket-toolbar > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.tf-basket-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px;
+}
+
+.tf-basket-main,
+.tf-basket-title-row {
+  min-width: 0;
+}
+
+.tf-basket-title-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tf-basket-title-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tf-basket-item .tf-action-row {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
 .capture-strip {
   margin-bottom: 16px;
 }
@@ -1074,10 +1183,16 @@ textarea.markdown-preview {
   .app-shell,
   .main-grid,
   .capture-form,
+  .tf-topic-detail-layout,
   .tf-capture-workbench,
   .tf-diff-columns,
   .search-form {
     grid-template-columns: 1fr;
+  }
+
+  .tf-topic-document {
+    min-height: 360px;
+    max-height: none;
   }
 
   .sidebar,
@@ -1403,10 +1518,16 @@ textarea.markdown-preview {
 
   .tf-stat-grid,
   .tf-two-column,
+  .tf-topic-detail-layout,
   .tf-page .capture-form,
   .tf-page .search-form,
   .tf-filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tf-topic-document {
+    min-height: 360px;
+    max-height: none;
   }
 
   .tf-description-list dl,

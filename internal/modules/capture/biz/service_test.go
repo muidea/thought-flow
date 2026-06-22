@@ -41,6 +41,7 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 		Content: "Remember to design from the source markdown first.",
 		Title:   "Design note",
 		Tags:    []string{"design", "design"},
+		Links:   []string{"thoughts/source.md", "thoughts/source.md"},
 	})
 	if err != nil {
 		t.Fatalf("Capture() error = %v", err)
@@ -68,6 +69,9 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	if snapshot.Content.AINotes != "Remember to design from the source markdown first." {
 		t.Fatalf("ai notes = %q", snapshot.Content.AINotes)
 	}
+	if snapshot.Content.Links != "- [[thoughts/source.md]]" {
+		t.Fatalf("links = %q", snapshot.Content.Links)
+	}
 	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(result.Thought.Path)))
 	if err != nil {
 		t.Fatalf("ReadFile markdown: %v", err)
@@ -77,6 +81,9 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "## AI Notes") {
 		t.Fatalf("capture should render AI Notes section:\n%s", string(raw))
+	}
+	if !strings.Contains(string(raw), "## Links") {
+		t.Fatalf("capture should render Links section:\n%s", string(raw))
 	}
 }
 
