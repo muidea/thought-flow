@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -413,6 +414,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 	if !hasSessionContext(contextBase.SessionContext) {
 		contextBase.SessionContext = req.ExistingContext
 	}
+	result = preserveLatestUserTurns(result, latest.Messages)
 	_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
 }
 
@@ -548,6 +550,185 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		ArchiveIntent:     normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
 		ArchiveStrategy:   normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
 	}
+}
+
+func preserveLatestUserTurns(result ai.CaptureContextResult, messages []scratchpad.Message) ai.CaptureContextResult {
+	for _, turn := range latestUserTurns(messages) {
+		if lowSignalCaptureTurn(turn) || captureTurnCovered(result, turn) {
+			continue
+		}
+		if likelyConflictingCaptureTurn(turn) {
+			conflict := "最新提交可能与既有整理存在冲突或变更，需要确认：" + turn
+			result.Conflicts = mergeContextStrings(result.Conflicts, []string{conflict})
+			result.CandidateSummary = appendCaptureContextSection(result.CandidateSummary, "需确认的冲突/变更", []string{conflict})
+			result.CandidateBody = appendCaptureContextSection(result.CandidateBody, "需确认的冲突/变更", []string{conflict})
+			continue
+		}
+		fact := "用户补充：" + turn
+		result.ConfirmedFacts = mergeContextStrings(result.ConfirmedFacts, []string{fact})
+		result.CandidateSummary = appendCaptureContextSection(result.CandidateSummary, "待整合信息", []string{fact})
+		result.CandidateBody = appendCaptureContextSection(result.CandidateBody, "待整合信息", []string{fact})
+	}
+	return result
+}
+
+func latestUserTurns(messages []scratchpad.Message) []string {
+	start := 0
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(messages[idx].Role) == "ai" {
+			start = idx + 1
+			break
+		}
+	}
+	out := []string{}
+	for _, msg := range messages[start:] {
+		if strings.TrimSpace(msg.Role) != "user" {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func captureTurnCovered(result ai.CaptureContextResult, turn string) bool {
+	available := strings.Join([]string{
+		result.Topic,
+		result.Goal,
+		strings.Join(result.ConfirmedFacts, "\n"),
+		strings.Join(result.OpenQuestions, "\n"),
+		strings.Join(result.Conflicts, "\n"),
+		result.CandidateTitle,
+		strings.Join(result.CandidateTags, "\n"),
+		result.CandidateSummary,
+		result.CandidateBody,
+	}, "\n")
+	available = normalizeCaptureCoverageText(available)
+	turnText := normalizeCaptureCoverageText(turn)
+	if turnText == "" || strings.Contains(available, turnText) {
+		return true
+	}
+	anchors := captureCoverageAnchors(turnText)
+	if len(anchors) == 0 {
+		return true
+	}
+	hits := 0
+	for _, anchor := range anchors {
+		if strings.Contains(available, anchor) {
+			hits++
+		}
+	}
+	required := (len(anchors) + 3) / 4
+	if required < 1 {
+		required = 1
+	}
+	if required > 3 {
+		required = 3
+	}
+	return hits >= required
+}
+
+var captureLatinTokenRE = regexp.MustCompile(`[a-z0-9][a-z0-9+._-]*`)
+var captureCJKRE = regexp.MustCompile(`[\p{Han}]{2,}`)
+
+func normalizeCaptureCoverageText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacements := map[string]string{
+		"golang":  "go",
+		"node.js": "nodejs",
+		"node js": "nodejs",
+	}
+	for old, next := range replacements {
+		value = strings.ReplaceAll(value, old, next)
+	}
+	return value
+}
+
+func captureCoverageAnchors(value string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(anchor string) {
+		anchor = strings.TrimSpace(anchor)
+		if anchor == "" || captureCoverageStopAnchor(anchor) {
+			return
+		}
+		if _, exists := seen[anchor]; exists {
+			return
+		}
+		seen[anchor] = struct{}{}
+		out = append(out, anchor)
+	}
+	for _, token := range captureLatinTokenRE.FindAllString(value, -1) {
+		if len(token) >= 2 {
+			add(token)
+		}
+	}
+	for _, run := range captureCJKRE.FindAllString(value, -1) {
+		runes := []rune(run)
+		if len(runes) == 2 {
+			add(run)
+			continue
+		}
+		for idx := 0; idx+2 <= len(runes); idx++ {
+			add(string(runes[idx : idx+2]))
+		}
+	}
+	return out
+}
+
+func captureCoverageStopAnchor(anchor string) bool {
+	switch anchor {
+	case "使用", "需要", "要求", "进行", "继续", "当前", "内容", "信息", "整理", "补充", "这个", "那个", "方式", "开发":
+		return true
+	default:
+		return false
+	}
+}
+
+func lowSignalCaptureTurn(turn string) bool {
+	compact := compactText(turn)
+	switch compact {
+	case "整理", "继续", "继续整理", "收口", "保存", "归档", "提交", "确认", "好的", "是的":
+		return true
+	default:
+		return len([]rune(compact)) <= 2
+	}
+}
+
+func likelyConflictingCaptureTurn(turn string) bool {
+	lower := strings.ToLower(turn)
+	for _, marker := range []string{
+		"不是", "不再", "不要", "不能", "取消", "改成", "改为", "调整为", "替换", "覆盖", "冲突", "相反", "而是", "instead",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendCaptureContextSection(body, title string, items []string) string {
+	items = trimNonEmpty(items)
+	if len(items) == 0 {
+		return strings.TrimSpace(body)
+	}
+	body = strings.TrimSpace(body)
+	var builder strings.Builder
+	if body != "" {
+		builder.WriteString(body)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("**")
+	builder.WriteString(title)
+	builder.WriteString("**\n")
+	for _, item := range items {
+		builder.WriteString("- ")
+		builder.WriteString(item)
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func firstNonEmptyString(values ...string) string {

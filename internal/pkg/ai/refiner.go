@@ -666,6 +666,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 		systemPrompt,
 		"Session ID: "+req.SessionID+
 			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
+			"\n\nLatest user turns that must be preserved or reconciled:\n"+renderLatestCaptureUserTurns(req.Messages)+
 			"\n\nConversation:\n"+renderCaptureContextMessages(req.Messages)+
 			"\n\nAccumulated user content:\n"+text,
 		0.2,
@@ -1159,6 +1160,34 @@ func renderCaptureContextMessages(messages []CaptureContextMessage) string {
 			continue
 		}
 		parts = append(parts, firstNonEmpty(msg.Role, "user")+": "+text)
+	}
+	if len(parts) == 0 {
+		return "(empty)"
+	}
+	return strings.Join(parts, "\n")
+}
+
+func renderLatestCaptureUserTurns(messages []CaptureContextMessage) string {
+	if len(messages) == 0 {
+		return "(empty)"
+	}
+	start := 0
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(messages[idx].Role) == "ai" {
+			start = idx + 1
+			break
+		}
+	}
+	parts := []string{}
+	for _, msg := range messages[start:] {
+		if strings.TrimSpace(msg.Role) != "user" {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, "- "+text)
 	}
 	if len(parts) == 0 {
 		return "(empty)"

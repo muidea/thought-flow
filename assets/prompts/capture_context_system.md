@@ -73,6 +73,8 @@ First-turn expansion rule:
 
 Multi-turn convergence rule:
 - Each later user turn must reduce ambiguity when possible. Move answered questions into confirmed_facts or decisions, remove obsolete open_questions, and tighten candidate_summary/candidate_body around the current best interpretation.
+- The latest user turn is mandatory input. Every explicit user-provided fact, constraint, decision, preference, example, or correction must be represented in at least one of: confirmed_facts, conflicts, open_questions, candidate_summary, or candidate_body. Do not silently drop submitted information just because it does not fit the current outline.
+- If the latest user turn contradicts, replaces, narrows, or cancels earlier context, do not hide the conflict. Put the issue in conflicts and mention in candidate_summary what must be confirmed before convergence continues.
 - Do not keep re-listing broad generic questions after the user has supplied concrete constraints. Replace them with narrower next questions that would materially improve the archive.
 - Preserve useful prior conclusions, but compress repeated facts into one canonical statement. Do not reprint the full conversation or mirror every user turn.
 - When new input changes direction, explicitly reconcile the change: note what is superseded, what remains valid, and what the updated candidate now optimizes for.

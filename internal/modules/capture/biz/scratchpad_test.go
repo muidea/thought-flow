@@ -208,6 +208,78 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	}
 }
 
+func TestScratchpadServiceAppendMessagePreservesUncoveredUserTurn(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateSummary: "LLM summary without latest details",
+			CandidateBody:    "LLM body without latest details",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+	)
+
+	latest := "使用 Golang 开发语言，文件方式进行数据存储"
+	if _, err := svc.AppendMessage("s1", "user", latest); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return strings.Contains(sp.SessionContext.CandidateSummary, "待整合信息")
+	})
+	if !containsStrings(sp.SessionContext.ConfirmedFacts, "用户补充："+latest) {
+		t.Fatalf("ConfirmedFacts should preserve latest user turn, got %+v", sp.SessionContext.ConfirmedFacts)
+	}
+	if !strings.Contains(sp.SessionContext.CandidateSummary, latest) || !strings.Contains(sp.SessionContext.CandidateBody, latest) {
+		t.Fatalf("latest turn not preserved in summary/body:\nsummary=%s\nbody=%s", sp.SessionContext.CandidateSummary, sp.SessionContext.CandidateBody)
+	}
+	if !strings.Contains(sp.Messages[len(sp.Messages)-1].Text, latest) {
+		t.Fatalf("AI reply should surface preserved latest turn, got %+v", sp.Messages)
+	}
+}
+
+func TestScratchpadServiceAppendMessageSurfacesUncoveredConflictTurn(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID: "s1",
+		SessionContext: scratchpad.SessionContext{
+			ConfirmedFacts:   []string{"使用 Golang 开发"},
+			CandidateSummary: "当前按 Golang 收敛",
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateSummary: "LLM summary without conflict",
+			CandidateBody:    "LLM body without conflict",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+	)
+
+	latest := "改成 Python，不再使用 Golang"
+	if _, err := svc.AppendMessage("s1", "user", latest); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return strings.Contains(sp.SessionContext.CandidateSummary, "需确认的冲突/变更")
+	})
+	if len(sp.SessionContext.Conflicts) == 0 || !strings.Contains(strings.Join(sp.SessionContext.Conflicts, "\n"), latest) {
+		t.Fatalf("Conflicts should preserve latest conflict turn, got %+v", sp.SessionContext.Conflicts)
+	}
+	if !strings.Contains(sp.SessionContext.CandidateSummary, latest) {
+		t.Fatalf("conflict not surfaced in summary:\n%s", sp.SessionContext.CandidateSummary)
+	}
+}
+
 func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *testing.T) {
 	store := newMemoryScratchpad()
 	if _, err := store.Save(scratchpad.Scratchpad{
@@ -221,7 +293,7 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 	}
 	provider := &stubCaptureContextProvider{result: ai.CaptureContextResult{
 		CandidateTitle:   "new title",
-		CandidateSummary: "new summary",
+		CandidateSummary: "new summary for follow-up note",
 		ArchiveIntent:    "none",
 		ArchiveStrategy:  "new",
 	}}
@@ -253,12 +325,12 @@ func TestScratchpadServiceAppendMessageKeepsPendingUntilProviderCompletes(t *tes
 
 	hub.DispatchAll()
 	sp = waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
-		return sp.SessionContext.CandidateSummary == "new summary"
+		return sp.SessionContext.CandidateSummary == "new summary for follow-up note"
 	})
-	if sp.SessionContext.CandidateTitle != "new title" || sp.SessionContext.CandidateSummary != "new summary" {
+	if sp.SessionContext.CandidateTitle != "new title" || sp.SessionContext.CandidateSummary != "new summary for follow-up note" {
 		t.Fatalf("SessionContext = %+v", sp.SessionContext)
 	}
-	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" || sp.Messages[1].Text != "new summary" {
+	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" || sp.Messages[1].Text != "new summary for follow-up note" {
 		t.Fatalf("Messages = %+v", sp.Messages)
 	}
 	if hub.Count(models.EventScratchpadContextUpdated) != 1 {
@@ -375,7 +447,7 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 		result: ai.CaptureContextResult{
 			CandidateTitle:   "new title",
 			CandidateTags:    []string{"new-tag"},
-			CandidateSummary: "new summary",
+			CandidateSummary: "new summary for follow-up note",
 			ConfirmedFacts:   []string{"new fact"},
 			SourceLinks:      []string{"https://new.example"},
 		},
@@ -389,12 +461,12 @@ func TestScratchpadServiceAppendMessagePreservesExistingContextWhenProviderRetur
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
-		return sp.SessionContext.CandidateSummary == "new summary"
+		return sp.SessionContext.CandidateSummary == "new summary for follow-up note"
 	})
 	if sp.SessionContext.CandidateTitle != "new title" {
 		t.Fatalf("CandidateTitle = %q", sp.SessionContext.CandidateTitle)
 	}
-	if sp.SessionContext.CandidateSummary != "new summary" {
+	if sp.SessionContext.CandidateSummary != "new summary for follow-up note" {
 		t.Fatalf("CandidateSummary = %q", sp.SessionContext.CandidateSummary)
 	}
 	if !containsStrings(sp.SessionContext.ConfirmedFacts, "old fact", "new fact") {

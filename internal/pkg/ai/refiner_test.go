@@ -370,7 +370,12 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 	}, appconfig.EmbeddingConfig{})
 	result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{
 		SessionID: "s1",
-		Content:   "整理一个主题方向",
+		Content:   "整理一个主题方向\n\n第一轮内容\n\n第二轮补充",
+		Messages: []CaptureContextMessage{
+			{Role: "user", Text: "第一轮内容"},
+			{Role: "ai", Text: "第一轮整理"},
+			{Role: "user", Text: "第二轮补充"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("BuildCaptureContext() error = %v", err)
@@ -380,6 +385,9 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 	}
 	if !strings.Contains(requestBody, customPrompt) {
 		t.Fatalf("request body does not contain configured prompt:\n%s", requestBody)
+	}
+	if !strings.Contains(requestBody, "Latest user turns that must be preserved or reconciled") || !strings.Contains(requestBody, "第二轮补充") {
+		t.Fatalf("request body should highlight latest user turns:\n%s", requestBody)
 	}
 	if strings.Contains(requestBody, "You maintain ThoughtFlow capture session context") {
 		t.Fatalf("request body should not contain default prompt when a prompt file is configured:\n%s", requestBody)
@@ -439,6 +447,11 @@ func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T)
 		"初步推断",
 		"Multi-turn convergence rule",
 		"reduce ambiguity",
+		"The latest user turn is mandatory input",
+		"must be represented in at least one of",
+		"Do not silently drop submitted information",
+		"contradicts, replaces, narrows, or cancels earlier context",
+		"Put the issue in conflicts",
 		"remove obsolete open_questions",
 		"Only when archive_intent is \"llm\"",
 		"complete formal Thought document",
