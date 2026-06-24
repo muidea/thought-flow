@@ -33,6 +33,7 @@ import (
 	"thoughtflow/internal/pkg/searchdb"
 	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/topicstore"
+	webassets "thoughtflow/web"
 )
 
 func TestHandleWebServesEmbeddedIndex(t *testing.T) {
@@ -123,6 +124,24 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	}
 }
 
+func TestHandleWebServesSiteIcon(t *testing.T) {
+	service := &Service{}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/assets/ThoughtFlow.png", nil)
+
+	service.handleWeb(context.Background(), res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d", res.Code)
+	}
+	if contentType := res.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if body := res.Body.Bytes(); len(body) < 8 || string(body[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("expected PNG body")
+	}
+}
+
 // TestHandleWebRoutesCoverEveryEmbeddedAsset is a regression guard: every
 // file under web/ in the embed FS must be reachable through handleWeb.
 // When a new JS/CSS/HTML file is added under web/i18n/, web/vendor/,
@@ -135,11 +154,11 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 func TestHandleWebRoutesCoverEveryEmbeddedAsset(t *testing.T) {
 	service := &Service{}
 	var missing []string
-	err := fs.WalkDir(webAssets, "web", func(path string, d fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(webassets.Assets, ".", func(assetPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		urlPath := "/" + strings.TrimPrefix(path, "web")
+		urlPath := "/" + strings.TrimPrefix(assetPath, ".")
 		res := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, urlPath, nil)
 		service.handleWeb(context.Background(), res, req)

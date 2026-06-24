@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,10 +33,8 @@ import (
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/workspace"
+	webassets "thoughtflow/web"
 )
-
-//go:embed web/*
-var webAssets embed.FS
 
 type Service struct {
 	registry         engine.RouteRegistry
@@ -134,6 +131,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/i18n/en-US.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.min.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/assets/ThoughtFlow.png", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/api/thoughts", engine.GET, s.handleListThoughts)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)
@@ -192,7 +190,7 @@ func (s *Service) handleWeb(ctx context.Context, res http.ResponseWriter, req *h
 		http.NotFound(res, req)
 		return
 	}
-	raw, err := webAssets.ReadFile(path.Join("web", filePath))
+	raw, err := webassets.Assets.ReadFile(filePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		http.NotFound(res, req)
 		return
@@ -208,6 +206,8 @@ func (s *Service) handleWeb(ctx context.Context, res http.ResponseWriter, req *h
 		res.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	case ".LICENSE":
 		res.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	case ".png":
+		res.Header().Set("Content-Type", "image/png")
 	default:
 		res.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}

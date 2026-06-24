@@ -23,7 +23,7 @@
 
 ### 2.1 技术约束
 
-1. 继续使用 `internal/modules/application/thoughtflow/service/web/index.html`、`styles.css`、`app.js`。
+1. 继续使用根目录 `web/index.html`、`web/styles.css`、`web/app.js`。
 2. 不新增前端构建链。
 3. 不引入 AntD 运行时依赖；仅复刻 AntD 风格 token、布局、表单、按钮、Tabs、Table、Drawer、Modal 等样式与行为。
 4. 继续使用 vendored `markdown-it` 做 Markdown 渲染。

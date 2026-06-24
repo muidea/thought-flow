@@ -4,8 +4,8 @@ GO ?= go
 NODE ?= node
 BINARY ?= ./thoughtflow
 GO_PACKAGES := ./...
-WEB_DIR := internal/modules/application/thoughtflow/service/web
-GO_FILES := $(shell find cmd internal -name '*.go' -type f)
+WEB_DIR := web
+GO_FILES := $(shell find cmd internal web -name '*.go' -type f)
 # DuckDB ships as a static archive (libduckdb_static.a) under
 # vendor/github.com/duckdb/duckdb-go-bindings/lib/<goos>-<goarch>/ and is
 # linked directly into the thoughtflow binary on every supported
@@ -79,7 +79,7 @@ LIBSTDCPP_FALLBACK_LDFLAGS = $(shell \
 help:
 	@printf '%s\n' \
 		'Targets:' \
-		'  fmt              Format Go files under cmd/ and internal/' \
+		'  fmt              Format Go files under cmd/, internal/, and web/' \
 		'  fmt-check        Verify Go formatting without changing files' \
 		'  test             Run Go tests (DuckDB is the only backing store)' \
 		'  build            Build the thoughtflow binary (statically links DuckDB)' \

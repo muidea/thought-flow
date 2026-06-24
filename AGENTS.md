@@ -4,7 +4,7 @@
 
 ThoughtFlow is a Go 1.24 local-first service with a single binary entry point in `cmd/thoughtflow`. Domain modules live under `internal/modules`, with the HTTP/UI application in `internal/modules/application/thoughtflow` and feature modules such as `capture`, `expander`, `refiner`, `search`, `topic`, and `git_sync`. Shared libraries are in `internal/pkg`, including config, stores, markdown, event streaming, search, AI helpers, and workspace utilities.
 
-Embedded web assets and browser-facing tests are in `internal/modules/application/thoughtflow/service/web`. Product and implementation docs are in `doc`, CI workflows are in `.github/workflows`, and vendored Go dependencies are kept in `vendor`.
+Embedded web assets and browser-facing tests are in root-level `web/`. Product and implementation docs are in `doc`, CI workflows are in `.github/workflows`, and vendored Go dependencies are kept in `vendor`.
 
 ## Build, Test, and Development Commands
 
@@ -26,7 +26,7 @@ Run locally with `make build` then `./thoughtflow`; the default UI is `http://12
 
 Use standard Go formatting and idioms; keep package names short, lowercase, and purpose-driven. Place new reusable code in `internal/pkg/<name>` and feature-specific business logic in the matching `internal/modules/<feature>/biz` package. Go tests should sit beside the code as `*_test.go`.
 
-For web code, keep plain JavaScript, CSS, HTML, and i18n files in the existing `service/web` layout. When adding visible UI strings, update both `i18n/en-US.js` and `i18n/zh-CN.js` and keep keys centralized in `i18n/keys.js`.
+For web code, keep plain JavaScript, CSS, HTML, and i18n files in the root-level `web/` layout. When adding visible UI strings, update both `i18n/en-US.js` and `i18n/zh-CN.js` and keep keys centralized in `i18n/keys.js`.
 
 ## Testing Guidelines
 

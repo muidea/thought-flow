@@ -359,34 +359,34 @@ PR4 完成后手动验收：
 
 ### PR1
 
-- 改 `service/web/i18n/zh-CN.js`（§7.1 删除 + §7.2 新增 + §7.3 改值）
-- 改 `service/web/i18n/en-US.js`（同上）
-- 改 `service/web/index.html`（sidebar 6 项 + 齿轮按钮 + icon inline SVG）
-- 改 `service/web/app.js`（sidebar 渲染、正式 route、齿轮入口）
-- 改 `service/web/styles.css`（sidebar 节奏、齿轮按钮、icon 尺寸）
-- 改 `service/web/app.test.js`（i18n 改值、正式 route、key 完整性）
-- 改 `service/web/app.browser.test.js`（zh-CN / en-US 下 sidebar 文案 + 正式 route）
+- 改 `web/i18n/zh-CN.js`（§7.1 删除 + §7.2 新增 + §7.3 改值）
+- 改 `web/i18n/en-US.js`（同上）
+- 改 `web/index.html`（sidebar 6 项 + 齿轮按钮 + icon inline SVG）
+- 改 `web/app.js`（sidebar 渲染、正式 route、齿轮入口）
+- 改 `web/styles.css`（sidebar 节奏、齿轮按钮、icon 尺寸）
+- 改 `web/app.test.js`（i18n 改值、正式 route、key 完整性）
+- 改 `web/app.browser.test.js`（zh-CN / en-US 下 sidebar 文案 + 正式 route）
 
 ### PR2
 
-- 改 `service/web/index.html`（删除 #page-topic-detail / #page-topic-review / #page-synthesis，新增 #page-compose + 各 tab 结构）
-- 改 `service/web/app.js`（tab 切换状态、renderTopicsTabs、renderNotesTabs、renderComposeTabs）
-- 改 `service/web/styles.css`（tab 容器、tab 按钮 active 态、tab content 显示规则）
-- 改 `service/web/app.test.js`（tab 状态切换、state.topics.detail / state.topics.review）
-- 改 `service/web/app.browser.test.js`（tab 切换、hash 路径变化）
+- 改 `web/index.html`（删除 #page-topic-detail / #page-topic-review / #page-synthesis，新增 #page-compose + 各 tab 结构）
+- 改 `web/app.js`（tab 切换状态、renderTopicsTabs、renderNotesTabs、renderComposeTabs）
+- 改 `web/styles.css`（tab 容器、tab 按钮 active 态、tab content 显示规则）
+- 改 `web/app.test.js`（tab 状态切换、state.topics.detail / state.topics.review）
+- 改 `web/app.browser.test.js`（tab 切换、hash 路径变化）
 
 ### PR3
 
-- 改 `service/web/index.html`（删除 #page-jobs / #topbar-language，齿轮展开 #page-settings drawer）
-- 改 `service/web/app.js`（openSettingsDrawer、renderSettingsTabs、EventStream 进抽屉、jobs 摘要卡）
-- 改 `service/web/styles.css`（settings drawer 布局、折叠卡、齿轮按钮）
-- 改 `service/web/app.test.js`（drawer 状态、折叠卡 toggle）
-- 改 `service/web/app.browser.test.js`（齿轮点击 → 抽屉 → 5 tab 切换）
+- 改 `web/index.html`（删除 #page-jobs / #topbar-language，齿轮展开 #page-settings drawer）
+- 改 `web/app.js`（openSettingsDrawer、renderSettingsTabs、EventStream 进抽屉、jobs 摘要卡）
+- 改 `web/styles.css`（settings drawer 布局、折叠卡、齿轮按钮）
+- 改 `web/app.test.js`（drawer 状态、折叠卡 toggle）
+- 改 `web/app.browser.test.js`（齿轮点击 → 抽屉 → 5 tab 切换）
 
 ### PR4
 
-- 改 `service/web/i18n/zh-CN.js` + `en-US.js`（description 收紧）
-- 改 `service/web/app.js`（移除 request_id 透出逻辑、settings "高级"区块默认收起）
+- 改 `web/i18n/zh-CN.js` + `en-US.js`（description 收紧）
+- 改 `web/app.js`（移除 request_id 透出逻辑、settings "高级"区块默认收起）
 - 改 `Makefile`（`i18n-check` 目标 + 失败码）
 - 改 `doc/thoughtflow-implementation-status.md`（追加本轮收口段落）
-- 改 `service/web/app.browser.test.js`（description 长度断言）
+- 改 `web/app.browser.test.js`（description 长度断言）

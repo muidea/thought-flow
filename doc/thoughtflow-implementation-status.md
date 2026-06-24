@@ -265,11 +265,11 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - UI 通过现有 REST/SSE API 工作，不直接读写 Markdown、DuckDB 或 Git。
 6. 嵌入资产服务单元测试。
 7. 原生前端组件测试：
-   - `node --check internal/modules/application/thoughtflow/service/web/app.js`
-   - `node --test internal/modules/application/thoughtflow/service/web/app.test.js`
+   - `node --check web/app.js`
+   - `node --test web/app.test.js`
    - 覆盖 Markdown CommonMark/GFM 安全渲染、Obsidian 双链、diff 展示、synthesis source link 去重、outline helper、route parser、导航 active 状态、status badge、search result score/explain 渲染和 synthesis basket helper。
 8. 浏览器 smoke 测试矩阵：
-   - `node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js`
+   - `node --test web/app.browser.test.js`
    - 使用本机 Google Chrome headless 和 mock API server 覆盖 desktop/mobile 视口。
    - 测试矩阵显式声明 Chrome、Firefox、Safari 目标；当前环境 Firefox 为未安装 snap wrapper，Safari/WebKit 自动化在 Linux host 不可用，因此对应 subtest 以稳定原因 skip，不计入实际覆盖。
    - 校验首屏渲染、Sidebar 路由切换、Capture 成功结果、Search 结果和 explain、Thought preview Drawer、合稿篮、Topic create/rules Drawer、Topic detail tabs、Synthesis create Drawer、Jobs 查询、Settings metrics、控制台错误和移动端水平溢出。
@@ -277,9 +277,9 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
 验证：
 
 ```bash
-node --check internal/modules/application/thoughtflow/service/web/app.js
-node --test internal/modules/application/thoughtflow/service/web/app.test.js
-node --test internal/modules/application/thoughtflow/service/web/app.browser.test.js
+node --check web/app.js
+node --test web/app.test.js
+node --test web/app.browser.test.js
 go test ./...
 go build -o /tmp/thoughtflow ./cmd/thoughtflow
 ```
@@ -495,7 +495,7 @@ make e2e-test                          # 26 个 e2e 测试通过，含默认复�
 todo 第 8 节第 3 条要求"有浏览器环境时 `make browser-test` 通过"。本轮通过 Playwright 把 Firefox 从"探测后 skip"升级为"真跑 desktop + mobile"：
 
 1. **依赖**：当时曾通过根目录 `package.json` 增加 `playwright` devDependency；当前已调整为不在项目根目录保留 npm manifest，Playwright 由开发机或 CI 外部环境按需提供。
-2. **代码改造**（`internal/modules/application/thoughtflow/service/web/app.browser.test.js`）：
+2. **代码改造**（`web/app.browser.test.js`）：
    - 加 `PlaywrightPage` 类（CDPPage 兼容适配器）:接 `page.evaluate` / `page.waitForFunction` / `page.goto` 三个调用，`pageerror` / `console.error` 转 `Runtime.exceptionThrown` / `Log.entryAdded` 事件。
    - `connectPage(launched)` 检测 `launched.kind === "playwright"` 走 `PlaywrightPage`，否则走 `CDPPage`。
    - `launchFirefox(viewport)` 通过 `playwright.firefox.launch({ headless: true })` 启动，返回 `{ kind: "playwright", page, close }`。
@@ -541,9 +541,9 @@ todo 第 8 节第 3 条要求"有浏览器环境时 `make browser-test` 通过"�
 stop hook feedback #3 指出前轮 transcript 只到 75 项 grep 通过 + §8 5 项核对,要求独立证明每个收口项都跑了对应测试而非仅 grep 命中。本轮按 todo 75 项 + i18n 收口共 76 项 evidence,逐项跑对应测试收集 transcript 证据。
 
 **执行命令**:
-- `make e2e-test` 29 项 → `node --test --test-name-pattern="NAME" internal/modules/application/thoughtflow/service/web/api.e2e.test.js`
-- `make node-test` 29 项 → `node --test --test-name-pattern="NAME" internal/modules/application/thoughtflow/service/web/app.test.js`
-- `make node-test-i18n` 1 项 → `node --test --test-name-pattern="NAME" internal/modules/application/thoughtflow/service/web/i18n/i18n.test.js`
+- `make e2e-test` 29 项 → `node --test --test-name-pattern="NAME" web/api.e2e.test.js`
+- `make node-test` 29 项 → `node --test --test-name-pattern="NAME" web/app.test.js`
+- `make node-test-i18n` 1 项 → `node --test --test-name-pattern="NAME" web/i18n/i18n.test.js`
 - `grep-only` 5 项(30/55/56/57/58)→ 直接对源码/文档跑 `rg "PATTERN" PATH` 命中数(预期 = 0)
 - `browser-test` 8 项(32/35/69-76)→ §8.2 15/16 browser-test 矩阵独立覆盖
 
