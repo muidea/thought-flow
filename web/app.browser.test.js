@@ -516,6 +516,26 @@ async function setPageHash(page, hash) {
   await page.evaluate(hashNavigationScript(hash));
 }
 
+async function waitForExpectedHashParam(page, label) {
+  try {
+    await page.waitForExpression(() => {
+      const key = document.documentElement.dataset.expectedHashKey || "";
+      const value = document.documentElement.dataset.expectedHashValue || "";
+      if (!key) return false;
+      const query = window.location.hash.includes("?") ? window.location.hash.split("?").slice(1).join("?") : "";
+      return new URLSearchParams(query).get(key) === value;
+    }, 30000);
+  } catch (error) {
+    const current = await page.evaluate(() => window.location.hash);
+    throw new Error(`${label} hash did not settle: ${current}`);
+  } finally {
+    await page.evaluate(() => {
+      delete document.documentElement.dataset.expectedHashKey;
+      delete document.documentElement.dataset.expectedHashValue;
+    });
+  }
+}
+
 test("embedded UI restores deep-link query into inputs and reflects input changes back into the hash", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
@@ -554,10 +574,12 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     // Typing into the search box updates the hash via the debounced serializer.
     await page.evaluate(() => {
       const input = document.querySelector("#search-query");
+      document.documentElement.dataset.expectedHashKey = "q";
+      document.documentElement.dataset.expectedHashValue = "vector store";
       input.value = "vector store";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await page.waitForExpression(() => /q=vector(\+|%20)store/.test(window.location.hash));
+    await waitForExpectedHashParam(page, "search query");
     const hashAfter = await page.evaluate(() => window.location.hash);
     assert.match(hashAfter, /q=vector(\+|%20)store/);
 
@@ -566,10 +588,12 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     await page.waitForExpression(() => document.querySelector("#page-topics")?.classList.contains("active"));
     await page.evaluate(() => {
       const input = document.querySelector("#topic-filter");
+      document.documentElement.dataset.expectedHashKey = "keyword";
+      document.documentElement.dataset.expectedHashValue = "demo";
       input.value = "demo";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await page.waitForExpression(() => /keyword=demo/.test(window.location.hash));
+    await waitForExpectedHashParam(page, "topic filter");
     const topicsHash = await page.evaluate(() => window.location.hash);
     assert.match(topicsHash, /keyword=demo/);
     assert.deepEqual(errors, []);
