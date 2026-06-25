@@ -131,7 +131,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/i18n/en-US.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.min.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
-	s.registry.AddHandler("/assets/ThoughtFlow.png", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/assets/thoughtflow.png", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/api/thoughts", engine.GET, s.handleListThoughts)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/:id/retry-refine", engine.POST, s.handleRetryRefine)

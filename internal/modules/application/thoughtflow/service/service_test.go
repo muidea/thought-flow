@@ -127,7 +127,7 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 func TestHandleWebServesSiteIcon(t *testing.T) {
 	service := &Service{}
 	res := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/assets/ThoughtFlow.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/assets/thoughtflow.png", nil)
 
 	service.handleWeb(context.Background(), res, req)
 
