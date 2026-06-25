@@ -135,7 +135,15 @@ e2e-test:
 
 check: fmt-check test build node-check node-test i18n-check
 
-ci-check: check browser-test e2e-test
+ci-check:
+	@scripts/run-quiet.sh fmt-check $(MAKE) --no-print-directory fmt-check
+	@scripts/run-quiet.sh test $(MAKE) --no-print-directory test
+	@scripts/run-quiet.sh build $(MAKE) --no-print-directory build
+	@scripts/run-quiet.sh node-check $(MAKE) --no-print-directory node-check
+	@scripts/run-quiet.sh node-test $(MAKE) --no-print-directory node-test
+	@scripts/run-quiet.sh i18n-check $(MAKE) --no-print-directory i18n-check
+	@scripts/run-quiet.sh browser-test $(MAKE) --no-print-directory browser-test
+	@scripts/run-quiet.sh e2e-test $(MAKE) --no-print-directory e2e-test
 
 clean:
 	rm -f $(BINARY)
