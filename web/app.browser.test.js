@@ -536,6 +536,13 @@ async function waitForExpectedHashParam(page, label) {
   }
 }
 
+async function waitForCaptureComposerIdle(page) {
+  await page.waitForExpression(() => {
+    const send = document.querySelector("#capture-composer-send");
+    return send && !send.disabled;
+  }, 30000);
+}
+
 test("embedded UI restores deep-link query into inputs and reflects input changes back into the hash", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
@@ -724,6 +731,8 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => /Multi-turn browser smoke/.test(document.querySelector("#capture-conversation")?.textContent || ""));
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]'), 30000);
+    await waitForCaptureComposerIdle(page);
     // Issue a rename command; in the current capture flow it updates
     // session_context.CandidateTitle rather than PATCHing a Thought.
     await page.evaluate(() => {
@@ -751,6 +760,7 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
     }
     assert.ok(renamed, "rename command should update the session context title");
+    await waitForCaptureComposerIdle(page);
     await page.evaluate(() => {
       const input = document.querySelector("#capture-composer-input");
       input.value = "/save";
