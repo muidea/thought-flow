@@ -569,6 +569,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
     // stripping the query from the fragment.
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.waitForExpression(() => window.__thoughtflowReady === true, 30000);
     await setPageHash(page, "#/search?q=rag&selected=thought-1");
     await page.waitForExpression(() => document.querySelector("#page-search")?.classList.contains("active"));
     await page.waitForExpression(() => document.querySelector("#search-query")?.value === "rag");
@@ -586,7 +587,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
       document.documentElement.dataset.expectedHashValue = "vector store";
       input.value = "vector store";
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      window.syncHash?.();
+      window.syncHash();
     });
     await waitForExpectedHashParam(page, "search query");
     const hashAfter = await page.evaluate(() => window.location.hash);
@@ -601,7 +602,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
       document.documentElement.dataset.expectedHashValue = "demo";
       input.value = "demo";
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      window.syncHash?.();
+      window.syncHash();
     });
     await waitForExpectedHashParam(page, "topic filter");
     const topicsHash = await page.evaluate(() => window.location.hash);

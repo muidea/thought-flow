@@ -302,6 +302,10 @@ function syncHash() {
   persistRouteNow();
 }
 
+if (typeof window !== "undefined") {
+  window.syncHash = syncHash;
+}
+
 async function refreshRouteData(route, options = {}) {
   if (!route || !route.page) return;
   switch (route.page) {
@@ -4698,6 +4702,7 @@ async function boot() {
   // authority; the browser does not persist capture session history.
   await rehydrateActiveScratchpad();
   connectEvents();
+  window.__thoughtflowReady = true;
 }
 
 boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));
