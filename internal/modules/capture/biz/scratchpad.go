@@ -175,7 +175,7 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 	if err != nil {
 		return scratchpad.Scratchpad{}, err
 	}
-	existingContext := sp.SessionContext
+	existingContext := enrichmentSeedContext(sp)
 	sp.Messages = append(sp.Messages, scratchpad.Message{Role: role, Text: text, At: s.now()})
 	if role == "user" {
 		if sp.Content != "" {
@@ -183,6 +183,8 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 		}
 		sp.Content += text
 		sp.SessionContext = scratchpad.SessionContext{}
+		sp.ArchiveIntent = scratchpad.ArchiveIntentNone
+		sp.ArchivePreview = nil
 	}
 	saved, err := s.store.Save(sp)
 	if err != nil {
@@ -378,6 +380,41 @@ func (s *ScratchpadService) requestSessionContextEnrichment(sp scratchpad.Scratc
 	)
 	ev.BindLaneKey(captureContextLaneKey(sessionID))
 	s.eventHub.Post(ev)
+}
+
+func enrichmentSeedContext(sp scratchpad.Scratchpad) scratchpad.SessionContext {
+	ctx := sp.SessionContext
+	if sp.ArchivePreview == nil {
+		return ctx
+	}
+	preview := *sp.ArchivePreview
+	previewBody := strings.TrimSpace(preview.Body)
+	relatedTopics := trimNonEmpty(preview.RelatedTopics)
+	ctx.CandidateTitle = firstNonEmptyString(preview.Title, ctx.CandidateTitle)
+	ctx.CandidateTags = mergeContextStrings(preview.Tags, ctx.CandidateTags)
+	ctx.CandidateSummary = seedArchivedBody(ctx.CandidateSummary, previewBody)
+	ctx.CandidateBody = seedArchivedBody(ctx.CandidateBody, previewBody)
+	ctx.SourceLinks = mergeContextStrings(preview.SourceLinks, ctx.SourceLinks)
+	ctx.SuggestedTopicIDs = mergeContextStrings(relatedTopics, ctx.SuggestedTopicIDs)
+	ctx.ArchiveIntent = scratchpad.ArchiveIntentNone
+	strategy := firstNonEmptyString(string(ctx.ArchiveStrategy), string(preview.Strategy), string(sp.ArchiveStrategy))
+	ctx.ArchiveStrategy = normalizeArchiveStrategy(scratchpad.ArchiveStrategy(strategy))
+	return ctx
+}
+
+func seedArchivedBody(existing, archived string) string {
+	existing = strings.TrimSpace(existing)
+	archived = strings.TrimSpace(archived)
+	if archived == "" {
+		return existing
+	}
+	if existing == "" {
+		return archived
+	}
+	if strings.Contains(compactText(existing), compactText(archived)) {
+		return existing
+	}
+	return archived + "\n\n" + existing
 }
 
 func captureContextLaneKey(sessionID string) string {

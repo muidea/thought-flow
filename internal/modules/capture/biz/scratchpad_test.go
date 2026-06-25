@@ -252,6 +252,69 @@ func TestScratchpadServiceAppendMessageEnrichesCommittedHistorySession(t *testin
 	}
 }
 
+func TestScratchpadServiceAppendMessageSeedsCommittedHistoryFromArchivePreview(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID:          "history",
+		CommittedThoughtID: "thought-1",
+		CommittedAt:        ptrTime(),
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:   "待用户提供原始内容后确认",
+			CandidateSummary: "当前会话上下文为空，需要用户提供原始内容。",
+			CandidateBody:    "错误整理：没有上述内容。",
+		},
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Title:    "归档标题",
+			Body:     "这是已经归档的完整内容，需要作为继续对话的上述内容。",
+			Tags:     []string{"归档", "历史"},
+			Strategy: scratchpad.ArchiveStrategyNew,
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateSummary: "基于归档内容继续补充",
+			CandidateBody:    "补充后的内容",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+	)
+
+	if _, err := svc.AppendMessage("history", "user", "基于上述内容继续完善"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	waitFor(t, func() bool { return provider.callCount() == 1 })
+	if provider.lastReq.Existing.CandidateTitle != "归档标题" {
+		t.Fatalf("Existing.CandidateTitle = %q", provider.lastReq.Existing.CandidateTitle)
+	}
+	if !strings.Contains(provider.lastReq.Existing.CandidateBody, "已经归档的完整内容") {
+		t.Fatalf("Existing.CandidateBody = %q", provider.lastReq.Existing.CandidateBody)
+	}
+	if !strings.Contains(provider.lastReq.Existing.CandidateBody, "错误整理") {
+		t.Fatalf("Existing.CandidateBody should preserve current context too, got %q", provider.lastReq.Existing.CandidateBody)
+	}
+	if !sameStringSet(provider.lastReq.Existing.CandidateTags, []string{"归档", "历史"}) {
+		t.Fatalf("Existing.CandidateTags = %+v", provider.lastReq.Existing.CandidateTags)
+	}
+	sp := waitForScratchpad(t, store, "history", func(sp scratchpad.Scratchpad) bool {
+		return strings.Contains(sp.SessionContext.CandidateBody, "补充后的内容")
+	})
+	if sp.CommittedThoughtID != "thought-1" {
+		t.Fatalf("CommittedThoughtID = %q, want thought-1", sp.CommittedThoughtID)
+	}
+	if sp.ArchivePreview != nil {
+		t.Fatalf("ArchivePreview should be cleared after a new user turn, got %+v", sp.ArchivePreview)
+	}
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentNone {
+		t.Fatalf("ArchiveIntent = %q, want none", sp.ArchiveIntent)
+	}
+}
+
 func TestScratchpadServiceAppendMessagePreservesUncoveredUserTurn(t *testing.T) {
 	store := newMemoryScratchpad()
 	provider := &stubCaptureContextProvider{
