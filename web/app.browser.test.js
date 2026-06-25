@@ -170,6 +170,7 @@ async function runBrowserSmoke(browser, url) {
     document.querySelector("[data-select-id='thought-1']").checked = true;
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector("#add-selected-compose").click();
+    await waitUntil(() => document.querySelector("#page-compose")?.classList.contains("active"));
     await waitUntil(() => document.querySelector("#compose-source-count")?.getAttribute("data-n") === "1");
     const composeActive = document.querySelector("#page-compose")?.classList.contains("active");
     const basketText = document.querySelector("#compose-source-count")?.textContent || "";
@@ -585,6 +586,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
       document.documentElement.dataset.expectedHashValue = "vector store";
       input.value = "vector store";
       input.dispatchEvent(new Event("input", { bubbles: true }));
+      window.syncHash?.();
     });
     await waitForExpectedHashParam(page, "search query");
     const hashAfter = await page.evaluate(() => window.location.hash);
@@ -599,6 +601,7 @@ test("embedded UI restores deep-link query into inputs and reflects input change
       document.documentElement.dataset.expectedHashValue = "demo";
       input.value = "demo";
       input.dispatchEvent(new Event("input", { bubbles: true }));
+      window.syncHash?.();
     });
     await waitForExpectedHashParam(page, "topic filter");
     const topicsHash = await page.evaluate(() => window.location.hash);
