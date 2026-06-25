@@ -2948,17 +2948,16 @@ async function stageScratchpadTurn(text) {
 async function appendSessionMessage(text) {
   const turnMessageKey = latestCaptureUserTurnKey();
   let scratchpad;
-  if (!state.capture.activeScratchpad || !state.capture.activeScratchpad.session_id) {
-    const headers = state.capture.sessionId ? { "X-Session-Id": state.capture.sessionId } : {};
-    scratchpad = await api("/api/capture/sessions", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ content: text }),
-    });
-  } else {
-    scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/messages`, {
+  const sessionId = state.capture.sessionId || state.capture.activeScratchpad?.session_id || "";
+  if (sessionId) {
+    scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
       body: JSON.stringify({ role: "user", text }),
+    });
+  } else {
+    scratchpad = await api("/api/capture/sessions", {
+      method: "POST",
+      body: JSON.stringify({ content: text }),
     });
   }
   if (!scratchpad || !scratchpad.session_id) throw new Error(t("toast.request_failed"));

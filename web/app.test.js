@@ -101,6 +101,34 @@ function makeDomStub(initial = {}) {
     innerHTML: "",
     querySelectorAll: () => [],
   };
+  nodes["capture-conversation"] = {
+    innerHTML: "",
+    scrollTop: 0,
+    scrollHeight: 0,
+  };
+  nodes["capture-refresh-preview"] = { disabled: false };
+  nodes["capture-archive-commit"] = { disabled: false };
+  nodes["capture-archive-preview"] = { innerHTML: "" };
+  nodes["capture-lock-indicator"] = {
+    hidden: true,
+    setAttribute: () => {},
+    classList: classSet(),
+  };
+  nodes["capture-composer-input"] = {
+    id: "capture-composer-input",
+    value: store["capture-composer-input"] || "",
+    form: null,
+  };
+  nodes["capture-composer-send"] = {
+    disabled: false,
+    textContent: "",
+    dataset: {},
+  };
+  nodes["capture-composer"] = {
+    requestSubmit: () => {},
+    addEventListener: () => {},
+  };
+  nodes["capture-composer-input"].form = nodes["capture-composer"];
   nodes["search-results"] = {
     get innerHTML() { return store["search-results_innerHTML"] || ""; },
     set innerHTML(v) { store["search-results_innerHTML"] = String(v); },
@@ -320,6 +348,9 @@ function loadAppFunctionsWith(opts = {}) {
       openCaptureSessionsDrawer,
       closeCaptureSessionsDrawer,
       renderCaptureSessionItem,
+      switchCaptureSession,
+      submitCaptureComposer,
+      appendSessionMessage,
       deleteCaptureSession,
       handleCaptureEvent,
       formatBadgeCount,
@@ -2106,6 +2137,61 @@ test("capture session history is not persisted in browser storage", () => {
   assert.equal(storage.data["tflow.capture.sessions"], undefined);
   assert.equal(app._state.capture.sessions[0].sessionId, "s2");
   assert.equal(app._state.capture.sessions[0].messages, undefined);
+});
+
+test("opened capture history session can continue through composer", async () => {
+  const calls = [];
+  const dom = makeDomStub({ "capture-composer-input": "继续完善历史会话" });
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push({ url, method: options.method || "GET", body: options.body || "" });
+      if (url === "/api/capture/sessions/history-1") {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              session_id: "history-1",
+              committed_thought_id: "thought-1",
+              archive_preview: { title: "Archived", body: "Archived body", strategy: "new" },
+              messages: [{ role: "ai", text: "Archived body" }],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          data: {
+            session_id: "history-1",
+            committed_thought_id: "thought-1",
+            messages: [
+              { role: "ai", text: "Archived body" },
+              { role: "user", text: "继续完善历史会话" },
+            ],
+          },
+        }),
+      };
+    },
+  });
+  app._state.capture.sessions = [{
+    sessionId: "history-1",
+    thoughtId: "thought-1",
+    title: "Archived session",
+  }];
+
+  app.switchCaptureSession("history-1");
+  await Promise.resolve();
+  await app.submitCaptureComposer({ preventDefault: () => {} });
+
+  assert.equal(app._state.capture.sessionId, "history-1");
+  assert.ok(
+    calls.some((call) => call.method === "POST" && call.url === "/api/capture/sessions/history-1/messages"),
+    JSON.stringify(calls),
+  );
+  const posted = calls.find((call) => call.method === "POST" && call.url === "/api/capture/sessions/history-1/messages");
+  assert.match(posted.body, /继续完善历史会话/);
 });
 
 test("deleteCaptureSession removes one session and calls backend delete", async () => {
