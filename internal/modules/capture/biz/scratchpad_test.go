@@ -208,6 +208,50 @@ func TestScratchpadServiceAppendMessageEnrichesContextWithProvider(t *testing.T)
 	}
 }
 
+func TestScratchpadServiceAppendMessageEnrichesCommittedHistorySession(t *testing.T) {
+	store := newMemoryScratchpad()
+	if _, err := store.Save(scratchpad.Scratchpad{
+		SessionID:          "history",
+		CommittedThoughtID: "thought-1",
+		CommittedAt:        ptrTime(),
+		SessionContext: scratchpad.SessionContext{
+			CandidateSummary: "archived summary",
+			CandidateBody:    "archived body",
+		},
+	}); err != nil {
+		t.Fatalf("seed scratchpad: %v", err)
+	}
+	provider := &stubCaptureContextProvider{
+		result: ai.CaptureContextResult{
+			CandidateSummary: "continued summary",
+			CandidateBody:    "continued body",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "update_thought",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+	)
+
+	if _, err := svc.AppendMessage("history", "user", "继续补充历史会话"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	waitFor(t, func() bool { return provider.callCount() == 1 })
+	if provider.lastReq.Existing.CandidateSummary != "archived summary" {
+		t.Fatalf("Existing.CandidateSummary = %q", provider.lastReq.Existing.CandidateSummary)
+	}
+	sp := waitForScratchpad(t, store, "history", func(sp scratchpad.Scratchpad) bool {
+		return strings.Contains(sp.SessionContext.CandidateSummary, "continued summary")
+	})
+	if sp.CommittedThoughtID != "thought-1" {
+		t.Fatalf("CommittedThoughtID = %q, want thought-1", sp.CommittedThoughtID)
+	}
+	if len(sp.Messages) != 2 || sp.Messages[0].Role != "user" || sp.Messages[1].Role != "ai" {
+		t.Fatalf("Messages = %+v", sp.Messages)
+	}
+}
+
 func TestScratchpadServiceAppendMessagePreservesUncoveredUserTurn(t *testing.T) {
 	store := newMemoryScratchpad()
 	provider := &stubCaptureContextProvider{

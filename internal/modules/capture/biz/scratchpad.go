@@ -391,7 +391,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 		return
 	}
 	current, err := s.store.Get(sessionID)
-	if err != nil || current.Content != contentAtSchedule || strings.TrimSpace(current.CommittedThoughtID) != "" {
+	if err != nil || current.Content != contentAtSchedule {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
@@ -407,7 +407,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 		return
 	}
 	latest, err := s.store.Get(sessionID)
-	if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
+	if err != nil || latest.Content != contentAtSchedule {
 		return
 	}
 	contextBase := latest
@@ -421,7 +421,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error) {
 	slog.Warn("capture context enrichment failed", "session_id", sessionID, "error", cause)
 	latest, err := s.store.Get(sessionID)
-	if err != nil || latest.Content != contentAtSchedule || strings.TrimSpace(latest.CommittedThoughtID) != "" {
+	if err != nil || latest.Content != contentAtSchedule {
 		return
 	}
 	text := captureContextFailureText(cause)
