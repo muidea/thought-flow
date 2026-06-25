@@ -579,7 +579,12 @@ test("embedded UI restores deep-link query into inputs and reflects input change
 });
 
 test("compose basket loads from the backend", async (t) => {
-  const server = await startFixtureServer();
+  const server = await startFixtureServer({
+    composeBasketSources: [
+      { source_type: "thought", source_id: "thought-1", title: "Browser Thought" },
+      { source_type: "thought", source_id: "thought-2", title: "Another Thought" },
+    ],
+  });
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
@@ -1299,7 +1304,7 @@ function startFixtureServer(options = {}) {
   // and corrupted the conversation the tests were probing. We use
   // an explicit flag so the wiring stays disabled for tests that
   // don't opt in.
-  const { autoCommit = false, enrichEnabled = false, enrichDelayMs = 50 } = options;
+  const { autoCommit = false, composeBasketSources = [], enrichEnabled = false, enrichDelayMs = 50 } = options;
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
   // SSE plumbing: tests can subscribe to /api/events, and post events via
@@ -1314,10 +1319,7 @@ function startFixtureServer(options = {}) {
   const thoughtState = new Map();
   const captureSessions = new Map();
   let composeBasket = {
-    sources: [
-      { source_type: "thought", source_id: "thought-1", title: "Browser Thought" },
-      { source_type: "thought", source_id: "thought-2", title: "Another Thought" },
-    ],
+    sources: composeBasketSources,
     updated_at: "2026-06-13T00:00:00Z",
   };
   const makeScratchpad = (id, text = "Captured from browser smoke") => ({
@@ -1536,6 +1538,8 @@ function startFixtureServer(options = {}) {
         return serveFile(res, path.join(webRoot, "vendor", "markdown-it.min.js"), "application/javascript; charset=utf-8");
       case "/session-lock.js":
         return serveFile(res, path.join(webRoot, "session-lock.js"), "application/javascript; charset=utf-8");
+      case "/assets/thoughtflow.png":
+        return serveFile(res, path.join(webRoot, "assets", "thoughtflow.png"), "image/png");
       case "/favicon.ico":
         res.writeHead(204);
         return res.end();
