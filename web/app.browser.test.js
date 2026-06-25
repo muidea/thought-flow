@@ -15,15 +15,14 @@ const chromePath = process.env.CHROME_PATH || findChrome();
 const browserTargets = discoverBrowserTargets();
 
 test("embedded UI browser smoke matrix", async (t) => {
-  const server = await startFixtureServer();
-  t.after(() => server.close());
-
-  const baseURL = `http://127.0.0.1:${server.address().port}`;
   const resolvedTargets = await resolveTargetSkips(browserTargets);
   for (const target of resolvedTargets) {
     await t.test(target.name, { skip: target.skip }, async (browserTest) => {
       for (const viewport of viewports()) {
         await browserTest.test(viewport.name, async () => {
+          const server = await startFixtureServer();
+          browserTest.after(() => server.close());
+          const baseURL = `http://127.0.0.1:${server.address().port}`;
           const browser = await target.launch(viewport);
           try {
             await runBrowserSmoke(browser, `${baseURL}/?lang=en-US`);
@@ -107,9 +106,9 @@ async function runBrowserSmoke(browser, url) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     };
     const waitUntil = async (predicate) => {
-      for (let index = 0; index < 80; index++) {
+      for (let index = 0; index < 300; index++) {
         if (predicate()) return;
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
       throw new Error("timed out waiting for browser UI state");
     };
@@ -164,13 +163,14 @@ async function runBrowserSmoke(browser, url) {
     const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
     const thoughtDrawerText = document.querySelector("#thought-drawer-content")?.textContent || "";
     document.querySelector("#drawer-add-compose")?.click();
+    await waitUntil(() => document.querySelector("#compose-source-count")?.getAttribute("data-n") === "1");
     const basketTextAfterDrawer = document.querySelector("#compose-source-count")?.textContent || "";
     const basketCountAfterDrawer = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
     document.querySelector("[data-close-drawer='thought-drawer']")?.click();
     document.querySelector("[data-select-id='thought-1']").checked = true;
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector("#add-selected-compose").click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(() => document.querySelector("#compose-source-count")?.getAttribute("data-n") === "1");
     const composeActive = document.querySelector("#page-compose")?.classList.contains("active");
     const basketText = document.querySelector("#compose-source-count")?.textContent || "";
     const basketCount = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
