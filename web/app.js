@@ -1540,7 +1540,9 @@ async function refreshNotesRuntime() {
   // event; the clone is cheap and avoids a second SSE connection.
   if (eventsNode) {
     const source = $("#dashboard-events");
-    const items = source ? Array.from(source.children).slice(0, 6) : [];
+    const items = source
+      ? Array.from(source.children).filter((item) => item?.classList?.contains?.("event-item")).slice(0, 6)
+      : [];
     if (items.length === 0) {
       eventsNode.innerHTML = `<div class="tf-empty" data-i18n="settings.events.empty">${escapeHTML(t("settings.events.empty"))}</div>`;
     } else {
@@ -4260,29 +4262,54 @@ async function refreshTopic() {
   state.activeJobId = job.id;
 }
 
+const DOMAIN_EVENT_TYPES = [
+  "thought.captured",
+  "thought.refine_started",
+  "thought.refined",
+  "thought.refine_failed",
+  "thought.patched",
+  "thought.expanded",
+  "scratchpad.context_enrich_requested",
+  "scratchpad.context_updated",
+  "scratchpad.committed",
+  "search.index_updated",
+  "search.index_failed",
+  "search.reindex_started",
+  "search.reindex_finished",
+  "topic.created",
+  "topic.matched",
+  "topic.updated",
+  "topic.refresh_started",
+  "topic.refresh_failed",
+  "git.commit_requested",
+  "git.commit_succeeded",
+  "git.commit_failed",
+  "job.updated",
+  "compose.draft_created",
+  "compose.draft_saved",
+];
+
+const CAPTURE_EVENT_TYPES = new Set([
+  "scratchpad.committed",
+  "scratchpad.context_updated",
+  "thought.captured",
+  "thought.refined",
+  "thought.refine_failed",
+  "thought.patched",
+  "thought.expanded",
+]);
+
 function connectEvents() {
   // PR3: events flow into the settings drawer (full stream with filters)
   // and the dashboard summary. The notes runtime card reuses the same
   // DOM as the dashboard summary by reading #dashboard-events via cloning.
   const drawerList = $("#settings-drawer-event-list");
   const dashboardList = $("#dashboard-events");
+  renderEventEmptyState(drawerList);
+  renderEventEmptyState(dashboardList);
   const source = new EventSource("/api/events");
   source.onmessage = (event) => appendEvent("message", event.data);
-  [
-    "thought.captured",
-    "thought.refined",
-    "thought.refine_failed",
-    "thought.patched",
-    "thought.expanded",
-    "scratchpad.committed",
-    "scratchpad.context_updated",
-    "search.index_updated",
-    "topic.updated",
-    "topic.matched",
-    "git.commit_succeeded",
-    "git.commit_failed",
-    "job.updated",
-  ].forEach((type) => {
+  DOMAIN_EVENT_TYPES.forEach((type) => {
     source.addEventListener(type, (event) => {
       appendEvent(type, event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
@@ -4296,21 +4323,13 @@ function connectEvents() {
       // 1.95 s refreshActiveScratchpadContext poll is a best-effort
       // fast path that loses gracefully when LLM round-trips take
       // 30-90 s.
-      if (
-        type === "scratchpad.committed" ||
-        type === "scratchpad.context_updated" ||
-        type === "thought.captured" ||
-        type === "thought.refined" ||
-        type === "thought.refine_failed" ||
-        type === "thought.patched" ||
-        type === "thought.expanded"
-      ) {
+      if (CAPTURE_EVENT_TYPES.has(type)) {
         handleCaptureEvent(type, event.data);
       }
     });
   });
   source.onerror = () => {
-    if (drawerList && drawerList.children.length === 0 && dashboardList && dashboardList.children.length === 0) {
+    if (!hasEventItems(drawerList) && !hasEventItems(dashboardList)) {
       appendEvent("events", t("toast.sse_reconnecting"));
     }
   };
@@ -4451,8 +4470,25 @@ function appendEvent(type, data) {
   applyEventFilter();
 }
 
+function hasEventItems(list) {
+  return Boolean(list && Array.from(list.children || []).some((child) => child?.classList?.contains?.("event-item")));
+}
+
+function renderEventEmptyState(list) {
+  if (!list || hasEventItems(list)) return;
+  list.innerHTML = `<div class="tf-empty" data-empty="true">${escapeHTML(t("settings.events.empty"))}</div>`;
+  if (list.dataset) list.dataset.empty = "true";
+}
+
+function clearEventEmptyState(list) {
+  if (!list || !list.dataset || list.dataset.empty !== "true") return;
+  list.innerHTML = "";
+  delete list.dataset.empty;
+}
+
 function prependEventItem(list, item, limit = 60) {
   if (!list || !item) return;
+  clearEventEmptyState(list);
   list.prepend(item);
   while (list.children.length > limit) list.removeChild(list.lastChild);
 }

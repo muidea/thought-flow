@@ -19,27 +19,96 @@ const stubTflow = {
   resetMissingReport: () => {},
 };
 
+const classSet = (initialClasses = []) => {
+  const set = new Set(initialClasses);
+  return {
+    add: (...names) => names.forEach((name) => set.add(name)),
+    remove: (...names) => names.forEach((name) => set.delete(name)),
+    toggle: (name, enabled) => {
+      if (enabled) set.add(name);
+      else set.delete(name);
+    },
+    contains: (name) => set.has(name),
+    has: (name) => set.has(name),
+    toString: () => Array.from(set).join(" "),
+  };
+};
+
+function makeElementStub(tagName = "div") {
+  const node = {
+    tagName: String(tagName).toUpperCase(),
+    dataset: {},
+    attributes: {},
+    children: [],
+    hidden: false,
+    style: {},
+    _className: "",
+    _innerHTML: "",
+    textContent: "",
+    get className() { return this._className; },
+    set className(value) {
+      this._className = String(value || "");
+      this.classList = classSet(this._className.split(/\s+/).filter(Boolean));
+    },
+    get innerHTML() { return this._innerHTML; },
+    set innerHTML(value) {
+      this._innerHTML = String(value || "");
+      this.children = [];
+    },
+    get lastChild() {
+      return this.children[this.children.length - 1] || null;
+    },
+    classList: classSet(),
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+      if (name === "class") this.className = value;
+    },
+    getAttribute(name) { return this.attributes[name]; },
+    removeAttribute(name) { delete this.attributes[name]; },
+    append(...items) {
+      this.children.push(...items.filter(Boolean));
+    },
+    prepend(...items) {
+      this.children.unshift(...items.filter(Boolean));
+    },
+    removeChild(child) {
+      const index = this.children.indexOf(child);
+      if (index >= 0) this.children.splice(index, 1);
+      return child;
+    },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    focus: () => {},
+    querySelectorAll(selector) {
+      if (selector === ".event-item") {
+        return this.children.filter((child) => child?.classList?.contains?.("event-item"));
+      }
+      return [];
+    },
+    cloneNode(deep = false) {
+      const clone = makeElementStub(this.tagName);
+      clone.className = this.className;
+      clone.dataset = { ...this.dataset };
+      clone.attributes = { ...this.attributes };
+      clone.hidden = this.hidden;
+      clone.style = { ...this.style };
+      clone.innerHTML = this.innerHTML;
+      clone.textContent = this.textContent;
+      if (deep) clone.children = this.children.map((child) => child.cloneNode ? child.cloneNode(true) : child);
+      return clone;
+    },
+  };
+  return node;
+}
+
 // Build a minimal DOM stub with input values that the page serializers read
 // and that restoreRoutePage writes. Backed by a plain object so tests can
 // inspect and mutate inputs between operations. Other selectors return null.
 function makeDomStub(initial = {}) {
   const store = { ...initial };
-  const classSet = (initialClasses = []) => {
-    const set = new Set(initialClasses);
-    return {
-      add: (name) => set.add(name),
-      remove: (name) => set.delete(name),
-      toggle: (name, enabled) => {
-        if (enabled) set.add(name);
-        else set.delete(name);
-      },
-      contains: (name) => set.has(name),
-      has: (name) => set.has(name),
-    };
-  };
   const controls = ["search-query", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
-    "thought-filter"];
+    "thought-filter", "settings-drawer-event-type", "settings-drawer-event-resource"];
   // Side-effect nodes (toast, basket list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
@@ -70,6 +139,8 @@ function makeDomStub(initial = {}) {
       style: {},
     };
   }
+  nodes["dashboard-events"] = makeElementStub("div");
+  nodes["settings-drawer-event-list"] = makeElementStub("div");
   const sessionsPanel = {
     dataset: {},
     addEventListener: () => {},
@@ -229,8 +300,14 @@ function makeDomStub(initial = {}) {
   }
   return {
     store,
+    nodes,
     find,
-    all: (_selector) => [],
+    all: (selector) => {
+      if (selector === "#settings-drawer-event-list .event-item") {
+        return nodes["settings-drawer-event-list"].children.filter((child) => child?.classList?.contains?.("event-item"));
+      }
+      return [];
+    },
   };
 }
 
@@ -272,6 +349,7 @@ function loadAppFunctionsWith(opts = {}) {
     document: {
       querySelector: (selector) => dom.find(selector),
       querySelectorAll: (selector) => dom.all(selector),
+      createElement: (tagName) => makeElementStub(tagName),
       addEventListener: () => {},
     },
     window: {
@@ -284,7 +362,7 @@ function loadAppFunctionsWith(opts = {}) {
     },
     URLSearchParams,
     fetch: opts.fetch || (async () => ({ ok: true, json: async () => ({ data: null }) })),
-    EventSource: function EventSource() {},
+    EventSource: opts.EventSource || function EventSource() {},
     BroadcastChannel: opts.BroadcastChannel,
     console,
   };
@@ -352,6 +430,9 @@ function loadAppFunctionsWith(opts = {}) {
       submitCaptureComposer,
       appendSessionMessage,
       deleteCaptureSession,
+      connectEvents,
+      appendEvent,
+      DOMAIN_EVENT_TYPES,
       handleCaptureEvent,
       formatBadgeCount,
       computeSidebarBadgeCounts,
@@ -745,6 +826,70 @@ test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", ()
   assert.doesNotMatch(html, /search\.keyword_label/);
   assert.doesNotMatch(html, /search\.semantic_label/);
   assert.doesNotMatch(html, /search\.recency_label/);
+});
+
+test("appendEvent feeds overview and drawer activity lists with dashboard limit", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom });
+
+  app.appendEvent("compose.draft_created", JSON.stringify({
+    resource_type: "compose",
+    resource_id: "draft-1",
+  }));
+
+  const dashboard = dom.nodes["dashboard-events"];
+  const drawer = dom.nodes["settings-drawer-event-list"];
+  assert.equal(dashboard.children.length, 1);
+  assert.equal(drawer.children.length, 1);
+  assert.match(dashboard.children[0].innerHTML, /compose\.draft_created/);
+  assert.match(dashboard.children[0].innerHTML, /compose:draft-1/);
+  assert.equal(dashboard.children[0].dataset.eventType, "compose.draft_created");
+  assert.equal(drawer.children[0].dataset.resourceId, "draft-1");
+
+  for (let i = 0; i < 9; i += 1) {
+    app.appendEvent("search.index_updated", JSON.stringify({
+      resource_type: "thought",
+      resource_id: `thought-${i}`,
+    }));
+  }
+
+  assert.equal(dashboard.children.length, 8);
+  assert.equal(drawer.children.length, 10);
+  assert.match(dashboard.children[0].innerHTML, /thought:thought-8/);
+  assert.doesNotMatch(dashboard.children.map((item) => item.innerHTML).join("\n"), /draft-1/);
+});
+
+test("connectEvents subscribes overview activity to every known domain event", () => {
+  const dom = makeDomStub();
+  const listeners = {};
+  let sourceURL = "";
+  function FakeEventSource(url) {
+    sourceURL = url;
+    this.addEventListener = (type, handler) => { listeners[type] = handler; };
+  }
+  const app = loadAppFunctionsWith({ dom, EventSource: FakeEventSource });
+
+  app.connectEvents();
+
+  assert.equal(sourceURL, "/api/events");
+  assert.equal(dom.nodes["dashboard-events"].dataset.empty, "true");
+  assert.equal(dom.nodes["settings-drawer-event-list"].dataset.empty, "true");
+  for (const type of app.DOMAIN_EVENT_TYPES) {
+    assert.equal(typeof listeners[type], "function", `${type} should be subscribed`);
+  }
+  assert.equal(typeof listeners["search.index_failed"], "function");
+  assert.equal(typeof listeners["topic.refresh_started"], "function");
+  assert.equal(typeof listeners["scratchpad.context_enrich_requested"], "function");
+  assert.equal(typeof listeners["compose.draft_created"], "function");
+
+  listeners["compose.draft_created"]({
+    data: JSON.stringify({ resource_type: "compose", resource_id: "draft-2" }),
+  });
+
+  assert.equal(dom.nodes["dashboard-events"].dataset.empty, undefined);
+  assert.equal(dom.nodes["settings-drawer-event-list"].dataset.empty, undefined);
+  assert.equal(dom.nodes["dashboard-events"].children.length, 1);
+  assert.match(dom.nodes["dashboard-events"].children[0].innerHTML, /compose:draft-2/);
 });
 
 test("buildRouteHash omits empty query fields and keeps the path clean", () => {
