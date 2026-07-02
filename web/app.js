@@ -2122,11 +2122,18 @@ function scratchpadArchiveStrategy(sp = {}) {
   return stringsTrim(ctx.archive_strategy || sp.archive_strategy || sp.ArchiveStrategy);
 }
 
+function scratchpadHasPendingArchiveMaterial(sp = {}) {
+  if (!sp || typeof sp !== "object") return false;
+  if (stringsTrim(sp.content || sp.Content)) return true;
+  const messages = Array.isArray(sp.messages) ? sp.messages : [];
+  return messages.some((msg) => msg && msg.role === "user" && stringsTrim(msg.text));
+}
+
 function shouldAutoPreviewArchive(sp = {}) {
   if (!sp || !sp.session_id) return false;
   if (state.capture.autoArchiveInFlight) return false;
-  if (state.capture.activeThoughtId || sp.committed_thought_id) return false;
   if (state.capture.archivePreview || sp.archive_preview) return false;
+  if (!scratchpadHasPendingArchiveMaterial(sp)) return false;
   return scratchpadArchiveIntent(sp) === "llm";
 }
 
@@ -3427,6 +3434,22 @@ async function previewArchive({ intent = "menu", strategy = "", commitAfterPrevi
       method: "POST",
       body: JSON.stringify({ intent }),
     });
+    if (strategy === "update_thought" || strategy === "supplement") {
+      const targetThoughtId = state.capture.activeScratchpad?.source_thought_id ||
+        state.capture.archivePreview?.thought_id ||
+        state.capture.activeThoughtId ||
+        state.capture.activeScratchpad?.committed_thought_id ||
+        "";
+      if (targetThoughtId) {
+        const staged = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/strategy`, {
+          method: "POST",
+          body: JSON.stringify({ strategy, thought_id: targetThoughtId }),
+        });
+        if (staged && staged.session_id) {
+          state.capture.activeScratchpad = staged;
+        }
+      }
+    }
     const suffix = strategy ? `?strategy=${encodeURIComponent(strategy)}` : "";
     const result = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/archive/preview${suffix}`, {
       method: "GET",
