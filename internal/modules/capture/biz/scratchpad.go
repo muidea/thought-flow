@@ -42,16 +42,20 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
-	store          ScratchpadStore
-	capture        CaptureCommitter
-	eventHub       eventHub
-	contextAI      ai.CaptureContextProvider
-	contextTimeout time.Duration
-	sessionID      string
-	now            func() time.Time
+	store              ScratchpadStore
+	capture            CaptureCommitter
+	eventHub           eventHub
+	contextAI          ai.CaptureContextProvider
+	contextTimeout     time.Duration
+	contextRetryDelays []time.Duration
+	sessionID          string
+	now                func() time.Time
 }
 
 const defaultCaptureContextEnrichTimeout = 2 * time.Minute
+
+var defaultCaptureContextRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+
 const captureContextEnricherObserverID = "capture.context-enricher"
 
 type captureContextEnrichRequest struct {
@@ -119,6 +123,12 @@ func WithCaptureContextTimeout(timeout time.Duration) ScratchpadServiceOption {
 	}
 }
 
+func WithCaptureContextRetryDelays(delays ...time.Duration) ScratchpadServiceOption {
+	return func(s *ScratchpadService) {
+		s.contextRetryDelays = append([]time.Duration(nil), delays...)
+	}
+}
+
 // WithSessionID sets the sessionID used by PatchThought's
 // locker. The capture service's PatchThought requires a session
 // id; the scratchpad session id is the natural choice.
@@ -131,10 +141,11 @@ func WithSessionID(id string) ScratchpadServiceOption {
 // rather than nil-panicking, so the HTTP layer can return 503 cleanly.
 func NewScratchpadService(store ScratchpadStore, options ...ScratchpadServiceOption) *ScratchpadService {
 	s := &ScratchpadService{
-		store:          store,
-		contextTimeout: defaultCaptureContextEnrichTimeout,
-		sessionID:      "scratchpad",
-		now:            func() time.Time { return time.Now().UTC() },
+		store:              store,
+		contextTimeout:     defaultCaptureContextEnrichTimeout,
+		contextRetryDelays: append([]time.Duration(nil), defaultCaptureContextRetryDelays...),
+		sessionID:          "scratchpad",
+		now:                func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range options {
 		opt(s)
@@ -433,12 +444,13 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
 	defer cancel()
-	result, err := s.contextAI.BuildCaptureContext(ctx, ai.CaptureContextRequest{
+	request := ai.CaptureContextRequest{
 		SessionID: sessionID,
 		Content:   current.Content,
 		Messages:  captureContextMessages(current.Messages),
 		Existing:  captureContextFromScratchpad(req.ExistingContext),
-	})
+	}
+	result, err := s.buildCaptureContextWithRetry(ctx, sessionID, contentAtSchedule, request)
 	if err != nil {
 		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err)
 		return
@@ -453,6 +465,63 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 	}
 	result = preserveLatestUserTurns(result, latest.Messages)
 	_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
+}
+
+func (s *ScratchpadService) buildCaptureContextWithRetry(ctx context.Context, sessionID, contentAtSchedule string, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
+	var lastErr error
+	maxAttempts := len(s.contextRetryDelays) + 1
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			delay := s.contextRetryDelays[attempt-1]
+			slog.Info("capture context enrichment retrying", "session_id", sessionID, "attempt", attempt+1, "max_attempts", maxAttempts, "delay", delay, "error", lastErr)
+			if err := waitCaptureContextRetryDelay(ctx, delay); err != nil {
+				return ai.CaptureContextResult{}, err
+			}
+			latest, err := s.store.Get(sessionID)
+			if err != nil || latest.Content != contentAtSchedule {
+				return ai.CaptureContextResult{}, context.Canceled
+			}
+		}
+		result, err := s.contextAI.BuildCaptureContext(ctx, req)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !isRetryableCaptureContextError(err) || attempt == maxAttempts-1 {
+			return ai.CaptureContextResult{}, err
+		}
+	}
+	return ai.CaptureContextResult{}, lastErr
+}
+
+func waitCaptureContextRetryDelay(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableCaptureContextError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var providerErr ai.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Retryable
 }
 
 func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error) {

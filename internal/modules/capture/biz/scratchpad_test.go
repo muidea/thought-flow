@@ -653,8 +653,48 @@ func TestScratchpadServiceAppendMessageSurfacesProviderFailure(t *testing.T) {
 	if sp.Messages[1].Role != "ai" || !strings.Contains(sp.Messages[1].Text, "鉴权失败") {
 		t.Fatalf("failure message = %+v", sp.Messages[1])
 	}
+	if provider.callCount() != 1 {
+		t.Fatalf("non-retryable provider calls = %d, want 1", provider.callCount())
+	}
 	if hub.Count(models.EventScratchpadContextUpdated) != 1 {
 		t.Fatalf("events = %+v", hub.events)
+	}
+}
+
+func TestScratchpadServiceAppendMessageRetriesTransientProviderFailure(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &stubCaptureContextProvider{
+		errs: []error{
+			ai.ProviderError{Code: "thoughtflow.ai.transient_status", StatusCode: 529, Message: "cluster busy", Retryable: true},
+			nil,
+		},
+		result: ai.CaptureContextResult{
+			CandidateSummary: "retry succeeded",
+			CandidateBody:    "retry body",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+		WithCaptureContextRetryDelays(0),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "needs retry"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return sp.SessionContext.CandidateSummary == "retry succeeded"
+	})
+	if provider.callCount() != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.callCount())
+	}
+	if len(sp.Messages) != 2 || sp.Messages[1].Text != "retry succeeded" {
+		t.Fatalf("messages = %+v", sp.Messages)
+	}
+	if strings.Contains(sp.Messages[1].Text, "暂时不可用") {
+		t.Fatalf("transient failure leaked to user: %+v", sp.Messages)
 	}
 }
 
@@ -710,6 +750,13 @@ func TestScratchpadServiceCaptureContextTimeoutCanBeConfigured(t *testing.T) {
 	svc = NewScratchpadService(newMemoryScratchpad(), WithCaptureContextTimeout(0))
 	if svc.contextTimeout != defaultCaptureContextEnrichTimeout {
 		t.Fatalf("zero timeout should keep default, got %v", svc.contextTimeout)
+	}
+	if len(svc.contextRetryDelays) != len(defaultCaptureContextRetryDelays) {
+		t.Fatalf("default retry delays = %+v", svc.contextRetryDelays)
+	}
+	svc = NewScratchpadService(newMemoryScratchpad(), WithCaptureContextRetryDelays(0, time.Millisecond))
+	if len(svc.contextRetryDelays) != 2 || svc.contextRetryDelays[0] != 0 || svc.contextRetryDelays[1] != time.Millisecond {
+		t.Fatalf("configured retry delays = %+v", svc.contextRetryDelays)
 	}
 }
 
@@ -809,13 +856,18 @@ type stubCaptureContextProvider struct {
 	lastReq ai.CaptureContextRequest
 	result  ai.CaptureContextResult
 	err     error
+	errs    []error
 }
 
 func (s *stubCaptureContextProvider) BuildCaptureContext(_ context.Context, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
 	s.mu.Lock()
 	s.calls++
 	s.lastReq = req
+	call := s.calls
 	s.mu.Unlock()
+	if call <= len(s.errs) && s.errs[call-1] != nil {
+		return ai.CaptureContextResult{}, s.errs[call-1]
+	}
 	if s.err != nil {
 		return ai.CaptureContextResult{}, s.err
 	}
