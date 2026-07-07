@@ -343,7 +343,7 @@ export const messages = {
   "topics.rule.auto_weave_disabled": "disabled",
 
   "compose.title": "Write from Sources",
-  "compose.description": "Generate a new thought from notes, search results, and topic sections",
+  "compose.description": "Create writing from notes, search results, and topics",
   "compose.create": "Generate writing",
   "compose.refresh": "Refresh",
   "compose.source_count": "{n} selected sources",
