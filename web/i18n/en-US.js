@@ -38,6 +38,7 @@ export const messages = {
   "topbar.badge.search": "Search",
   "topbar.action.system": "System",
   "topbar.language": "Language",
+  "topbar.gear": "Settings",
   "topbar.gear_full": "Open settings",
   "topbar.skip_to_main": "Skip to main content",
 
