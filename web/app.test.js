@@ -109,12 +109,13 @@ function makeDomStub(initial = {}) {
   const controls = ["search-query", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
     "thought-filter", "settings-drawer-event-type", "settings-drawer-event-resource"];
-  // Side-effect nodes (toast, basket list, etc.) only need the methods the
+  // Side-effect nodes (toast, source list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
   const sideEffectNodes = new Set(["toast", "compose-source-count", "compose-source-list",
-    "clear-compose-basket", "compose-basket-list", "compose-source-count-basket",
-    "clear-compose-basket-tab", "selected-count", "add-selected-compose", "clear-selected",
+    "clear-compose-sources", "compose-sources-list", "compose-source-count-sources",
+    "clear-compose-sources-tab", "open-compose-create", "open-compose-create-sources",
+    "selected-count", "add-selected-compose", "clear-selected",
     "topic-rules-summary"]);
   // Each control is a live proxy over the store: reads go to store, writes
   // (and `checked` toggles) flow back into the store so assertions can see them.
@@ -386,7 +387,7 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
-      renderComposeBasketItem,
+      renderComposeSourcesItem,
       renderThoughtsList,
       renderTopics,
       runSearch,
@@ -394,9 +395,9 @@ function loadAppFunctionsWith(opts = {}) {
       renderTopicCandidateImpact,
       renderTopicCandidates,
       renderTopicRules,
-      createComposeBasket,
-      addToComposeBasket,
-      clearComposeBasket,
+      createComposeSources,
+      addToComposeSources,
+      clearComposeSources,
       displayWorkspace,
       displayRuntimePath,
       buildRouteHash,
@@ -404,8 +405,8 @@ function loadAppFunctionsWith(opts = {}) {
       refreshRouteData,
       applyRoute,
       PAGE_SERIALIZERS,
-      persistBasket,
-      restoreBasket,
+      persistSources,
+      restoreSources,
       trapFocus,
       classifyCaptureInput,
       parseCaptureCommand,
@@ -486,8 +487,10 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   // the topic id lives in the query and the page has no in-param topicId.
   assert.deepEqual(route("#/topics?topic=demo&tab=rules"), { page: "topics", nav: "topics", params: {}, query: { topic: "demo", tab: "rules" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
-  assert.deepEqual(route("#/compose"), { page: "compose", nav: "compose", params: {}, query: {} });
-  assert.deepEqual(route("#/compose?draft=d-1"), { page: "compose", nav: "compose", params: {}, query: { draft: "d-1" } });
+  assert.deepEqual(route("#/write"), { page: "compose", nav: "compose", params: {}, query: {} });
+  assert.deepEqual(route("#/write?tab=sources"), { page: "compose", nav: "compose", params: {}, query: { tab: "sources" } });
+  assert.deepEqual(route("#/write?draft=d-1"), { page: "compose", nav: "compose", params: {}, query: { draft: "d-1" } });
+  assert.deepEqual(route("#/compose?tab=basket"), { page: "dashboard", nav: "overview", params: {}, query: { tab: "basket" } });
   // The bare /notes segment opens the notes list with no thought selected;
   // ?id= selects a specific thought.
   assert.deepEqual(route("#/notes"), { page: "thoughts", nav: "notes", params: { thoughtId: "" }, query: {} });
@@ -497,7 +500,7 @@ test("parseRoute falls back to overview for unknown segments", () => {
   const app = loadAppFunctions();
   const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
   // Any top-level segment that isn't in the live set (overview / capture /
-  // search / topics / notes / compose) falls through to overview. The
+  // search / topics / notes / write) falls through to overview. The
   // query is preserved so legacy query params don't silently vanish.
   assert.deepEqual(
     route("#/legacy-dashboard"),
@@ -563,37 +566,37 @@ test("renderSearchResultItem exposes source actions without score details", () =
   assert.doesNotMatch(html, /0\.80/);
   assert.doesNotMatch(html, /0\.70/);
   assert.doesNotMatch(html, /0\.60/);
-  assert.match(html, /data-basket-id="thought-1"/);
-  assert.match(html, /data-basket-title="Search Result"/);
+  assert.match(html, /data-compose-source-id="thought-1"/);
+  assert.match(html, /data-compose-source-title="Search Result"/);
   assert.match(html, /data-weave-id="thought-1"/);
   assert.match(html, /thoughts\/demo\.md/);
   assert.doesNotMatch(html, /tf-explain/);
 });
 
-test("compose basket helper deduplicates and clears sources", () => {
+test("compose sources helper deduplicates and clears sources", () => {
   const app = loadAppFunctions();
   // Initial entries are full source objects keyed by (source_type, source_id).
-  const basket = app.createComposeBasket([
+  const sourceQueue = app.createComposeSources([
     { source_type: "thought", source_id: "one", title: "One" },
     { source_type: "thought", source_id: "one", title: "duplicate" },
   ]);
   const values = (result) => JSON.parse(JSON.stringify(result));
 
-  assert.deepEqual(values(basket.values()), [
+  assert.deepEqual(values(sourceQueue.values()), [
     { source_type: "thought", source_id: "one", title: "One" },
   ]);
-  // add() of a new (type, id) extends the basket.
-  assert.deepEqual(values(basket.add({ source_type: "search_result", source_id: "two" })), [
+  // add() of a new (type, id) extends the source queue.
+  assert.deepEqual(values(sourceQueue.add({ source_type: "search_result", source_id: "two" })), [
     { source_type: "thought", source_id: "one", title: "One" },
     { source_type: "search_result", source_id: "two", title: "" },
   ]);
   // add() of a duplicate is a no-op (no error, no double entry).
-  assert.deepEqual(values(basket.add({ source_type: "thought", source_id: "one", title: "ignored" })), [
+  assert.deepEqual(values(sourceQueue.add({ source_type: "thought", source_id: "one", title: "ignored" })), [
     { source_type: "thought", source_id: "one", title: "One" },
     { source_type: "search_result", source_id: "two", title: "" },
   ]);
   // addMany() iterates and deduplicates.
-  assert.deepEqual(values(basket.addMany([
+  assert.deepEqual(values(sourceQueue.addMany([
     { source_type: "search_result", source_id: "two" },
     { source_type: "topic_section", source_id: "three", title: "Three" },
   ])), [
@@ -601,9 +604,9 @@ test("compose basket helper deduplicates and clears sources", () => {
     { source_type: "search_result", source_id: "two", title: "" },
     { source_type: "topic_section", source_id: "three", title: "Three" },
   ]);
-  // clear() empties the basket.
-  assert.deepEqual(values(basket.clear()), []);
-  assert.deepEqual(values(basket.values()), []);
+  // clear() empties the source queue.
+  assert.deepEqual(values(sourceQueue.clear()), []);
+  assert.deepEqual(values(sourceQueue.values()), []);
 });
 
 test("renderMarkdown supports extended document structures safely", () => {
@@ -788,21 +791,21 @@ test("renderTopicCandidates lists every item and falls back to empty state", () 
   assert.match(html, /data-candidate-ref="s1"/);
 });
 
-test("renderComposeBasketItem exposes source metadata and actions", () => {
+test("renderComposeSourcesItem exposes source metadata and actions", () => {
   const app = loadAppFunctions();
 
-  const html = app.renderComposeBasketItem({
+  const html = app.renderComposeSourcesItem({
     source_type: "thought",
     source_id: "thought-1",
     title: "Readable title",
   });
 
-  assert.match(html, /tf-basket-item/);
+  assert.match(html, /tf-source-queue-item/);
   assert.match(html, /Readable title/);
   assert.match(html, /compose\.source_type\.thought/);
-  assert.match(html, /data-basket-preview="thought-1"/);
-  assert.match(html, /data-basket-remove="thought-1"/);
-  assert.match(html, /compose\.basket_source_id/);
+  assert.match(html, /data-compose-source-preview="thought-1"/);
+  assert.match(html, /data-compose-source-remove="thought-1"/);
+  assert.match(html, /compose\.source_id/);
 });
 
 test("outline helpers preserve one title per line", () => {
@@ -822,7 +825,7 @@ test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", ()
   const app = loadAppFunctions();
   const html = app.renderSearchResultItem({ thought_id: "x", title: "t", score: 0.1 }, { selected: false, activeTopicId: "" });
   assert.doesNotMatch(html, /search\.score_label/);
-  assert.match(html, /search\.result\.add_basket/);
+  assert.match(html, /search\.result\.add_source/);
   assert.doesNotMatch(html, /search\.keyword_label/);
   assert.doesNotMatch(html, /search\.semantic_label/);
   assert.doesNotMatch(html, /search\.recency_label/);
@@ -906,6 +909,7 @@ test("buildRouteHash omits empty query fields and keeps the path clean", () => {
   // ?tab=... so deep-links land on the right pane.
   assert.equal(app.buildRouteHash("topics", { topicId: "ai-notes" }, { tab: "rules" }), "#/topics/ai-notes?tab=rules");
   assert.equal(app.buildRouteHash("topics", { topicId: "ai-notes" }, {}), "#/topics/ai-notes");
+  assert.equal(app.buildRouteHash("compose", {}, { tab: "sources" }), "#/write?tab=sources");
   // Special characters are URL-encoded.
   assert.equal(app.buildRouteHash("search", {}, { q: "a b&c" }), "#/search?q=a%20b%26c");
 });
@@ -1105,10 +1109,10 @@ test("handleTabClick scopes ordinary page tabs to their own page", () => {
       },
     };
   };
-  const tabA = { dataset: { tab: "compose-drafts" }, classList: classes(["active"]) };
-  const tabB = { dataset: { tab: "compose-basket" }, classList: classes() };
-  const panelA = { id: "tab-compose-drafts", classList: classes(["active"]) };
-  const panelB = { id: "tab-compose-basket", classList: classes() };
+  const tabA = { dataset: { tab: "compose-writing" }, classList: classes(["active"]) };
+  const tabB = { dataset: { tab: "compose-sources" }, classList: classes() };
+  const panelA = { id: "tab-compose-writing", classList: classes(["active"]) };
+  const panelB = { id: "tab-compose-sources", classList: classes() };
   const outsideTab = { dataset: { tab: "notes-all" }, classList: classes(["active"]) };
   const page = {
     dataset: { page: "compose" },
@@ -1152,9 +1156,9 @@ test("applyRoute refreshes the target page data when navigation enters search", 
   assert.match(dom.store["search-results_innerHTML"], /empty\.no_matching/);
 });
 
-test("persistBasket writes through the backend and clears legacy browser storage", async () => {
+test("persistSources writes through the backend and clears browser storage", async () => {
   const storage = makeStorageStub({
-    "tflow.basket": JSON.stringify({ sources: [{ source_type: "thought", source_id: "legacy" }] }),
+    "tflow.compose.sources": JSON.stringify({ sources: [{ source_type: "thought", source_id: "stale" }] }),
   });
   const calls = [];
   const app = loadAppFunctionsWith({
@@ -1166,23 +1170,23 @@ test("persistBasket writes through the backend and clears legacy browser storage
     },
   });
 
-  app._state.composeBasket = new Map([
+  app._state.composeSources = new Map([
     ["thought::t-1", { source_type: "thought", source_id: "t-1", title: "T1" }],
     ["search_result::t-2", { source_type: "search_result", source_id: "t-2", title: "T2" }],
   ]);
-  await app.persistBasket();
+  await app.persistSources();
 
-  assert.equal(storage.data["tflow.basket"], undefined);
+  assert.equal(storage.data["tflow.compose.sources"], undefined);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "PUT");
-  assert.equal(calls[0].url, "/api/compose/basket");
+  assert.equal(calls[0].url, "/api/compose/sources");
   assert.deepEqual(JSON.parse(calls[0].body).sources, [
     { source_type: "thought", source_id: "t-1", title: "T1" },
     { source_type: "search_result", source_id: "t-2", title: "T2" },
   ]);
 });
 
-test("persistBasket clears the backend basket when no sources remain", async () => {
+test("persistSources clears the backend sources when no sources remain", async () => {
   const calls = [];
   const app = loadAppFunctionsWith({
     exposeState: true,
@@ -1192,21 +1196,21 @@ test("persistBasket clears the backend basket when no sources remain", async () 
     },
   });
 
-  app._state.composeBasket = new Map();
-  await app.persistBasket();
+  app._state.composeSources = new Map();
+  await app.persistSources();
 
-  assert.deepEqual(calls, [{ url: "/api/compose/basket", method: "DELETE" }]);
+  assert.deepEqual(calls, [{ url: "/api/compose/sources", method: "DELETE" }]);
 });
 
-test("restoreBasket reads from the backend only", async () => {
+test("restoreSources reads from the backend only", async () => {
   const storage = makeStorageStub({
-    "tflow.basket": JSON.stringify({ sources: [{ source_type: "thought", source_id: "legacy" }] }),
+    "tflow.compose.sources": JSON.stringify({ sources: [{ source_type: "thought", source_id: "stale" }] }),
   });
   const app = loadAppFunctionsWith({
     storage,
     exposeState: true,
     fetch: async (url, options = {}) => {
-      assert.equal(String(url), "/api/compose/basket");
+      assert.equal(String(url), "/api/compose/sources");
       assert.equal(options.method || "GET", "GET");
       return {
         ok: true,
@@ -1222,93 +1226,93 @@ test("restoreBasket reads from the backend only", async () => {
     },
   });
 
-  await app.restoreBasket();
-  const restored = JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
-  assert.equal(storage.data["tflow.basket"], undefined);
+  await app.restoreSources();
+  const restored = JSON.parse(JSON.stringify(Array.from(app._state.composeSources.values())));
+  assert.equal(storage.data["tflow.compose.sources"], undefined);
   assert.deepEqual(restored, [
     { source_type: "thought", source_id: "t-1", title: "T1" },
     { source_type: "search_result", source_id: "t-2", title: "T2" },
   ]);
 });
 
-test("createComposeBasket deduplicates by source_type+source_id and supports clear", () => {
+test("createComposeSources deduplicates by source_type+source_id and supports clear", () => {
   const app = loadAppFunctions();
-  // basket.values() returns objects created in the vm context, so flatten via
+  // sourceQueue.values() returns objects created in the vm context, so flatten via
   // JSON before comparing against literals defined in this test realm.
   const flat = (arr) => JSON.parse(JSON.stringify(arr));
 
-  const basket = app.createComposeBasket();
-  assert.equal(basket.size(), 0);
-  assert.deepEqual(flat(basket.values()), []);
+  const sourceQueue = app.createComposeSources();
+  assert.equal(sourceQueue.size(), 0);
+  assert.deepEqual(flat(sourceQueue.values()), []);
 
   // New entries appear in insertion order. add() returns the full values list.
-  assert.deepEqual(flat(basket.add({ source_type: "thought", source_id: "a", title: "A" })), [
+  assert.deepEqual(flat(sourceQueue.add({ source_type: "thought", source_id: "a", title: "A" })), [
     { source_type: "thought", source_id: "a", title: "A" },
   ]);
-  assert.deepEqual(flat(basket.add({ source_type: "search_result", source_id: "b" })), [
+  assert.deepEqual(flat(sourceQueue.add({ source_type: "search_result", source_id: "b" })), [
     { source_type: "thought", source_id: "a", title: "A" },
     { source_type: "search_result", source_id: "b", title: "" },
   ]);
-  assert.equal(basket.size(), 2);
+  assert.equal(sourceQueue.size(), 2);
 
   // Same (source_type, source_id) twice — kept only once. The returned values
   // list reflects the unchanged state.
-  assert.deepEqual(flat(basket.add({ source_type: "thought", source_id: "a", title: "ignored" })), [
+  assert.deepEqual(flat(sourceQueue.add({ source_type: "thought", source_id: "a", title: "ignored" })), [
     { source_type: "thought", source_id: "a", title: "A" },
     { source_type: "search_result", source_id: "b", title: "" },
   ]);
-  assert.equal(basket.size(), 2);
+  assert.equal(sourceQueue.size(), 2);
 
   // Same source_id under a different source_type is a distinct source.
-  assert.deepEqual(flat(basket.add({ source_type: "search_result", source_id: "a", title: "" })), [
+  assert.deepEqual(flat(sourceQueue.add({ source_type: "search_result", source_id: "a", title: "" })), [
     { source_type: "thought", source_id: "a", title: "A" },
     { source_type: "search_result", source_id: "b", title: "" },
     { source_type: "search_result", source_id: "a", title: "" },
   ]);
-  assert.equal(basket.size(), 3);
+  assert.equal(sourceQueue.size(), 3);
 
   // addMany iterates all sources; malformed entries are silently dropped.
-  basket.addMany([
+  sourceQueue.addMany([
     null,
     { source_type: "thought" },
     { source_id: "no-type" },
     { source_type: "topic_section", source_id: "t-1", title: "T" },
   ]);
-  assert.equal(basket.size(), 4);
-  assert.equal(basket.has({ source_type: "topic_section", source_id: "t-1" }), true);
+  assert.equal(sourceQueue.size(), 4);
+  assert.equal(sourceQueue.has({ source_type: "topic_section", source_id: "t-1" }), true);
 
-  // clear empties the basket.
-  basket.clear();
-  assert.equal(basket.size(), 0);
-  assert.deepEqual(flat(basket.values()), []);
+  // clear empties the source queue.
+  sourceQueue.clear();
+  assert.equal(sourceQueue.size(), 0);
+  assert.deepEqual(flat(sourceQueue.values()), []);
 });
 
-test("addToComposeBasket accepts strings and source objects, defaults to thought", () => {
-  // addToComposeBasket is a side-effecting helper (it persists, broadcasts,
+test("addToComposeSources accepts strings and source objects, defaults to thought", () => {
+  // addToComposeSources is a side-effecting helper (it persists, broadcasts,
   // and renders) so it needs the dom + storage stubs.
   const dom = makeDomStub();
   const storage = makeStorageStub();
   const app = loadAppFunctionsWith({ dom, storage, exposeState: true });
 
-  const flat = () => JSON.parse(JSON.stringify(Array.from(app._state.composeBasket.values())));
+  const flat = () => JSON.parse(JSON.stringify(Array.from(app._state.composeSources.values())));
 
   // A bare string defaults to source_type "thought".
-  app.addToComposeBasket(["t-1"]);
+  app.addToComposeSources(["t-1"]);
   assert.deepEqual(flat(), [{ source_type: "thought", source_id: "t-1", title: "" }]);
 
   // A second thought under the default sourceType — string path again.
-  app.addToComposeBasket(["t-2"]);
+  app.addToComposeSources(["t-2"]);
   assert.deepEqual(flat(), [
     { source_type: "thought", source_id: "t-1", title: "" },
     { source_type: "thought", source_id: "t-2", title: "" },
   ]);
 
   // Duplicate thought id is a no-op (no second entry, no error).
-  app.addToComposeBasket(["t-1"]);
-  assert.equal(app._state.composeBasket.size, 2);
+  app.addToComposeSources(["t-1"]);
+  assert.equal(app._state.composeSources.size, 2);
 
   // Source objects override source_type and carry title metadata.
-  app.addToComposeBasket([
+  app.addToComposeSources([
     { source_type: "search_result", source_id: "s-1", title: "S1" },
     { source_type: "topic_section", source_id: "u-1", title: "U1" },
   ]);
@@ -1321,11 +1325,11 @@ test("addToComposeBasket accepts strings and source objects, defaults to thought
 
   // Mixing strings and objects in one call is supported; strings get the
   // explicit sourceType, objects use their own source_type.
-  app.addToComposeBasket(
+  app.addToComposeSources(
     [{ source_type: "capture_session", source_id: "c-1", title: "C1" }, "t-3"],
     "thought",
   );
-  assert.equal(app._state.composeBasket.size, 6);
+  assert.equal(app._state.composeSources.size, 6);
   assert.deepEqual(flat(), [
     { source_type: "thought", source_id: "t-1", title: "" },
     { source_type: "thought", source_id: "t-2", title: "" },
@@ -1335,10 +1339,29 @@ test("addToComposeBasket accepts strings and source objects, defaults to thought
     { source_type: "thought", source_id: "t-3", title: "" },
   ]);
 
-  // clearComposeBasket empties state without touching storage directly.
-  app.clearComposeBasket();
-  assert.equal(app._state.composeBasket.size, 0);
+  // clearComposeSources empties state without touching storage directly.
+  app.clearComposeSources();
+  assert.equal(app._state.composeSources.size, 0);
   assert.equal(flat().length, 0);
+});
+
+test("compose create actions are disabled until the source queue has sources", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  const create = dom.find("#open-compose-create");
+  const createFromSources = dom.find("#open-compose-create-sources");
+
+  app.clearComposeSources();
+  assert.equal(create.disabled, true);
+  assert.equal(createFromSources.disabled, true);
+
+  app.addToComposeSources(["t-1"]);
+  assert.equal(create.disabled, false);
+  assert.equal(createFromSources.disabled, false);
+
+  app.clearComposeSources();
+  assert.equal(create.disabled, true);
+  assert.equal(createFromSources.disabled, true);
 });
 
 test("navItemAriaCurrent marks the active page and clears others", () => {
@@ -1541,7 +1564,7 @@ test("notes list item click switches directly to detail tab", () => {
   assert.equal(activeNotesTab(dom), "notes-detail");
 });
 
-test("restoreRoutePage hydrates compose basket tab from query", () => {
+test("restoreRoutePage hydrates compose sources tab from query", () => {
   const classes = (initial = []) => {
     const set = new Set(initial);
     return {
@@ -1552,14 +1575,14 @@ test("restoreRoutePage hydrates compose basket tab from query", () => {
       },
     };
   };
-  const tabDrafts = { dataset: { tab: "compose-drafts" }, classList: classes(["active"]) };
-  const tabBasket = { dataset: { tab: "compose-basket" }, classList: classes() };
-  const panelDrafts = { id: "tab-compose-drafts", classList: classes(["active"]) };
-  const panelBasket = { id: "tab-compose-basket", classList: classes() };
+  const tabDrafts = { dataset: { tab: "compose-writing" }, classList: classes(["active"]) };
+  const tabSources = { dataset: { tab: "compose-sources" }, classList: classes() };
+  const panelDrafts = { id: "tab-compose-writing", classList: classes(["active"]) };
+  const panelSources = { id: "tab-compose-sources", classList: classes() };
   const composePage = {
     querySelectorAll: (selector) => {
-      if (selector === ".tab") return [tabDrafts, tabBasket];
-      if (selector === ".tab-panel") return [panelDrafts, panelBasket];
+      if (selector === ".tab") return [tabDrafts, tabSources];
+      if (selector === ".tab-panel") return [panelDrafts, panelSources];
       return [];
     },
   };
@@ -1568,12 +1591,12 @@ test("restoreRoutePage hydrates compose basket tab from query", () => {
   dom.find = (selector) => (selector === "#page-compose" ? composePage : baseFind(selector));
   const app = loadAppFunctionsWith({ dom });
 
-  app.restoreRoutePage("compose", { tab: "basket" });
+  app.restoreRoutePage("compose", { tab: "sources" });
 
   assert.equal(tabDrafts.classList.has("active"), false);
-  assert.equal(tabBasket.classList.has("active"), true);
+  assert.equal(tabSources.classList.has("active"), true);
   assert.equal(panelDrafts.classList.has("active"), false);
-  assert.equal(panelBasket.classList.has("active"), true);
+  assert.equal(panelSources.classList.has("active"), true);
 });
 
 test("appendExpansionSections renders the 4 expansion fields when present", () => {

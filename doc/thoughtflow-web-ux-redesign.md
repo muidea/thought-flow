@@ -78,7 +78,7 @@ AppShell
 | `#/notes` | Notes | 已归档 Thought 阅读、状态查看、重新整理入口 |
 | `#/search` | Search | 内容关键词搜索、结果预览、分发到 Notes/Compose/Topics |
 | `#/topics` | Topics | 专题正文、候选影响确认、规则维护 |
-| `#/compose` | Compose | 多来源整理、草稿编辑、保存为 Thought |
+| `#/write` | Compose | 多来源整理、草稿编辑、保存为 Thought |
 | Settings Drawer | Settings | 系统状态、外部能力、索引、Git、Jobs/Events 治理 |
 
 当前阶段不保留旧 hash 兼容。Topic detail / weave review 作为 `#/topics` 内部 tab 或状态，不再作为一级 route。
@@ -736,7 +736,7 @@ window.addEventListener("hashchange", routeFromHash);
 1. 空 hash 默认 `#/overview`。
 2. `#/notes?id=<id>` 打开 Notes 页面并加载详情。
 3. `#/topics?topic=<id>&tab=detail|candidates|rules|proposals` 打开 Topics 内部状态。
-4. `#/compose?draft=<id>` 打开 Compose 草稿。
+4. `#/write?draft=<id>` 打开 Compose 草稿。
 5. 旧 hash 路径（todo 第 8 节收口后已废弃；具体名单见 `doc/thoughtflow-implementation-status.md` 附录 A）`fall-through` 到 Overview 并按参数打开 Settings Drawer 对应 tab。
 
 导航验收：
@@ -849,7 +849,7 @@ Browser smoke 需要继续覆盖：
 
 验收：
 
-1. `#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/compose` 可切换。
+1. `#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/write` 可切换。
 2. Settings 通过顶栏齿轮或旧 hash 打开 Drawer。
 3. 旧的一屏三栏布局不再作为主交互方式。
 4. Chrome desktop/mobile browser smoke 通过。
@@ -976,7 +976,7 @@ Phase 1 后应改为断言新信息架构：
 4. 可切换到 `#/capture`，并看到对话流和 Composer。
 5. 可切换到 `#/search`，mock API 返回结果后能看到结果列表。
 6. 可切换到 `#/topics`，并能进入专题工作区。
-7. 可切换到 `#/compose`，并看到来源篮和草稿空态。
+7. 可切换到 `#/write`，并看到来源篮和草稿空态。
 8. 顶栏齿轮可打开 Settings Drawer。
 9. Chrome desktop/mobile 均无水平溢出。
 10. Firefox/Safari 仍保留目标声明和环境 skip。
@@ -1016,7 +1016,7 @@ Phase 4 后新增 browser smoke 覆盖：
    - 空 hash -> overview。
    - `#/notes?id=abc` -> notes + active id。
    - `#/topics?topic=demo&tab=proposals` -> topics 内部提案 tab。
-   - `#/compose?draft=draft-1` -> compose + active draft id。
+   - `#/write?draft=draft-1` -> compose + active draft id。
    - 旧 hash 路径（todo 第 8 节收口后已废弃；具体名单见 `doc/thoughtflow-implementation-status.md` 附录 A）`-> overview + settings events drawer`。
 2. `navItemClass(route, item)`：
    - 当前页面 active。

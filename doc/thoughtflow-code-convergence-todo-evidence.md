@@ -439,7 +439,7 @@
 
 ### 6.2 Node / Web (5 项)
 
-- [x] route parser 覆盖 `#/overview`、`#/capture`、`#/notes?id=...`、`#/search`、`#/topics?topic=...&tab=...`、`#/compose?draft=...`。
+- [x] route parser 覆盖 `#/overview`、`#/capture`、`#/notes?id=...`、`#/search`、`#/topics?topic=...&tab=...`、`#/write?draft=...`。
   - **impl-grep**: `rg "parseRoute|restoreRoutePage" web/app.test.js` 命中
   - **impl**: `app.test.js` route parser block
   - **test**: `make node-test` 5 个相关 test: "parseRoute maps hash routes to pages and navigation groups" (6.4ms) + "parseRoute falls back to overview for unknown segments" (5.9ms) + "restoreRoutePage populates search inputs from the query object" (5.0ms) + "restoreRoutePage ignores unknown / malformed keys without throwing" (4.8ms) + "restoreRoutePage hydrates topic state from query" (4.7ms) + "buildRouteHash omits empty query fields and keeps the path clean" (5.6ms) (6 个相关 test)

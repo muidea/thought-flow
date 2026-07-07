@@ -18,7 +18,7 @@ const state = {
   topics: [],
   activeTopicId: "",
   selectedThoughts: new Set(),
-  composeBasket: new Map(),
+  composeSources: new Map(),
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
@@ -86,10 +86,10 @@ function initTflowBus() {
   return null;
 }
 
-// Wire basket updates onto the bus so other tabs see add/remove/clear.
-function broadcastBasketChange() {
+// Wire compose source updates onto the bus so other tabs see add/remove/clear.
+function broadcastSourcesChange() {
   if (tflowBus) {
-    tflowBus.post({ kind: "basket:changed" });
+    tflowBus.post({ kind: "compose:sources_changed" });
   }
 }
 
@@ -114,7 +114,7 @@ function parseRoute(hash) {
   if (parts[0] === "notes") {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
   }
-  if (parts[0] === "compose") {
+  if (parts[0] === "write") {
     return { page: "compose", nav: "compose", params: {}, query };
   }
   if (parts[0] === "overview") {
@@ -157,7 +157,7 @@ const PAGE_SERIALIZERS = {
   compose: () => {
     const q = {};
     const active = document.querySelector(`#page-compose .tab.active`);
-    if (active && active.dataset.tab && active.dataset.tab !== "compose-drafts") q.tab = active.dataset.tab.replace(/^compose-/, "");
+    if (active && active.dataset.tab && active.dataset.tab !== defaultComposeTabName()) q.tab = composeTabRouteValue(active.dataset.tab);
     return q;
   },
 };
@@ -203,8 +203,7 @@ function restoreRoutePage(page, query) {
   } else if (page === "thoughts") {
     activateTab(normalizeNotesTabName(query.tab, query), $("#page-thoughts"));
   } else if (page === "compose") {
-    const tab = typeof query.tab === "string" && query.tab.trim() ? query.tab.trim() : "drafts";
-    activateTab(tab.startsWith("compose-") ? tab : `compose-${tab}`, $("#page-compose"));
+    activateTab(normalizeComposeTabName(query.tab), $("#page-compose"));
   }
   // topic-review, compose handled by their loaders (proposal / draft IDs
   // come back via API calls and are stored on state).
@@ -212,6 +211,23 @@ function restoreRoutePage(page, query) {
 
 function defaultNotesTabForQuery(query = {}) {
   return typeof query.id === "string" && query.id.trim() ? "notes-detail" : "notes-all";
+}
+
+function defaultComposeTabName() {
+  return "compose-writing";
+}
+
+function normalizeComposeTabName(value = "") {
+  const raw = String(value || "").trim().replace(/^compose-/, "");
+  const aliases = {
+    writing: "compose-writing",
+    sources: "compose-sources",
+  };
+  return aliases[raw] || defaultComposeTabName();
+}
+
+function composeTabRouteValue(tabName = "") {
+  return normalizeComposeTabName(tabName) === "compose-sources" ? "sources" : "writing";
 }
 
 function normalizeNotesTabName(tab, query = {}) {
@@ -248,7 +264,7 @@ function buildRouteHash(page, params = {}, query = {}) {
   const pageToSegment = {
     dashboard: "overview",
     thoughts: "notes",
-    compose: "compose",
+    compose: "write",
   };
   let path = `#/${pageToSegment[page] || page}`;
   if (page === "topics" && params.topicId) {
@@ -329,7 +345,7 @@ async function refreshRouteData(route, options = {}) {
       break;
     case "compose":
       await loadComposeDrafts();
-      renderComposeBasket();
+      renderComposeSources();
       break;
     default:
       break;
@@ -393,25 +409,25 @@ function removeFromStorage(key) {
   }
 }
 
-const BASKET_STORAGE_KEY = "tflow.basket";
+const COMPOSE_SOURCES_STORAGE_KEY = "tflow.compose.sources";
 
-function persistBasket() {
-  removeFromStorage(BASKET_STORAGE_KEY);
-  const sources = Array.from(state.composeBasket.values());
+function persistSources() {
+  removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
+  const sources = Array.from(state.composeSources.values());
   if (sources.length === 0) {
-    return api("/api/compose/basket", { method: "DELETE" }).catch((error) => toast(error.message));
+    return api("/api/compose/sources", { method: "DELETE" }).catch((error) => toast(error.message));
   }
-  return api("/api/compose/basket", {
+  return api("/api/compose/sources", {
     method: "PUT",
     body: JSON.stringify({ sources }),
   }).catch((error) => toast(error.message));
 }
 
-async function restoreBasket() {
-  removeFromStorage(BASKET_STORAGE_KEY);
-  const basket = await api("/api/compose/basket");
+async function restoreSources() {
+  removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
+  const payload = await api("/api/compose/sources");
   const next = new Map();
-  for (const source of basket?.sources || []) {
+  for (const source of payload?.sources || []) {
     if (!source || !source.source_type || !source.source_id) continue;
     next.set(`${source.source_type}::${source.source_id}`, {
       source_type: String(source.source_type),
@@ -419,8 +435,8 @@ async function restoreBasket() {
       title: source.title ? String(source.title) : "",
     });
   }
-  state.composeBasket = next;
-  renderComposeBasket();
+  state.composeSources = next;
+  renderComposeSources();
 }
 
 function navItemClass(route, nav) {
@@ -670,10 +686,10 @@ function displayRuntimePath(value, workspaceRoot = "") {
   return path;
 }
 
-function createComposeBasket(initial = []) {
-  // 篮内每个条目是 {source_type, source_id[, title?]} 复合源;
+function createComposeSources(initial = []) {
+  // 每个条目是 {source_type, source_id[, title?]} 复合源;
   // 去重以 (source_type, source_id) 联合键为基准,同一 thought 既可作为
-  // thought 来源又可作为 search_result 来源重复入篮,互不影响。
+  // thought 来源又可作为 search_result 来源重复加入,互不影响。
   const map = new Map();
   for (const source of initial || []) addSource(source);
   function keyOf(source) {
@@ -1133,10 +1149,10 @@ function renderWeaveProposals() {
 }
 
 function renderComposeDrafts() {
-  const list = $("#compose-drafts");
+  const list = $("#compose-writing");
   if (!list) return;
   if (!state.composeDrafts || state.composeDrafts.length === 0) {
-    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("compose.drafts_empty"))}</div>`;
+    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("compose.writing_empty"))}</div>`;
     return;
   }
   list.innerHTML = state.composeDrafts
@@ -1296,7 +1312,7 @@ function renderThoughtListItem(thought) {
         ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
         <div class="tf-action-row">
           <button class="mini-button" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
-          <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
+          <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_source"))}</button>
           ${thought.path ? `<button class="mini-button" data-copy-path="${escapeHTML(thought.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button>` : ""}
         </div>
       </div>
@@ -1348,7 +1364,7 @@ function renderThoughtsList() {
     });
   });
   list.querySelectorAll("[data-note-compose]").forEach((button) => {
-    button.addEventListener("click", () => addToComposeBasket([button.dataset.noteCompose]));
+    button.addEventListener("click", () => addToComposeSources([button.dataset.noteCompose]));
   });
   bindThoughtReopenButtons(list);
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
@@ -1805,7 +1821,7 @@ function renderTopicMembers(members) {
             <div class="result-meta">${escapeHTML(member.match_type || t("match.label"))} · ${t("match.score", { value: score(member.score) })}</div>
             <div class="score-line">
               <button class="mini-button" data-preview-id="${escapeHTML(member.thought_id || member.id)}" type="button">${escapeHTML(t("search.result.preview"))}</button>
-              <button class="mini-button" data-basket-id="${escapeHTML(member.thought_id || member.id)}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>
+              <button class="mini-button" data-compose-source-id="${escapeHTML(member.thought_id || member.id)}" type="button">${escapeHTML(t("search.result.add_source"))}</button>
             </div>
           </div>
         </div>
@@ -1815,10 +1831,10 @@ function renderTopicMembers(members) {
   node.querySelectorAll("[data-preview-id]").forEach((button) => {
     button.addEventListener("click", () => previewThought(button.dataset.previewId, { drawer: true }).catch((error) => toast(error.message)));
   });
-  node.querySelectorAll("[data-basket-id]").forEach((button) => {
+  node.querySelectorAll("[data-compose-source-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      addToComposeBasket([button.dataset.basketId]);
-      openComposeBasket();
+      addToComposeSources([button.dataset.composeSourceId]);
+      openComposeSources();
     });
   });
 }
@@ -3759,14 +3775,14 @@ function renderResults(response) {
       window.location.hash = `#/notes?id=${encodeURIComponent(button.dataset.openId)}`;
     });
   });
-  list.querySelectorAll("[data-basket-id]").forEach((button) => {
+  list.querySelectorAll("[data-compose-source-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      addToComposeBasket([{
+      addToComposeSources([{
         source_type: "search_result",
-        source_id: button.dataset.basketId,
-        title: button.dataset.basketTitle || "",
+        source_id: button.dataset.composeSourceId,
+        title: button.dataset.composeSourceTitle || "",
       }], "search_result");
-      openComposeBasket();
+      openComposeSources();
     });
   });
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
@@ -3793,7 +3809,7 @@ function renderSearchResultItem(item, options = {}) {
     : ["preview", "open_note", "add_to_compose", "topic_impact", "copy_path"]);
   const canPreview = actions.has("preview") && thoughtID;
   const canOpen = actions.has("open_note") && thoughtID;
-  const canAddBasket = actions.has("add_to_compose") && sourceID;
+  const canAddSources = actions.has("add_to_compose") && sourceID;
   const canReviewWeave = actions.has("topic_impact") && thoughtID;
   const canCopyPath = actions.has("copy_path") && pathHint;
   // SearchResultView 投影只暴露 content-facing 字段: thought_id / title /
@@ -3810,7 +3826,7 @@ function renderSearchResultItem(item, options = {}) {
           </div>
           <div class="tf-action-row">
             ${canOpen ? `<button class="mini-button" data-open-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.open"))}</button>` : ""}
-            ${canAddBasket ? `<button class="mini-button" data-basket-id="${escapeHTML(sourceID)}" data-basket-title="${escapeHTML(title)}" type="button">${escapeHTML(t("search.result.add_basket"))}</button>` : ""}
+            ${canAddSources ? `<button class="mini-button" data-compose-source-id="${escapeHTML(sourceID)}" data-compose-source-title="${escapeHTML(title)}" type="button">${escapeHTML(t("search.result.add_source"))}</button>` : ""}
             ${canReviewWeave ? `<button class="mini-button" data-weave-id="${escapeHTML(thoughtID)}" ${options.activeTopicId ? "" : "disabled"} type="button">${escapeHTML(t("search.result.review_weave"))}</button>` : ""}
             ${canCopyPath ? `<button class="mini-button" data-copy-path="${escapeHTML(pathHint)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(pathHint)}</code>` : ""}
           </div>
@@ -3839,7 +3855,7 @@ function updateSelectionControls() {
   if (clear) clear.disabled = count === 0;
 }
 
-function addToComposeBasket(sources, sourceType = "thought") {
+function addToComposeSources(sources, sourceType = "thought") {
   const normalised = (sources || [])
     .filter(Boolean)
     .map((entry) => {
@@ -3848,34 +3864,34 @@ function addToComposeBasket(sources, sourceType = "thought") {
     })
     .filter((entry) => entry.source_id);
   if (normalised.length === 0) return;
-  state.composeBasket = new Map(state.composeBasket);
+  state.composeSources = new Map(state.composeSources);
   for (const source of normalised) {
     const key = `${source.source_type}::${source.source_id}`;
-    if (state.composeBasket.has(key)) continue;
-    state.composeBasket.set(key, {
+    if (state.composeSources.has(key)) continue;
+    state.composeSources.set(key, {
       source_type: source.source_type,
       source_id: source.source_id,
       title: source.title || "",
     });
   }
-  persistBasket();
-  broadcastBasketChange();
-  renderComposeBasket();
-  toast(t("toast.basket_add", { n: state.composeBasket.size }));
+  persistSources();
+  broadcastSourcesChange();
+  renderComposeSources();
+  toast(t("toast.sources_add", { n: state.composeSources.size }));
 }
 
-function openComposeBasket() {
-  navigateHash(buildRouteHash("compose", {}, { tab: "basket" }), { force: true });
+function openComposeSources() {
+  navigateHash(buildRouteHash("compose", {}, { tab: "sources" }), { force: true });
 }
 
-function removeComposeBasketSource(sourceType, sourceID) {
+function removeComposeSource(sourceType, sourceID) {
   const key = `${sourceType || "thought"}::${sourceID || ""}`;
-  if (!state.composeBasket.has(key)) return;
-  state.composeBasket = new Map(state.composeBasket);
-  state.composeBasket.delete(key);
-  persistBasket();
-  broadcastBasketChange();
-  renderComposeBasket();
+  if (!state.composeSources.has(key)) return;
+  state.composeSources = new Map(state.composeSources);
+  state.composeSources.delete(key);
+  persistSources();
+  broadcastSourcesChange();
+  renderComposeSources();
 }
 
 function clearSearchSelection() {
@@ -3884,19 +3900,23 @@ function clearSearchSelection() {
   persistRouteDebounced();
 }
 
-function clearComposeBasket() {
-  state.composeBasket.clear();
-  persistBasket();
-  broadcastBasketChange();
-  renderComposeBasket();
+function clearComposeSources() {
+  state.composeSources.clear();
+  persistSources();
+  broadcastSourcesChange();
+  renderComposeSources();
 }
 
-function renderComposeBasket() {
-  const sources = Array.from(state.composeBasket.values());
+function renderComposeSources() {
+  const sources = Array.from(state.composeSources.values());
   const ids = sources.map((s) => s.source_id);
   const count = $("#compose-source-count");
   const list = $("#compose-source-list");
-  const clear = $("#clear-compose-basket");
+  const clear = $("#clear-compose-sources");
+  const create = $("#open-compose-create");
+  const createFromSources = $("#open-compose-create-sources");
+  if (create) create.disabled = sources.length === 0;
+  if (createFromSources) createFromSources.disabled = sources.length === 0;
   if (count) {
     const rendered = t("compose.source_count", { n: sources.length });
     // Keep the data-n attribute in sync so a later tApply() doesn't reset
@@ -3917,11 +3937,11 @@ function renderComposeBasket() {
         .join("");
     }
   }
-  // /compose-basket-list 在 Compose 页面 basket tab 单独展示一份,
+  // /compose-sources-list 在 Compose 页面 sources tab 单独展示一份,
   // 复用同源数据 + 同样的 source_type 标签,避免两份内容漂移。
-  const tabList = $("#compose-basket-list");
-  const tabCount = $("#compose-source-count-basket");
-  const tabClear = $("#clear-compose-basket-tab");
+  const tabList = $("#compose-sources-list");
+  const tabCount = $("#compose-source-count-sources");
+  const tabClear = $("#clear-compose-sources-tab");
   if (tabCount) {
     tabCount.setAttribute("data-n", String(sources.length));
     tabCount.textContent = t("compose.source_count", { n: sources.length });
@@ -3931,36 +3951,36 @@ function renderComposeBasket() {
     if (sources.length === 0) {
       tabList.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty_sources"))}</div>`;
     } else {
-      tabList.innerHTML = sources.map(renderComposeBasketItem).join("");
+      tabList.innerHTML = sources.map(renderComposeSourcesItem).join("");
       if (typeof tabList.querySelectorAll === "function") {
-        tabList.querySelectorAll("[data-basket-preview]").forEach((button) => {
-          button.addEventListener("click", () => previewThought(button.dataset.basketPreview, { drawer: true }).catch((error) => toast(error.message)));
+        tabList.querySelectorAll("[data-compose-source-preview]").forEach((button) => {
+          button.addEventListener("click", () => previewThought(button.dataset.composeSourcePreview, { drawer: true }).catch((error) => toast(error.message)));
         });
-        tabList.querySelectorAll("[data-basket-remove]").forEach((button) => {
-          button.addEventListener("click", () => removeComposeBasketSource(button.dataset.sourceType, button.dataset.sourceId));
+        tabList.querySelectorAll("[data-compose-source-remove]").forEach((button) => {
+          button.addEventListener("click", () => removeComposeSource(button.dataset.sourceType, button.dataset.sourceId));
         });
       }
     }
   }
 }
 
-function renderComposeBasketItem(source) {
+function renderComposeSourcesItem(source) {
   const sourceType = source?.source_type || "thought";
   const sourceID = source?.source_id || "";
   const sourceTypeLabel = t(`compose.source_type.${sourceType}`) || sourceType;
   const title = source?.title || sourceID;
   const canPreview = (sourceType === "thought" || sourceType === "search_result") && sourceID;
-  return `<article class="tf-basket-item" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}">
-    <div class="tf-basket-main">
-      <div class="tf-basket-title-row">
+  return `<article class="tf-source-queue-item" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}">
+    <div class="tf-source-queue-main">
+      <div class="tf-source-queue-title-row">
         <strong>${escapeHTML(title)}</strong>
         <span class="pill">${escapeHTML(sourceTypeLabel)}</span>
       </div>
-      <div class="topic-meta">${escapeHTML(t("compose.basket_source_id"))}: <code>${escapeHTML(sourceID)}</code></div>
+      <div class="topic-meta">${escapeHTML(t("compose.source_id"))}: <code>${escapeHTML(sourceID)}</code></div>
     </div>
     <div class="tf-action-row">
-      ${canPreview ? `<button class="mini-button" data-basket-preview="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("search.result.preview"))}</button>` : ""}
-      <button class="mini-button" data-basket-remove="${escapeHTML(sourceID)}" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("compose.basket_remove"))}</button>
+      ${canPreview ? `<button class="mini-button" data-compose-source-preview="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("search.result.preview"))}</button>` : ""}
+      <button class="mini-button" data-compose-source-remove="${escapeHTML(sourceID)}" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("compose.source_remove"))}</button>
     </div>
   </article>`;
 }
@@ -4095,7 +4115,7 @@ async function retryRefine() {
 
 async function createComposeDraft(event) {
   event.preventDefault();
-  const sources = Array.from(state.composeBasket.values());
+  const sources = Array.from(state.composeSources.values());
   if (sources.length === 0) {
     toast(t("toast.add_sources_first"));
     return;
@@ -4130,19 +4150,19 @@ async function loadComposeDraft(draftId) {
   if (!draftId) return;
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
   state.composeDraft = draft;
-  state.composeBasket = new Map(state.composeBasket);
+  state.composeSources = new Map(state.composeSources);
   for (const source of draft.sources || []) {
     if (source && source.source_type && source.source_id) {
-      state.composeBasket.set(`${source.source_type}::${source.source_id}`, {
+      state.composeSources.set(`${source.source_type}::${source.source_id}`, {
         source_type: source.source_type,
         source_id: source.source_id,
         title: source.title || "",
       });
     }
   }
-  await persistBasket();
-  broadcastBasketChange();
-  renderComposeBasket();
+  await persistSources();
+  broadcastSourcesChange();
+  renderComposeSources();
   $("#compose-goal").value = draft.goal || "";
   $("#compose-format").value = draft.format || t("compose.format.summary");
   $("#compose-output").value = renderComposeDraft(draft);
@@ -4225,7 +4245,7 @@ function composeTitleFromContent(content, draft = {}) {
 
 async function saveComposeDraft() {
   if (!state.composeDraft) {
-    toast(t("toast.create_draft_first"));
+    toast(t("toast.generate_writing_first"));
     return;
   }
   const confirmed = await confirmAction(t("compose.confirm_title"), t("compose.confirm_message"));
@@ -4241,10 +4261,10 @@ async function saveComposeDraft() {
   });
   toast(t("toast.saved", { id: result.thought.id }));
   state.selectedThoughts.clear();
-  state.composeBasket.clear();
-  await persistBasket();
-  broadcastBasketChange();
-  renderComposeBasket();
+  state.composeSources.clear();
+  await persistSources();
+  broadcastSourcesChange();
+  renderComposeSources();
   $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/notes?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
   $("#save-compose").disabled = true;
   state.composeDraft = null;
@@ -4602,16 +4622,16 @@ function bind() {
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
   $("#open-compose-create").addEventListener("click", () => openDrawer("compose-create-drawer"));
-  $("#open-compose-create-basket")?.addEventListener("click", () => openDrawer("compose-create-drawer"));
+  $("#open-compose-create-sources")?.addEventListener("click", () => openDrawer("compose-create-drawer"));
   $("#refresh-compose").addEventListener("click", () => loadComposeDrafts().catch((error) => toast(error.message)));
   $("#add-selected-compose").addEventListener("click", () => {
-    addToComposeBasket(Array.from(state.selectedThoughts));
-    openComposeBasket();
+    addToComposeSources(Array.from(state.selectedThoughts));
+    openComposeSources();
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
-  $("#clear-compose-basket").addEventListener("click", clearComposeBasket);
-  $("#clear-compose-basket-tab").addEventListener("click", clearComposeBasket);
-  $("#drawer-add-compose").addEventListener("click", () => addToComposeBasket([state.activeThoughtId]));
+  $("#clear-compose-sources").addEventListener("click", clearComposeSources);
+  $("#clear-compose-sources-tab").addEventListener("click", clearComposeSources);
+  $("#drawer-add-compose").addEventListener("click", () => addToComposeSources([state.activeThoughtId]));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));
   $("#confirm-ok").addEventListener("click", () => closeConfirm(true));
@@ -4694,7 +4714,7 @@ function rerenderForLocale() {
   try { renderThoughtsList(); } catch (_) {}
   try { renderThoughtPanels(); } catch (_) {}
   try { renderTopics(); } catch (_) {}
-  try { renderComposeBasket(); } catch (_) {}
+  try { renderComposeSources(); } catch (_) {}
   try { updateSelectionControls(); } catch (_) {}
   if (state.status) {
     try { renderTopbarStatus(state.status); } catch (_) {}
@@ -4721,12 +4741,12 @@ async function boot() {
   if (tflowBus) {
     tflowBus.on((message) => {
       if (!message || typeof message !== "object") return;
-      if (message.kind === "basket:changed") {
-        restoreBasket().catch((error) => toast(error.message));
+      if (message.kind === "compose:sources_changed") {
+        restoreSources().catch((error) => toast(error.message));
       }
     });
   }
-  await restoreBasket().catch((error) => toast(error.message));
+  await restoreSources().catch((error) => toast(error.message));
   state.capture.sessions = loadCaptureSessions();
   // Sweep any stale cross-tab session locks before we render. Per-key
   // getHolder() only fires for thoughts the user actually opens, but
@@ -4738,10 +4758,10 @@ async function boot() {
     try { window.tflowSessionLock.sweepStaleLocks(); } catch (_error) { /* ignore */ }
   }
   bind();
-  // Render the basket counter once the page is reachable. Done here so the
+  // Render the source counter once the page is reachable. Done here so the
   // rehydrated count shows even before the user opens the compose page.
-  if (typeof renderComposeBasket === "function") {
-    try { renderComposeBasket(); } catch (_error) { /* noop before render */ }
+  if (typeof renderComposeSources === "function") {
+    try { renderComposeSources(); } catch (_error) { /* noop before render */ }
   }
   if (typeof renderCaptureConversation === "function") {
     try { renderCaptureConversation(); } catch (_error) { /* noop before render */ }

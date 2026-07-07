@@ -123,7 +123,7 @@
 
 ### 6.2 Node / Web
 
-- [x] route parser 覆盖 `#/overview`、`#/capture`、`#/notes?id=...`、`#/search`、`#/topics?topic=...&tab=...`、`#/compose?draft=...`。
+- [x] route parser 覆盖 `#/overview`、`#/capture`、`#/notes?id=...`、`#/search`、`#/topics?topic=...&tab=...`、`#/write?draft=...`。
 - [x] Search result renderer 不断言 score/explain 主流程展示。
 - [x] Compose basket helper 覆盖 add/remove/toggle/clear 和去重。
 - [x] `renderComposeDraft` 覆盖 source link 去重。

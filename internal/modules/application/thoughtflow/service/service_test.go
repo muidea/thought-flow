@@ -950,7 +950,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 		{"source_type":"search_result","source_id":"search-1","title":"Search"}
 	]}`)
 	saveRes := httptest.NewRecorder()
-	saveReq := httptest.NewRequest(http.MethodPut, "/api/compose/basket", saveBody)
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/compose/sources", saveBody)
 	service.handleSaveComposeBasket(ctx, saveRes, saveReq)
 	if saveRes.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
@@ -966,7 +966,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 	}
 
 	getRes := httptest.NewRecorder()
-	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/basket", nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/sources", nil)
 	service.handleGetComposeBasket(ctx, getRes, getReq)
 	if getRes.Code != http.StatusOK {
 		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
@@ -982,7 +982,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 	}
 
 	clearRes := httptest.NewRecorder()
-	clearReq := httptest.NewRequest(http.MethodDelete, "/api/compose/basket", nil)
+	clearReq := httptest.NewRequest(http.MethodDelete, "/api/compose/sources", nil)
 	service.handleClearComposeBasket(ctx, clearRes, clearReq)
 	if clearRes.Code != http.StatusOK {
 		t.Fatalf("clear status = %d, body = %s", clearRes.Code, clearRes.Body.String())

@@ -44,7 +44,7 @@
             <span class="tf-menu-label" data-i18n="nav.topics">Topics</span>
             <span class="tf-menu-badge" data-badge="topics" aria-hidden="true"></span>
           </a>
-          <a class="tf-menu-item" href="#/compose" data-nav="compose">
+          <a class="tf-menu-item" href="#/write" data-nav="compose">
             <svg class="tf-menu-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3" cy="3" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="13" cy="8" r="1.5"/><path d="M3 4.5V11.5"/><path d="M3 8C3 8 6 8 8 10C10 12 11.5 9 11.5 9"/></svg>
             <span class="tf-menu-label" data-i18n="nav.compose">Compose</span>
             <span class="tf-menu-badge" data-badge="compose" aria-hidden="true"></span>
@@ -314,50 +314,50 @@
           <section class="tf-page" id="page-compose" data-page="compose">
             <div class="tf-page-header">
               <div>
-                <h2 data-i18n="compose.title">Compose Drafts</h2>
-                <p data-i18n="compose.description">Compose a document from many thoughts</p>
+                <h2 data-i18n="compose.title">Write from Sources</h2>
+                <p data-i18n="compose.description">Generate a new thought from notes, search results, and topic sections</p>
               </div>
               <div class="tf-page-actions">
-                <button class="tf-btn tf-btn-primary" id="open-compose-create" type="button" data-i18n="compose.create">Create draft</button>
+                <button class="tf-btn tf-btn-primary" id="open-compose-create" type="button" data-i18n="compose.create">Generate writing</button>
                 <button class="tf-btn" id="refresh-compose" type="button" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
             <div class="tf-tabs" role="tablist" id="compose-tablist">
-              <button class="tab active" data-tab="compose-drafts" data-i18n="compose.tab.drafts">Drafts</button>
-              <button class="tab" data-tab="compose-basket" data-i18n="compose.tab.basket">Basket</button>
+              <button class="tab active" data-tab="compose-writing" data-i18n="compose.tab.writing">Generated writing</button>
+              <button class="tab" data-tab="compose-sources" data-i18n="compose.tab.sources">Source queue</button>
             </div>
             <section class="tf-card">
-              <div id="tab-compose-drafts" class="tab-panel active">
+              <div id="tab-compose-writing" class="tab-panel active">
                 <div class="tf-two-column">
                   <div>
                     <div class="tf-selection-bar">
                       <span id="compose-source-count" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
-                      <button class="tf-btn" id="clear-compose-basket" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
+                      <button class="tf-btn" id="clear-compose-sources" type="button" disabled data-i18n="compose.clear_sources">Clear sources</button>
                     </div>
-                    <div id="compose-drafts" class="approval-list" data-i18n-template="compose.drafts_empty" data-empty="true">No compose drafts.</div>
+                    <div id="compose-writing" class="approval-list" data-i18n-template="compose.writing_empty" data-empty="true">No generated writing.</div>
                   </div>
                   <div>
                     <div class="tf-card-header">
-                      <h3 data-i18n="compose.editor_title">Draft Editor</h3>
+                      <h3 data-i18n="compose.editor_title">Writing Editor</h3>
                       <button class="tf-btn" type="button" id="save-compose" disabled data-i18n="compose.save">Save as thought</button>
                     </div>
-                    <textarea id="compose-output" class="markdown-preview" spellcheck="false" data-i18n-template="compose.empty" data-empty="true">Select search results, then create a draft.</textarea>
-                    <div id="compose-save-result" class="tf-empty" data-i18n="compose.empty">No saved thought yet.</div>
+                    <textarea id="compose-output" class="markdown-preview" spellcheck="false" data-i18n-template="compose.empty" data-empty="true">No generated or saved writing yet.</textarea>
+                    <div id="compose-save-result" class="tf-empty" data-i18n="compose.empty">No generated or saved writing yet.</div>
                   </div>
                 </div>
               </div>
-              <div id="tab-compose-basket" class="tab-panel">
-                <div class="tf-selection-bar tf-basket-toolbar">
+              <div id="tab-compose-sources" class="tab-panel">
+                <div class="tf-selection-bar tf-source-queue-toolbar">
                   <div>
-                    <strong data-i18n="compose.basket_title">Basket sources</strong>
-                    <span id="compose-source-count-basket" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
+                    <strong data-i18n="compose.sources_title">Sources for writing</strong>
+                    <span id="compose-source-count-sources" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
                   </div>
                   <div class="tf-action-row">
-                    <button class="tf-btn tf-btn-primary" id="open-compose-create-basket" type="button" data-i18n="compose.create_from_basket">Create draft</button>
-                    <button class="tf-btn" id="clear-compose-basket-tab" type="button" disabled data-i18n="compose.clear_basket">Clear basket</button>
+                    <button class="tf-btn tf-btn-primary" id="open-compose-create-sources" type="button" data-i18n="compose.generate_from_sources">Generate from sources</button>
+                    <button class="tf-btn" id="clear-compose-sources-tab" type="button" disabled data-i18n="compose.clear_sources">Clear sources</button>
                   </div>
                 </div>
-                <div id="compose-basket-list" class="tf-basket-list" data-i18n-template="compose.empty_sources" data-empty="true">No sources selected.</div>
+                <div id="compose-sources-list" class="tf-source-queue-list" data-i18n-template="compose.empty_sources" data-empty="true">No writing sources selected.</div>
               </div>
             </section>
           </section>
@@ -515,11 +515,11 @@
     <aside class="tf-drawer" id="compose-create-drawer" aria-hidden="true">
       <div class="tf-drawer-panel">
         <div class="tf-drawer-header">
-          <h2 data-i18n="compose.create_drawer_title">Create Draft</h2>
+          <h2 data-i18n="compose.create_drawer_title">Generate Writing</h2>
           <button class="tf-btn tf-drawer-close" data-close-drawer="compose-create-drawer" type="button" data-i18n="compose.create_close">Close</button>
         </div>
         <form id="compose-form" class="tf-form stack-form">
-          <div id="compose-source-list" class="tf-empty" data-i18n="compose.empty_sources">No sources selected.</div>
+          <div id="compose-source-list" class="tf-empty" data-i18n="compose.empty_sources">No writing sources selected.</div>
           <label class="tf-form-item">
             <span class="tf-label" data-i18n="compose.goal_label">Goal</span>
             <input id="compose-goal" type="text" data-i18n-attr="compose.goal_placeholder" data-i18n-attr-target="placeholder" placeholder="Goal">
@@ -532,7 +532,7 @@
               <option value="report" data-i18n="compose.format.report">Report</option>
             </select>
           </label>
-          <button class="tf-btn tf-btn-primary" type="submit" data-i18n="compose.create_submit">Create draft</button>
+          <button class="tf-btn tf-btn-primary" type="submit" data-i18n="compose.create_submit">Generate writing</button>
         </form>
       </div>
     </aside>

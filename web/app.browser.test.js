@@ -117,7 +117,7 @@ async function runBrowserSmoke(browser, url) {
       ["notes", "#/notes", "#page-thoughts", "#thought-list"],
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
-      ["compose", "#/compose", "#page-compose", "#compose-drafts"],
+      ["compose", "#/write", "#page-compose", "#compose-writing"],
     ];
     // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
     // entry and no dedicated page section, so it isn't in the routes
@@ -613,9 +613,9 @@ test("embedded UI restores deep-link query into inputs and reflects input change
   }
 });
 
-test("compose basket loads from the backend", async (t) => {
+test("compose sources load from the backend", async (t) => {
   const server = await startFixtureServer({
-    composeBasketSources: [
+    composeSources: [
       { source_type: "thought", source_id: "thought-1", title: "Browser Thought" },
       { source_type: "thought", source_id: "thought-2", title: "Another Thought" },
     ],
@@ -633,15 +633,15 @@ test("compose basket loads from the backend", async (t) => {
     await page.send("Page.enable");
     await page.navigate(`${baseURL}/`);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
-    await setPageHash(page, "#/compose");
+    await setPageHash(page, "#/write");
     await page.waitForExpression(() => {
       const el = document.querySelector("#compose-source-count");
       return el && /2/.test(el.textContent || "");
     });
     const count = await page.evaluate(() => document.querySelector("#compose-source-count")?.textContent || "");
     assert.match(count, /2/);
-    const legacy = await page.evaluate(() => window.localStorage.getItem("tflow.basket"));
-    assert.equal(legacy, null);
+    const current = await page.evaluate(() => window.localStorage.getItem("tflow.compose.sources"));
+    assert.equal(current, null);
   } finally {
     await browser.close();
   }
@@ -1342,7 +1342,7 @@ function startFixtureServer(options = {}) {
   // and corrupted the conversation the tests were probing. We use
   // an explicit flag so the wiring stays disabled for tests that
   // don't opt in.
-  const { autoCommit = false, composeBasketSources = [], enrichEnabled = false, enrichDelayMs = 50 } = options;
+  const { autoCommit = false, composeSources = [], enrichEnabled = false, enrichDelayMs = 50 } = options;
   const webRoot = __dirname;
   const api = (data) => JSON.stringify({ request_id: "browser-test", data, error: null });
   // SSE plumbing: tests can subscribe to /api/events, and post events via
@@ -1356,8 +1356,8 @@ function startFixtureServer(options = {}) {
   // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
   const captureSessions = new Map();
-  let composeBasket = {
-    sources: composeBasketSources,
+  let composeSourcesState = {
+    sources: composeSources,
     updated_at: "2026-06-13T00:00:00Z",
   };
   const makeScratchpad = (id, text = "Captured from browser smoke") => ({
@@ -1635,19 +1635,19 @@ function startFixtureServer(options = {}) {
         return json(res, api([
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
         ]));
-      case "/api/compose/basket":
-        if (req.method === "GET") return json(res, api(composeBasket));
+      case "/api/compose/sources":
+        if (req.method === "GET") return json(res, api(composeSourcesState));
         if (req.method === "PUT") {
           const body = (await readJson(req)) || {};
-          composeBasket = {
+          composeSourcesState = {
             sources: Array.isArray(body.sources) ? body.sources : [],
             updated_at: "2026-06-13T00:00:00Z",
           };
-          return json(res, api(composeBasket));
+          return json(res, api(composeSourcesState));
         }
         if (req.method === "DELETE") {
-          composeBasket = { sources: [], updated_at: "2026-06-13T00:00:00Z" };
-          return json(res, api(composeBasket));
+          composeSourcesState = { sources: [], updated_at: "2026-06-13T00:00:00Z" };
+          return json(res, api(composeSourcesState));
         }
         break;
       case "/api/thoughts":

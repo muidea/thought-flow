@@ -728,21 +728,21 @@ p {
   width: 100%;
 }
 
-.tf-basket-list {
+.tf-source-queue-list {
   display: grid;
   gap: 8px;
 }
 
-.tf-basket-toolbar {
+.tf-source-queue-toolbar {
   align-items: center;
 }
 
-.tf-basket-toolbar > div:first-child {
+.tf-source-queue-toolbar > div:first-child {
   display: grid;
   gap: 4px;
 }
 
-.tf-basket-item {
+.tf-source-queue-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
@@ -754,24 +754,24 @@ p {
   padding: 10px;
 }
 
-.tf-basket-main,
-.tf-basket-title-row {
+.tf-source-queue-main,
+.tf-source-queue-title-row {
   min-width: 0;
 }
 
-.tf-basket-title-row {
+.tf-source-queue-title-row {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
 
-.tf-basket-title-row strong {
+.tf-source-queue-title-row strong {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.tf-basket-item .tf-action-row {
+.tf-source-queue-item .tf-action-row {
   justify-content: flex-end;
   margin-top: 0;
 }

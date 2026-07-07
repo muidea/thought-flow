@@ -36,7 +36,7 @@ v1 收口后 Web 端已经完成 9 个独立 section + 8 项顶级导航 + i18n 
 | 3 | `nav.notes` | notebook | 笔记 | Notes | `#/notes` | `#page-notes` |
 | 4 | `nav.search` | search | 搜索 | Search | `#/search` | `#page-search` |
 | 5 | `nav.topics` | appstore | 专题 | Topics | `#/topics` | `#page-topics` |
-| 6 | `nav.compose` | merge | 整理 | Compose | `#/compose` | `#page-compose` |
+| 6 | `nav.compose` | merge | 整理 | Compose | `#/write` | `#page-compose` |
 | — | `nav.settings` | setting | 设置 | Settings | `#/settings` | `#page-settings`（抽屉） |
 
 **齿轮图标**位置：顶栏右上角，不占 sidebar 顶级位。点击展开右侧抽屉（沿用 `.tf-drawer` 机制）。
@@ -205,8 +205,8 @@ search.tab.filters
 overview.tab.status
 overview.tab.shortcuts
 overview.tab.activity
-compose.tab.drafts
-compose.tab.basket
+compose.tab.writing
+compose.tab.sources
 compose.tab.templates
 settings.tab.general
 settings.tab.models
@@ -241,7 +241,7 @@ settings.description: 收紧
 - sidebar 改 6 项 + 齿轮占位
 - `index.html` 数据驱动 `data-i18n` / `data-nav` 同步
 - 添加 16×16 图标（SVG inline 即可，不引图标库）
-- 不保留旧 hash alias；`#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/compose` 为唯一主导航入口。
+- 不保留旧 hash alias；`#/overview`、`#/capture`、`#/notes`、`#/search`、`#/topics`、`#/write` 为唯一主导航入口。
 
 **验收**：
 - `node --test` 全过
