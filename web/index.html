@@ -81,6 +81,26 @@
                 <a class="tf-btn" href="#/search" data-i18n="dashboard.card.action.search">Search</a>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span data-i18n="overview.guide_title">How to use Overview</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="overview.guide_summary">Use Overview to check workspace health and jump into the main workflows.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="overview.guide_step_status_title">Check status</strong>
+                    <span data-i18n="overview.guide_step_status_body">Review workspace, model, Git, and search index status from the summary cards.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="overview.guide_step_jump_title">Jump to work</strong>
+                    <span data-i18n="overview.guide_step_jump_body">Start capture or search directly from the page actions.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="overview.guide_step_activity_title">Review activity</strong>
+                    <span data-i18n="overview.guide_step_activity_body">Use recent activity to understand what changed and open the full event stream when needed.</span>
+                  </li>
+                </ol>
+              </div>
+            </details>
             <div class="tf-stat-grid">
               <article class="tf-card tf-clickable-card" data-open-drawer="settings-drawer" data-drawer-tab="settings-drawer-general">
                 <span class="tf-text-secondary" data-i18n="dashboard.card.workspace">Workspace</span>
@@ -124,6 +144,26 @@
                 <button class="tf-btn" id="capture-sessions-toggle" type="button" aria-controls="capture-sessions-drawer" aria-expanded="false" data-i18n="capture.session.sessions">Recent sessions</button>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span data-i18n="capture.guide_title">How to use Capture</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="capture.guide_summary">Capture turns raw ideas, URLs, and follow-up notes into archived thoughts.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="capture.guide_step_input_title">Send material</strong>
+                    <span data-i18n="capture.guide_step_input_body">Type an idea, paste a URL, or continue the current session from the composer.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="capture.guide_step_review_title">Review context</strong>
+                    <span data-i18n="capture.guide_step_review_body">Check the extracted context and archive preview before saving.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="capture.guide_step_archive_title">Archive thought</strong>
+                    <span data-i18n="capture.guide_step_archive_body">Archive when the preview is ready; recent sessions can be reopened from the session drawer.</span>
+                  </li>
+                </ol>
+              </div>
+            </details>
             <section class="tf-card tf-capture-shell">
               <div id="capture-lock-indicator" class="tf-capture-lock" hidden>
                 <span data-i18n="capture.session.locked">Locked by another session</span>
@@ -174,6 +214,26 @@
                 <p data-i18n="thoughts.description">View, edit, share thoughts</p>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span data-i18n="notes.guide_title">How to use Notes</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="notes.guide_summary">Notes is where archived thoughts are read, checked, and reused.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="notes.guide_step_find_title">Find a note</strong>
+                    <span data-i18n="notes.guide_step_find_body">Use the list and filter to open a recent note.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="notes.guide_step_inspect_title">Inspect details</strong>
+                    <span data-i18n="notes.guide_step_inspect_body">Switch between detail, status, and runtime tabs to see content and processing state.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="notes.guide_step_reuse_title">Reuse material</strong>
+                    <span data-i18n="notes.guide_step_reuse_body">Open a note for continued capture or add it to writing sources.</span>
+                  </li>
+                </ol>
+              </div>
+            </details>
             <div class="tf-tabs" role="tablist" id="notes-tablist">
               <button class="tab active" data-tab="notes-all" data-i18n="notes.tab.all">All</button>
               <button class="tab" data-tab="notes-detail" data-i18n="notes.tab.detail">Detail</button>
@@ -231,6 +291,26 @@
                 <p data-i18n="search.description">Find thoughts by keyword or meaning</p>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span data-i18n="search.guide_title">How to use Search</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="search.guide_summary">Search finds existing thoughts and sends selected results into the next workflow.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="search.guide_step_query_title">Search and filter</strong>
+                    <span data-i18n="search.guide_step_query_body">Enter keywords or tags, then run the search.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="search.guide_step_review_title">Review results</strong>
+                    <span data-i18n="search.guide_step_review_body">Open or preview a result before deciding how to use it.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="search.guide_step_send_title">Send forward</strong>
+                    <span data-i18n="search.guide_step_send_body">Select results and add them to writing sources, or start a topic weave from a result.</span>
+                  </li>
+                </ol>
+              </div>
+            </details>
             <section class="tf-card">
               <form id="search-form" class="search-form">
                 <input id="search-query" type="search" data-i18n-attr="search.query_placeholder" data-i18n-attr-target="placeholder" placeholder="Search thoughts">
@@ -264,6 +344,26 @@
                 <button class="tf-btn" id="refresh-topics" data-i18n-attr="common.refresh" data-i18n-attr-target="title" title="Refresh" aria-label="Refresh" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span data-i18n="topics.guide_title">How to use Topics</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="topics.guide_summary">Topics organize related thoughts and let you review proposed document changes.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="topics.guide_step_create_title">Create or select</strong>
+                    <span data-i18n="topics.guide_step_create_body">Create a topic or select one from the list to open its workspace.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="topics.guide_step_review_title">Review impact</strong>
+                    <span data-i18n="topics.guide_step_review_body">Check members, candidates, and generated weave proposals before accepting changes.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="topics.guide_step_rules_title">Tune rules</strong>
+                    <span data-i18n="topics.guide_step_rules_body">Edit topic rules to control matching and auto-weave behavior.</span>
+                  </li>
+                </ol>
+              </div>
+            </details>
             <div class="tf-tabs" role="tablist" id="topics-tablist">
               <button class="tab active" data-tab="topics-list" data-i18n="topics.tab.list">List</button>
               <button class="tab" data-tab="topics-detail" data-i18n="topics.tab.detail" id="topics-tab-detail" disabled>Detail</button>
@@ -322,6 +422,27 @@
                 <button class="tf-btn" id="refresh-compose" type="button" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
+            <details class="tf-usage-guide" open>
+              <summary><span id="compose-guide-title" data-i18n="compose.guide_title">How to use writing sources</span></summary>
+              <div class="tf-usage-guide-body">
+                <p data-i18n="compose.guide_summary">Collect material first, generate editable writing from it, then save the accepted result as a thought.</p>
+                <ol class="tf-usage-steps">
+                  <li>
+                    <strong data-i18n="compose.guide_step_collect_title">Collect sources</strong>
+                    <span data-i18n="compose.guide_step_collect_body">Add notes, search results, or topic sections to writing sources from their action buttons.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="compose.guide_step_generate_title">Generate writing</strong>
+                    <span data-i18n="compose.guide_step_generate_body">Open the source queue, set a goal and format, then generate a draftable writing result.</span>
+                  </li>
+                  <li>
+                    <strong data-i18n="compose.guide_step_save_title">Save as thought</strong>
+                    <span data-i18n="compose.guide_step_save_body">Review or edit the generated writing, then save it as a new thought with source links.</span>
+                  </li>
+                </ol>
+                <p class="tf-usage-note" data-i18n="compose.guide_note">Writing sources are only the selected material queue; generated writing is the editable output; only Save as thought creates a new note.</p>
+              </div>
+            </details>
             <div class="tf-tabs" role="tablist" id="compose-tablist">
               <button class="tab active" data-tab="compose-writing" data-i18n="compose.tab.writing">Generated writing</button>
               <button class="tab" data-tab="compose-sources" data-i18n="compose.tab.sources">Source queue</button>
@@ -388,6 +509,13 @@
               <button data-locale="zh-CN" type="button" aria-pressed="false">zh-CN</button>
               <button data-locale="en-US" type="button" aria-pressed="false">en-US</button>
             </div>
+          </div>
+          <div class="tf-form-item">
+            <label class="toggle-row">
+              <input id="settings-help-visible" type="checkbox" checked>
+              <span data-i18n="settings.general.help_visible">Show usage guides</span>
+            </label>
+            <p class="tf-text-secondary" data-i18n="settings.general.help_visible_help">Controls the collapsible help panels shown on each feature page.</p>
           </div>
         </div>
         <div id="tab-settings-drawer-models" class="tab-panel">

@@ -54,6 +54,14 @@ export const Key = Object.freeze({
   DashboardRecentActivity: "dashboard.recent_activity",
   DashboardViewAll: "dashboard.view_all",
   DashboardStatusAlert: "dashboard.status_alert",
+  OverviewGuideTitle: "overview.guide_title",
+  OverviewGuideSummary: "overview.guide_summary",
+  OverviewGuideStepStatusTitle: "overview.guide_step_status_title",
+  OverviewGuideStepStatusBody: "overview.guide_step_status_body",
+  OverviewGuideStepJumpTitle: "overview.guide_step_jump_title",
+  OverviewGuideStepJumpBody: "overview.guide_step_jump_body",
+  OverviewGuideStepActivityTitle: "overview.guide_step_activity_title",
+  OverviewGuideStepActivityBody: "overview.guide_step_activity_body",
 
   // Capture page
   CaptureTitle: "capture.title",
@@ -105,6 +113,14 @@ export const Key = Object.freeze({
   CaptureArchiveTarget: "capture.archive.target",
   CaptureArchiveDiffBefore: "capture.archive.diff_before",
   CaptureArchiveDiffAfter: "capture.archive.diff_after",
+  CaptureGuideTitle: "capture.guide_title",
+  CaptureGuideSummary: "capture.guide_summary",
+  CaptureGuideStepInputTitle: "capture.guide_step_input_title",
+  CaptureGuideStepInputBody: "capture.guide_step_input_body",
+  CaptureGuideStepReviewTitle: "capture.guide_step_review_title",
+  CaptureGuideStepReviewBody: "capture.guide_step_review_body",
+  CaptureGuideStepArchiveTitle: "capture.guide_step_archive_title",
+  CaptureGuideStepArchiveBody: "capture.guide_step_archive_body",
 
   // Thoughts page
   ThoughtsPreviewEmpty: "thoughts.preview_empty",
@@ -145,6 +161,14 @@ export const Key = Object.freeze({
   NotesStatusTopics: "notes.status.topics",
   NotesStatusGit: "notes.status.git",
   NotesStatusErrors: "notes.status.errors",
+  NotesGuideTitle: "notes.guide_title",
+  NotesGuideSummary: "notes.guide_summary",
+  NotesGuideStepFindTitle: "notes.guide_step_find_title",
+  NotesGuideStepFindBody: "notes.guide_step_find_body",
+  NotesGuideStepInspectTitle: "notes.guide_step_inspect_title",
+  NotesGuideStepInspectBody: "notes.guide_step_inspect_body",
+  NotesGuideStepReuseTitle: "notes.guide_step_reuse_title",
+  NotesGuideStepReuseBody: "notes.guide_step_reuse_body",
 
   // Search page
   SearchTitle: "search.title",
@@ -167,6 +191,14 @@ export const Key = Object.freeze({
   SearchResultCopyPath: "search.result.copy_path",
   SearchResultPreview: "search.result.preview",
   SearchResultSelectAria: "search.result.select_aria",
+  SearchGuideTitle: "search.guide_title",
+  SearchGuideSummary: "search.guide_summary",
+  SearchGuideStepQueryTitle: "search.guide_step_query_title",
+  SearchGuideStepQueryBody: "search.guide_step_query_body",
+  SearchGuideStepReviewTitle: "search.guide_step_review_title",
+  SearchGuideStepReviewBody: "search.guide_step_review_body",
+  SearchGuideStepSendTitle: "search.guide_step_send_title",
+  SearchGuideStepSendBody: "search.guide_step_send_body",
 
   // Topics page
   TopicsTitle: "topics.title",
@@ -213,6 +245,14 @@ export const Key = Object.freeze({
   TopicWeaveConfirmMessage: "topics.weave_confirm_message",
   TopicBackToTopic: "topics.back_to_topic",
   TopicPatchHunks: "topics.patch_hunks",
+  TopicsGuideTitle: "topics.guide_title",
+  TopicsGuideSummary: "topics.guide_summary",
+  TopicsGuideStepCreateTitle: "topics.guide_step_create_title",
+  TopicsGuideStepCreateBody: "topics.guide_step_create_body",
+  TopicsGuideStepReviewTitle: "topics.guide_step_review_title",
+  TopicsGuideStepReviewBody: "topics.guide_step_review_body",
+  TopicsGuideStepRulesTitle: "topics.guide_step_rules_title",
+  TopicsGuideStepRulesBody: "topics.guide_step_rules_body",
 
   // Create topic drawer
   CreateTopicTitle: "topics.create_drawer_title",
@@ -281,6 +321,15 @@ export const Key = Object.freeze({
   ComposeGenerateFromSources: "compose.generate_from_sources",
   ComposeSourceID: "compose.source_id",
   ComposeSourceRemove: "compose.source_remove",
+  ComposeGuideTitle: "compose.guide_title",
+  ComposeGuideSummary: "compose.guide_summary",
+  ComposeGuideStepCollectTitle: "compose.guide_step_collect_title",
+  ComposeGuideStepCollectBody: "compose.guide_step_collect_body",
+  ComposeGuideStepGenerateTitle: "compose.guide_step_generate_title",
+  ComposeGuideStepGenerateBody: "compose.guide_step_generate_body",
+  ComposeGuideStepSaveTitle: "compose.guide_step_save_title",
+  ComposeGuideStepSaveBody: "compose.guide_step_save_body",
+  ComposeGuideNote: "compose.guide_note",
   // Source-type pills shown next to each source entry. The key is dynamic
   // (compose.source_type.${source_type}); the four literals below are the
   // only legal values and must stay in sync with the backend's source enum.
@@ -348,6 +397,8 @@ export const Key = Object.freeze({
   SettingsConfigTemplateDesc: "settings.config_template_desc",
   SettingsConfigDocsDesc: "settings.config_docs_desc",
   SettingsPrometheusLink: "settings.prometheus_link",
+  SettingsGeneralHelpVisible: "settings.general.help_visible",
+  SettingsGeneralHelpVisibleHelp: "settings.general.help_visible_help",
 
   // Toasts
   ToastPathCopied: "toast.path_copied",

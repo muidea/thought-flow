@@ -108,7 +108,8 @@ function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-tags",
     "topic-filter", "topic-auto-filter", "event-type-filter",
-    "thought-filter", "settings-drawer-event-type", "settings-drawer-event-resource"];
+    "thought-filter", "settings-drawer-event-type", "settings-drawer-event-resource",
+    "settings-help-visible"];
   // Side-effect nodes (toast, source list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
@@ -128,6 +129,7 @@ function makeDomStub(initial = {}) {
     };
     return [id, node];
   }));
+  const body = makeElementStub("body");
   for (const id of sideEffectNodes) {
     nodes[id] = {
       textContent: "",
@@ -302,6 +304,7 @@ function makeDomStub(initial = {}) {
   return {
     store,
     nodes,
+    body,
     find,
     all: (selector) => {
       if (selector === "#settings-drawer-event-list .event-item") {
@@ -352,6 +355,7 @@ function loadAppFunctionsWith(opts = {}) {
       querySelectorAll: (selector) => dom.all(selector),
       createElement: (tagName) => makeElementStub(tagName),
       addEventListener: () => {},
+      body: dom.body,
     },
     window: {
       clearTimeout: () => {},
@@ -407,6 +411,9 @@ function loadAppFunctionsWith(opts = {}) {
       PAGE_SERIALIZERS,
       persistSources,
       restoreSources,
+      isHelpVisible,
+      setHelpVisible,
+      applyHelpVisibility,
       trapFocus,
       classifyCaptureInput,
       parseCaptureCommand,
@@ -1233,6 +1240,27 @@ test("restoreSources reads from the backend only", async () => {
     { source_type: "thought", source_id: "t-1", title: "T1" },
     { source_type: "search_result", source_id: "t-2", title: "T2" },
   ]);
+});
+
+test("usage guide visibility is controlled by settings storage", () => {
+  const dom = makeDomStub();
+  const storage = makeStorageStub({ "tflow.help.visible": "false" });
+  const app = loadAppFunctionsWith({ dom, storage });
+
+  assert.equal(app.isHelpVisible(), false);
+  app.applyHelpVisibility();
+  assert.equal(dom.body.classList.contains("tf-help-hidden"), true);
+  assert.equal(dom.find("#settings-help-visible").checked, false);
+
+  app.setHelpVisible(true);
+  assert.equal(storage.data["tflow.help.visible"], "true");
+  assert.equal(dom.body.classList.contains("tf-help-hidden"), false);
+  assert.equal(dom.find("#settings-help-visible").checked, true);
+
+  app.setHelpVisible(false);
+  assert.equal(storage.data["tflow.help.visible"], "false");
+  assert.equal(dom.body.classList.contains("tf-help-hidden"), true);
+  assert.equal(dom.find("#settings-help-visible").checked, false);
 });
 
 test("createComposeSources deduplicates by source_type+source_id and supports clear", () => {

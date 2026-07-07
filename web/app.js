@@ -410,6 +410,7 @@ function removeFromStorage(key) {
 }
 
 const COMPOSE_SOURCES_STORAGE_KEY = "tflow.compose.sources";
+const HELP_VISIBLE_STORAGE_KEY = "tflow.help.visible";
 
 function persistSources() {
   removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
@@ -437,6 +438,31 @@ async function restoreSources() {
   }
   state.composeSources = next;
   renderComposeSources();
+}
+
+function isHelpVisible() {
+  try {
+    return window.localStorage?.getItem(HELP_VISIBLE_STORAGE_KEY) !== "false";
+  } catch (_error) {
+    return true;
+  }
+}
+
+function setHelpVisible(visible) {
+  const enabled = visible !== false;
+  try {
+    window.localStorage?.setItem(HELP_VISIBLE_STORAGE_KEY, enabled ? "true" : "false");
+  } catch (_error) {
+    /* ignore */
+  }
+  applyHelpVisibility(enabled);
+}
+
+function applyHelpVisibility(visible = isHelpVisible()) {
+  const enabled = visible !== false;
+  document.body?.classList?.toggle("tf-help-hidden", !enabled);
+  const control = $("#settings-help-visible");
+  if (control) control.checked = enabled;
 }
 
 function navItemClass(route, nav) {
@@ -4605,6 +4631,7 @@ function bind() {
   $("#settings-drawer-event-type")?.addEventListener("input", () => applyEventFilter());
   $("#settings-drawer-event-resource")?.addEventListener("input", () => applyEventFilter());
   $("#settings-drawer-reset-event-filter")?.addEventListener("click", () => resetEventFilter());
+  $("#settings-help-visible")?.addEventListener("change", (event) => setHelpVisible(event.target.checked));
   $("#notes-runtime-refresh")?.addEventListener("click", () => refreshNotesRuntime().catch((error) => toast(error.message)));
   $("#open-events-from-dashboard")?.addEventListener("click", () => {
     openSettingsDrawer("settings-drawer-events");
@@ -4737,6 +4764,7 @@ async function boot() {
   // boot and any subsequent locale switch.
   tApply(document);
   syncLanguageSwitcher();
+  applyHelpVisibility();
   initTflowBus();
   if (tflowBus) {
     tflowBus.on((message) => {
