@@ -1425,6 +1425,20 @@ textarea.markdown-preview {
   padding: 0;
 }
 
+.tf-drawer-panel > .tf-drawer-form {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tf-drawer-form-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  align-content: start;
+}
+
 .tf-drawer-body {
   display: flex;
   flex-direction: column;
@@ -1474,6 +1488,11 @@ textarea.markdown-preview {
   border-top: 1px solid var(--tf-color-border-secondary);
   border-bottom: 0;
   justify-content: flex-end;
+  background: var(--tf-color-bg-elevated);
+}
+
+.tf-drawer-footer .tf-btn {
+  min-width: 88px;
 }
 
 .tf-drawer-panel > .preview-box,

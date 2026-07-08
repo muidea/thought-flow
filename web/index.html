@@ -573,24 +573,27 @@
           <h2 data-i18n="topics.create_drawer_title">Create Topic</h2>
           <button class="tf-btn tf-drawer-close" data-close-drawer="topic-create-drawer" type="button" data-i18n="topics.create.close">Close</button>
         </div>
-        <form id="topic-form" class="tf-form stack-form">
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.name">Name</span>
-            <input id="topic-name" type="text" data-i18n-attr="topics.create.name_placeholder" data-i18n-attr-target="placeholder" placeholder="Name">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.description">Description</span>
-            <textarea id="topic-description" data-i18n-attr="topics.create.description_placeholder" data-i18n-attr-target="placeholder" placeholder="Description"></textarea>
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.keywords_any">Keywords</span>
-            <input id="topic-keywords" type="text" data-i18n-attr="topics.create.keywords_any" data-i18n-attr-target="placeholder" placeholder="keywords any">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.create.tags">Tags</span>
-            <input id="topic-tags" type="text" placeholder="tags">
-          </label>
-          <div class="tf-form-actions">
+        <form id="topic-form" class="tf-drawer-form">
+          <div class="tf-drawer-form-body tf-form stack-form">
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.create.name">Name</span>
+              <input id="topic-name" type="text" data-i18n-attr="topics.create.name_placeholder" data-i18n-attr-target="placeholder" placeholder="Name">
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.create.description">Description</span>
+              <textarea id="topic-description" data-i18n-attr="topics.create.description_placeholder" data-i18n-attr-target="placeholder" placeholder="Description"></textarea>
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.create.keywords_any">Keywords</span>
+              <input id="topic-keywords" type="text" data-i18n-attr="topics.create.keywords_any" data-i18n-attr-target="placeholder" placeholder="keywords any">
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.create.tags">Tags</span>
+              <input id="topic-tags" type="text" placeholder="tags">
+            </label>
+          </div>
+          <div class="tf-drawer-footer">
+            <button class="tf-btn" data-close-drawer="topic-create-drawer" type="button" data-i18n="common.cancel">Cancel</button>
             <button class="tf-btn tf-btn-primary" type="submit" data-i18n="topics.create.submit">Create</button>
           </div>
         </form>
@@ -603,24 +606,27 @@
           <h2 data-i18n="topics.edit_drawer_title">Edit Topic</h2>
           <button class="tf-btn tf-drawer-close" data-close-drawer="topic-rules-drawer" type="button" data-i18n="topics.edit.close">Close</button>
         </div>
-        <form id="topic-edit-form" class="tf-form stack-form">
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.edit.name">Name</span>
-            <input id="edit-topic-name" type="text" data-i18n-attr="topics.edit.name" data-i18n-attr-target="placeholder" placeholder="Name" disabled>
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.edit.description">Description</span>
-            <textarea id="edit-topic-description" data-i18n-attr="topics.edit.description" data-i18n-attr-target="placeholder" placeholder="Description" disabled></textarea>
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.edit.keywords_any">Keywords</span>
-            <input id="edit-keywords-any" type="text" data-i18n-attr="topics.edit.keywords_any" data-i18n-attr-target="placeholder" placeholder="Keywords" disabled>
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="topics.edit.tags_any">Tags</span>
-            <input id="edit-tags-any" type="text" data-i18n-attr="topics.edit.tags_any" data-i18n-attr-target="placeholder" placeholder="Tags" disabled>
-          </label>
-          <div class="tf-form-actions">
+        <form id="topic-edit-form" class="tf-drawer-form">
+          <div class="tf-drawer-form-body tf-form stack-form">
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.edit.name">Name</span>
+              <input id="edit-topic-name" type="text" data-i18n-attr="topics.edit.name" data-i18n-attr-target="placeholder" placeholder="Name" disabled>
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.edit.description">Description</span>
+              <textarea id="edit-topic-description" data-i18n-attr="topics.edit.description" data-i18n-attr-target="placeholder" placeholder="Description" disabled></textarea>
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.edit.keywords_any">Keywords</span>
+              <input id="edit-keywords-any" type="text" data-i18n-attr="topics.edit.keywords_any" data-i18n-attr-target="placeholder" placeholder="Keywords" disabled>
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="topics.edit.tags_any">Tags</span>
+              <input id="edit-tags-any" type="text" data-i18n-attr="topics.edit.tags_any" data-i18n-attr-target="placeholder" placeholder="Tags" disabled>
+            </label>
+          </div>
+          <div class="tf-drawer-footer">
+            <button class="tf-btn" data-close-drawer="topic-rules-drawer" type="button" data-i18n="common.cancel">Cancel</button>
             <button class="tf-btn tf-btn-primary" id="save-topic-rules" type="submit" disabled data-i18n="topics.edit.save">Save</button>
           </div>
         </form>
@@ -633,21 +639,26 @@
           <h2 data-i18n="compose.create_drawer_title">Generate Writing</h2>
           <button class="tf-btn tf-drawer-close" data-close-drawer="compose-create-drawer" type="button" data-i18n="compose.create_close">Close</button>
         </div>
-        <form id="compose-form" class="tf-form stack-form">
-          <div id="compose-source-list" class="tf-empty" data-i18n="compose.empty_sources">No writing sources selected.</div>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="compose.goal_label">Goal</span>
-            <input id="compose-goal" type="text" data-i18n-attr="compose.goal_placeholder" data-i18n-attr-target="placeholder" placeholder="Goal">
-          </label>
-          <label class="tf-form-item">
-            <span class="tf-label" data-i18n="compose.format_label">Format</span>
-            <select id="compose-format">
-              <option value="summary" data-i18n="compose.format.summary">Summary</option>
-              <option value="outline" data-i18n="compose.format.outline">Outline</option>
-              <option value="report" data-i18n="compose.format.report">Report</option>
-            </select>
-          </label>
-          <button class="tf-btn tf-btn-primary" type="submit" data-i18n="compose.create_submit">Generate writing</button>
+        <form id="compose-form" class="tf-drawer-form">
+          <div class="tf-drawer-form-body tf-form stack-form">
+            <div id="compose-source-list" class="tf-empty" data-i18n="compose.empty_sources">No writing sources selected.</div>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="compose.goal_label">Goal</span>
+              <input id="compose-goal" type="text" data-i18n-attr="compose.goal_placeholder" data-i18n-attr-target="placeholder" placeholder="Goal">
+            </label>
+            <label class="tf-form-item">
+              <span class="tf-label" data-i18n="compose.format_label">Format</span>
+              <select id="compose-format">
+                <option value="summary" data-i18n="compose.format.summary">Summary</option>
+                <option value="outline" data-i18n="compose.format.outline">Outline</option>
+                <option value="report" data-i18n="compose.format.report">Report</option>
+              </select>
+            </label>
+          </div>
+          <div class="tf-drawer-footer">
+            <button class="tf-btn" data-close-drawer="compose-create-drawer" type="button" data-i18n="common.cancel">Cancel</button>
+            <button class="tf-btn tf-btn-primary" type="submit" data-i18n="compose.create_submit">Generate writing</button>
+          </div>
         </form>
       </div>
     </aside>
