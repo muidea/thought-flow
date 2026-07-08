@@ -1409,7 +1409,7 @@ textarea.markdown-preview {
 
 .tf-drawer-panel {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(680px, 100vw);
   height: 100%;
   background: var(--tf-color-bg-elevated);
@@ -1418,10 +1418,10 @@ textarea.markdown-preview {
 }
 
 .tf-drawer-panel > .tf-drawer-body {
-  grid-row: 1 / -1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
   padding: 0;
 }
 
