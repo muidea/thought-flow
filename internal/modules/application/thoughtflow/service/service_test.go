@@ -60,11 +60,10 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 		!strings.Contains(res.Body.String(), `id="page-container"`) {
 		t.Fatalf("expected redesigned app shell in embedded index")
 	}
-	if !strings.Contains(res.Body.String(), `data-tab="topics-proposals"`) {
-		t.Fatalf("expected weave review tab under topics page in embedded index")
-	}
-	if !strings.Contains(res.Body.String(), `id="weave-review-title"`) {
-		t.Fatalf("expected weave review title target in embedded index")
+	for _, removed := range []string{`data-tab="topics-proposals"`, `id="weave-review-title"`} {
+		if strings.Contains(res.Body.String(), removed) {
+			t.Fatalf("topics page should not expose weave proposal UI %s", removed)
+		}
 	}
 	for _, removed := range []string{`id="topic-keywords-all"`, `id="topic-keywords-exclude"`, `id="topic-manual-include"`, `id="topic-manual-exclude"`, `id="topic-semantic"`, `id="topic-threshold"`, `id="topic-auto-weave"`, `id="topic-outline"`} {
 		if strings.Contains(res.Body.String(), removed) {
@@ -110,17 +109,10 @@ func TestHandleWebServesEmbeddedScript(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "renderMarkdown") {
 		t.Fatalf("expected markdown renderer in embedded app script")
 	}
-	if !strings.Contains(res.Body.String(), "weave-preview") ||
-		!strings.Contains(res.Body.String(), "weave-accept") ||
-		!strings.Contains(res.Body.String(), "weave-proposals") {
-		t.Fatalf("expected weave preview, accept, and proposal API calls in embedded app script")
-	}
-	if !strings.Contains(res.Body.String(), "renderDiff") {
-		t.Fatalf("expected diff renderer in embedded app script")
-	}
-	if !strings.Contains(res.Body.String(), "topics.patch_hunks") &&
-		!strings.Contains(res.Body.String(), "patch hunks") {
-		t.Fatalf("expected structured patch hunk indicator in embedded app script")
+	for _, removed := range []string{"weave-preview", "weave-accept", "weave-proposals", "renderDiff", "topics.patch_hunks", "patch hunks"} {
+		if strings.Contains(res.Body.String(), removed) {
+			t.Fatalf("embedded app script should not expose weave proposal UI logic %q", removed)
+		}
 	}
 }
 

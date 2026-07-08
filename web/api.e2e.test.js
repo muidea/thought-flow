@@ -201,6 +201,24 @@ function envelope(res) {
   return res.json;
 }
 
+async function waitForSearchHit(baseURL, path, title, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTitles = [];
+  while (Date.now() < deadline) {
+    const res = await request(baseURL, path, "GET");
+    assert.equal(res.status, 200, `search status=${res.status} body=${res.text}`);
+    const data = envelope(res).data;
+    assert.ok(Array.isArray(data.results), "results must be an array");
+    lastTitles = data.results.map((r) => r.title);
+    const hit = data.results.find((r) => r.title === title);
+    if (hit) {
+      return { res, data, hit };
+    }
+    await sleep(150);
+  }
+  assert.fail(`search should surface ${title}; got titles=${lastTitles.join(",")}`);
+}
+
 test("API e2e", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
@@ -353,21 +371,12 @@ test("API e2e", async (t) => {
     await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "search-target", content: "alpha beta gamma DuckDB keyword search test" },
     });
-    await sleep(50);
     for (const mode of ["keyword", "semantic", "hybrid"]) {
-      const res = await request(
+      const { hit } = await waitForSearchHit(
         server.baseURL,
         `/api/search?q=DuckDB&mode=${mode}&limit=5&explain=true`,
-        "GET"
+        "search-target"
       );
-      assert.equal(res.status, 200, `search mode=${mode} status=${res.status} body=${res.text}`);
-      const data = envelope(res).data;
-      assert.ok(Array.isArray(data.results), "results must be an array");
-      // The freshly seeded note must appear somewhere in the top 5 — the
-      // rank is not asserted because the e2e suite shares an index and
-      // other notes (e.g. "e2e note") may outrank on keyword frequency.
-      const hit = data.results.find((r) => r.title === "search-target");
-      assert.ok(hit, `search mode=${mode} should surface the seeded note; got titles=${data.results.map((r) => r.title).join(",")}`);
       assert.equal(typeof hit.score, "undefined", "score is intentionally hidden from the Web search projection");
     }
   });
@@ -384,20 +393,12 @@ test("API e2e", async (t) => {
         tags: ["rag"],
       },
     });
-    await sleep(50);
 
     // tags=rag should surface the freshly seeded note.
-    const byTag = await request(
+    const { data: tagData } = await waitForSearchHit(
       server.baseURL,
       `/api/search?q=vector&tags=rag&limit=5`,
-      "GET"
-    );
-    assert.equal(byTag.status, 200, `tags filter status=${byTag.status}`);
-    const tagData = envelope(byTag).data;
-    assert.ok(Array.isArray(tagData.results), "results must be an array");
-    assert.ok(
-      tagData.results.find((r) => r.title === "search-tagged"),
-      "tags=rag must surface the seeded note",
+      "search-tagged"
     );
     // SearchResultView does not expose an `explain` field; the legacy
     // /api/search?explain=true still works server-side but the projection is

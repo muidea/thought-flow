@@ -1,79 +1,67 @@
-# ThoughtFlow magicCommon application configuration template.
-# Effective path: <config-dir>/application.toml
-# Default config dir: OS user config directory, for example ~/.config/thoughtflow on Linux.
+# ThoughtFlow 应用配置模板。
+# 生效路径：<config-dir>/application.toml
+# 默认配置目录来自操作系统用户配置目录，例如 Linux 通常是 ~/.config/thoughtflow。
 #
-# ThoughtFlow reuses magicCommon framework/configuration directly:
-# 1. Built-in ThoughtFlow defaults.
-# 2. magicCommon application config: <config-dir>/application.toml
-# Runtime configuration is not read from environment variables.
+# 配置优先级：
+# 1. ThoughtFlow 内置默认值。
+# 2. <config-dir>/application.toml 中的应用配置。
+#
+# 运行时不会读取环境变量作为业务配置覆盖；需要调整时请修改 application.toml。
+# 模板仅保留当前会影响运行行为的常用配置项。
 
 [server]
-# HTTP listen address.
+# 页面服务监听地址。保持 127.0.0.1 可避免局域网暴露。
 host = "127.0.0.1"
 port = 8080
 
 [workspace]
-# Content directory stores user-owned knowledge assets: thoughts, topics, and attachments.
-# These files are readable outside ThoughtFlow and are the content Git should track.
-# Relative paths are resolved from the process working directory.
+# 用户内容目录，保存笔记、专题和附件等可读知识资产。
+# 相对路径按启动进程的当前工作目录解析。
 content_dir = "./thoughtflow-workspace"
-# Git initialization policy field. Commit behavior is controlled by git_sync.enabled
-# and the actual local Git repository state.
-auto_init_git = true
 
 [runtime]
-# State directory stores rebuildable service state: jobs, logs, and local indexes.
-# Keep it separate from the config directory and outside the knowledge asset model.
+# 运行状态目录，保存任务、日志和本地索引等可重建数据。
+# 请不要和配置目录使用同一个目录，也不要嵌套在配置目录内。
 state_dir = "./thoughtflow-runtime"
 
 [capture]
-# Supported values: "warn" and "allow".
-# "warn" preserves duplicate captures and marks duplicate_warned.
+# 重复采集策略：
+# - "warn"：保留本次采集，并标记为重复提醒。
+# - "allow"：直接允许重复内容。
 duplicate_policy = "warn"
 
-[refiner]
-# Refine runtime concurrency.
-concurrency = 2
-# URL fetch timeout in seconds.
-url_fetch_timeout_seconds = 30
+[expander]
+# 扩展流水线总超时时间，单位秒。
+# 0 表示使用内置默认值；远程模型响应较慢时可适当调大。
+pipeline_timeout_seconds = 0
 
 [git_sync]
-# Whether to enable local Git auto-commit requests for Markdown/YAML workspace changes.
+# 是否对工作区内的笔记/专题文件变更发起本地 Git 自动提交。
+# 仍需要工作区本身是 Git 仓库，并已配置 user.name / user.email。
 enabled = true
-# Debounce window before pending changes are written to Git, in seconds.
+# 变更后的提交防抖窗口，单位秒。
 debounce_seconds = 5
 
 [search]
-# Relative paths are resolved against runtime.state_dir.
+# 本地搜索索引库路径；相对路径会解析到 runtime.state_dir 下。
 duckdb_path = "thoughtflow.duckdb"
-# Web search defaults to keyword. Backend retrieval may still use semantic signals internally.
-default_mode = "keyword"
-
-[topic]
-# Whether to enable automatic topic document weaving after topic matches.
-auto_weave = true
-# Default semantic matching threshold for topics.
-min_semantic_score = 0.78
-
-[events]
-# SSE heartbeat interval in seconds.
-sse_heartbeat_seconds = 20
 
 [llm]
-# OpenAI-compatible chat provider. Empty api_key uses the local-rule fallback.
+# 兼容 OpenAI 接口的聊天模型服务。
+# api_key 为空时，整理、扩展、专题文档维护和成文会使用本地规则兜底。
 base_url = "https://api.openai.com"
 api_key = ""
 chat_model = "gpt-4o-mini"
 timeout_seconds = 30
 
 [llm.prompts]
-# Optional capture conversation system prompt file.
-# Relative paths are resolved from this config directory, so templates can be
-# stored beside application.toml and switched per business scenario.
+# 可选：采集会话上下文的系统提示词文件。
+# 相对路径按 <config-dir> 解析，便于把业务提示词和 application.toml 放在一起管理。
 capture_context_system_path = ""
 
 [embedding]
-# OpenAI-compatible embedding provider. Empty api_key uses deterministic local embeddings.
+# 兼容 OpenAI 接口的向量模型服务。
+# api_key 为空时使用本地确定性向量，仍可完成本地采集、搜索和专题匹配。
 base_url = "https://api.openai.com"
 api_key = ""
 model = "text-embedding-3-small"
