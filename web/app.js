@@ -25,8 +25,6 @@ const state = {
   activeThoughtId: "",
   activeThoughtSnapshot: null,
   activeTopicDetail: null,
-  weaveProposal: null,
-  weaveProposals: [],
   status: null,
   metrics: null,
   pendingConfirm: null,
@@ -103,9 +101,9 @@ function parseRoute(hash) {
   const parts = pathPart.split("/").filter(Boolean);
   const query = Object.fromEntries(new URLSearchParams(queryPart).entries());
   if (parts.length === 0) return { page: "dashboard", nav: "overview", params: {}, query };
-  // /topics/{id}/review is folded into the topic detail tab ?tab=proposals.
+  // Legacy /topics/{id}/review links now land on the topic detail workspace.
   if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
-    const detailQuery = { ...query, tab: "proposals" };
+    const detailQuery = { ...query, tab: "detail" };
     return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
   }
   if (parts[0] === "topics" && parts[1]) {
@@ -166,7 +164,6 @@ function topicFilterRouteQuery() {
   const q = {};
   const f = $("#topic-filter")?.value.trim();
   if (f) q.keyword = f;
-  if ($("#topic-auto-filter")?.checked) q.auto_weave = "true";
   return q;
 }
 
@@ -194,7 +191,6 @@ function restoreRoutePage(page, query) {
     }
   } else if (page === "topics") {
     $("#topic-filter").value = typeof query.keyword === "string" ? query.keyword : "";
-    $("#topic-auto-filter").checked = query.auto_weave === "true";
     if (state.route?.params?.topicId) {
       activateTab(normalizeTopicsTabName(query.tab), $("#page-topics"));
     } else {
@@ -205,8 +201,7 @@ function restoreRoutePage(page, query) {
   } else if (page === "compose") {
     activateTab(normalizeComposeTabName(query.tab), $("#page-compose"));
   }
-  // topic-review, compose handled by their loaders (proposal / draft IDs
-  // come back via API calls and are stored on state).
+  // Compose draft IDs come back via API calls and are stored on state.
 }
 
 function defaultNotesTabForQuery(query = {}) {
@@ -246,11 +241,12 @@ function normalizeNotesTabName(tab, query = {}) {
 
 function normalizeTopicsTabName(tab) {
   const value = typeof tab === "string" && tab.trim() ? tab.trim() : "detail";
-  if (value.startsWith("topics-")) return value;
+  if (value.startsWith("topics-")) {
+    return ["topics-list", "topics-detail", "topics-rules"].includes(value) ? value : "topics-detail";
+  }
   const aliases = {
     list: "topics-list",
     detail: "topics-detail",
-    proposals: "topics-proposals",
     rules: "topics-rules",
   };
   return aliases[value] || "topics-detail";
@@ -1128,52 +1124,6 @@ function splitTableRow(line) {
     .map((cell) => cell.trim());
 }
 
-function renderDiff(lines) {
-  if (!lines || lines.length === 0) {
-    return `<div class="topic-meta">${escapeHTML(t("diff.no_changes"))}</div>`;
-  }
-  return lines
-    .map((line) => {
-      const op = line.op || "context";
-      const marker = op === "add" ? "+" : op === "remove" ? "-" : " ";
-      return `<div class="diff-line ${escapeHTML(op)}"><span>${marker}</span><code>${escapeHTML(line.text || "")}</code></div>`;
-    })
-    .join("");
-}
-
-function renderWeaveProposals() {
-  const list = $("#weave-proposals");
-  if (!list) return;
-  if (!state.activeTopicId) {
-    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("topics.select_first"))}</div>`;
-    return;
-  }
-  if (!state.weaveProposals || state.weaveProposals.length === 0) {
-    list.innerHTML = `<div class="topic-meta">${escapeHTML(t("topics.weave_proposals_none"))}</div>`;
-    return;
-  }
-  list.innerHTML = state.weaveProposals
-    .map((proposal) => {
-      const active = state.weaveProposal?.id === proposal.id ? " active" : "";
-      const status = proposal.status || "pending";
-      const hunkCount = proposal.patch?.hunks?.length || 0;
-      return `
-        <article class="approval-item${active}" data-proposal-id="${escapeHTML(proposal.id)}">
-          <strong>${escapeHTML(proposal.thought_id || proposal.id)}</strong>
-          <div class="topic-meta">
-            <span class="pill">${escapeHTML(status)}</span>
-            <span>${t("topics.patch_hunks", { n: hunkCount })}</span>
-            <span>${escapeHTML(fmtDate(proposal.updated_at || proposal.created_at))}</span>
-          </div>
-        </article>
-      `;
-    })
-    .join("");
-  list.querySelectorAll("[data-proposal-id]").forEach((item) => {
-    item.addEventListener("click", () => loadWeaveProposal(item.dataset.proposalId).catch((error) => toast(error.message)));
-  });
-}
-
 function renderComposeDrafts() {
   const list = $("#compose-writing");
   if (!list) return;
@@ -1670,12 +1620,10 @@ async function loadTopics() {
 function renderTopics() {
   const list = $("#topic-list");
   const textFilter = ($("#topic-filter")?.value || "").trim().toLowerCase();
-  const autoOnly = Boolean($("#topic-auto-filter")?.checked);
   const filteredTopics = state.topics.filter((topic) => {
     const text = `${topic.name || ""} ${topic.description || ""} ${topic.id || ""}`.toLowerCase();
     const matchesText = !textFilter || text.includes(textFilter);
-    const matchesAuto = !autoOnly || topic.auto_weave !== false;
-    return matchesText && matchesAuto;
+    return matchesText;
   });
   if (state.topics.length === 0) {
     state.activeTopicId = "";
@@ -1686,9 +1634,6 @@ function renderTopics() {
     $("#open-topic-rules").disabled = true;
     $("#topic-members").innerHTML = `<div class="tf-empty">${escapeHTML(t("empty.no_topic"))}</div>`;
     $("#topic-rules-summary").innerHTML = escapeHTML(t("empty.no_topic"));
-    state.weaveProposals = [];
-    state.weaveProposal = null;
-    renderWeaveProposals();
     list.innerHTML = `<div class="topic-meta">${escapeHTML(t("topics.empty"))}</div>`;
     return;
   }
@@ -1718,16 +1663,12 @@ function renderTopics() {
 
 function resetTopicFilters() {
   $("#topic-filter").value = "";
-  $("#topic-auto-filter").checked = false;
   renderTopics();
 }
 
-function navigateTopic(topicId, review = false) {
+function navigateTopic(topicId) {
   if (!topicId) return;
-  // Topic detail is the default selected-topic view. Review/proposals remain
-  // an explicit tab because it is a secondary workflow.
-  const suffix = review ? "?tab=proposals" : "";
-  navigateHash(`#/topics/${encodeURIComponent(topicId)}${suffix}`, { force: true });
+  navigateHash(`#/topics/${encodeURIComponent(topicId)}`, { force: true });
 }
 
 async function openTopic(topicId) {
@@ -1735,11 +1676,11 @@ async function openTopic(topicId) {
   const detail = await api(`/api/topics/${encodeURIComponent(topicId)}`);
   state.activeTopicId = topicId;
   state.activeTopicDetail = detail;
-  // PR2: topic detail / proposals / rules are tabs inside the topics
+  // Topic detail / rules are tabs inside the topics
   // page; enable them once a topic is loaded and populate the document
   // panel. Tab activation follows the URL `?tab=` query so deep-links
   // land on the right pane.
-  ["topics-tab-detail", "topics-tab-proposals", "topics-tab-rules"].forEach((id) => {
+  ["topics-tab-detail", "topics-tab-rules"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.disabled = false;
   });
@@ -1750,7 +1691,6 @@ async function openTopic(topicId) {
   renderTopicMembers(detail.members || []);
   renderTopicRules(detail.topic);
   renderTopics();
-  await loadWeaveProposals(topicId);
   await loadTopicCandidates(topicId);
 }
 
@@ -1774,9 +1714,6 @@ function renderTopicCandidates(candidates) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return `<div class="tf-empty">${escapeHTML(t("topics.candidates_empty"))}</div>`;
   }
-  // 候选影响区只读展示 in-flight 影响,任何接受 / 合并动作都走 Weave Proposals
-  // tab 并先展示 diff,符合 todo 第 4.4 节「确认候选或接受 weave 前必须
-  // 展示写入内容或 diff」。
   const items = candidates.map(renderTopicCandidateImpact).join("");
   const header = `<div class="tf-card-header"><h3>${escapeHTML(t("topics.candidates_title"))}</h3><span class="tf-text-secondary">${escapeHTML(t("topics.candidates_hint"))}</span></div>`;
   return `${header}<div class="approval-list">${items}</div>`;
@@ -1786,23 +1723,6 @@ function renderTopicCandidatesInto(candidates) {
   const node = $("#topic-candidates");
   if (!node) return;
   node.innerHTML = renderTopicCandidates(candidates);
-  // Clicking a thought-backed candidate creates a weave preview immediately,
-  // then opens the proposals tab where the diff / written content is shown.
-  node.querySelectorAll("[data-candidate-source]").forEach((el) => {
-    el.addEventListener("click", () => {
-      const thoughtId = el.dataset.candidateThought || "";
-      if (thoughtId) {
-        previewWeave(thoughtId).catch((error) => toast(error.message));
-        return;
-      }
-      activateTab("topics-proposals", $("#page-topics"));
-      $("#weave-review-title").textContent = t("topics.weave_proposals_empty_title");
-      $("#weave-diff").innerHTML = `<div class="tf-empty">${escapeHTML(t("topics.candidate_archive_first"))}</div>`;
-      $("#weave-document").value = "";
-      $("#accept-weave").disabled = true;
-      loadWeaveProposals(state.activeTopicId).catch((error) => toast(error.message));
-    });
-  });
 }
 
 function renderTopicCandidateImpact(candidate) {
@@ -1814,7 +1734,7 @@ function renderTopicCandidateImpact(candidate) {
   const referenceID = candidate.thought_id || candidate.draft_id || candidate.session_id || candidate.candidate_id || "";
   const thoughtID = candidate.thought_id || "";
   return `
-    <article class="result-item" data-candidate-source="${escapeHTML(candidate.source)}" data-candidate-id="${escapeHTML(candidate.candidate_id)}" data-candidate-ref="${escapeHTML(referenceID)}" data-candidate-thought="${escapeHTML(thoughtID)}" style="cursor: pointer;">
+    <article class="result-item" data-candidate-source="${escapeHTML(candidate.source)}" data-candidate-id="${escapeHTML(candidate.candidate_id)}" data-candidate-ref="${escapeHTML(referenceID)}" data-candidate-thought="${escapeHTML(thoughtID)}">
       <div class="result-row">
         <div>
           <strong>${escapeHTML(candidate.title || candidate.candidate_id || t("topics.candidates_empty"))}</strong>
@@ -1875,7 +1795,6 @@ function renderTopicRules(topic) {
   const rows = [
     [t("topics.rule.keywords_any"), joinCSV(keywords.any) || t("topics.rule.none")],
     [t("topics.rule.tags_any"), joinCSV(tags.any) || t("topics.rule.none")],
-    [t("topics.rule.auto_weave"), topic.auto_weave === false ? t("topics.rule.auto_weave_disabled") : t("topics.rule.auto_weave_enabled")],
   ];
   if ((keywords.all || []).length > 0) rows.push([t("topics.rule.keywords_all"), joinCSV(keywords.all)]);
   if ((keywords.exclude || []).length > 0) rows.push([t("topics.rule.keywords_exclude"), joinCSV(keywords.exclude)]);
@@ -1885,16 +1804,6 @@ function renderTopicRules(topic) {
   const outline = outlineText(topic.outline);
   if (outline && outline !== outlineText(outlineFromText("Notes\nOpen Questions"))) rows.push([t("topics.rule.outline"), outline]);
   node.innerHTML = renderDescription(rows);
-}
-
-async function loadWeaveProposals(topicId = state.activeTopicId) {
-  if (!topicId) {
-    state.weaveProposals = [];
-    renderWeaveProposals();
-    return;
-  }
-  state.weaveProposals = await api(`/api/topics/${encodeURIComponent(topicId)}/weave-proposals`);
-  renderWeaveProposals();
 }
 
 function populateTopicEditor(topic) {
@@ -1944,7 +1853,6 @@ async function createTopic(event) {
         manual_exclude: [],
       },
       outline: outlineFromText("Notes\nOpen Questions"),
-      auto_weave: true,
     }),
   });
   event.target.reset();
@@ -1984,7 +1892,6 @@ async function saveTopicRules(event) {
         manual_exclude: Array.isArray(currentRules.manual_exclude) ? currentRules.manual_exclude : [],
       },
       outline: Array.isArray(currentTopic.outline) ? currentTopic.outline : outlineFromText("Notes\nOpen Questions"),
-      auto_weave: currentTopic.auto_weave !== false,
     }),
   });
   toast(t("toast.topic_rules_saved"));
@@ -3814,9 +3721,6 @@ function renderResults(response) {
   list.querySelectorAll("[data-copy-path]").forEach((button) => {
     button.addEventListener("click", () => copyPath(button.dataset.copyPath));
   });
-  list.querySelectorAll("[data-weave-id]").forEach((button) => {
-    button.addEventListener("click", () => previewWeave(button.dataset.weaveId).catch((error) => toast(error.message)));
-  });
   updateSelectionControls();
 }
 
@@ -3832,11 +3736,10 @@ function renderSearchResultItem(item, options = {}) {
   const sourceID = item.source_id || thoughtID;
   const actions = new Set(Array.isArray(item.actions) && item.actions.length > 0
     ? item.actions
-    : ["preview", "open_note", "add_to_compose", "topic_impact", "copy_path"]);
+    : ["preview", "open_note", "add_to_compose", "copy_path"]);
   const canPreview = actions.has("preview") && thoughtID;
   const canOpen = actions.has("open_note") && thoughtID;
   const canAddSources = actions.has("add_to_compose") && sourceID;
-  const canReviewWeave = actions.has("topic_impact") && thoughtID;
   const canCopyPath = actions.has("copy_path") && pathHint;
   // SearchResultView 投影只暴露 content-facing 字段: thought_id / title /
   // snippet / tags / topics / source / source_id / path_hint / actions。
@@ -3853,7 +3756,6 @@ function renderSearchResultItem(item, options = {}) {
           <div class="tf-action-row">
             ${canOpen ? `<button class="mini-button" data-open-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.open"))}</button>` : ""}
             ${canAddSources ? `<button class="mini-button" data-compose-source-id="${escapeHTML(sourceID)}" data-compose-source-title="${escapeHTML(title)}" type="button">${escapeHTML(t("search.result.add_source"))}</button>` : ""}
-            ${canReviewWeave ? `<button class="mini-button" data-weave-id="${escapeHTML(thoughtID)}" ${options.activeTopicId ? "" : "disabled"} type="button">${escapeHTML(t("search.result.review_weave"))}</button>` : ""}
             ${canCopyPath ? `<button class="mini-button" data-copy-path="${escapeHTML(pathHint)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(pathHint)}</code>` : ""}
           </div>
         </div>
@@ -4196,66 +4098,6 @@ async function loadComposeDraft(draftId) {
   renderComposeDrafts();
 }
 
-async function previewWeave(thoughtId) {
-  if (!state.activeTopicId) {
-    toast(t("toast.select_topic_first"));
-    return;
-  }
-  const proposal = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/weave-preview`, {
-    method: "POST",
-    body: JSON.stringify({ thought_id: thoughtId }),
-  });
-  state.weaveProposal = proposal;
-  $("#weave-review-title").textContent = t("topics.weave_title", { id: proposal.thought_id });
-  $("#weave-diff").innerHTML = renderDiff(proposal.diff || []);
-  $("#weave-document").value = proposal.proposed_document || "";
-  $("#accept-weave").disabled = false;
-  await loadWeaveProposals(state.activeTopicId);
-  navigateTopic(state.activeTopicId, true);
-}
-
-async function loadWeaveProposal(proposalId) {
-  if (!state.activeTopicId || !proposalId) return;
-  const proposal = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/weave-proposals/${encodeURIComponent(proposalId)}`);
-  state.weaveProposal = proposal;
-  $("#weave-review-title").textContent = t("topics.weave_title", { id: proposal.thought_id });
-  $("#weave-diff").innerHTML = renderDiff(proposal.diff || []);
-  $("#weave-document").value = proposal.accepted_document || proposal.proposed_document || "";
-  $("#accept-weave").disabled = (proposal.status || "pending") !== "pending";
-  renderWeaveProposals();
-  navigateTopic(state.activeTopicId, true);
-}
-
-async function acceptWeave() {
-  if (!state.weaveProposal) {
-    toast(t("toast.create_weave_first"));
-    return;
-  }
-  const confirmed = await confirmAction(t("topics.weave_confirm_title"), t("topics.weave_confirm_message"));
-  if (!confirmed) return;
-  const document = $("#weave-document").value.trim();
-  if (!document) {
-    toast(t("toast.proposed_document_required"));
-    return;
-  }
-  const detail = await api(`/api/topics/${encodeURIComponent(state.weaveProposal.topic_id)}/weave-accept`, {
-    method: "POST",
-    body: JSON.stringify({
-      proposal_id: state.weaveProposal.id,
-      thought_id: state.weaveProposal.thought_id,
-      document,
-    }),
-  });
-  toast(t("toast.weave_accepted"));
-  state.weaveProposal = null;
-  $("#accept-weave").disabled = true;
-  $("#weave-diff").innerHTML = `<div class="topic-meta">${escapeHTML(t("empty.pending_weave"))}</div>`;
-  $("#weave-document").value = "";
-  await loadTopics();
-  await loadWeaveProposals(detail.topic.id);
-  navigateTopic(detail.topic.id);
-}
-
 function renderComposeDraft(draft) {
   return draft.content || "";
 }
@@ -4588,7 +4430,6 @@ async function applyRoute(hash = window.location.hash, options = {}) {
     if (serial !== routeApplySerial) return;
     const topicTab = normalizeTopicsTabName(route.query.tab);
     activateTab(topicTab, $("#page-topics"));
-    if (topicTab === "topics-proposals") await loadWeaveProposals(route.params.topicId);
   }
   if (route.page === "thoughts" && route.params.thoughtId) {
     await previewThought(route.params.thoughtId);
@@ -4637,10 +4478,8 @@ function bind() {
     openSettingsDrawer("settings-drawer-events");
   });
   $("#save-compose").addEventListener("click", () => saveComposeDraft().catch((error) => toast(error.message)));
-  $("#accept-weave").addEventListener("click", () => acceptWeave().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
   $("#topic-filter").addEventListener("input", () => { renderTopics(); persistRouteDebounced(); });
-  $("#topic-auto-filter").addEventListener("change", () => { renderTopics(); persistRouteDebounced(); });
   $("#reset-topic-filter").addEventListener("click", () => { resetTopicFilters(); persistRouteDebounced(); });
   $("#refresh-topic").addEventListener("click", () => refreshTopic().catch((error) => toast(error.message)));
   // Reindex entry removed — the search page no longer exposes a reindex
@@ -4746,9 +4585,6 @@ function rerenderForLocale() {
   if (state.status) {
     try { renderTopbarStatus(state.status); } catch (_) {}
     try { renderSettingsStatus(state.status); } catch (_) {}
-  }
-  if (state.weaveProposals || !state.activeTopicId) {
-    try { renderWeaveProposals(); } catch (_) {}
   }
   if (state.composeDrafts) {
     try { renderComposeDrafts(); } catch (_) {}

@@ -306,7 +306,7 @@
                   </li>
                   <li>
                     <strong data-i18n="search.guide_step_send_title">Send forward</strong>
-                    <span data-i18n="search.guide_step_send_body">Select results and add them to writing sources, or start a topic weave from a result.</span>
+                    <span data-i18n="search.guide_step_send_body">Select results and add them to writing sources.</span>
                   </li>
                 </ol>
               </div>
@@ -347,7 +347,7 @@
             <details class="tf-usage-guide" open>
               <summary><span data-i18n="topics.guide_title">How to use Topics</span></summary>
               <div class="tf-usage-guide-body">
-                <p data-i18n="topics.guide_summary">Topics organize related thoughts and let you review proposed document changes.</p>
+                <p data-i18n="topics.guide_summary">Topics organize related thoughts and keep their document updated from matching rules.</p>
                 <ol class="tf-usage-steps">
                   <li>
                     <strong data-i18n="topics.guide_step_create_title">Create or select</strong>
@@ -355,11 +355,11 @@
                   </li>
                   <li>
                     <strong data-i18n="topics.guide_step_review_title">Review impact</strong>
-                    <span data-i18n="topics.guide_step_review_body">Check members, candidates, and generated weave proposals before accepting changes.</span>
+                    <span data-i18n="topics.guide_step_review_body">Check members and candidate impact for the selected topic.</span>
                   </li>
                   <li>
                     <strong data-i18n="topics.guide_step_rules_title">Tune rules</strong>
-                    <span data-i18n="topics.guide_step_rules_body">Edit topic rules to control matching and auto-weave behavior.</span>
+                    <span data-i18n="topics.guide_step_rules_body">Edit topic rules to control matching behavior.</span>
                   </li>
                 </ol>
               </div>
@@ -367,14 +367,12 @@
             <div class="tf-tabs" role="tablist" id="topics-tablist">
               <button class="tab active" data-tab="topics-list" data-i18n="topics.tab.list">List</button>
               <button class="tab" data-tab="topics-detail" data-i18n="topics.tab.detail" id="topics-tab-detail" disabled>Detail</button>
-              <button class="tab" data-tab="topics-proposals" data-i18n="topics.tab.proposals" id="topics-tab-proposals" disabled>Proposals</button>
               <button class="tab" data-tab="topics-rules" data-i18n="topics.tab.rules" id="topics-tab-rules" disabled>Rules</button>
             </div>
             <section class="tf-card">
               <div id="tab-topics-list" class="tab-panel active">
-                <div class="tf-filter-grid">
+                <div class="tf-filter-grid tf-topic-filter-bar">
                   <input id="topic-filter" type="search" data-i18n-attr="topics.filter_placeholder" data-i18n-attr-target="placeholder" placeholder="filter topics">
-                  <label class="toggle-row"><input id="topic-auto-filter" type="checkbox"> <span data-i18n="topics.auto_filter">Auto weave only</span></label>
                   <button class="tf-btn" id="reset-topic-filter" type="button" data-i18n="topics.reset_filters">Reset filters</button>
                 </div>
                 <div id="topic-list" class="topic-list" data-i18n-template="empty.no_topic" data-empty="true"></div>
@@ -390,19 +388,6 @@
                     <div id="topic-members" class="tf-topic-members" data-i18n="topics.members_empty">No topic members loaded.</div>
                     <div id="topic-candidates" class="tf-topic-candidates" data-i18n-template="topics.candidates_empty" data-empty="true">No pending candidates.</div>
                   </aside>
-                </div>
-              </div>
-              <div id="tab-topics-proposals" class="tab-panel">
-                <div class="tf-two-column">
-                  <div id="weave-proposals" class="approval-list" data-i18n-template="topics.weave_proposals_none" data-empty="true">No weave proposals.</div>
-                  <div>
-                    <h3 id="weave-review-title" data-i18n="topics.weave_proposals_empty_title">No pending weave review.</h3>
-                    <div id="weave-diff" class="diff-view" data-i18n-template="topics.weave_diff_empty" data-empty="true">Select a proposal to review.</div>
-                    <textarea id="weave-document" class="markdown-preview" spellcheck="false" data-i18n-attr="topics.weave_proposed_placeholder" data-i18n-attr-target="placeholder" placeholder="Proposed topic document" style="margin-top: 12px;"></textarea>
-                    <div style="margin-top: 12px; text-align: right;">
-                      <button class="tf-btn tf-btn-primary" id="accept-weave" disabled data-i18n="topics.weave_accept">Accept</button>
-                    </div>
-                  </div>
                 </div>
               </div>
               <div id="tab-topics-rules" class="tab-panel">

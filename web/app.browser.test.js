@@ -183,17 +183,14 @@ async function runBrowserSmoke(browser, url) {
     document.querySelector("#open-create-topic").click();
     const createTopicDrawerOpen = document.querySelector("#topic-create-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-create-drawer']")?.click();
-    // PR2: topic detail / members / rules / proposals all live under
-    // #/topics/{id} as tabs. The legacy "members" pane is now folded
-    // into the detail tab (members render below the document).
+    // Topic detail / members / rules live under #/topics/{id} as tabs.
+    // The legacy "members" pane is folded into the detail tab.
     await settleRoute("#/topics/demo?tab=detail");
-    await waitUntil(() => document.querySelector("#topics-tab-proposals")?.disabled === false);
+    await waitUntil(() => document.querySelector("#topics-tab-rules")?.disabled === false);
     const topicRouteActive = document.querySelector("#page-topics")?.classList.contains("active");
     const topicDetailActive = document.querySelector("#tab-topics-detail")?.classList.contains("active");
     const topicDocumentText = document.querySelector("#topic-document")?.textContent || "";
     const topicsNavActive = document.querySelector('[data-nav="topics"]')?.classList.contains("active");
-    document.querySelector("[data-tab='topics-proposals']").click();
-    const proposalsActive = document.querySelector("#tab-topics-proposals")?.classList.contains("active");
     document.querySelector("[data-tab='topics-rules']").click();
     await waitUntil(() => (document.querySelector("#topic-rules-summary")?.textContent || "").includes("Keywords any"));
     const rulesText = document.querySelector("#topic-rules-summary")?.textContent || "";
@@ -268,7 +265,6 @@ async function runBrowserSmoke(browser, url) {
       topicDetailActive,
       topicDocumentText,
       topicsNavActive,
-      proposalsActive,
       rulesText,
       rulesDrawerOpen,
       metricsText,
@@ -318,7 +314,6 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.topicDetailActive, true);
   assert.match(state.topicDocumentText, /Demo Topic/);
   assert.equal(state.topicsNavActive, true);
-  assert.equal(state.proposalsActive, true);
   assert.match(state.rulesText, /Keywords any/);
   assert.equal(state.rulesDrawerOpen, true);
   assert.match(state.metricsText, /thoughtflow_background_jobs/);
@@ -1616,8 +1611,6 @@ function startFixtureServer(options = {}) {
           document: "# Demo Topic\n\nBrowser smoke document.",
           members: [{ thought_id: "thought-1", title: "Browser Thought", match_type: "keyword", score: 0.9 }],
         }));
-      case "/api/topics/demo/weave-proposals":
-        return json(res, api({ proposals: [] }));
       case "/api/topics/demo/candidates":
         return json(res, api({
           candidates: [{
@@ -1866,7 +1859,7 @@ function startFixtureServer(options = {}) {
             source: "thought",
             source_id: "thought-1",
             path_hint: "thoughts/browser.md",
-            actions: ["preview", "open_note", "add_to_compose", "topic_impact", "copy_path"],
+            actions: ["preview", "open_note", "add_to_compose", "copy_path"],
           }],
           page: 1,
           page_size: 20,

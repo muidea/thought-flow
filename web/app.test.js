@@ -107,7 +107,7 @@ function makeElementStub(tagName = "div") {
 function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-tags",
-    "topic-filter", "topic-auto-filter", "event-type-filter",
+    "topic-filter", "event-type-filter",
     "thought-filter", "settings-drawer-event-type", "settings-drawer-event-resource",
     "settings-help-visible"];
   // Side-effect nodes (toast, source list, etc.) only need the methods the
@@ -273,12 +273,12 @@ function makeDomStub(initial = {}) {
       return [];
     },
   };
-  const topicTabs = ["topics-list", "topics-detail", "topics-proposals", "topics-rules"].map((tab) => ({
+  const topicTabs = ["topics-list", "topics-detail", "topics-rules"].map((tab) => ({
     dataset: { tab },
     classList: classSet(tab === "topics-list" ? ["active"] : []),
     disabled: tab !== "topics-list",
   }));
-  const topicPanels = ["topics-list", "topics-detail", "topics-proposals", "topics-rules"].map((tab) => ({
+  const topicPanels = ["topics-list", "topics-detail", "topics-rules"].map((tab) => ({
     id: `tab-${tab}`,
     classList: classSet(tab === "topics-list" ? ["active"] : []),
   }));
@@ -379,7 +379,6 @@ function loadAppFunctionsWith(opts = {}) {
       renderMarkdown,
       renderTopicDocumentMarkdown,
       thoughtLinksForDisplay,
-      renderDiff,
       renderComposeDraft,
       composeTitleFromContent,
       outlineFromText,
@@ -484,12 +483,9 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/capture"), { page: "capture", nav: "capture", params: {}, query: {} });
   assert.deepEqual(route("#/search"), { page: "search", nav: "search", params: {}, query: {} });
-  // PR2: topic detail and review are tabs under #/topics. The URL
-  // /topics/{id} opens the detail tab by default; the /review segment
-  // is rewritten to ?tab=proposals so the same page section hosts both
-  // views.
+  // Legacy /topics/{id}/review links land on the topic detail workspace.
   assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: {} });
-  assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "proposals" } });
+  assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
   // /topics?topic=...&tab=... is an alternate path syntax (no path id);
   // the topic id lives in the query and the page has no in-param topicId.
   assert.deepEqual(route("#/topics?topic=demo&tab=rules"), { page: "topics", nav: "topics", params: {}, query: { topic: "demo", tab: "rules" } });
@@ -575,7 +571,7 @@ test("renderSearchResultItem exposes source actions without score details", () =
   assert.doesNotMatch(html, /0\.60/);
   assert.match(html, /data-compose-source-id="thought-1"/);
   assert.match(html, /data-compose-source-title="Search Result"/);
-  assert.match(html, /data-weave-id="thought-1"/);
+  assert.doesNotMatch(html, /data-weave-id="thought-1"/);
   assert.match(html, /thoughts\/demo\.md/);
   assert.doesNotMatch(html, /tf-explain/);
 });
@@ -718,22 +714,6 @@ continues on the next line.
   assert.match(html, /<pre><code>indented code\n<\/code><\/pre>/);
   assert.match(html, /<s>strike<\/s>/);
   assert.match(html, /<table>/);
-});
-
-test("renderDiff marks added and removed lines", () => {
-  const app = loadAppFunctions();
-
-  const html = app.renderDiff([
-    { op: "context", text: "same" },
-    { op: "remove", text: "old" },
-    { op: "add", text: "new" },
-  ]);
-
-  assert.match(html, /diff-line context/);
-  assert.match(html, /diff-line remove/);
-  assert.match(html, /diff-line add/);
-  assert.match(html, />-<\/span><code>old<\/code>/);
-  assert.match(html, />\+<\/span><code>new<\/code>/);
 });
 
 test("renderComposeDraft keeps source links out of the editable body", () => {
@@ -911,7 +891,7 @@ test("buildRouteHash omits empty query fields and keeps the path clean", () => {
   // Empty values are dropped, null/undefined are dropped, so common default state
   // does not pollute the URL.
   assert.equal(app.buildRouteHash("search", {}, { q: "", mode: null, sort: undefined }), "#/search");
-  // PR2: topic detail / proposals / rules share the topics page. The
+  // Topic detail / rules share the topics page. The
   // topic id is read from params and the active tab is encoded as
   // ?tab=... so deep-links land on the right pane.
   assert.equal(app.buildRouteHash("topics", { topicId: "ai-notes" }, { tab: "rules" }), "#/topics/ai-notes?tab=rules");
@@ -1033,13 +1013,11 @@ test("restoreRoutePage hydrates topic state from query", () => {
   const dom = makeDomStub();
   const app = loadAppFunctionsWith({ dom, exposeState: true });
 
-  app.restoreRoutePage("topics", { keyword: "ai", auto_weave: "true" });
+  app.restoreRoutePage("topics", { keyword: "ai" });
   assert.equal(dom.store["topic-filter"], "ai");
-  assert.equal(dom.store["topic-auto-filter_checked"], true);
 
   app.restoreRoutePage("topics", {});
   assert.equal(dom.store["topic-filter"], "");
-  assert.equal(dom.store["topic-auto-filter_checked"], false);
 });
 
 test("topics list item click navigates directly to topic detail", () => {
@@ -1058,9 +1036,9 @@ test("normalizeTopicsTabName maps route query aliases to DOM tab ids", () => {
   const app = loadAppFunctions();
 
   assert.equal(app.normalizeTopicsTabName("detail"), "topics-detail");
-  assert.equal(app.normalizeTopicsTabName("proposals"), "topics-proposals");
   assert.equal(app.normalizeTopicsTabName("rules"), "topics-rules");
   assert.equal(app.normalizeTopicsTabName("topics-detail"), "topics-detail");
+  assert.equal(app.normalizeTopicsTabName("topics-proposals"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName("unknown"), "topics-detail");
   assert.equal(app.normalizeTopicsTabName(""), "topics-detail");
 });
@@ -1069,7 +1047,6 @@ test("topicTabRouteValue writes stable URL aliases instead of DOM tab ids", () =
   const app = loadAppFunctions();
 
   assert.equal(app.topicTabRouteValue("topics-detail"), "detail");
-  assert.equal(app.topicTabRouteValue("topics-proposals"), "proposals");
   assert.equal(app.topicTabRouteValue("topics-rules"), "rules");
   assert.equal(app.topicTabRouteValue("detail"), "detail");
 });
@@ -1087,7 +1064,6 @@ test("renderTopicRules shows the simplified rule summary and hides inactive inte
       manual_exclude: [],
     },
     outline: [{ title: "Notes" }, { title: "Open Questions" }],
-    auto_weave: true,
   });
 
   const html = dom.find("#topic-rules-summary").innerHTML;
@@ -1095,7 +1071,7 @@ test("renderTopicRules shows the simplified rule summary and hides inactive inte
   assert.match(html, /web/);
   assert.match(html, /topics\.rule\.tags_any/);
   assert.match(html, /crawler/);
-  assert.match(html, /topics\.rule\.auto_weave/);
+  assert.doesNotMatch(html, /topics\.rule\.auto_weave/);
   assert.doesNotMatch(html, /topics\.rule\.keywords_all/);
   assert.doesNotMatch(html, /topics\.rule\.keywords_exclude/);
   assert.doesNotMatch(html, /topics\.rule\.manual_include/);
@@ -1399,12 +1375,6 @@ test("navItemAriaCurrent marks the active page and clears others", () => {
   assert.equal(app.navItemAriaCurrent(route, "search"), "page");
   assert.equal(app.navItemAriaCurrent(route, "dashboard"), null);
   assert.equal(app.navItemAriaCurrent(route, "thoughts"), null);
-});
-
-test("renderDiff emits translated empty-state key", () => {
-  const app = loadAppFunctions();
-  const html = app.renderDiff([]);
-  assert.match(html, /diff\.no_changes/);
 });
 
 test("classifyCaptureInput recognizes URLs and plain text", () => {

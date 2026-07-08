@@ -1182,48 +1182,6 @@ textarea.markdown-preview {
   color: inherit;
 }
 
-.diff-view {
-  max-height: 220px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fbfcfd;
-  margin-top: 10px;
-  margin-bottom: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-
-.diff-line {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  border-bottom: 1px solid #eef1f5;
-}
-
-.diff-line:last-child {
-  border-bottom: 0;
-}
-
-.diff-line span {
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-}
-
-.diff-line code {
-  min-height: 24px;
-  padding: 4px 8px;
-  white-space: pre-wrap;
-}
-
-.diff-line.add {
-  background: #edf8f1;
-}
-
-.diff-line.remove {
-  background: #fff1f1;
-}
-
 .toggle-row {
   display: flex;
   gap: 8px;
@@ -1329,6 +1287,16 @@ textarea.markdown-preview {
   gap: 10px;
   align-items: center;
   margin-top: 12px;
+}
+
+.tf-filter-grid.tf-topic-filter-bar {
+  grid-template-columns: minmax(220px, 1fr) max-content;
+  align-items: stretch;
+}
+
+.tf-topic-filter-bar #reset-topic-filter {
+  min-width: 112px;
+  white-space: nowrap;
 }
 
 .tf-page .stack-form {
@@ -1611,6 +1579,10 @@ textarea.markdown-preview {
   .tf-page .search-form,
   .tf-usage-steps,
   .tf-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-filter-grid.tf-topic-filter-bar {
     grid-template-columns: 1fr;
   }
 

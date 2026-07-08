@@ -252,10 +252,9 @@ go build -o /tmp/thoughtflow ./cmd/thoughtflow
    - Dashboard 展示系统状态卡片、最近活动和快捷入口，不承载采集正文、专题规则或合稿编辑。
    - Capture 独立页面支持 text/url 类型切换、URL 专用输入、topic hints、提交 loading/disabled、重复内容 warning、成功结果区、Thought 入口和 Job 入口。
    - Thoughts 页面支持通过 Thought ID、路由或搜索结果打开详情，并提供 preview Drawer、加入合稿篮和 retry refine 入口。
-   - Search 页面支持 keyword / semantic / hybrid 模式、topic/tags/date/sort/explain 过滤、score/explain 展示、Thought preview Drawer、加入合稿篮、复制 path 和 weave preview 入口。
-   - Topics 页面提供列表、keyword/auto weave 前端过滤和明确创建入口；创建专题通过 Drawer 录入 keywords any/all/exclude、tags、manual include/exclude、semantic threshold、outline 和 auto_weave。
-   - Topic Detail 页面展示 document、members、rules、activity tabs；规则编辑通过 Drawer 进入，不再常驻右侧 rail；rebuild 使用确认 Modal 并跳转 Job。
-   - Weave Review 独立页面用于 proposal queue、diff、proposed document editor 和 accept confirmation。
+   - Search 页面支持 keyword / semantic / hybrid 模式、topic/tags/date/sort/explain 过滤、score/explain 展示、Thought preview Drawer、加入合稿篮和复制 path。
+   - Topics 页面提供列表、keyword 前端过滤和明确创建入口；创建专题通过 Drawer 录入 keywords any/all/exclude、tags、manual include/exclude、semantic threshold 和 outline。
+   - Topic Detail 页面展示 document、members、candidates 和 rules tab；规则编辑通过 Drawer 进入，不再常驻右侧 rail；rebuild 使用确认 Modal 并跳转 Job。
    - Synthesis 独立页面提供来源合稿篮、创建草稿 Drawer、草稿列表、草稿编辑器和保存为 Thought confirmation。
    - Jobs & Activity 页面提供 Job ID 查询、失败信息展示、SSE activity feed 和 event type/resource 前端过滤。
    - Settings 页面提供 Status、Metrics、Index、Git、Configuration tabs，reindex 使用确认 Modal。
@@ -301,7 +300,7 @@ UI 验证环境：
 按 `doc/thoughtflow-web-ux-polish-v2.md` 收口 UI 的最终形态：
 
 1. **侧栏 6 + 1 结构（PR1，commit e18dfc1）**：菜单重命名为「总览 / 采集 / 笔记 / 搜索 / 专题 / 整理」6 项 + 齿轮入口；每项 2 字 zh-CN / 5–8 字符 en-US；inline 16×16 SVG 图标。
-2. **页面 tab 化（PR2，commit 9970f63）**：topic-detail / topic-review 合并为 topics 页的 4 个 tab（列表 / 详情 / 提案 / 规则）；synthesis 页重命名为 compose，3 tab（草稿 / 篮子 / 模板）；旧 hash 段（/topics/{id}/review、/synthesis）通过 query `?tab=` 改写兼容。
+2. **页面 tab 化（PR2，commit 9970f63）**：topics 页保留 3 个 tab（列表 / 详情 / 规则），topic-review 提案管理不再暴露在前端；synthesis 页重命名为 compose，3 tab（草稿 / 篮子 / 模板）；旧 hash 段（/topics/{id}/review、/synthesis）通过 query `?tab=` 改写兼容。
 3. **jobs/events 并入（PR3，commit 0f677da）**：`#page-jobs` 与 `#page-settings` 移除；/jobs、/settings 走 deprecated redirect 到 /notes、/overview 并触发 deprecation toast；侧栏齿轮打开 settings 抽屉，5 tab（通用 / 模型 / 同步 / 索引 / 事件）；运行卡进 notes 页 Runtime tab 的可折叠 details 元素；语言切换移到设置抽屉的通用 tab。
 4. **内容裁剪 + description 收紧（PR4）**：六页 description 全部改写为 ≤ 12 字 zh-CN / ≤ 60 字符 en-US；设置抽屉"高级指标"块改为默认收起的 `<details>` 元素；移除页面底部 request_id 透出（仅错误 toast 保留）；`make i18n-check` 已在 i18n 测试中以 `assert.ok` 强制失败而非 warn。
 
