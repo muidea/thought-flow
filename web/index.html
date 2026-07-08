@@ -49,6 +49,10 @@
             <span class="tf-menu-label" data-i18n="nav.compose">Compose</span>
             <span class="tf-menu-badge" data-badge="compose" aria-hidden="true"></span>
           </a>
+          <a class="tf-menu-item" href="#/about" data-nav="about">
+            <svg class="tf-menu-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.5V11"/><circle cx="8" cy="5" r="0.5" fill="currentColor" stroke="none"/></svg>
+            <span class="tf-menu-label" data-i18n="nav.about">About</span>
+          </a>
         </nav>
       </aside>
 
@@ -465,6 +469,72 @@
                 </div>
                 <div id="compose-sources-list" class="tf-source-queue-list" data-i18n-template="compose.empty_sources" data-empty="true">No writing sources selected.</div>
               </div>
+            </section>
+          </section>
+
+          <section class="tf-page" id="page-about" data-page="about">
+            <div class="tf-page-header">
+              <div>
+                <h2 data-i18n="about.title">About</h2>
+                <p data-i18n="about.description">Product and capabilities</p>
+              </div>
+            </div>
+            <section class="tf-card tf-about-intro">
+              <div>
+                <span class="tf-text-secondary" data-i18n="about.product_label">Product</span>
+                <h3 data-i18n="about.product_name">ThoughtFlow</h3>
+                <p data-i18n="about.product_summary">A local-first thinking workspace for capturing ideas, organizing notes, finding related material, and turning selected sources into draft writing.</p>
+              </div>
+              <dl class="tf-about-meta">
+                <div>
+                  <dt data-i18n="about.meta.status">System status</dt>
+                  <dd id="about-system-status" data-i18n="brand.status.connecting">Connecting</dd>
+                </div>
+                <div>
+                  <dt data-i18n="about.meta.version">Version</dt>
+                  <dd data-i18n="about.meta.version_value">Local build</dd>
+                </div>
+                <div>
+                  <dt data-i18n="about.meta.copyright">Copyright</dt>
+                  <dd data-i18n="about.meta.copyright_value">Copyright © ThoughtFlow contributors.</dd>
+                </div>
+              </dl>
+            </section>
+            <section class="tf-about-grid" id="about-capabilities" aria-label="Product capabilities">
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.capture_title">Capture</h3>
+                <p data-i18n="about.cap.capture_body">Collect text, URLs, and follow-up context into archived thoughts with source-aware metadata.</p>
+              </article>
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.notes_title">Notes</h3>
+                <p data-i18n="about.cap.notes_body">Browse archived thoughts, inspect refined content, reopen context, and reuse notes as writing sources.</p>
+              </article>
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.search_title">Search</h3>
+                <p data-i18n="about.cap.search_body">Find relevant thoughts by keyword, tags, topics, and semantic index when embedding is available.</p>
+              </article>
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.topics_title">Topics</h3>
+                <p data-i18n="about.cap.topics_body">Group related thoughts with rules, maintain topic documents, and review members and candidate impact.</p>
+              </article>
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.compose_title">Compose</h3>
+                <p data-i18n="about.cap.compose_body">Queue selected sources, generate editable writing, and save accepted output back as a thought.</p>
+              </article>
+              <article class="tf-card">
+                <h3 data-i18n="about.cap.runtime_title">Runtime</h3>
+                <p data-i18n="about.cap.runtime_body">Monitor workspace health, Git sync, model status, indexing, background jobs, and live events.</p>
+              </article>
+            </section>
+            <section class="tf-card">
+              <div class="tf-card-header">
+                <h3 data-i18n="about.data_title">Data and operation</h3>
+              </div>
+              <ul class="tf-about-list">
+                <li data-i18n="about.data.local">Local-first by default: workspace data lives under the configured local workspace.</li>
+                <li data-i18n="about.data.files">Thoughts and topics are represented as readable files so they can be inspected outside the UI.</li>
+                <li data-i18n="about.data.sync">Git sync, model providers, and enrichment depend on the current configuration and runtime status.</li>
+              </ul>
             </section>
           </section>
         </main>

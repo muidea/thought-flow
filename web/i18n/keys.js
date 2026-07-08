@@ -9,6 +9,7 @@ export const Key = Object.freeze({
   NavSearch: "nav.search",
   NavTopics: "nav.topics",
   NavCompose: "nav.compose",
+  NavAbout: "nav.about",
 
   // Shared / common
   CommonCancel: "common.cancel",
@@ -318,6 +319,34 @@ export const Key = Object.freeze({
   ComposeSourceTypeSearchResult: "compose.source_type.search_result",
   ComposeSourceTypeTopicSection: "compose.source_type.topic_section",
   ComposeSourceTypeCaptureSession: "compose.source_type.capture_session",
+
+  // About page
+  AboutTitle: "about.title",
+  AboutDescription: "about.description",
+  AboutProductLabel: "about.product_label",
+  AboutProductName: "about.product_name",
+  AboutProductSummary: "about.product_summary",
+  AboutMetaStatus: "about.meta.status",
+  AboutMetaVersion: "about.meta.version",
+  AboutMetaVersionValue: "about.meta.version_value",
+  AboutMetaCopyright: "about.meta.copyright",
+  AboutMetaCopyrightValue: "about.meta.copyright_value",
+  AboutCapabilityCaptureTitle: "about.cap.capture_title",
+  AboutCapabilityCaptureBody: "about.cap.capture_body",
+  AboutCapabilityNotesTitle: "about.cap.notes_title",
+  AboutCapabilityNotesBody: "about.cap.notes_body",
+  AboutCapabilitySearchTitle: "about.cap.search_title",
+  AboutCapabilitySearchBody: "about.cap.search_body",
+  AboutCapabilityTopicsTitle: "about.cap.topics_title",
+  AboutCapabilityTopicsBody: "about.cap.topics_body",
+  AboutCapabilityComposeTitle: "about.cap.compose_title",
+  AboutCapabilityComposeBody: "about.cap.compose_body",
+  AboutCapabilityRuntimeTitle: "about.cap.runtime_title",
+  AboutCapabilityRuntimeBody: "about.cap.runtime_body",
+  AboutDataTitle: "about.data_title",
+  AboutDataLocal: "about.data.local",
+  AboutDataFiles: "about.data.files",
+  AboutDataSync: "about.data.sync",
 
   // Jobs page
   JobsIDPlaceholder: "jobs.id_placeholder",

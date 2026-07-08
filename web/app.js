@@ -118,7 +118,7 @@ function parseRoute(hash) {
   if (parts[0] === "overview") {
     return { page: "dashboard", nav: "overview", params: {}, query };
   }
-  const known = new Set(["capture", "search", "topics"]);
+  const known = new Set(["capture", "search", "topics", "about"]);
   if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
   return { page: "dashboard", nav: "overview", params: {}, query };
 }
@@ -1156,7 +1156,10 @@ async function loadStatus() {
   try {
     const status = await api("/api/system/status");
     state.status = status;
-    $("#system-status").textContent = `${status.workspace.id} / ${status.status}`;
+    const statusText = `${status.workspace.id} / ${status.status}`;
+    $("#system-status").textContent = statusText;
+    const aboutStatus = $("#about-system-status");
+    if (aboutStatus) aboutStatus.textContent = statusText;
     $("#dashboard-workspace").textContent = status.workspace?.status || status.status;
     $("#dashboard-llm").textContent = status.llm?.status || t("toast.unknown");
     $("#dashboard-embedding").textContent = status.embedding?.status || t("toast.unknown");
@@ -1173,6 +1176,8 @@ async function loadStatus() {
     }
   } catch (error) {
     $("#system-status").textContent = "degraded";
+    const aboutStatus = $("#about-system-status");
+    if (aboutStatus) aboutStatus.textContent = "degraded";
     const dashboardAlert = $("#dashboard-alert");
     if (dashboardAlert) {
       dashboardAlert.hidden = false;

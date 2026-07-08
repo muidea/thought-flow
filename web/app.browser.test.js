@@ -118,6 +118,7 @@ async function runBrowserSmoke(browser, url) {
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
       ["compose", "#/write", "#page-compose", "#compose-writing"],
+      ["about", "#/about", "#page-about", "#about-capabilities"],
     ];
     // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
     // entry and no dedicated page section, so it isn't in the routes
@@ -300,6 +301,7 @@ async function runBrowserSmoke(browser, url) {
     { name: "search", active: true, visible: true, navActive: true },
     { name: "topics", active: true, visible: true, navActive: true },
     { name: "compose", active: true, visible: true, navActive: true },
+    { name: "about", active: true, visible: true, navActive: true },
     { name: "settings", active: true, visible: false, navActive: true },
   ]);
   assert.match(state.captureResult, /Captured from browser smoke|Session context|Archive preview/);

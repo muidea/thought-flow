@@ -483,6 +483,7 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/capture"), { page: "capture", nav: "capture", params: {}, query: {} });
   assert.deepEqual(route("#/search"), { page: "search", nav: "search", params: {}, query: {} });
+  assert.deepEqual(route("#/about"), { page: "about", nav: "about", params: {}, query: {} });
   // Legacy /topics/{id}/review links land on the topic detail workspace.
   assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: {} });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
@@ -503,7 +504,7 @@ test("parseRoute falls back to overview for unknown segments", () => {
   const app = loadAppFunctions();
   const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
   // Any top-level segment that isn't in the live set (overview / capture /
-  // search / topics / notes / write) falls through to overview. The
+  // search / topics / notes / write / about) falls through to overview. The
   // query is preserved so legacy query params don't silently vanish.
   assert.deepEqual(
     route("#/legacy-dashboard"),

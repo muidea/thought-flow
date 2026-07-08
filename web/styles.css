@@ -504,6 +504,71 @@ p {
   font-size: 18px;
 }
 
+.tf-about-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.7fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.tf-about-intro h3 {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  font-size: 20px;
+}
+
+.tf-about-intro p,
+.tf-about-grid p {
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-about-meta {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.tf-about-meta div {
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px solid var(--tf-color-border-secondary);
+  padding-bottom: 10px;
+}
+
+.tf-about-meta div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.tf-about-meta dt {
+  color: var(--tf-color-text-secondary);
+  font-size: 12px;
+}
+
+.tf-about-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tf-about-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.tf-about-grid .tf-card {
+  display: grid;
+  gap: 8px;
+}
+
+.tf-about-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--tf-color-text-secondary);
+}
+
 .tf-two-column {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
@@ -1592,6 +1657,7 @@ textarea.markdown-preview {
   }
 
   .tf-stat-grid,
+  .tf-about-grid,
   .tf-two-column,
   .tf-topic-detail-layout,
   .tf-page .capture-form,
@@ -1602,6 +1668,10 @@ textarea.markdown-preview {
   }
 
   .tf-filter-grid.tf-topic-filter-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-about-intro {
     grid-template-columns: 1fr;
   }
 
