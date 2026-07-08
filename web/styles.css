@@ -1357,6 +1357,9 @@ textarea.markdown-preview {
 .tf-filter-grid.tf-topic-filter-bar {
   grid-template-columns: minmax(220px, 1fr) max-content;
   align-items: stretch;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--tf-color-border-secondary);
 }
 
 .tf-topic-filter-bar #reset-topic-filter {
