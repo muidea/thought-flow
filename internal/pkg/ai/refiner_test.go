@@ -392,6 +392,9 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 	if strings.Contains(requestBody, "You maintain ThoughtFlow capture session context") {
 		t.Fatalf("request body should not contain default prompt when a prompt file is configured:\n%s", requestBody)
 	}
+	if !strings.Contains(requestBody, `"response_format":{"type":"json_object"}`) {
+		t.Fatalf("request body should request JSON object mode:\n%s", requestBody)
+	}
 }
 
 func TestBuildCaptureContextParsesFirstBalancedJSONObject(t *testing.T) {
@@ -426,6 +429,41 @@ func TestBuildCaptureContextParsesFirstBalancedJSONObject(t *testing.T) {
 		t.Fatalf("BuildCaptureContext() error = %v", err)
 	}
 	if result.CandidateSummary != "summary with {braces}" {
+		t.Fatalf("CandidateSummary = %q", result.CandidateSummary)
+	}
+}
+
+func TestBuildCaptureContextSkipsMalformedJSONObjectCandidate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": `{"topic":"broken"æ}` + "\n" +
+							`{"topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"recovered","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+		Timeout:   time.Second,
+	}, appconfig.EmbeddingConfig{})
+
+	result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{
+		SessionID: "s1",
+		Content:   "整理一个主题方向",
+	})
+	if err != nil {
+		t.Fatalf("BuildCaptureContext() error = %v", err)
+	}
+	if result.CandidateSummary != "recovered" {
 		t.Fatalf("CandidateSummary = %q", result.CandidateSummary)
 	}
 }

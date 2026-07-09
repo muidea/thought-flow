@@ -698,6 +698,40 @@ func TestScratchpadServiceAppendMessageRetriesTransientProviderFailure(t *testin
 	}
 }
 
+func TestScratchpadServiceAppendMessageRetriesCaptureContextParseFailure(t *testing.T) {
+	store := newMemoryScratchpad()
+	provider := &stubCaptureContextProvider{
+		errs: []error{
+			errors.New("parse capture context json: invalid character 'æ' after object key:value pair"),
+			nil,
+		},
+		result: ai.CaptureContextResult{
+			CandidateSummary: "parse retry succeeded",
+			CandidateBody:    "parse retry body",
+			ArchiveIntent:    "none",
+			ArchiveStrategy:  "new",
+		},
+	}
+	svc := NewScratchpadService(store,
+		WithCaptureContextProvider(provider),
+		WithEventHub(newRecordingEventHub(true)),
+		WithCaptureContextRetryDelays(0),
+	)
+
+	if _, err := svc.AppendMessage("s1", "user", "needs parse retry"); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	sp := waitForScratchpad(t, store, "s1", func(sp scratchpad.Scratchpad) bool {
+		return sp.SessionContext.CandidateSummary == "parse retry succeeded"
+	})
+	if provider.callCount() != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.callCount())
+	}
+	if len(sp.Messages) != 2 || sp.Messages[1].Text != "parse retry succeeded" {
+		t.Fatalf("messages = %+v", sp.Messages)
+	}
+}
+
 func sameStringSet(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

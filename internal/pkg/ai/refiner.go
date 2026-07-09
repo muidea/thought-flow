@@ -16,6 +16,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/models"
@@ -549,14 +550,35 @@ func NewOpenAICompatibleEmbeddingProvider(cfg appconfig.EmbeddingConfig) *OpenAI
 // future addition (response_format, tools, structured outputs)
 // only needs to flow through here.
 func (p *OpenAICompatibleProvider) chatCompletion(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
-	resp, err := p.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	return p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
+}
+
+func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
+	content, err := p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, true)
+	if err == nil {
+		return content, nil
+	}
+	var providerErr ProviderError
+	if errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusBadRequest {
+		return p.chatCompletion(ctx, systemPrompt, userPrompt, temperature)
+	}
+	return "", err
+}
+
+func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool) (string, error) {
+	params := openai.ChatCompletionNewParams{
 		Model: p.chatModel,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(systemPrompt),
 			openai.UserMessage(userPrompt),
 		},
 		Temperature: openai.Float(temperature),
-	})
+	}
+	if jsonMode {
+		format := shared.NewResponseFormatJSONObjectParam()
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{OfJSONObject: &format}
+	}
+	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return "", wrapSDKError(err)
 	}
@@ -618,7 +640,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
-	content, err := p.chatCompletion(ctx,
+	content, err := p.chatCompletionJSON(ctx,
 		"You refine notes for ThoughtFlow. Return strict JSON only with fields summary string, key_points string array, tags string array, title string.",
 		"Refine this note without changing the original content.\n\nTitle: "+
 			firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)+
@@ -629,7 +651,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		return models.ThoughtRefinement{}, err
 	}
 	var parsed refineJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return models.ThoughtRefinement{}, fmt.Errorf("parse refinement json: %w", err)
 	}
 	embedding, err := p.Embed(ctx, EmbedRequest{ThoughtID: req.Thought.ID, Text: text})
@@ -662,7 +684,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 	if err != nil {
 		return CaptureContextResult{}, err
 	}
-	content, err := p.chatCompletion(ctx,
+	content, err := p.chatCompletionJSON(ctx,
 		systemPrompt,
 		"Session ID: "+req.SessionID+
 			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
@@ -675,7 +697,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 		return CaptureContextResult{}, err
 	}
 	var parsed captureContextJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return CaptureContextResult{}, fmt.Errorf("parse capture context json: %w", err)
 	}
 	return CaptureContextResult{
@@ -738,7 +760,7 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 		req.CurrentDocument = localInitialTopicDocument(req.Topic)
 	}
 	section := localThoughtSection(req, "")
-	content, err := p.chatCompletion(ctx,
+	content, err := p.chatCompletionJSON(ctx,
 		"You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
 		"Topic name: "+req.Topic.Name+
 			"\nTopic description: "+req.Topic.Description+
@@ -752,7 +774,7 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 		return models.TopicWeaveResult{}, err
 	}
 	var parsed topicWeaveJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return models.TopicWeaveResult{}, fmt.Errorf("parse topic weave json: %w", err)
 	}
 	document := strings.TrimSpace(parsed.Document)
@@ -771,7 +793,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}
 	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
 	format := firstNonEmpty(req.Format, "summary")
-	content, err := p.chatCompletion(ctx,
+	content, err := p.chatCompletionJSON(ctx,
 		"You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
 		"Goal: "+goal+
 			"\nFormat: "+format+
@@ -783,7 +805,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 		return models.SynthesisDraft{}, err
 	}
 	var parsed synthesisJSON
-	if err := json.Unmarshal([]byte(extractJSONObject(content)), &parsed); err != nil {
+	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return models.SynthesisDraft{}, fmt.Errorf("parse synthesis json: %w", err)
 	}
 	synthContent := strings.TrimSpace(parsed.Content)
@@ -1077,6 +1099,32 @@ func extractJSONObject(value string) string {
 		}
 	}
 	return value
+}
+
+func unmarshalFirstJSONObject(value string, target any) error {
+	value = strings.TrimSpace(value)
+	var firstErr error
+	for start := strings.Index(value, "{"); start >= 0; {
+		candidate := extractJSONObject(value[start:])
+		if err := json.Unmarshal([]byte(candidate), target); err == nil {
+			return nil
+		} else if firstErr == nil {
+			firstErr = err
+		}
+		next := start + 1
+		if next >= len(value) {
+			break
+		}
+		relative := strings.Index(value[next:], "{")
+		if relative < 0 {
+			break
+		}
+		start = next + relative
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return json.Unmarshal([]byte(value), target)
 }
 
 func renderSynthesisInputs(snapshots []models.ThoughtSnapshot) string {

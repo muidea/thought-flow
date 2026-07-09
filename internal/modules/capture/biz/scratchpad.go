@@ -520,6 +520,9 @@ func isRetryableCaptureContextError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	if strings.Contains(err.Error(), "parse capture context json") {
+		return true
+	}
 	var providerErr ai.ProviderError
 	return errors.As(err, &providerErr) && providerErr.Retryable
 }
