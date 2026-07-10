@@ -23,6 +23,15 @@ test("i18n registry resolves a key in zh-CN", async () => {
   assert.equal(t("nav.overview"), "总览");
   assert.equal(t("common.cancel"), "取消");
   assert.equal(t("common.save"), "保存");
+  assert.equal(t("capture.context.pending"), "正在整理…");
+});
+
+test("capture pending copy does not expose context processing details", async () => {
+  const en = await import(enUSPath);
+  const zh = await import(zhCNPath);
+  assert.equal(en.messages["capture.context.pending"], "Working on it…");
+  assert.doesNotMatch(en.messages["capture.context.pending"], /conversation|context/i);
+  assert.doesNotMatch(zh.messages["capture.context.pending"], /对话|上下文/);
 });
 
 test("i18n registry falls back to en-US when a key is missing in zh-CN", async () => {

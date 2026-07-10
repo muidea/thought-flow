@@ -1680,6 +1680,64 @@ test("renderCaptureThoughtCardFromSnapshot renders status chips and refine secti
   assert.match(html, /data-tag="ai"[^>]*>RAG/);
 });
 
+test("renderCaptureThoughtCardFromSnapshot shows the complete archived typed document", () => {
+  const app = loadAppFunctions();
+  const archivedBody = `# Agent design
+
+## 背景与问题
+
+完整背景说明。
+
+## 目标
+
+完整目标说明。
+
+## 方案设计
+
+这里是不能被摘要替代的完整方案正文。`;
+  const html = app.renderCaptureThoughtCardFromSnapshot({
+    thought: {
+      id: "design-1",
+      display_title: "Agent design",
+      capture_status: "captured",
+      refine_status: "refined",
+      summary: "简短加工摘要。",
+      document_profile: {
+        family: "design",
+        profile_id: "builtin.design-doc",
+        version: 1,
+      },
+    },
+    content: { ai_notes: archivedBody },
+  });
+
+  assert.match(html, /capture\.card\.section_document/);
+  assert.match(html, /builtin\.design-doc · v1/);
+  assert.match(html, /这里是不能被摘要替代的完整方案正文/);
+  assert.match(html, /<h2[^>]*>方案设计<\/h2>/);
+  assert.ok(html.indexOf("这里是不能被摘要替代的完整方案正文") < html.indexOf("简短加工摘要"));
+});
+
+test("renderCaptureThoughtCardFromSnapshot keeps ordinary note cards compact", () => {
+  const app = loadAppFunctions();
+  const html = app.renderCaptureThoughtCardFromSnapshot({
+    thought: {
+      id: "note-1",
+      display_title: "Note",
+      summary: "普通笔记摘要。",
+      document_profile: {
+        family: "note",
+        profile_id: "builtin.note",
+        version: 1,
+      },
+    },
+    content: { ai_notes: "不应在普通笔记卡片中完整展开" },
+  });
+
+  assert.doesNotMatch(html, /capture\.card\.section_document/);
+  assert.doesNotMatch(html, /不应在普通笔记卡片中完整展开/);
+});
+
 test("renderCaptureThoughtCardFromSnapshot renders the 4 expansion sections", () => {
   const app = loadAppFunctions();
   const snapshot = {

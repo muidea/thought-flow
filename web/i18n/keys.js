@@ -95,6 +95,7 @@ export const Key = Object.freeze({
   CaptureCardStatusIndex: "capture.card.status_index",
   CaptureCardStatusTopic: "capture.card.status_topic",
   CaptureCardSectionRefine: "capture.card.section_refine",
+  CaptureCardSectionDocument: "capture.card.section_document",
   CaptureFeedbackRenamed: "capture.feedback.renamed",
   CaptureFeedbackTagsAdded: "capture.feedback.tags_added",
   CaptureFeedbackNoteAppended: "capture.feedback.note_appended",

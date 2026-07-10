@@ -2352,6 +2352,10 @@ textarea:focus-visible {
   list-style: disc;
 }
 
+.tf-capture-archived-document > .markdown-rendered {
+  padding: 0 var(--tf-space-3, 0.75rem) var(--tf-space-3, 0.75rem);
+}
+
 .tf-capture-plan {
   padding: 0 var(--tf-space-3, 0.75rem) var(--tf-space-3, 0.75rem);
   font-size: 0.875rem;

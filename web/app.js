@@ -3113,6 +3113,7 @@ function renderCaptureThoughtCard(thought, jobs) {
 // nagging once the pipeline is at least partially through.
 function renderCaptureThoughtCardFromSnapshot(snapshot) {
   const thought = (snapshot && snapshot.thought) || {};
+  const content = (snapshot && snapshot.content) || {};
   const jobs = (snapshot && snapshot.jobs) || [];
   const title = escapeHTML(thought.display_title || thought.user_title || thought.extracted_title || thought.id || "");
   const id = escapeHTML(thought.id || "");
@@ -3129,6 +3130,9 @@ function renderCaptureThoughtCardFromSnapshot(snapshot) {
   const urlFollowups = Array.isArray(thought.url_followups) ? thought.url_followups : [];
   const expansionPlan = typeof thought.expansion_plan === "string" ? thought.expansion_plan.trim() : "";
   const expandError = (thought.errors || []).find((e) => typeof e?.code === "string" && e.code.startsWith("thoughtflow.expand."));
+  const profileRef = thought.document_profile || {};
+  const archivedBody = typeof content.ai_notes === "string" ? content.ai_notes.trim() : "";
+  const isTypedDocument = Boolean(profileRef.profile_id) && profileRef.family !== "note";
 
   const warning = thought.capture_status === "duplicate_warned"
     ? `<div class="tf-alert tf-alert-warning">${escapeHTML((thought.errors || []).map((error) => error.message || error.code).join("; ") || t("capture.duplicate.default"))}</div>`
@@ -3154,6 +3158,13 @@ function renderCaptureThoughtCardFromSnapshot(snapshot) {
       </div>`
     : "";
 
+  const documentBlock = isTypedDocument && archivedBody
+    ? `<details class="tf-capture-expansion tf-capture-archived-document" open>
+        <summary>${escapeHTML(t("capture.card.section_document"))}<span class="tf-chip">${escapeHTML(profileRef.profile_id)} · v${escapeHTML(profileRef.version || 1)}</span></summary>
+        <div class="markdown-rendered">${renderMarkdown(archivedBody)}</div>
+      </details>`
+    : "";
+
   const expansionSections = buildCaptureExpansionSections(thought, {
     relatedIDs, suggestedTopicIDs, urlFollowups, expansionPlan, expandError,
   });
@@ -3163,6 +3174,7 @@ function renderCaptureThoughtCardFromSnapshot(snapshot) {
     <div class="topic-meta">${id}${captureStatus ? ` · ${captureStatus}` : ""}</div>
     <div class="tf-capture-status-row">${statusChips.join("")}</div>
     ${warning}
+    ${documentBlock}
     ${refineBlock}
     ${expansionSections}
     <div class="tf-action-row">
