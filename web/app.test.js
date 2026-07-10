@@ -2557,6 +2557,20 @@ test("about page document profile guide summarizes loaded profiles and registry 
   assert.match(html, /about\.profiles\.issue_count/);
 });
 
+test("about page explains document profile purpose and lifecycle", () => {
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  assert.match(html, /about\.profiles\.background_title/);
+  assert.match(html, /about\.profiles\.concept_profile_body/);
+  assert.match(html, /about\.profiles\.concept_lifecycle_body/);
+  assert.match(html, /about\.profiles\.usage_case_3/);
+  assert.match(html, /about\.profiles\.usage_avoid/);
+  assert.match(html, /about\.profiles\.quickstart_step_5/);
+  assert.match(html, /about\.profiles\.activation_title/);
+  assert.doesNotMatch(html, /POST \/api\/document-profiles\/(validate|publish|reload)/);
+  const profileGuide = html.match(/<section class="tf-about-advanced"[\s\S]*?<\/section>\s*<\/section>/)?.[0] || "";
+  assert.doesNotMatch(profileGuide, /multi-turn conversations|selected source material|Capture should|Compose should/i);
+});
+
 test("document profile loader preserves the active compose selection across automatic refresh", async () => {
   const dom = makeDomStub();
   const select = {

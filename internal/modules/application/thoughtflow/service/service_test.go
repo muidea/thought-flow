@@ -123,9 +123,14 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 			t.Fatalf("expected topic drawer control %s", expected)
 		}
 	}
-	for _, expected := range []string{`id="about-document-profiles"`, `id="about-document-format-path"`, `id="about-document-profile-list"`, `POST /api/document-profiles/validate`, `{{section:proposal|required}}`} {
+	for _, expected := range []string{`id="about-document-profiles"`, `id="about-document-format-path"`, `id="about-document-profile-list"`, `about.profiles.background_title`, `about.profiles.usage_avoid`, `about.profiles.activation_title`, `published/&lt;profile-id&gt;/vN.md`, `{{section:proposal|required}}`} {
 		if !strings.Contains(res.Body.String(), expected) {
 			t.Fatalf("expected advanced DocumentProfile guidance %s", expected)
+		}
+	}
+	for _, removed := range []string{`POST /api/document-profiles/validate`, `POST /api/document-profiles/publish`, `POST /api/document-profiles/reload`, `Multi-turn conversations`, `selected source material`, `Capture should recognize`, `Compose should offer`} {
+		if strings.Contains(res.Body.String(), removed) {
+			t.Fatalf("advanced DocumentProfile guidance should not expose operational API %s", removed)
 		}
 	}
 	for _, removedText := range []string{"Edit Topic Rules", "Save rules"} {

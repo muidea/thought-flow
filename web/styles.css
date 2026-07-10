@@ -671,8 +671,15 @@ p {
 
 .tf-about-guide-body p,
 .tf-about-guide-body ol,
-.tf-about-guide-body ul {
+.tf-about-guide-body ul,
+.tf-about-guide-body dl {
   margin: 0;
+}
+
+.tf-about-guide-body h4 {
+  margin: 4px 0 0;
+  color: var(--tf-color-text);
+  font-size: 14px;
 }
 
 .tf-about-guide-body ol,
@@ -693,6 +700,40 @@ p {
   color: var(--tf-color-text);
   line-height: 1.55;
   white-space: pre;
+}
+
+.tf-about-profile-concepts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--tf-color-border-secondary);
+}
+
+.tf-about-profile-concepts > div {
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.tf-about-profile-concepts > div + div {
+  border-left: 1px solid var(--tf-color-border-secondary);
+}
+
+.tf-about-profile-concepts dt {
+  margin-bottom: 5px;
+  color: var(--tf-color-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.tf-about-profile-concepts dd {
+  margin: 0;
+  color: var(--tf-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tf-about-guide-note {
+  border-left: 3px solid var(--tf-color-primary);
+  padding-left: 10px;
 }
 
 .tf-about-token-list {
@@ -1820,6 +1861,15 @@ textarea.markdown-preview {
 
   .tf-about-profile-runtime {
     grid-template-columns: 1fr;
+  }
+
+  .tf-about-profile-concepts {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-about-profile-concepts > div + div {
+    border-top: 1px solid var(--tf-color-border-secondary);
+    border-left: 0;
   }
 
   .tf-topic-document {
