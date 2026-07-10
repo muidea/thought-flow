@@ -2,10 +2,12 @@ package documentprofile
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"thoughtflow/assets/documentformats"
 	"thoughtflow/internal/pkg/models"
@@ -93,6 +95,54 @@ func TestRegistryPublishesCustomFormat(t *testing.T) {
 	resolved, err := registry.Resolve(profile.Ref)
 	if err != nil || resolved.Ref.ContentHash != profile.Ref.ContentHash {
 		t.Fatalf("Resolve() = %+v, %v", resolved.Ref, err)
+	}
+}
+
+func TestRegistryCreatesCustomDirectoryLayout(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "profiles")
+	registry, err := NewRegistry(root, models.DocumentProfileBuiltinNote, Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	registry.Close()
+	for _, dir := range []string{filepath.Join(root, "drafts"), filepath.Join(root, "published")} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("expected directory %s: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("expected %s to be a directory", dir)
+		}
+	}
+}
+
+func TestRegistryAutoReloadsPublishedProfilesAndStopsOnClose(t *testing.T) {
+	root := t.TempDir()
+	registry, err := NewRegistry(root, models.DocumentProfileBuiltinNote, Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	registry.StartAutoReload(10 * time.Millisecond)
+
+	raw := strings.Replace(documentformats.NoteV1, "builtin.note", "custom.auto-loaded", 1)
+	writePublishedProfile(t, root, "custom.auto-loaded", 1, raw)
+	waitForRegistry(t, time.Second, func() bool {
+		_, err := registry.ResolveLatest("custom.auto-loaded")
+		return err == nil
+	})
+
+	writePublishedProfile(t, root, "custom.invalid", 1, "not a document format")
+	waitForRegistry(t, time.Second, func() bool { return len(registry.Issues()) > 0 })
+	if _, err := registry.ResolveLatest(models.DocumentProfileBuiltinNote); err != nil {
+		t.Fatalf("invalid custom profile affected builtin profiles: %v", err)
+	}
+
+	registry.Close()
+	stoppedRaw := strings.Replace(documentformats.NoteV1, "builtin.note", "custom.after-close", 1)
+	writePublishedProfile(t, root, "custom.after-close", 1, stoppedRaw)
+	time.Sleep(50 * time.Millisecond)
+	if _, err := registry.ResolveLatest("custom.after-close"); !errors.Is(err, ErrProfileNotFound) {
+		t.Fatalf("ResolveLatest(after Close) error = %v, want ErrProfileNotFound", err)
 	}
 }
 
@@ -196,4 +246,28 @@ func TestRegistryPublishRejectsSymlinkedPublishedDirectory(t *testing.T) {
 	if _, err := registry.Publish([]byte(raw)); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("Publish error = %v", err)
 	}
+}
+
+func writePublishedProfile(t *testing.T, root, profileID string, version int, raw string) {
+	t.Helper()
+	dir := filepath.Join(root, "published", profileID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create published profile directory: %v", err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("v%d.md", version))
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write published profile: %v", err)
+	}
+}
+
+func waitForRegistry(t *testing.T, timeout time.Duration, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ready() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for document profile registry")
 }

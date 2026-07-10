@@ -43,10 +43,11 @@ func New() *Module {
 }
 
 type Module struct {
-	server      gracefulHTTPServer
-	serverDone  chan error
-	stream      *eventstream.Stream
-	httpService *service.Service
+	server          gracefulHTTPServer
+	serverDone      chan error
+	stream          *eventstream.Stream
+	httpService     *service.Service
+	profileRegistry *documentprofile.Registry
 }
 
 type gracefulHTTPServer interface {
@@ -136,11 +137,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	scratchpadStore := scratchpad.New(ws.ScratchpadPath)
 	var profileRegistry *documentprofile.Registry
 	if cfg.DocumentProfiles.Enabled {
-		profileDir := cfg.DocumentProfiles.CustomDir
-		if profileDir == "" {
-			profileDir = ws.DocumentFormatsPath
-		}
-		profileRegistry, err = documentprofile.NewRegistry(profileDir, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
+		profileRegistry, err = documentprofile.NewRegistry(ws.DocumentFormatsPath, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
 			MaxFormatBytes: cfg.DocumentProfiles.MaxFormatBytes,
 			MaxSections:    cfg.DocumentProfiles.MaxSections,
 		})
@@ -169,6 +166,10 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		return cd.WrapError(cd.Unexpected, err, "create http server")
 	}
 	m.serverDone = make(chan error, 1)
+	m.profileRegistry = profileRegistry
+	if m.profileRegistry != nil && cfg.DocumentProfiles.AutoReload {
+		m.profileRegistry.StartAutoReload(cfg.DocumentProfiles.ReloadInterval)
+	}
 	return nil
 }
 
@@ -208,6 +209,10 @@ func (m *Module) Run(ctx context.Context) *cd.Error {
 }
 
 func (m *Module) Teardown(ctx context.Context) {
+	if m.profileRegistry != nil {
+		m.profileRegistry.Close()
+		m.profileRegistry = nil
+	}
 	if m.httpService != nil {
 		m.httpService.Close()
 	}

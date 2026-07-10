@@ -49,13 +49,16 @@ type CaptureConfig struct {
 }
 
 type DocumentProfilesConfig struct {
-	Enabled            bool
-	CustomDir          string
-	DefaultProfileID   string
-	MaxMatchCandidates int
-	MaxFormatBytes     int
-	MaxSections        int
-	MaxRepairAttempts  int
+	Enabled               bool
+	CustomDir             string
+	DefaultProfileID      string
+	AutoReload            bool
+	ReloadInterval        time.Duration
+	ReloadIntervalSeconds int
+	MaxMatchCandidates    int
+	MaxFormatBytes        int
+	MaxSections           int
+	MaxRepairAttempts     int
 }
 
 type RefinerConfig struct {
@@ -210,12 +213,15 @@ func defaultConfig() Config {
 			DuplicatePolicy: "warn",
 		},
 		DocumentProfiles: DocumentProfilesConfig{
-			Enabled:            true,
-			DefaultProfileID:   "builtin.note",
-			MaxMatchCandidates: 10,
-			MaxFormatBytes:     131072,
-			MaxSections:        32,
-			MaxRepairAttempts:  2,
+			Enabled:               true,
+			DefaultProfileID:      "builtin.note",
+			AutoReload:            true,
+			ReloadInterval:        2 * time.Second,
+			ReloadIntervalSeconds: 2,
+			MaxMatchCandidates:    10,
+			MaxFormatBytes:        131072,
+			MaxSections:           32,
+			MaxRepairAttempts:     2,
 		},
 		Refiner: RefinerConfig{
 			Concurrency:        2,
@@ -280,6 +286,12 @@ func applyFrameworkOverrides(cfg *Config, configDir string) {
 	cfg.DocumentProfiles.Enabled = configBool(appConfig, "document_profiles.enabled", cfg.DocumentProfiles.Enabled)
 	cfg.DocumentProfiles.CustomDir = configPath(appConfig, "document_profiles.custom_dir", cfg.DocumentProfiles.CustomDir, configDir)
 	cfg.DocumentProfiles.DefaultProfileID = configString(appConfig, "document_profiles.default_profile_id", cfg.DocumentProfiles.DefaultProfileID)
+	cfg.DocumentProfiles.AutoReload = configBool(appConfig, "document_profiles.auto_reload", cfg.DocumentProfiles.AutoReload)
+	cfg.DocumentProfiles.ReloadIntervalSeconds = configInt(appConfig, "document_profiles.reload_interval_seconds", cfg.DocumentProfiles.ReloadIntervalSeconds)
+	if cfg.DocumentProfiles.ReloadIntervalSeconds <= 0 {
+		cfg.DocumentProfiles.ReloadIntervalSeconds = 2
+	}
+	cfg.DocumentProfiles.ReloadInterval = time.Duration(cfg.DocumentProfiles.ReloadIntervalSeconds) * time.Second
 	cfg.DocumentProfiles.MaxMatchCandidates = configInt(appConfig, "document_profiles.max_match_candidates", cfg.DocumentProfiles.MaxMatchCandidates)
 	cfg.DocumentProfiles.MaxFormatBytes = configInt(appConfig, "document_profiles.max_format_bytes", cfg.DocumentProfiles.MaxFormatBytes)
 	cfg.DocumentProfiles.MaxSections = configInt(appConfig, "document_profiles.max_sections", cfg.DocumentProfiles.MaxSections)

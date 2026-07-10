@@ -21,6 +21,15 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 	if err != nil {
 		return nil, err
 	}
+	documentFormatsPath := strings.TrimSpace(cfg.DocumentProfiles.CustomDir)
+	if documentFormatsPath == "" {
+		documentFormatsPath = filepath.Join(rootPath, "document-formats")
+	} else {
+		documentFormatsPath, err = filepath.Abs(documentFormatsPath)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	ws := &models.Workspace{
 		ID:                  "local",
@@ -31,7 +40,7 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 		RuntimePath:         dataPath,
 		JobsPath:            filepath.Join(dataPath, "jobs"),
 		ScratchpadPath:      filepath.Join(rootPath, ".scratchpad"),
-		DocumentFormatsPath: filepath.Join(rootPath, "document-formats"),
+		DocumentFormatsPath: documentFormatsPath,
 		GitEnabled:          cfg.GitSync.Enabled,
 		CreatedAt:           time.Now().UTC(),
 	}

@@ -430,6 +430,8 @@ function loadAppFunctionsWith(opts = {}) {
       renderArchivePreviewBody,
       renderCaptureContextRows,
       renderDocumentProfileOptions,
+      loadDocumentProfiles,
+      aboutDocumentProfilesHTML,
       renderCaptureBubbleBody,
       handleCaptureComposerKeydown,
       handleTabClick,
@@ -2532,4 +2534,54 @@ test("document profile UI renders dynamic choices and strict validation issues",
   assert.match(preview, /builtin\.design-doc/);
   assert.match(preview, /document_profile\.validation_invalid/);
   assert.match(preview, /Missing rollback section/);
+});
+
+test("about page document profile guide summarizes loaded profiles and registry issues", () => {
+  const app = loadAppFunctionsWith();
+  const html = app.aboutDocumentProfilesHTML([
+    {
+      name: "Team RFC",
+      description: "Team design contract",
+      enabled: true,
+      ref: { profile_id: "custom.team-rfc", version: 2, family: "design" },
+    },
+    {
+      name: "Disabled",
+      enabled: false,
+      ref: { profile_id: "custom.disabled", version: 1, family: "other" },
+    },
+  ], [{ code: "thoughtflow.profile.invalid" }]);
+  assert.match(html, /Team RFC · v2/);
+  assert.match(html, /design/);
+  assert.doesNotMatch(html, /custom\.disabled/);
+  assert.match(html, /about\.profiles\.issue_count/);
+});
+
+test("document profile loader preserves the active compose selection across automatic refresh", async () => {
+  const dom = makeDomStub();
+  const select = {
+    value: "custom.team-rfc",
+    selectedOptions: [{ dataset: { version: "2" } }],
+    innerHTML: "",
+  };
+  dom.nodes["compose-format"] = select;
+  const app = loadAppFunctionsWith({
+    dom,
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        data: {
+          profiles: [
+            { name: "Note", ref: { profile_id: "builtin.note", version: 1 } },
+            { name: "Team RFC", ref: { profile_id: "custom.team-rfc", version: 2 } },
+          ],
+          issues: [],
+        },
+      }),
+    }),
+  });
+
+  await app.loadDocumentProfiles();
+
+  assert.match(select.innerHTML, /value="custom\.team-rfc"[^>]*selected/);
 });

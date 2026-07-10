@@ -1,6 +1,7 @@
 package documentprofile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"thoughtflow/assets/documentformats"
 	"thoughtflow/internal/pkg/models"
@@ -20,6 +22,10 @@ var ErrProfileConflict = errors.New("document profile version conflict")
 
 type Registry struct {
 	mu               sync.RWMutex
+	reloadMu         sync.Mutex
+	lifecycleMu      sync.Mutex
+	cancelAutoReload context.CancelFunc
+	autoReloadWG     sync.WaitGroup
 	customDir        string
 	defaultProfileID string
 	limits           Limits
@@ -89,6 +95,9 @@ func NewRegistry(customDir, defaultProfileID string, limits Limits) (*Registry, 
 	if r.defaultProfileID == "" {
 		r.defaultProfileID = models.DocumentProfileBuiltinNote
 	}
+	if err := r.ensureDirectories(); err != nil {
+		return nil, fmt.Errorf("prepare document profile directories: %w", err)
+	}
 	status := r.Reload()
 	if status.ProfileCount == 0 {
 		return nil, errors.New("no valid document profiles are available")
@@ -97,6 +106,9 @@ func NewRegistry(customDir, defaultProfileID string, limits Limits) (*Registry, 
 }
 
 func (r *Registry) Reload() RegistryStatus {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+
 	r.mu.RLock()
 	previous := make(map[string]DocumentProfile, len(r.profiles))
 	for key, profile := range r.profiles {
@@ -168,6 +180,58 @@ func (r *Registry) Reload() RegistryStatus {
 	r.issues = issues
 	r.mu.Unlock()
 	return RegistryStatus{ProfileCount: len(profiles), Issues: append([]models.ValidationIssue(nil), issues...)}
+}
+
+func (r *Registry) StartAutoReload(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.cancelAutoReload != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelAutoReload = cancel
+	r.autoReloadWG.Add(1)
+	go func() {
+		defer r.autoReloadWG.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				r.Reload()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (r *Registry) Close() {
+	r.lifecycleMu.Lock()
+	cancel := r.cancelAutoReload
+	if cancel == nil {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	cancel()
+	r.autoReloadWG.Wait()
+	r.cancelAutoReload = nil
+	r.lifecycleMu.Unlock()
+}
+
+func (r *Registry) ensureDirectories() error {
+	if r.customDir == "" {
+		return nil
+	}
+	for _, dir := range []string{r.customDir, filepath.Join(r.customDir, "drafts"), filepath.Join(r.customDir, "published")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Registry) ListEnabled() []DocumentProfileDescriptor {

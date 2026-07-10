@@ -132,6 +132,8 @@ duplicate_policy = "warn"
 enabled = true
 custom_dir = ""
 default_profile_id = "builtin.note"
+auto_reload = true
+reload_interval_seconds = 2
 max_match_candidates = 10
 max_format_bytes = 131072
 max_sections = 32
@@ -178,6 +180,8 @@ timeout_seconds = 30
 4. `embedding.api_key` 为空时，服务使用 deterministic local embedding，仍可完成本地采集、搜索和专题匹配。
 5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
 6. 配置目录和运行状态目录应保持物理分离。配置目录存放 `application.toml`，运行状态目录存放 jobs、logs、DuckDB 等运行态文件。
+7. `document_profiles.custom_dir` 为空时使用 `<workspace>/document-formats`；相对路径以 `application.toml` 所在配置目录为基准。启动时会自动创建 `drafts/` 和 `published/`，只有 `published/<profile-id>/vN.md` 参与匹配和生成。
+8. `document_profiles.auto_reload = true` 时，服务按 `reload_interval_seconds` 周期扫描发布目录。新增 Profile 或新版本无需重启，也无需调用 reload API，即可同时对 Capture 和 Compose 生效。reload API 保留为运维兜底；原地修改已发布版本仍会触发 hash 冲突并退出新匹配。
 
 ## 6. CLI 参数
 

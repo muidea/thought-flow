@@ -30,7 +30,8 @@ func New() *Module {
 }
 
 type Module struct {
-	service *biz.Service
+	service         *biz.Service
+	profileRegistry *documentprofile.Registry
 }
 
 var (
@@ -83,11 +84,7 @@ func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundR
 	)
 	m.service.SetModel(cfg.LLM.ChatModel)
 	if cfg.DocumentProfiles.Enabled {
-		profileDir := cfg.DocumentProfiles.CustomDir
-		if profileDir == "" {
-			profileDir = ws.DocumentFormatsPath
-		}
-		profiles, profileErr := documentprofile.NewRegistry(profileDir, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
+		profiles, profileErr := documentprofile.NewRegistry(ws.DocumentFormatsPath, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
 			MaxFormatBytes: cfg.DocumentProfiles.MaxFormatBytes,
 			MaxSections:    cfg.DocumentProfiles.MaxSections,
 		})
@@ -95,6 +92,10 @@ func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundR
 			return cd.WrapError(cd.Unexpected, profileErr, "load compose document profiles")
 		}
 		m.service.SetDocumentProfiles(profiles, ai.NewDocumentGenerationProvider(cfg.LLM), cfg.DocumentProfiles.MaxRepairAttempts)
+		m.profileRegistry = profiles
+		if cfg.DocumentProfiles.AutoReload {
+			m.profileRegistry.StartAutoReload(cfg.DocumentProfiles.ReloadInterval)
+		}
 	}
 	setCurrent(m.service)
 	return nil
@@ -105,5 +106,9 @@ func (m *Module) Run(_ context.Context) *cd.Error {
 }
 
 func (m *Module) Teardown(_ context.Context) {
+	if m.profileRegistry != nil {
+		m.profileRegistry.Close()
+		m.profileRegistry = nil
+	}
 	setCurrent(nil)
 }

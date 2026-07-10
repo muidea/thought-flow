@@ -536,6 +536,140 @@
                 <li data-i18n="about.data.sync">Git sync, model providers, and enrichment depend on the current configuration and runtime status.</li>
               </ul>
             </section>
+            <section class="tf-about-advanced" id="about-document-profiles" aria-labelledby="about-document-profiles-title">
+              <div class="tf-about-section-header">
+                <div>
+                  <span class="tf-text-secondary" data-i18n="about.profiles.eyebrow">Advanced usage</span>
+                  <h3 id="about-document-profiles-title" data-i18n="about.profiles.title">Customize DocumentProfile</h3>
+                  <p data-i18n="about.profiles.summary">Add strict document types for Capture and Compose with local DocumentFormat files.</p>
+                </div>
+              </div>
+              <dl class="tf-about-profile-runtime">
+                <div>
+                  <dt data-i18n="about.profiles.workspace_path">Configured profile directory</dt>
+                  <dd><code id="about-document-format-path">document-formats/</code></dd>
+                </div>
+                <div>
+                  <dt data-i18n="about.profiles.loaded">Loaded profiles</dt>
+                  <dd id="about-document-profile-list" class="tf-about-profile-list" data-i18n="about.profiles.loading">Loading profiles</dd>
+                </div>
+              </dl>
+              <div class="tf-about-guide-sections">
+                <details open>
+                  <summary data-i18n="about.profiles.quickstart_title">Quick start</summary>
+                  <div class="tf-about-guide-body">
+                    <ol>
+                      <li data-i18n="about.profiles.quickstart_step_1">Create a Markdown format under the configured profile directory's drafts folder.</li>
+                      <li data-i18n="about.profiles.quickstart_step_2">Define metadata, matching examples, inputs, validation, and a restricted Markdown template.</li>
+                      <li data-i18n="about.profiles.quickstart_step_3">Validate the complete file, then publish an immutable ID and version.</li>
+                      <li data-i18n="about.profiles.quickstart_step_4">Published changes are detected automatically and become available to both Capture and Compose.</li>
+                    </ol>
+                    <pre><code>&lt;configured-profile-dir&gt;/
+├── drafts/
+│   └── team-rfc.md
+└── published/
+    └── custom.team-rfc/
+        ├── v1.md
+        └── v2.md</code></pre>
+                  </div>
+                </details>
+                <details>
+                  <summary data-i18n="about.profiles.format_title">Minimal DocumentFormat</summary>
+                  <div class="tf-about-guide-body">
+                    <p data-i18n="about.profiles.format_body">A format is YAML front matter followed by a Markdown template. Custom IDs must not use the builtin namespace.</p>
+                    <pre><code>---
+id: custom.team-rfc
+version: 1
+name: Team RFC
+family: design
+description: Design contract for team-owned system changes
+enabled: true
+auto_match:
+  enabled: true
+  priority: 50
+  use_when:
+    - The user asks for a team RFC
+  positive_examples:
+    - Turn this discussion into a team RFC
+  negative_examples:
+    - Write a blog post about RFCs
+inputs:
+  - key: audience
+    label: Audience
+    required: false
+    default: Engineering reviewers
+validation:
+  allow_unknown_sections: false
+  require_non_empty_sections: true
+  minimum_body_chars: 500
+  maximum_body_chars: 12000
+  heading_level: 2
+generation:
+  additional_instructions: |
+    Cover failure paths, compatibility, testing, and rollback.
+---
+# {{title}}
+
+&gt; {{summary}}
+
+## Context
+
+{{section:context|required}}
+
+## Proposal
+
+{{section:proposal|required}}
+
+## Testing and rollback
+
+{{section:verification|required}}
+
+## References
+
+{{references}}</code></pre>
+                  </div>
+                </details>
+                <details>
+                  <summary data-i18n="about.profiles.dsl_title">Template DSL and constraints</summary>
+                  <div class="tf-about-guide-body">
+                    <p data-i18n="about.profiles.dsl_body">Only deterministic placeholders are supported. Formats cannot execute code, access files, call the network, or change archive behavior.</p>
+                    <div class="tf-about-token-list">
+                      <code>{{title}}</code>
+                      <code>{{summary}}</code>
+                      <code>{{parameter:key}}</code>
+                      <code>{{section:key|required}}</code>
+                      <code>{{section:key|optional}}</code>
+                      <code>{{references}}</code>
+                    </div>
+                    <ul>
+                      <li data-i18n="about.profiles.dsl_rule_1">Use a stable family: note, research, design, article, record, or other.</li>
+                      <li data-i18n="about.profiles.dsl_rule_2">Every required section must appear exactly once and receive non-empty generated content.</li>
+                      <li data-i18n="about.profiles.dsl_rule_3">Published versions are immutable; changes require a higher version.</li>
+                      <li data-i18n="about.profiles.dsl_rule_4">Use precise positive and negative examples so ordinary discussion does not trigger a specialized profile.</li>
+                    </ul>
+                  </div>
+                </details>
+                <details>
+                  <summary data-i18n="about.profiles.publish_title">Validate, publish, and troubleshoot</summary>
+                  <div class="tf-about-guide-body">
+                    <p data-i18n="about.profiles.publish_body">The validate and publish endpoints accept the complete DocumentFormat file in the content field. Reload is retained as an operational fallback because published changes are detected automatically.</p>
+                    <pre><code>POST /api/document-profiles/validate
+POST /api/document-profiles/publish
+POST /api/document-profiles/reload
+
+{
+  "content": "&lt;complete DocumentFormat file&gt;"
+}</code></pre>
+                    <ul>
+                      <li data-i18n="about.profiles.publish_rule_1">Validate before publishing and resolve every error-level issue.</li>
+                      <li data-i18n="about.profiles.publish_rule_2">Do not edit a published file in place; a hash conflict removes it from new matching.</li>
+                      <li data-i18n="about.profiles.publish_rule_3">If a profile does not match, check enabled, auto_match, use_when, examples, ID, and version.</li>
+                      <li data-i18n="about.profiles.publish_rule_4">If archive validation fails, inspect missing sections, unresolved placeholders, length limits, and reference IDs.</li>
+                    </ul>
+                  </div>
+                </details>
+              </div>
+            </section>
           </section>
         </main>
       </div>

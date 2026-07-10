@@ -26,7 +26,7 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	if cfg.Search.DuckDBPath != "thoughtflow.duckdb" || cfg.Search.DefaultMode != "keyword" {
 		t.Fatalf("search config = %#v", cfg.Search)
 	}
-	if !cfg.DocumentProfiles.Enabled || cfg.DocumentProfiles.DefaultProfileID != "builtin.note" || cfg.DocumentProfiles.MaxMatchCandidates != 10 {
+	if !cfg.DocumentProfiles.Enabled || cfg.DocumentProfiles.DefaultProfileID != "builtin.note" || !cfg.DocumentProfiles.AutoReload || cfg.DocumentProfiles.ReloadInterval != 2*time.Second || cfg.DocumentProfiles.MaxMatchCandidates != 10 {
 		t.Fatalf("document profile defaults = %#v", cfg.DocumentProfiles)
 	}
 }
@@ -39,13 +39,15 @@ func TestLoadDocumentProfileOverrides(t *testing.T) {
 enabled = false
 custom_dir = "formats"
 default_profile_id = "custom.team"
+auto_reload = false
+reload_interval_seconds = 7
 max_match_candidates = 4
 max_format_bytes = 4096
 max_sections = 12
 max_repair_attempts = 1
 `)
 	cfg := LoadWithConfigDir(configDir)
-	if cfg.DocumentProfiles.Enabled || cfg.DocumentProfiles.CustomDir != filepath.Join(configDir, "formats") || cfg.DocumentProfiles.DefaultProfileID != "custom.team" {
+	if cfg.DocumentProfiles.Enabled || cfg.DocumentProfiles.CustomDir != filepath.Join(configDir, "formats") || cfg.DocumentProfiles.DefaultProfileID != "custom.team" || cfg.DocumentProfiles.AutoReload || cfg.DocumentProfiles.ReloadInterval != 7*time.Second {
 		t.Fatalf("document profile config = %#v", cfg.DocumentProfiles)
 	}
 	if cfg.DocumentProfiles.MaxMatchCandidates != 4 || cfg.DocumentProfiles.MaxFormatBytes != 4096 || cfg.DocumentProfiles.MaxSections != 12 || cfg.DocumentProfiles.MaxRepairAttempts != 1 {

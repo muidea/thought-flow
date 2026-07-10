@@ -569,6 +569,146 @@ p {
   color: var(--tf-color-text-secondary);
 }
 
+.tf-about-advanced {
+  display: grid;
+  gap: 16px;
+  border-top: 1px solid var(--tf-color-border);
+  padding-top: 20px;
+}
+
+.tf-about-section-header h3 {
+  margin: 4px 0 6px;
+  font-size: 20px;
+}
+
+.tf-about-section-header p {
+  max-width: 52rem;
+  margin: 0;
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-about-profile-runtime {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 16px;
+  margin: 0;
+  border-block: 1px solid var(--tf-color-border-secondary);
+  padding-block: 14px;
+}
+
+.tf-about-profile-runtime > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tf-about-profile-runtime dt {
+  color: var(--tf-color-text-secondary);
+  font-size: 12px;
+}
+
+.tf-about-profile-runtime dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.tf-about-profile-runtime dd > code {
+  display: block;
+  overflow-x: auto;
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius-sm);
+  background: #f6f8fa;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.tf-about-profile-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.tf-about-profile-list .tf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tf-about-profile-list small {
+  color: var(--tf-color-text-tertiary);
+  font-size: 11px;
+}
+
+.tf-profile-issue {
+  color: #ad6800;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tf-about-guide-sections {
+  display: grid;
+  border-top: 1px solid var(--tf-color-border-secondary);
+}
+
+.tf-about-guide-sections details {
+  border-bottom: 1px solid var(--tf-color-border-secondary);
+}
+
+.tf-about-guide-sections summary {
+  padding: 14px 2px;
+  cursor: pointer;
+  color: var(--tf-color-text);
+  font-weight: 650;
+}
+
+.tf-about-guide-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 2px 18px;
+  color: var(--tf-color-text-secondary);
+}
+
+.tf-about-guide-body p,
+.tf-about-guide-body ol,
+.tf-about-guide-body ul {
+  margin: 0;
+}
+
+.tf-about-guide-body ol,
+.tf-about-guide-body ul {
+  display: grid;
+  gap: 7px;
+  padding-left: 22px;
+}
+
+.tf-about-guide-body pre {
+  max-height: 34rem;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--tf-color-border);
+  border-radius: var(--tf-border-radius);
+  background: #f6f8fa;
+  padding: 12px;
+  color: var(--tf-color-text);
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.tf-about-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tf-about-token-list code {
+  border: 1px solid var(--tf-color-border-secondary);
+  border-radius: var(--tf-border-radius-sm);
+  background: #eef3f6;
+  padding: 4px 7px;
+  color: var(--tf-color-primary-active);
+}
+
 .tf-two-column {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
@@ -1675,6 +1815,10 @@ textarea.markdown-preview {
   }
 
   .tf-about-intro {
+    grid-template-columns: 1fr;
+  }
+
+  .tf-about-profile-runtime {
     grid-template-columns: 1fr;
   }
 

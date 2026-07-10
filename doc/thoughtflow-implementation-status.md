@@ -753,3 +753,4 @@ LLM enrichment **完全工作**,响应时间 8-20s 不等(取决于 LLM provider
 5. Thought Markdown front matter、Scratchpad v3、Capture update/supplement/reopen 和 Compose draft/save 均携带 `DocumentProfileRef`。
 6. Profile query/validate/publish/reload API 与 Capture profile 切换 API 已接入；Web Capture 展示匹配和校验状态，Compose 从 Profile API 动态生成选择项。
 7. `[document_profiles]` 配置控制整体能力；`capture_context_system_path` 仅用于协议覆盖，不再作为扩充文档类型的入口。
+8. `custom_dir` 作为自定义 Profile 的唯一生效根目录；Registry 自动创建 `drafts/`、`published/` 并轮询加载发布文件，Capture 与 Compose 均在模块生命周期内启动和关闭 watcher。

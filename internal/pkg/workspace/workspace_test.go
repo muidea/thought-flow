@@ -42,6 +42,25 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 	}
 }
 
+func TestOpenUsesConfiguredDocumentFormatsDirectory(t *testing.T) {
+	root := t.TempDir()
+	customDir := filepath.Join(t.TempDir(), "profiles")
+	ws, err := Open(context.Background(), appconfig.Config{
+		Workspace:        appconfig.WorkspaceConfig{ContentDir: root},
+		Runtime:          appconfig.RuntimeConfig{StateDir: filepath.Join(t.TempDir(), "runtime")},
+		DocumentProfiles: appconfig.DocumentProfilesConfig{CustomDir: customDir},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if ws.DocumentFormatsPath != customDir {
+		t.Fatalf("document formats path = %q, want %q", ws.DocumentFormatsPath, customDir)
+	}
+	if _, err := os.Stat(customDir); err != nil {
+		t.Fatalf("configured document formats directory: %v", err)
+	}
+}
+
 func TestRuntimeStatusCreatesWritableRuntimeDirectory(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "workspace")

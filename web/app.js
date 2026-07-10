@@ -710,10 +710,45 @@ function syncComposeProfileSelect(selectedID = "", selectedVersion = 0) {
 
 async function loadDocumentProfiles() {
   const payload = await api("/api/document-profiles");
-  state.documentProfiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
-  state.documentProfileIssues = Array.isArray(payload?.issues) ? payload.issues : [];
-  syncComposeProfileSelect();
+  const profiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
+  const issues = Array.isArray(payload?.issues) ? payload.issues : [];
+  const changed = JSON.stringify([state.documentProfiles, state.documentProfileIssues]) !== JSON.stringify([profiles, issues]);
+  state.documentProfiles = profiles;
+  state.documentProfileIssues = issues;
+  if (!changed) return false;
+  const composeSelect = $("#compose-format");
+  const selectedID = composeSelect?.value || "";
+  const selectedVersion = Number(composeSelect?.selectedOptions?.[0]?.dataset?.version || 0);
+  syncComposeProfileSelect(selectedID, selectedVersion);
+  renderAboutDocumentProfiles();
   renderCaptureConversation();
+  return true;
+}
+
+function aboutDocumentProfilesHTML(profiles = [], issues = []) {
+  const enabled = (profiles || []).filter((profile) => profile && profile.enabled !== false);
+  const chips = enabled.map((profile) => {
+    const ref = profileRef(profile);
+    return `<span class="tf-chip" title="${escapeHTML(profile.description || "")}">${escapeHTML(profileLabel(profile))}<small>${escapeHTML(ref.family || "")}</small></span>`;
+  });
+  if (!chips.length) {
+    chips.push(`<span class="tf-text-secondary">${escapeHTML(t("about.profiles.none"))}</span>`);
+  }
+  if (Array.isArray(issues) && issues.length) {
+    chips.push(`<span class="tf-profile-issue">${escapeHTML(t("about.profiles.issue_count", { count: issues.length }))}</span>`);
+  }
+  return chips.join("");
+}
+
+function renderAboutDocumentProfiles() {
+  const pathNode = $("#about-document-format-path");
+  if (pathNode) {
+    pathNode.textContent = state.status?.workspace?.document_formats_path || "document-formats/";
+  }
+  const listNode = $("#about-document-profile-list");
+  if (listNode) {
+    listNode.innerHTML = aboutDocumentProfilesHTML(state.documentProfiles, state.documentProfileIssues);
+  }
 }
 
 function renderDescription(rows) {
@@ -1217,6 +1252,7 @@ async function loadStatus() {
     // applies them. The dashboard cards above keep the lightweight summary.
     renderTopbarStatus(status);
     renderSettingsStatus(status);
+    renderAboutDocumentProfiles();
     const dashboardAlert = $("#dashboard-alert");
     if (dashboardAlert) {
       dashboardAlert.hidden = status.status === "ready";
@@ -4681,6 +4717,7 @@ function rerenderForLocale() {
   try { renderThoughtPanels(); } catch (_) {}
   try { renderTopics(); } catch (_) {}
   try { renderComposeSources(); } catch (_) {}
+  try { renderAboutDocumentProfiles(); } catch (_) {}
   try { syncComposeProfileSelect(state.composeDraft?.document_profile?.profile_id || "", state.composeDraft?.document_profile?.version || 0); } catch (_) {}
   try { renderCaptureConversation(); } catch (_) {}
   try { updateSelectionControls(); } catch (_) {}
@@ -4716,6 +4753,7 @@ async function boot() {
   await loadDocumentProfiles().catch((error) => {
     state.documentProfiles = [];
     syncComposeProfileSelect();
+    renderAboutDocumentProfiles();
     toast(error.message);
   });
   state.capture.sessions = loadCaptureSessions();
@@ -4752,6 +4790,7 @@ async function boot() {
   // authority; the browser does not persist capture session history.
   await rehydrateActiveScratchpad();
   connectEvents();
+  window.setInterval(() => loadDocumentProfiles().catch(() => {}), 5000);
   window.__thoughtflowReady = true;
 }
 

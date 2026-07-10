@@ -118,7 +118,7 @@ async function runBrowserSmoke(browser, url) {
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
       ["compose", "#/write", "#page-compose", "#compose-writing"],
-      ["about", "#/about", "#page-about", "#about-capabilities"],
+      ["about", "#/about", "#page-about", "#about-document-profiles"],
     ];
     // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
     // entry and no dedicated page section, so it isn't in the routes

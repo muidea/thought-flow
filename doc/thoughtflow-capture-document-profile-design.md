@@ -787,13 +787,15 @@ thoughtflow_archive_validation_total{profile_id,status}
 enabled = true
 custom_dir = ""
 default_profile_id = "builtin.note"
+auto_reload = true
+reload_interval_seconds = 2
 max_match_candidates = 10
 max_format_bytes = 131072
 max_sections = 32
 max_repair_attempts = 2
 ```
 
-`custom_dir` 为空时默认 `<workspace>/document-formats`。内置 Profile 始终可用，除非整体能力被显式禁用。
+`custom_dir` 为空时默认 `<workspace>/document-formats`；相对路径以配置文件目录为基准。Registry 启动时自动创建 `drafts/` 和 `published/`，并在 `auto_reload = true` 时按 `reload_interval_seconds` 周期扫描 `published/`。新增 Profile 或新版本自动对 Capture 和 Compose 生效；`drafts/` 不参与匹配，reload API 仅作为显式运维兜底。内置 Profile 始终可用，除非整体能力被显式禁用。
 
 ## 16. 安全与稳定性
 
@@ -805,6 +807,7 @@ max_repair_attempts = 2
 6. 发布时使用原子写入并计算规范化 hash。
 7. Registry reload 失败时保留上一份有效快照，不能使 Capture 整体不可用。
 8. 单个自定义 Profile 无效时隔离该 Profile，不影响内置 Profile。
+9. 自动 reload 与发布、手动 reload 串行执行；模块 Teardown 必须停止 watcher，避免 goroutine 泄漏。
 
 ## 17. 兼容与迁移
 

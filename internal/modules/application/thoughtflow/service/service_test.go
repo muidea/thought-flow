@@ -123,6 +123,11 @@ func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 			t.Fatalf("expected topic drawer control %s", expected)
 		}
 	}
+	for _, expected := range []string{`id="about-document-profiles"`, `id="about-document-format-path"`, `id="about-document-profile-list"`, `POST /api/document-profiles/validate`, `{{section:proposal|required}}`} {
+		if !strings.Contains(res.Body.String(), expected) {
+			t.Fatalf("expected advanced DocumentProfile guidance %s", expected)
+		}
+	}
 	for _, removedText := range []string{"Edit Topic Rules", "Save rules"} {
 		if strings.Contains(res.Body.String(), removedText) {
 			t.Fatalf("edit topic drawer should not expose rules-only wording %q", removedText)
