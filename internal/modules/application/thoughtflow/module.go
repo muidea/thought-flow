@@ -25,6 +25,7 @@ import (
 	"thoughtflow/internal/modules/topic"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/scratchpad"
@@ -133,16 +134,35 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 
 	jobs := jobstore.New(ws.JobsPath)
 	scratchpadStore := scratchpad.New(ws.ScratchpadPath)
-	scratchpadSvc := capture.NewScratchpadService(scratchpadStore,
+	var profileRegistry *documentprofile.Registry
+	if cfg.DocumentProfiles.Enabled {
+		profileDir := cfg.DocumentProfiles.CustomDir
+		if profileDir == "" {
+			profileDir = ws.DocumentFormatsPath
+		}
+		profileRegistry, err = documentprofile.NewRegistry(profileDir, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
+			MaxFormatBytes: cfg.DocumentProfiles.MaxFormatBytes,
+			MaxSections:    cfg.DocumentProfiles.MaxSections,
+		})
+		if err != nil {
+			return cd.WrapError(cd.Unexpected, err, "load document profiles")
+		}
+	}
+	scratchpadOptions := []capturebiz.ScratchpadServiceOption{
 		capture.WithCapture(captureService),
 		capturebiz.WithEventHub(eventHub),
 		capturebiz.WithCaptureContextProvider(ai.NewCaptureContextProvider(cfg.LLM)),
 		capturebiz.WithCaptureContextTimeout(cfg.LLM.Timeout),
-	)
+	}
+	if profileRegistry != nil {
+		scratchpadOptions = append(scratchpadOptions, capture.WithDocumentProfiles(profileRegistry, ai.NewDocumentGenerationProvider(cfg.LLM), cfg.DocumentProfiles.MaxMatchCandidates, cfg.DocumentProfiles.MaxRepairAttempts))
+	}
+	scratchpadSvc := capture.NewScratchpadService(scratchpadStore, scratchpadOptions...)
 	topic.InjectScratchpadProvider(scratchpadStore)
 	topic.InjectComposeDraftProvider(compose.Current())
 	registry := engine.NewRouteRegistry()
 	m.httpService = service.New(registry, captureService, scratchpadSvc, refinerService, compose.Current(), searchService, topicService, scratchpadStore, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
+	m.httpService.SetDocumentProfiles(profileRegistry)
 	m.httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)
 	if err != nil {

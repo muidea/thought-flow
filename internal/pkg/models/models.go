@@ -24,6 +24,23 @@ const (
 	ComposeStatusDraft = "draft"
 	ComposeStatusSaved = "saved"
 
+	DocumentFamilyNote     = "note"
+	DocumentFamilyResearch = "research"
+	DocumentFamilyDesign   = "design"
+	DocumentFamilyArticle  = "article"
+	DocumentFamilyRecord   = "record"
+	DocumentFamilyOther    = "other"
+
+	DocumentProfileBuiltinNote           = "builtin.note"
+	DocumentProfileBuiltinResearchReport = "builtin.research-report"
+	DocumentProfileBuiltinDesignDoc      = "builtin.design-doc"
+	DocumentProfileBuiltinBlogPost       = "builtin.blog-post"
+
+	ArchiveValidationValid   = "valid"
+	ArchiveValidationInvalid = "invalid"
+	ValidationSeverityError  = "error"
+	ValidationSeverityWarn   = "warning"
+
 	CaptureStatusCaptured        = "captured"
 	CaptureStatusDuplicateWarned = "duplicate_warned"
 	CaptureStatusFailed          = "capture_failed"
@@ -87,44 +104,85 @@ const (
 )
 
 type Workspace struct {
-	ID              string    `json:"id"`
-	RootPath        string    `json:"root_path"`
-	ThoughtsPath    string    `json:"thoughts_path"`
-	TopicsPath      string    `json:"topics_path"`
-	AttachmentsPath string    `json:"attachments_path"`
-	RuntimePath     string    `json:"runtime_path"`
-	JobsPath        string    `json:"jobs_path"`
-	ScratchpadPath  string    `json:"scratchpad_path"`
-	GitEnabled      bool      `json:"git_enabled"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                  string    `json:"id"`
+	RootPath            string    `json:"root_path"`
+	ThoughtsPath        string    `json:"thoughts_path"`
+	TopicsPath          string    `json:"topics_path"`
+	AttachmentsPath     string    `json:"attachments_path"`
+	RuntimePath         string    `json:"runtime_path"`
+	JobsPath            string    `json:"jobs_path"`
+	ScratchpadPath      string    `json:"scratchpad_path"`
+	DocumentFormatsPath string    `json:"document_formats_path"`
+	GitEnabled          bool      `json:"git_enabled"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type Thought struct {
-	ID                string        `json:"id"`
-	Type              string        `json:"type"`
-	Source            string        `json:"source"`
-	UserTitle         string        `json:"user_title,omitempty"`
-	ExtractedTitle    string        `json:"extracted_title,omitempty"`
-	DisplayTitle      string        `json:"display_title,omitempty"`
-	URL               string        `json:"url,omitempty"`
-	Path              string        `json:"path"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	ContentHash       string        `json:"content_hash"`
-	UserTags          []string      `json:"user_tags,omitempty"`
-	AITags            []string      `json:"ai_tags,omitempty"`
-	TopicIDs          []string      `json:"topic_ids,omitempty"`
-	Summary           string        `json:"summary,omitempty"`
-	KeyPoints         []string      `json:"key_points,omitempty"`
-	Errors            []ErrorRef    `json:"errors,omitempty"`
-	CaptureStatus     string        `json:"capture_status"`
-	RefineStatus      string        `json:"refine_status"`
-	IndexStatus       string        `json:"index_status"`
-	TopicStatus       string        `json:"topic_status"`
-	RelatedThoughtIDs []string      `json:"related_thought_ids,omitempty" yaml:"related_thought_ids,omitempty"`
-	SuggestedTopicIDs []string      `json:"suggested_topic_ids,omitempty" yaml:"suggested_topic_ids,omitempty"`
-	URLFollowups      []URLFollowup `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
-	ExpansionPlan     string        `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
+	ID                string              `json:"id"`
+	Type              string              `json:"type"`
+	Source            string              `json:"source"`
+	UserTitle         string              `json:"user_title,omitempty"`
+	ExtractedTitle    string              `json:"extracted_title,omitempty"`
+	DisplayTitle      string              `json:"display_title,omitempty"`
+	URL               string              `json:"url,omitempty"`
+	Path              string              `json:"path"`
+	CreatedAt         time.Time           `json:"created_at"`
+	UpdatedAt         time.Time           `json:"updated_at"`
+	ContentHash       string              `json:"content_hash"`
+	UserTags          []string            `json:"user_tags,omitempty"`
+	AITags            []string            `json:"ai_tags,omitempty"`
+	TopicIDs          []string            `json:"topic_ids,omitempty"`
+	Summary           string              `json:"summary,omitempty"`
+	KeyPoints         []string            `json:"key_points,omitempty"`
+	Errors            []ErrorRef          `json:"errors,omitempty"`
+	CaptureStatus     string              `json:"capture_status"`
+	RefineStatus      string              `json:"refine_status"`
+	IndexStatus       string              `json:"index_status"`
+	TopicStatus       string              `json:"topic_status"`
+	RelatedThoughtIDs []string            `json:"related_thought_ids,omitempty" yaml:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs []string            `json:"suggested_topic_ids,omitempty" yaml:"suggested_topic_ids,omitempty"`
+	URLFollowups      []URLFollowup       `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
+	ExpansionPlan     string              `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
+	DocumentProfile   *DocumentProfileRef `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+}
+
+type DocumentProfileRef struct {
+	Family      string `json:"family" yaml:"family"`
+	ProfileID   string `json:"profile_id" yaml:"profile_id"`
+	Version     int    `json:"version" yaml:"version"`
+	ContentHash string `json:"content_hash" yaml:"content_hash"`
+}
+
+type ValidationIssue struct {
+	Code     string `json:"code" yaml:"code"`
+	Severity string `json:"severity" yaml:"severity"`
+	Section  string `json:"section,omitempty" yaml:"section,omitempty"`
+	Message  string `json:"message" yaml:"message"`
+}
+
+type ArchiveValidation struct {
+	Status      string            `json:"status" yaml:"status"`
+	Issues      []ValidationIssue `json:"issues,omitempty" yaml:"issues,omitempty"`
+	RepairCount int               `json:"repair_count" yaml:"repair_count"`
+	ValidatedAt time.Time         `json:"validated_at" yaml:"validated_at"`
+}
+
+type DocumentSection struct {
+	Content string `json:"content" yaml:"content"`
+}
+
+type DocumentReference struct {
+	ID         string `json:"id" yaml:"id"`
+	SourceLink string `json:"source_link" yaml:"source_link"`
+	Title      string `json:"title,omitempty" yaml:"title,omitempty"`
+}
+
+type DocumentDraft struct {
+	Title       string                     `json:"title" yaml:"title"`
+	Summary     string                     `json:"summary" yaml:"summary"`
+	Sections    map[string]DocumentSection `json:"sections" yaml:"sections"`
+	References  []DocumentReference        `json:"references,omitempty" yaml:"references,omitempty"`
+	Assumptions []string                   `json:"assumptions,omitempty" yaml:"assumptions,omitempty"`
 }
 
 // URLFollowup is one related URL harvested from the main URL of a
@@ -186,14 +244,15 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
-	Type       string   `json:"type"`
-	Content    string   `json:"content"`
-	URL        string   `json:"url"`
-	Title      string   `json:"title"`
-	Tags       []string `json:"tags"`
-	TopicHints []string `json:"topic_hints"`
-	Source     string   `json:"source"`
-	Links      []string `json:"links,omitempty"`
+	Type            string              `json:"type"`
+	Content         string              `json:"content"`
+	URL             string              `json:"url"`
+	Title           string              `json:"title"`
+	Tags            []string            `json:"tags"`
+	TopicHints      []string            `json:"topic_hints"`
+	Source          string              `json:"source"`
+	Links           []string            `json:"links,omitempty"`
+	DocumentProfile *DocumentProfileRef `json:"document_profile,omitempty"`
 }
 
 // ThoughtPatchRequest is the body of PATCH /api/thoughts/:id. Pointer
@@ -201,12 +260,13 @@ type CaptureCommand struct {
 // "field present with empty value" (clear the value). PatchThought
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
-	Title         *string   `json:"title,omitempty"`
-	Body          *string   `json:"body,omitempty"`
-	AINotes       *string   `json:"ai_notes,omitempty"`
-	Tags          *[]string `json:"tags,omitempty"`
-	AINotesAppend *string   `json:"ai_notes_append,omitempty"`
-	TopicIDs      *[]string `json:"topic_ids,omitempty"`
+	Title           *string             `json:"title,omitempty"`
+	Body            *string             `json:"body,omitempty"`
+	AINotes         *string             `json:"ai_notes,omitempty"`
+	Tags            *[]string           `json:"tags,omitempty"`
+	AINotesAppend   *string             `json:"ai_notes_append,omitempty"`
+	TopicIDs        *[]string           `json:"topic_ids,omitempty"`
+	DocumentProfile *DocumentProfileRef `json:"document_profile,omitempty"`
 }
 
 type ThoughtSuggestion struct {
@@ -372,18 +432,19 @@ type ThoughtIndexLagMetric struct {
 }
 
 type WorkspaceRuntimeStatus struct {
-	ID              string `json:"id"`
-	Status          string `json:"status"`
-	RootPath        string `json:"root_path"`
-	ThoughtsPath    string `json:"thoughts_path"`
-	TopicsPath      string `json:"topics_path"`
-	AttachmentsPath string `json:"attachments_path"`
-	RuntimePath     string `json:"runtime_path"`
-	JobsPath        string `json:"jobs_path"`
-	ScratchpadPath  string `json:"scratchpad_path"`
-	GitEnabled      bool   `json:"git_enabled"`
-	Writable        bool   `json:"writable"`
-	Error           string `json:"error,omitempty"`
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	RootPath            string `json:"root_path"`
+	ThoughtsPath        string `json:"thoughts_path"`
+	TopicsPath          string `json:"topics_path"`
+	AttachmentsPath     string `json:"attachments_path"`
+	RuntimePath         string `json:"runtime_path"`
+	JobsPath            string `json:"jobs_path"`
+	ScratchpadPath      string `json:"scratchpad_path"`
+	DocumentFormatsPath string `json:"document_formats_path"`
+	GitEnabled          bool   `json:"git_enabled"`
+	Writable            bool   `json:"writable"`
+	Error               string `json:"error,omitempty"`
 }
 
 type DuckDBRuntimeStatus struct {
@@ -789,11 +850,14 @@ type ComposeBasket struct {
 // sources carry their own type discriminator so the server can
 // hydrate Search/Topic/Capture rows in addition to Thought rows.
 type ComposeRequest struct {
-	Sources            []ComposeSource `json:"sources"`
-	SelectedThoughtIDs []string        `json:"selected_thought_ids,omitempty"`
-	Prompt             string          `json:"prompt,omitempty"`
-	Goal               string          `json:"goal,omitempty"`
-	Format             string          `json:"format,omitempty"`
+	Sources            []ComposeSource   `json:"sources"`
+	SelectedThoughtIDs []string          `json:"selected_thought_ids,omitempty"`
+	Prompt             string            `json:"prompt,omitempty"`
+	Goal               string            `json:"goal,omitempty"`
+	Format             string            `json:"format,omitempty"`
+	ProfileID          string            `json:"profile_id,omitempty"`
+	ProfileVersion     int               `json:"profile_version,omitempty"`
+	Parameters         map[string]string `json:"parameters,omitempty"`
 }
 
 // ComposeSaveRequest is the body of POST /api/compose/drafts/{id}/save.
@@ -811,19 +875,23 @@ type ComposeSaveRequest struct {
 // workspace/compose/drafts/{draft_id}.yaml. The status transitions
 // draft → saved when the user commits the draft to a Thought.
 type ComposeDraft struct {
-	ID             string                `json:"id" yaml:"id"`
-	Sources        []ComposeSource       `json:"sources" yaml:"sources"`
-	Goal           string                `json:"goal" yaml:"goal"`
-	Format         string                `json:"format" yaml:"format"`
-	Content        string                `json:"content" yaml:"content"`
-	SourceLinks    []string              `json:"source_links" yaml:"source_links"`
-	Model          string                `json:"model" yaml:"model"`
-	Status         string                `json:"status" yaml:"status"`
-	SavedThoughtID string                `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
-	History        []ComposeDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
-	CreatedAt      time.Time             `json:"created_at" yaml:"created_at"`
-	UpdatedAt      time.Time             `json:"updated_at" yaml:"updated_at"`
-	SavedAt        *time.Time            `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
+	ID              string                `json:"id" yaml:"id"`
+	Sources         []ComposeSource       `json:"sources" yaml:"sources"`
+	Goal            string                `json:"goal" yaml:"goal"`
+	Format          string                `json:"format" yaml:"format"`
+	DocumentProfile *DocumentProfileRef   `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+	Parameters      map[string]string     `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	DocumentDraft   *DocumentDraft        `json:"document_draft,omitempty" yaml:"document_draft,omitempty"`
+	Validation      *ArchiveValidation    `json:"validation,omitempty" yaml:"validation,omitempty"`
+	Content         string                `json:"content" yaml:"content"`
+	SourceLinks     []string              `json:"source_links" yaml:"source_links"`
+	Model           string                `json:"model" yaml:"model"`
+	Status          string                `json:"status" yaml:"status"`
+	SavedThoughtID  string                `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
+	History         []ComposeDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
+	CreatedAt       time.Time             `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time             `json:"updated_at" yaml:"updated_at"`
+	SavedAt         *time.Time            `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
 }
 
 type ComposeDraftHistory struct {

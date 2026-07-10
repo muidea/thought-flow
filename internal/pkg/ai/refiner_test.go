@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/models"
 )
 
@@ -333,6 +334,26 @@ func TestLocalProviderBuildCaptureContextReturnsStructuredSummary(t *testing.T) 
 	}
 }
 
+func TestLocalProviderFallsBackToNoteWithoutDocumentIntent(t *testing.T) {
+	provider := NewLocalRefineProvider()
+	result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{
+		SessionID: "s1",
+		Content:   "Adding a follow-up angle to the existing note.",
+		AvailableProfiles: []documentprofile.DocumentProfileDescriptor{
+			{ID: models.DocumentProfileBuiltinDesignDoc, Version: 1, Family: models.DocumentFamilyDesign, Priority: 20},
+			{ID: models.DocumentProfileBuiltinResearchReport, Version: 1, Family: models.DocumentFamilyResearch, Priority: 20},
+			{ID: models.DocumentProfileBuiltinBlogPost, Version: 1, Family: models.DocumentFamilyArticle, Priority: 20},
+			{ID: models.DocumentProfileBuiltinNote, Version: 1, Family: models.DocumentFamilyNote},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildCaptureContext: %v", err)
+	}
+	if result.CandidateProfileID != models.DocumentProfileBuiltinNote || result.CandidateDocumentFamily != models.DocumentFamilyNote {
+		t.Fatalf("profile = %s/%s", result.CandidateDocumentFamily, result.CandidateProfileID)
+	}
+}
+
 func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T) {
 	promptPath := filepath.Join(t.TempDir(), "capture-context-system.md")
 	customPrompt := "Custom capture context system prompt for a configured business template."
@@ -468,7 +489,7 @@ func TestBuildCaptureContextSkipsMalformedJSONObjectCandidate(t *testing.T) {
 	}
 }
 
-func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T) {
+func TestDefaultCaptureContextPromptRequiresProfileMatchingContract(t *testing.T) {
 	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{}, appconfig.EmbeddingConfig{})
 	prompt, err := provider.captureContextSystemPrompt()
 	if err != nil {
@@ -478,7 +499,7 @@ func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T)
 		"Everyday conversation style",
 		"archive_intent is \"none\"",
 		"thoughtful, conversational professional response",
-		"Avoid heavy document templates",
+		"avoid heavy document templates",
 		"backstage structured working note",
 		"First-turn expansion rule",
 		"only one user turn",
@@ -491,19 +512,18 @@ func TestDefaultCaptureContextPromptRequiresRichFirstTurnExpansion(t *testing.T)
 		"Strict Question Ceiling",
 		"MUST NOT exceed 3 items",
 		"When archive_intent is \"llm\"",
-		"complete formal Thought document",
+		"not the final strictly formatted document",
 		"No raw transcripts or filler phrases",
-		"RESEARCH / SPECIFICATION LENS",
-		"senior domain expert",
-		"全局原则与价值观",
-		"场景差异化对比",
-		"关键模块深挖",
-		"跨场景禁忌 / Anti-Patterns",
-		"文案与表达规范",
-		"正确做法 / 错误做法",
-		"Missing context must NOT block useful output",
-		"concrete, opinionated draft",
-		"few high-impact decisions",
+		"Available document profiles JSON",
+		"candidate_profile_id",
+		"candidate_profile_version",
+		"profile_confidence",
+		"profile_explicit",
+		"document_parameters",
+		"missing_profile_inputs",
+		"archive_readiness",
+		"Do not invent facts",
+		"downstream DocumentProfile renderer",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("default prompt missing %q:\n%s", want, prompt)

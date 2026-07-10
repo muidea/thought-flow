@@ -24,6 +24,7 @@ import (
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -49,14 +50,25 @@ type CaptureSink interface {
 }
 
 type Service struct {
-	workspace  *models.Workspace
-	draftStore *composedraft.Store
-	jobs       *jobstore.Store
-	eventHub   event.Hub
-	synthesis  ai.SynthesisProvider
-	capture    CaptureSink
-	now        func() time.Time
-	model      string
+	workspace         *models.Workspace
+	draftStore        *composedraft.Store
+	jobs              *jobstore.Store
+	eventHub          event.Hub
+	synthesis         ai.SynthesisProvider
+	capture           CaptureSink
+	now               func() time.Time
+	model             string
+	profiles          *documentprofile.Registry
+	documentGenerator ai.DocumentGenerationProvider
+	maxRepairAttempts int
+}
+
+func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry, generator ai.DocumentGenerationProvider, maxRepairAttempts int) {
+	s.profiles = registry
+	s.documentGenerator = generator
+	if maxRepairAttempts >= 0 {
+		s.maxRepairAttempts = maxRepairAttempts
+	}
 }
 
 func NewService(
@@ -140,22 +152,73 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (m
 		synthReq.Goal = synthReq.Goal + "\n\n" + prompt
 	}
 
-	synthDraft, err := s.synthesis.Synthesize(ctx, synthReq)
-	if err != nil {
-		return models.ComposeDraft{}, fmt.Errorf("compose synthesize: %w", err)
+	var synthDraft models.SynthesisDraft
+	var profileRef *models.DocumentProfileRef
+	var structuredDraft *models.DocumentDraft
+	var validation *models.ArchiveValidation
+	var err error
+	if s.profiles != nil && s.documentGenerator != nil {
+		profile, profileErr := s.resolveComposeProfile(req)
+		if profileErr != nil {
+			return models.ComposeDraft{}, profileErr
+		}
+		docReq := ai.DocumentGenerationRequest{
+			Profile:    profile,
+			Parameters: req.Parameters,
+			Context: ai.DocumentSourceContext{
+				Title:       synthReq.Goal,
+				Summary:     synthReq.Goal,
+				Body:        composeSnapshotText(snapshots),
+				SourceLinks: sourceLinks,
+			},
+		}
+		var doc models.DocumentDraft
+		var rendered documentprofile.RenderResult
+		for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
+			doc, err = s.documentGenerator.GenerateDocument(ctx, docReq)
+			if err != nil {
+				return models.ComposeDraft{}, fmt.Errorf("compose generate document: %w", err)
+			}
+			rendered = documentprofile.Render(profile, doc, req.Parameters)
+			rendered.Validation.RepairCount = attempt
+			if rendered.Validation.Status == models.ArchiveValidationValid {
+				break
+			}
+			docReq.PreviousDraft = &doc
+			docReq.RepairIssues = rendered.Validation.Issues
+		}
+		if rendered.Validation.Status != models.ArchiveValidationValid {
+			return models.ComposeDraft{}, errors.New("compose document format validation failed")
+		}
+		now := s.now()
+		synthDraft = models.SynthesisDraft{ID: models.NewJobID("compose", now), Goal: synthReq.Goal, Format: req.Format, Content: rendered.Content, SourceLinks: sourceLinks, Model: s.model, Status: models.ComposeStatusDraft, CreatedAt: now, UpdatedAt: now}
+		ref := profile.Ref
+		profileRef = &ref
+		structuredDraft = &doc
+		valid := rendered.Validation
+		validation = &valid
+	} else {
+		synthDraft, err = s.synthesis.Synthesize(ctx, synthReq)
+		if err != nil {
+			return models.ComposeDraft{}, fmt.Errorf("compose synthesize: %w", err)
+		}
 	}
 
 	draft := models.ComposeDraft{
-		ID:          firstNonEmpty(synthDraft.ID, models.NewJobID("compose", now)),
-		Sources:     deduped,
-		Goal:        synthReq.Goal,
-		Format:      firstNonEmpty(synthReq.Format, models.ComposeFormatSummary),
-		Content:     synthDraft.Content,
-		SourceLinks: sourceLinks,
-		Model:       firstNonEmpty(synthDraft.Model, s.model),
-		Status:      models.ComposeStatusDraft,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:              firstNonEmpty(synthDraft.ID, models.NewJobID("compose", now)),
+		Sources:         deduped,
+		Goal:            synthReq.Goal,
+		Format:          firstNonEmpty(synthReq.Format, models.ComposeFormatSummary),
+		DocumentProfile: profileRef,
+		Parameters:      cloneStringMap(req.Parameters),
+		DocumentDraft:   structuredDraft,
+		Validation:      validation,
+		Content:         synthDraft.Content,
+		SourceLinks:     sourceLinks,
+		Model:           firstNonEmpty(synthDraft.Model, s.model),
+		Status:          models.ComposeStatusDraft,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if len(synthDraft.History) > 0 {
 		draft.History = convertHistory(synthDraft.History)
@@ -253,12 +316,13 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 	}
 
 	cmd := models.CaptureCommand{
-		Type:    models.ThoughtTypeText,
-		Content: content,
-		Title:   title,
-		Tags:    tags,
-		Source:  models.ThoughtSourceCompose,
-		Links:   dedupeStrings(append([]string{}, draft.SourceLinks...)),
+		Type:            models.ThoughtTypeText,
+		Content:         content,
+		Title:           title,
+		Tags:            tags,
+		Source:          models.ThoughtSourceCompose,
+		Links:           dedupeStrings(append([]string{}, draft.SourceLinks...)),
+		DocumentProfile: cloneProfileRef(draft.DocumentProfile),
 	}
 	job, jobErr := s.recordJob(draftID)
 	if jobErr != nil && s.jobs == nil {
@@ -559,4 +623,52 @@ func convertHistory(in []models.SynthesisDraftHistory) []models.ComposeDraftHist
 		})
 	}
 	return out
+}
+
+func (s *Service) resolveComposeProfile(req models.ComposeRequest) (documentprofile.DocumentProfile, error) {
+	profileID := strings.TrimSpace(req.ProfileID)
+	if profileID == "" {
+		switch strings.TrimSpace(req.Format) {
+		case models.ComposeFormatReport:
+			profileID = models.DocumentProfileBuiltinResearchReport
+		default:
+			profileID = models.DocumentProfileBuiltinNote
+		}
+	}
+	if req.ProfileVersion > 0 {
+		return s.profiles.Resolve(models.DocumentProfileRef{ProfileID: profileID, Version: req.ProfileVersion})
+	}
+	return s.profiles.ResolveLatest(profileID)
+}
+
+func composeSnapshotText(snapshots []models.ThoughtSnapshot) string {
+	parts := []string{}
+	for _, snapshot := range snapshots {
+		title := firstNonEmpty(snapshot.Thought.DisplayTitle, snapshot.Thought.UserTitle, snapshot.Thought.ExtractedTitle, snapshot.Thought.ID)
+		body := firstNonEmpty(snapshot.Thought.Summary, snapshot.Content.AINotes, snapshot.Content.ExtractedContent, snapshot.Content.Original)
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		parts = append(parts, "## "+title+"\n\n"+body)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneProfileRef(ref *models.DocumentProfileRef) *models.DocumentProfileRef {
+	if ref == nil {
+		return nil
+	}
+	copy := *ref
+	return &copy
 }

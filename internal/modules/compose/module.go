@@ -14,6 +14,7 @@ import (
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/workspace"
 )
@@ -81,6 +82,20 @@ func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundR
 		capture,
 	)
 	m.service.SetModel(cfg.LLM.ChatModel)
+	if cfg.DocumentProfiles.Enabled {
+		profileDir := cfg.DocumentProfiles.CustomDir
+		if profileDir == "" {
+			profileDir = ws.DocumentFormatsPath
+		}
+		profiles, profileErr := documentprofile.NewRegistry(profileDir, cfg.DocumentProfiles.DefaultProfileID, documentprofile.Limits{
+			MaxFormatBytes: cfg.DocumentProfiles.MaxFormatBytes,
+			MaxSections:    cfg.DocumentProfiles.MaxSections,
+		})
+		if profileErr != nil {
+			return cd.WrapError(cd.Unexpected, profileErr, "load compose document profiles")
+		}
+		m.service.SetDocumentProfiles(profiles, ai.NewDocumentGenerationProvider(cfg.LLM), cfg.DocumentProfiles.MaxRepairAttempts)
+	}
 	setCurrent(m.service)
 	return nil
 }

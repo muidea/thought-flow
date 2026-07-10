@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/muidea/magicCommon/event"
 
 	"thoughtflow/internal/pkg/ai"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/scratchpad"
@@ -48,6 +50,10 @@ type ScratchpadService struct {
 	contextAI          ai.CaptureContextProvider
 	contextTimeout     time.Duration
 	contextRetryDelays []time.Duration
+	profiles           ProfileRegistry
+	documentGenerator  ai.DocumentGenerationProvider
+	maxMatchCandidates int
+	maxRepairAttempts  int
 	sessionID          string
 	now                func() time.Time
 }
@@ -87,6 +93,13 @@ type CaptureCommitter interface {
 	GetThought(ctx context.Context, thoughtID string) (models.ThoughtSnapshot, error)
 }
 
+type ProfileRegistry interface {
+	ListEnabled() []documentprofile.DocumentProfileDescriptor
+	Resolve(ref models.DocumentProfileRef) (documentprofile.DocumentProfile, error)
+	ResolveLatest(profileID string) (documentprofile.DocumentProfile, error)
+	Default() documentprofile.DocumentProfile
+}
+
 // eventHub is the publish/subscribe surface the scratchpad commit
 // and context-enrichment flows use. Context enrichment is queued on
 // a per-session EventHub lane so multi-turn capture updates are
@@ -113,6 +126,19 @@ func WithEventHub(h eventHub) ScratchpadServiceOption {
 
 func WithCaptureContextProvider(provider ai.CaptureContextProvider) ScratchpadServiceOption {
 	return func(s *ScratchpadService) { s.contextAI = provider }
+}
+
+func WithDocumentProfiles(registry ProfileRegistry, generator ai.DocumentGenerationProvider, maxMatchCandidates, maxRepairAttempts int) ScratchpadServiceOption {
+	return func(s *ScratchpadService) {
+		s.profiles = registry
+		s.documentGenerator = generator
+		if maxMatchCandidates > 0 {
+			s.maxMatchCandidates = maxMatchCandidates
+		}
+		if maxRepairAttempts >= 0 {
+			s.maxRepairAttempts = maxRepairAttempts
+		}
+	}
 }
 
 func WithCaptureContextTimeout(timeout time.Duration) ScratchpadServiceOption {
@@ -145,6 +171,7 @@ func NewScratchpadService(store ScratchpadStore, options ...ScratchpadServiceOpt
 		contextTimeout:     defaultCaptureContextEnrichTimeout,
 		contextRetryDelays: append([]time.Duration(nil), defaultCaptureContextRetryDelays...),
 		sessionID:          "scratchpad",
+		maxRepairAttempts:  2,
 		now:                func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range options {
@@ -157,6 +184,9 @@ func NewScratchpadService(store ScratchpadStore, options ...ScratchpadServiceOpt
 // ErrScratchpadUnavailable is returned when the scratchpad store has
 // not been wired up. The HTTP layer surfaces it as 503.
 var ErrScratchpadUnavailable = errors.New("capture: scratchpad store is not ready")
+var ErrArchivePreviewRequired = errors.New("capture: validated archive preview is required")
+var ErrArchivePreviewStale = errors.New("capture: archive preview is stale")
+var ErrArchiveFormatInvalid = errors.New("capture: archive format validation failed")
 
 // AppendMessage appends a single chat message to the scratchpad and,
 // for user-role messages, appends the text to the cumulative content
@@ -291,20 +321,29 @@ func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpa
 		return scratchpad.Scratchpad{}, err
 	}
 	sp.SessionContext = scratchpad.SessionContext{
-		Topic:             strings.TrimSpace(ctx.Topic),
-		Goal:              strings.TrimSpace(ctx.Goal),
-		ConfirmedFacts:    trimNonEmpty(ctx.ConfirmedFacts),
-		OpenQuestions:     trimNonEmpty(ctx.OpenQuestions),
-		Conflicts:         trimNonEmpty(ctx.Conflicts),
-		CandidateTitle:    strings.TrimSpace(ctx.CandidateTitle),
-		CandidateTags:     trimNonEmpty(ctx.CandidateTags),
-		CandidateSummary:  strings.TrimSpace(ctx.CandidateSummary),
-		CandidateBody:     ctx.CandidateBody,
-		SourceLinks:       trimNonEmpty(ctx.SourceLinks),
-		RelatedThoughtIDs: trimNonEmpty(ctx.RelatedThoughtIDs),
-		SuggestedTopicIDs: trimNonEmpty(ctx.SuggestedTopicIDs),
-		ArchiveIntent:     normalizeArchiveIntent(ctx.ArchiveIntent),
-		ArchiveStrategy:   normalizeArchiveStrategy(ctx.ArchiveStrategy),
+		Topic:                   strings.TrimSpace(ctx.Topic),
+		Goal:                    strings.TrimSpace(ctx.Goal),
+		ConfirmedFacts:          trimNonEmpty(ctx.ConfirmedFacts),
+		OpenQuestions:           trimNonEmpty(ctx.OpenQuestions),
+		Conflicts:               trimNonEmpty(ctx.Conflicts),
+		CandidateTitle:          strings.TrimSpace(ctx.CandidateTitle),
+		CandidateTags:           trimNonEmpty(ctx.CandidateTags),
+		CandidateSummary:        strings.TrimSpace(ctx.CandidateSummary),
+		CandidateBody:           ctx.CandidateBody,
+		SourceLinks:             trimNonEmpty(ctx.SourceLinks),
+		RelatedThoughtIDs:       trimNonEmpty(ctx.RelatedThoughtIDs),
+		SuggestedTopicIDs:       trimNonEmpty(ctx.SuggestedTopicIDs),
+		ArchiveIntent:           normalizeArchiveIntent(ctx.ArchiveIntent),
+		ArchiveStrategy:         normalizeArchiveStrategy(ctx.ArchiveStrategy),
+		CandidateDocumentFamily: strings.TrimSpace(ctx.CandidateDocumentFamily),
+		CandidateProfileID:      strings.TrimSpace(ctx.CandidateProfileID),
+		CandidateProfileVersion: ctx.CandidateProfileVersion,
+		ProfileConfidence:       ctx.ProfileConfidence,
+		ProfileMatchReason:      strings.TrimSpace(ctx.ProfileMatchReason),
+		ProfileExplicit:         ctx.ProfileExplicit,
+		DocumentParameters:      cloneStringMap(ctx.DocumentParameters),
+		MissingProfileInputs:    trimNonEmpty(ctx.MissingProfileInputs),
+		ArchiveReadiness:        normalizeArchiveReadiness(ctx.ArchiveReadiness),
 	}
 	if sp.SessionContext.ArchiveIntent == scratchpad.ArchiveIntentNone {
 		sp.SessionContext.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
@@ -445,10 +484,12 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
 	defer cancel()
 	request := ai.CaptureContextRequest{
-		SessionID: sessionID,
-		Content:   current.Content,
-		Messages:  captureContextMessages(current.Messages),
-		Existing:  captureContextFromScratchpad(req.ExistingContext),
+		SessionID:         sessionID,
+		Content:           current.Content,
+		Messages:          captureContextMessages(current.Messages),
+		Existing:          captureContextFromScratchpad(req.ExistingContext),
+		AvailableProfiles: s.availableProfileDescriptors(),
+		ExistingProfile:   s.existingProfile(current),
 	}
 	result, err := s.buildCaptureContextWithRetry(ctx, sessionID, contentAtSchedule, request)
 	if err != nil {
@@ -588,20 +629,29 @@ func captureContextMessages(messages []scratchpad.Message) []ai.CaptureContextMe
 
 func captureContextFromScratchpad(ctx scratchpad.SessionContext) ai.CaptureContextResult {
 	return ai.CaptureContextResult{
-		Topic:             ctx.Topic,
-		Goal:              ctx.Goal,
-		ConfirmedFacts:    append([]string(nil), ctx.ConfirmedFacts...),
-		OpenQuestions:     append([]string(nil), ctx.OpenQuestions...),
-		Conflicts:         append([]string(nil), ctx.Conflicts...),
-		CandidateTitle:    ctx.CandidateTitle,
-		CandidateTags:     append([]string(nil), ctx.CandidateTags...),
-		CandidateSummary:  ctx.CandidateSummary,
-		CandidateBody:     ctx.CandidateBody,
-		SourceLinks:       append([]string(nil), ctx.SourceLinks...),
-		RelatedThoughtIDs: append([]string(nil), ctx.RelatedThoughtIDs...),
-		SuggestedTopicIDs: append([]string(nil), ctx.SuggestedTopicIDs...),
-		ArchiveIntent:     string(ctx.ArchiveIntent),
-		ArchiveStrategy:   string(ctx.ArchiveStrategy),
+		Topic:                   ctx.Topic,
+		Goal:                    ctx.Goal,
+		ConfirmedFacts:          append([]string(nil), ctx.ConfirmedFacts...),
+		OpenQuestions:           append([]string(nil), ctx.OpenQuestions...),
+		Conflicts:               append([]string(nil), ctx.Conflicts...),
+		CandidateTitle:          ctx.CandidateTitle,
+		CandidateTags:           append([]string(nil), ctx.CandidateTags...),
+		CandidateSummary:        ctx.CandidateSummary,
+		CandidateBody:           ctx.CandidateBody,
+		SourceLinks:             append([]string(nil), ctx.SourceLinks...),
+		RelatedThoughtIDs:       append([]string(nil), ctx.RelatedThoughtIDs...),
+		SuggestedTopicIDs:       append([]string(nil), ctx.SuggestedTopicIDs...),
+		ArchiveIntent:           string(ctx.ArchiveIntent),
+		ArchiveStrategy:         string(ctx.ArchiveStrategy),
+		CandidateDocumentFamily: ctx.CandidateDocumentFamily,
+		CandidateProfileID:      ctx.CandidateProfileID,
+		CandidateProfileVersion: ctx.CandidateProfileVersion,
+		ProfileConfidence:       ctx.ProfileConfidence,
+		ProfileMatchReason:      ctx.ProfileMatchReason,
+		ProfileExplicit:         ctx.ProfileExplicit,
+		DocumentParameters:      cloneStringMap(ctx.DocumentParameters),
+		MissingProfileInputs:    append([]string(nil), ctx.MissingProfileInputs...),
+		ArchiveReadiness:        ctx.ArchiveReadiness,
 	}
 }
 
@@ -617,7 +667,8 @@ func hasSessionContext(ctx scratchpad.SessionContext) bool {
 		len(ctx.CandidateTags) > 0 ||
 		len(ctx.SourceLinks) > 0 ||
 		len(ctx.RelatedThoughtIDs) > 0 ||
-		len(ctx.SuggestedTopicIDs) > 0
+		len(ctx.SuggestedTopicIDs) > 0 ||
+		strings.TrimSpace(ctx.CandidateProfileID) != ""
 }
 
 func sessionContextReplyText(ctx scratchpad.SessionContext) string {
@@ -644,20 +695,29 @@ func appendContextReplyMessage(messages []scratchpad.Message, reply string, at t
 
 func captureContextToScratchpad(result ai.CaptureContextResult, current scratchpad.Scratchpad) scratchpad.SessionContext {
 	return scratchpad.SessionContext{
-		Topic:             firstNonEmptyString(result.Topic, current.SessionContext.Topic),
-		Goal:              firstNonEmptyString(result.Goal, current.SessionContext.Goal),
-		ConfirmedFacts:    mergeContextStrings(current.SessionContext.ConfirmedFacts, result.ConfirmedFacts),
-		OpenQuestions:     trimNonEmpty(result.OpenQuestions),
-		Conflicts:         mergeContextStrings(current.SessionContext.Conflicts, result.Conflicts),
-		CandidateTitle:    firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
-		CandidateTags:     mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),
-		CandidateSummary:  firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
-		CandidateBody:     firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody),
-		SourceLinks:       mergeContextStrings(current.SessionContext.SourceLinks, result.SourceLinks),
-		RelatedThoughtIDs: mergeContextStrings(current.SessionContext.RelatedThoughtIDs, result.RelatedThoughtIDs),
-		SuggestedTopicIDs: mergeContextStrings(current.SessionContext.SuggestedTopicIDs, result.SuggestedTopicIDs),
-		ArchiveIntent:     normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
-		ArchiveStrategy:   normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
+		Topic:                   firstNonEmptyString(result.Topic, current.SessionContext.Topic),
+		Goal:                    firstNonEmptyString(result.Goal, current.SessionContext.Goal),
+		ConfirmedFacts:          mergeContextStrings(current.SessionContext.ConfirmedFacts, result.ConfirmedFacts),
+		OpenQuestions:           trimNonEmpty(result.OpenQuestions),
+		Conflicts:               mergeContextStrings(current.SessionContext.Conflicts, result.Conflicts),
+		CandidateTitle:          firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
+		CandidateTags:           mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),
+		CandidateSummary:        firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
+		CandidateBody:           firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody),
+		SourceLinks:             mergeContextStrings(current.SessionContext.SourceLinks, result.SourceLinks),
+		RelatedThoughtIDs:       mergeContextStrings(current.SessionContext.RelatedThoughtIDs, result.RelatedThoughtIDs),
+		SuggestedTopicIDs:       mergeContextStrings(current.SessionContext.SuggestedTopicIDs, result.SuggestedTopicIDs),
+		ArchiveIntent:           normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
+		ArchiveStrategy:         normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
+		CandidateDocumentFamily: firstNonEmptyString(result.CandidateDocumentFamily, current.SessionContext.CandidateDocumentFamily),
+		CandidateProfileID:      firstNonEmptyString(result.CandidateProfileID, current.SessionContext.CandidateProfileID),
+		CandidateProfileVersion: firstNonZeroInt(result.CandidateProfileVersion, current.SessionContext.CandidateProfileVersion),
+		ProfileConfidence:       result.ProfileConfidence,
+		ProfileMatchReason:      firstNonEmptyString(result.ProfileMatchReason, current.SessionContext.ProfileMatchReason),
+		ProfileExplicit:         result.ProfileExplicit || current.SessionContext.ProfileExplicit,
+		DocumentParameters:      mergeStringMaps(current.SessionContext.DocumentParameters, result.DocumentParameters),
+		MissingProfileInputs:    trimNonEmpty(result.MissingProfileInputs),
+		ArchiveReadiness:        normalizeArchiveReadiness(firstNonEmptyString(result.ArchiveReadiness, current.SessionContext.ArchiveReadiness)),
 	}
 }
 
@@ -925,6 +985,47 @@ func (s *ScratchpadService) SetArchiveStrategy(sessionID string, strategy scratc
 	return s.store.Save(sp)
 }
 
+func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, version int) (scratchpad.Scratchpad, error) {
+	if s == nil || s.store == nil {
+		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
+	}
+	sp, err := s.store.Get(strings.TrimSpace(sessionID))
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		sp.SessionContext.CandidateDocumentFamily = ""
+		sp.SessionContext.CandidateProfileID = ""
+		sp.SessionContext.CandidateProfileVersion = 0
+		sp.SessionContext.ProfileConfidence = 0
+		sp.SessionContext.ProfileMatchReason = ""
+		sp.SessionContext.ProfileExplicit = false
+		sp.ArchivePreview = nil
+		return s.store.Save(sp)
+	}
+	if s.profiles == nil {
+		return scratchpad.Scratchpad{}, errors.New("capture: document profile registry is not ready")
+	}
+	var profile documentprofile.DocumentProfile
+	if version > 0 {
+		profile, err = s.profiles.Resolve(models.DocumentProfileRef{ProfileID: profileID, Version: version})
+	} else {
+		profile, err = s.profiles.ResolveLatest(profileID)
+	}
+	if err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	sp.SessionContext.CandidateDocumentFamily = profile.Ref.Family
+	sp.SessionContext.CandidateProfileID = profile.Ref.ProfileID
+	sp.SessionContext.CandidateProfileVersion = profile.Ref.Version
+	sp.SessionContext.ProfileConfidence = 100
+	sp.SessionContext.ProfileMatchReason = "explicit user profile selection"
+	sp.SessionContext.ProfileExplicit = true
+	sp.ArchivePreview = nil
+	return s.store.Save(sp)
+}
+
 // BuildArchivePreview renders a read-only ArchivePreview for a
 // scratchpad. The preview is what the user confirms before commit
 // actually lands; persisting it back onto the scratchpad (the
@@ -1029,6 +1130,156 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 		preview.ThoughtID = currentThought.Thought.ID
 	}
 	return preview, nil
+}
+
+func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
+	preview, err := s.BuildArchivePreview(sp, currentThought)
+	if err != nil {
+		return scratchpad.ArchivePreview{}, err
+	}
+	profile, err := s.resolveArchiveProfile(sp, currentThought)
+	if err != nil {
+		return scratchpad.ArchivePreview{}, err
+	}
+	parameters := profileParameters(profile, sp.SessionContext.DocumentParameters)
+	preview.DocumentProfile = profile.Ref
+	preview.Parameters = parameters
+	preview.ContextHash = archiveContextHash(sp, currentThought, profile.Ref)
+	if profile.Ref.Family == models.DocumentFamilyNote || s.documentGenerator == nil {
+		preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationValid, ValidatedAt: s.now()}
+		return preview, nil
+	}
+	request := ai.DocumentGenerationRequest{
+		Profile:    profile,
+		Parameters: parameters,
+		Context: ai.DocumentSourceContext{
+			Title:       preview.Title,
+			Summary:     sp.SessionContext.CandidateSummary,
+			Body:        sp.SessionContext.CandidateBody,
+			Facts:       append([]string(nil), sp.SessionContext.ConfirmedFacts...),
+			Questions:   append([]string(nil), sp.SessionContext.OpenQuestions...),
+			Conflicts:   append([]string(nil), sp.SessionContext.Conflicts...),
+			SourceLinks: append([]string(nil), preview.SourceLinks...),
+		},
+	}
+	var rendered documentprofile.RenderResult
+	var draft models.DocumentDraft
+	for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
+		draft, err = s.documentGenerator.GenerateDocument(ctx, request)
+		if err != nil {
+			return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document: %w", err)
+		}
+		rendered = documentprofile.Render(profile, draft, parameters)
+		rendered.Validation.RepairCount = attempt
+		if rendered.Validation.Status == models.ArchiveValidationValid {
+			break
+		}
+		request.PreviousDraft = &draft
+		request.RepairIssues = append([]models.ValidationIssue(nil), rendered.Validation.Issues...)
+	}
+	preview.Title = firstNonEmptyString(strings.TrimSpace(draft.Title), preview.Title)
+	preview.Body = strings.TrimSpace(rendered.Content)
+	preview.Validation = rendered.Validation
+	preview.GeneratedAt = s.now()
+	if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
+		before := currentThought.Content.AINotes
+		diff, changed := buildThoughtDiff(before, preview.Body, preview.Tags, currentThought)
+		if len(changed) == 0 {
+			diff.ChangedFields = []string{}
+		}
+		preview.Diff = &diff
+	}
+	return preview, nil
+}
+
+func (s *ScratchpadService) resolveArchiveProfile(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (documentprofile.DocumentProfile, error) {
+	if s.profiles == nil {
+		return documentprofile.DocumentProfile{Ref: models.DocumentProfileRef{Family: models.DocumentFamilyNote, ProfileID: models.DocumentProfileBuiltinNote, Version: 1}}, nil
+	}
+	if currentThought != nil && currentThought.Thought.DocumentProfile != nil && !sp.SessionContext.ProfileExplicit && sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate {
+		return s.profiles.Resolve(*currentThought.Thought.DocumentProfile)
+	}
+	if id := strings.TrimSpace(sp.SessionContext.CandidateProfileID); id != "" {
+		version := sp.SessionContext.CandidateProfileVersion
+		if version > 0 {
+			return s.profiles.Resolve(models.DocumentProfileRef{ProfileID: id, Version: version})
+		}
+		return s.profiles.ResolveLatest(id)
+	}
+	return s.profiles.Default(), nil
+}
+
+func profileParameters(profile documentprofile.DocumentProfile, values map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, input := range profile.Inputs {
+		if input.Default != "" {
+			out[input.Key] = input.Default
+		}
+	}
+	for key, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func archiveContextHash(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot, ref models.DocumentProfileRef) string {
+	stableContext := sp.SessionContext
+	stableContext.ArchiveIntent = ""
+	stableContext.ArchiveStrategy = ""
+	payload := struct {
+		Content     string
+		Messages    []scratchpad.Message
+		Context     scratchpad.SessionContext
+		Strategy    scratchpad.ArchiveStrategy
+		SourceID    string
+		CurrentHash string
+		Profile     models.DocumentProfileRef
+	}{sp.Content, sp.Messages, stableContext, sp.ArchiveStrategy, sp.SourceThoughtID, "", ref}
+	if currentThought != nil {
+		payload.CurrentHash = currentThought.Thought.ContentHash
+	}
+	raw, _ := json.Marshal(payload)
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func (s *ScratchpadService) validateArchivePreview(ctx context.Context, sp scratchpad.Scratchpad) error {
+	typedCandidate := strings.TrimSpace(sp.SessionContext.CandidateProfileID) != "" && sp.SessionContext.CandidateProfileID != models.DocumentProfileBuiltinNote
+	if sp.ArchivePreview == nil {
+		if typedCandidate {
+			return ErrArchivePreviewRequired
+		}
+		return nil
+	}
+	preview := sp.ArchivePreview
+	if preview.DocumentProfile.ProfileID == "" || preview.DocumentProfile.Family == models.DocumentFamilyNote {
+		return nil
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid {
+		return ErrArchiveFormatInvalid
+	}
+	if s.profiles == nil {
+		return ErrArchivePreviewRequired
+	}
+	if _, err := s.profiles.Resolve(preview.DocumentProfile); err != nil {
+		return fmt.Errorf("%w: %v", ErrArchivePreviewStale, err)
+	}
+	var current *models.ThoughtSnapshot
+	if sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate || sp.ArchiveStrategy == scratchpad.ArchiveStrategySupplement {
+		if strings.TrimSpace(sp.SourceThoughtID) != "" {
+			snapshot, err := s.capture.GetThought(ctx, sp.SourceThoughtID)
+			if err != nil {
+				return err
+			}
+			current = &snapshot
+		}
+	}
+	if preview.ContextHash == "" || preview.ContextHash != archiveContextHash(sp, current, preview.DocumentProfile) {
+		return ErrArchivePreviewStale
+	}
+	return nil
 }
 
 // thoughtBodyForDiff picks the string used as the "before" side
@@ -1253,17 +1504,28 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 	}
 	topicHints := uniqueStrings(sp.TopicHints)
 	cmdType := models.ThoughtTypeText
-	if url := extractURL(firstNonEmptyString(sp.Content, content)); url != "" {
-		cmdType = models.ThoughtTypeURL
+	typedPreview := sp.ArchivePreview != nil &&
+		strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" &&
+		sp.ArchivePreview.DocumentProfile.Family != models.DocumentFamilyNote
+	if !typedPreview {
+		if url := extractURL(firstNonEmptyString(sp.Content, content)); url != "" {
+			cmdType = models.ThoughtTypeURL
+		}
+	}
+	var profileRef *models.DocumentProfileRef
+	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
+		ref := sp.ArchivePreview.DocumentProfile
+		profileRef = &ref
 	}
 	return models.CaptureCommand{
-		Type:       cmdType,
-		Content:    content,
-		URL:        "",
-		Title:      title,
-		Tags:       tags,
-		TopicHints: topicHints,
-		Source:     models.ThoughtSourceScratchpadCommit,
+		Type:            cmdType,
+		Content:         content,
+		URL:             "",
+		Title:           title,
+		Tags:            tags,
+		TopicHints:      topicHints,
+		Source:          models.ThoughtSourceScratchpadCommit,
+		DocumentProfile: profileRef,
 	}, nil
 }
 
@@ -1335,6 +1597,9 @@ func (s *ScratchpadService) Commit(ctx context.Context, sessionID string) (model
 	}
 	sp, err := s.store.Get(sessionID)
 	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	if err := s.validateArchivePreview(ctx, sp); err != nil {
 		return models.CaptureResult{}, err
 	}
 
@@ -1509,9 +1774,11 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 		return models.CaptureResult{}, err
 	}
 	cmd.Source = models.ThoughtSourceScratchpadSupplement
-	prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
-	if !strings.HasPrefix(cmd.Content, prefix) {
-		cmd.Content = prefix + cmd.Content
+	if cmd.DocumentProfile == nil || cmd.DocumentProfile.Family == models.DocumentFamilyNote {
+		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
+		if !strings.HasPrefix(cmd.Content, prefix) {
+			cmd.Content = prefix + cmd.Content
+		}
 	}
 	result, err := s.capture.Capture(ctx, cmd)
 	if err != nil {
@@ -1590,6 +1857,10 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 	related = uniqueStrings(related)
 
 	body := reopenThoughtBody(content)
+	profileRef := models.DocumentProfileRef{Family: models.DocumentFamilyNote, ProfileID: models.DocumentProfileBuiltinNote, Version: 1}
+	if thought.DocumentProfile != nil {
+		profileRef = *thought.DocumentProfile
+	}
 	messages := []scratchpad.Message{}
 	if body != "" {
 		messages = append(messages, scratchpad.Message{Role: "ai", Text: body, At: s.now()})
@@ -1604,15 +1875,21 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 		Tags:            tags,
 		TopicHints:      append([]string(nil), thought.TopicIDs...),
 		SessionContext: scratchpad.SessionContext{
-			Topic:             strings.TrimSpace(thought.UserTitle),
-			CandidateTitle:    title,
-			CandidateTags:     tags,
-			CandidateSummary:  body,
-			CandidateBody:     body,
-			SourceLinks:       sourceLinks,
-			RelatedThoughtIDs: related,
-			ArchiveIntent:     scratchpad.ArchiveIntentMenu,
-			ArchiveStrategy:   scratchpad.ArchiveStrategyUpdate,
+			Topic:                   strings.TrimSpace(thought.UserTitle),
+			CandidateTitle:          title,
+			CandidateTags:           tags,
+			CandidateSummary:        body,
+			CandidateBody:           body,
+			SourceLinks:             sourceLinks,
+			RelatedThoughtIDs:       related,
+			ArchiveIntent:           scratchpad.ArchiveIntentMenu,
+			ArchiveStrategy:         scratchpad.ArchiveStrategyUpdate,
+			CandidateDocumentFamily: profileRef.Family,
+			CandidateProfileID:      profileRef.ProfileID,
+			CandidateProfileVersion: profileRef.Version,
+			ProfileConfidence:       95,
+			ProfileMatchReason:      "inherited existing thought profile",
+			ArchiveReadiness:        "ready",
 		},
 		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
@@ -1758,6 +2035,11 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		req.AINotes = &body
 		hasAny = true
 	}
+	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
+		ref := sp.ArchivePreview.DocumentProfile
+		req.DocumentProfile = &ref
+		hasAny = true
+	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {
 		req.TopicIDs = &topics
 		hasAny = true
@@ -1863,6 +2145,74 @@ func normalizeArchiveStrategy(strategy scratchpad.ArchiveStrategy) scratchpad.Ar
 		return scratchpad.ArchiveStrategySupplement
 	default:
 		return scratchpad.ArchiveStrategyNew
+	}
+}
+
+func (s *ScratchpadService) availableProfileDescriptors() []documentprofile.DocumentProfileDescriptor {
+	if s == nil || s.profiles == nil {
+		return nil
+	}
+	profiles := s.profiles.ListEnabled()
+	if s.maxMatchCandidates > 0 && len(profiles) > s.maxMatchCandidates {
+		profiles = profiles[:s.maxMatchCandidates]
+	}
+	return profiles
+}
+
+func (s *ScratchpadService) existingProfile(sp scratchpad.Scratchpad) *models.DocumentProfileRef {
+	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
+		ref := sp.ArchivePreview.DocumentProfile
+		return &ref
+	}
+	if s == nil || s.capture == nil || strings.TrimSpace(sp.SourceThoughtID) == "" {
+		return nil
+	}
+	snapshot, err := s.capture.GetThought(context.Background(), sp.SourceThoughtID)
+	if err != nil || snapshot.Thought.DocumentProfile == nil {
+		return nil
+	}
+	ref := *snapshot.Thought.DocumentProfile
+	return &ref
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeStringMaps(base, update map[string]string) map[string]string {
+	out := cloneStringMap(base)
+	for key, value := range update {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func normalizeArchiveReadiness(value string) string {
+	switch strings.TrimSpace(value) {
+	case "diverging", "converging", "ready":
+		return strings.TrimSpace(value)
+	default:
+		return "converging"
 	}
 }
 

@@ -22,6 +22,8 @@ const state = {
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
+  documentProfiles: [],
+  documentProfileIssues: [],
   activeThoughtId: "",
   activeThoughtSnapshot: null,
   activeTopicDetail: null,
@@ -670,6 +672,50 @@ function joinCSV(values) {
   return (values || []).join(", ");
 }
 
+function profileRef(profile = {}) {
+  return profile.ref || profile.document_profile || {};
+}
+
+function profileByID(profileID, version = 0) {
+  return (state.documentProfiles || []).find((profile) => {
+    const ref = profileRef(profile);
+    return ref.profile_id === profileID && (!version || ref.version === Number(version));
+  }) || null;
+}
+
+function profileLabel(profile = {}) {
+  const ref = profileRef(profile);
+  return `${profile.name || ref.profile_id || t("document_profile.unknown")} · v${ref.version || 1}`;
+}
+
+function renderDocumentProfileOptions(selectedID = "", selectedVersion = 0) {
+  const profiles = state.documentProfiles || [];
+  if (!profiles.length) {
+    return `<option value="">${escapeHTML(t("document_profile.unavailable"))}</option>`;
+  }
+  return profiles.map((profile) => {
+    const ref = profileRef(profile);
+    const selected = ref.profile_id === selectedID && (!selectedVersion || ref.version === Number(selectedVersion));
+    return `<option value="${escapeHTML(ref.profile_id || "")}" data-version="${escapeHTML(ref.version || 1)}"${selected ? " selected" : ""}>${escapeHTML(profileLabel(profile))}</option>`;
+  }).join("");
+}
+
+function syncComposeProfileSelect(selectedID = "", selectedVersion = 0) {
+  const select = $("#compose-format");
+  if (!select) return;
+  const fallback = profileByID("builtin.note") || state.documentProfiles[0] || null;
+  const fallbackRef = profileRef(fallback || {});
+  select.innerHTML = renderDocumentProfileOptions(selectedID || fallbackRef.profile_id, selectedVersion || fallbackRef.version);
+}
+
+async function loadDocumentProfiles() {
+  const payload = await api("/api/document-profiles");
+  state.documentProfiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
+  state.documentProfileIssues = Array.isArray(payload?.issues) ? payload.issues : [];
+  syncComposeProfileSelect();
+  renderCaptureConversation();
+}
+
 function renderDescription(rows) {
   return `<dl>${rows
     .filter((row) => row[1] !== undefined && row[1] !== null && row[1] !== "")
@@ -1135,12 +1181,14 @@ function renderComposeDrafts() {
     .map((draft) => {
       const active = state.composeDraft?.id === draft.id ? " active" : "";
       const status = draft.status || "draft";
+      const profile = profileByID(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
+      const formatLabel = profile ? profileLabel(profile) : (draft.format || t("compose.format.summary"));
       return `
         <article class="approval-item${active}" data-compose-id="${escapeHTML(draft.id)}">
           <strong>${escapeHTML(draft.goal || draft.id)}</strong>
           <div class="topic-meta">
             <span class="pill">${escapeHTML(status)}</span>
-            <span>${escapeHTML(draft.format || t("compose.format.summary"))}</span>
+            <span>${escapeHTML(formatLabel)}</span>
             <span>${escapeHTML(fmtDate(draft.updated_at || draft.created_at))}</span>
           </div>
         </article>
@@ -2418,7 +2466,9 @@ function renderCaptureConversation() {
   const previewButton = $("#capture-refresh-preview");
   if (previewButton) previewButton.disabled = !state.capture.sessionId;
   const archiveButton = $("#capture-archive-commit");
-  if (archiveButton) archiveButton.disabled = !state.capture.sessionId || !state.capture.archivePreview;
+  if (archiveButton) {
+    archiveButton.disabled = !state.capture.sessionId || !state.capture.archivePreview || state.capture.archivePreview?.validation?.status === "invalid";
+  }
   renderCaptureContextPanel();
   renderArchivePreviewPanel();
   renderCaptureLockIndicator();
@@ -2430,6 +2480,18 @@ function renderCaptureContextRows(ctx, options = {}) {
   const rows = [];
   if (ctx.topic) rows.push(`<div><span>${escapeHTML(t("capture.context.topic"))}</span><strong>${escapeHTML(ctx.topic)}</strong></div>`);
   if (ctx.goal) rows.push(`<div><span>${escapeHTML(t("capture.context.goal"))}</span><strong>${escapeHTML(ctx.goal)}</strong></div>`);
+  if (ctx.candidate_profile_id) {
+    const selectedProfile = profileByID(ctx.candidate_profile_id, ctx.candidate_profile_version);
+    const confidence = Number.isFinite(Number(ctx.profile_confidence)) ? ` · ${Number(ctx.profile_confidence)}%` : "";
+    const selector = includeBody
+      ? `<select class="tf-profile-select" data-capture-profile-select aria-label="${escapeHTML(t("capture.context.profile"))}">${renderDocumentProfileOptions(ctx.candidate_profile_id, ctx.candidate_profile_version)}</select>`
+      : `<strong>${escapeHTML(selectedProfile ? profileLabel(selectedProfile) : ctx.candidate_profile_id)}</strong>`;
+    rows.push(`<div class="tf-profile-row"><span>${escapeHTML(t("capture.context.profile"))}</span><div>
+      ${selector}
+      <div class="topic-meta">${escapeHTML((selectedProfile && selectedProfile.description) || ctx.candidate_document_family || "")}${escapeHTML(confidence)}</div>
+      ${ctx.profile_match_reason ? `<p>${escapeHTML(ctx.profile_match_reason)}</p>` : ""}
+    </div></div>`);
+  }
   if (Array.isArray(ctx.confirmed_facts) && ctx.confirmed_facts.length) {
     rows.push(`<div><span>${escapeHTML(t("capture.context.facts"))}</span><ul>${ctx.confirmed_facts.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul></div>`);
   }
@@ -2464,6 +2526,23 @@ function renderCaptureContextPanel() {
   const ctx = sp.session_context || sp.SessionContext || {};
   const rows = renderCaptureContextRows(ctx, { includeBody: true });
   node.innerHTML = rows.length ? rows.join("") : escapeHTML(t("capture.context.empty"));
+  node.querySelector("[data-capture-profile-select]")?.addEventListener("change", (event) => {
+    changeCaptureProfile(event.target.value, Number(event.target.selectedOptions?.[0]?.dataset.version || 0)).catch((error) => toast(error.message));
+  });
+}
+
+async function changeCaptureProfile(profileID, version = 0) {
+  const sessionID = state.capture.sessionId;
+  if (!sessionID || !profileID) return;
+  const hadPreview = Boolean(state.capture.archivePreview);
+  const scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(sessionID)}/profile`, {
+    method: "POST",
+    body: JSON.stringify({ profile_id: profileID, version }),
+  });
+  state.capture.activeScratchpad = scratchpad;
+  state.capture.archivePreview = null;
+  renderCaptureConversation();
+  if (hadPreview) await previewArchive({ intent: "menu" });
 }
 
 function renderArchivePreviewBody(preview) {
@@ -2493,15 +2572,27 @@ function renderArchivePreviewBody(preview) {
         </div>
       </details>`
     : "";
+  const ref = preview.document_profile || {};
+  const validation = preview.validation || {};
+  const issues = Array.isArray(validation.issues) ? validation.issues : [];
+  const validationClass = validation.status === "valid" ? "tf-validation-valid" : "tf-validation-invalid";
+  const profileMeta = ref.profile_id
+    ? `<div class="tf-profile-summary"><span class="tf-chip">${escapeHTML(ref.profile_id)} · v${escapeHTML(ref.version || 1)}</span><span class="${validationClass}">${escapeHTML(validation.status === "valid" ? t("document_profile.validation_valid") : t("document_profile.validation_invalid"))}</span></div>`
+    : "";
+  const validationIssues = issues.length
+    ? `<div class="tf-validation-issues"><strong>${escapeHTML(t("document_profile.validation_issues"))}</strong><ul>${issues.map((issue) => `<li>${escapeHTML(issue.message || issue.code || "")}</li>`).join("")}</ul></div>`
+    : "";
   return `<div class="tf-capture-preview-body">
     <strong>${escapeHTML(preview.title || t("capture.archive.untitled"))}</strong>
     <div class="topic-meta">
       ${escapeHTML(t("capture.archive.strategy"))}: ${escapeHTML(preview.strategy || "new")}
       ${target ? ` · ${escapeHTML(t("capture.archive.target"))}: ${escapeHTML(target)}` : ""}
     </div>
+    ${profileMeta}
     ${tags}
     <div class="markdown-rendered">${renderMarkdown(preview.body || "")}</div>
     ${links ? `<div class="tf-capture-section"><div class="tf-capture-section-title">${escapeHTML(t("capture.archive.source_links"))}</div>${links}</div>` : ""}
+    ${validationIssues}
     ${diff}
   </div>`;
 }
@@ -3417,7 +3508,7 @@ async function previewArchive({ intent = "menu", strategy = "", commitAfterPrevi
     appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
     upsertArchivePreviewMessage();
     renderCaptureConversation();
-    if (commitAfterPreview) {
+    if (commitAfterPreview && state.capture.archivePreview?.validation?.status !== "invalid") {
       await commitScratchpad();
     }
   } catch (error) {
@@ -4056,13 +4147,17 @@ async function createComposeDraft(event) {
   const selectedThoughtIds = sources
     .filter((source) => source.source_type === "thought")
     .map((source) => source.source_id);
+  const profileSelect = $("#compose-format");
+  const selectedProfileID = profileSelect.value;
+  const selectedProfileVersion = Number(profileSelect.selectedOptions?.[0]?.dataset.version || 0);
   const draft = await api("/api/compose/drafts", {
     method: "POST",
     body: JSON.stringify({
       sources,
       selected_thought_ids: selectedThoughtIds,
       goal: $("#compose-goal").value.trim(),
-      format: $("#compose-format").value,
+      profile_id: selectedProfileID,
+      profile_version: selectedProfileVersion,
     }),
   });
   state.composeDraft = draft;
@@ -4097,7 +4192,7 @@ async function loadComposeDraft(draftId) {
   broadcastSourcesChange();
   renderComposeSources();
   $("#compose-goal").value = draft.goal || "";
-  $("#compose-format").value = draft.format || t("compose.format.summary");
+  syncComposeProfileSelect(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
   $("#compose-output").value = renderComposeDraft(draft);
   $("#save-compose").disabled = (draft.status || "draft") !== "draft";
   renderComposeDrafts();
@@ -4586,6 +4681,8 @@ function rerenderForLocale() {
   try { renderThoughtPanels(); } catch (_) {}
   try { renderTopics(); } catch (_) {}
   try { renderComposeSources(); } catch (_) {}
+  try { syncComposeProfileSelect(state.composeDraft?.document_profile?.profile_id || "", state.composeDraft?.document_profile?.version || 0); } catch (_) {}
+  try { renderCaptureConversation(); } catch (_) {}
   try { updateSelectionControls(); } catch (_) {}
   if (state.status) {
     try { renderTopbarStatus(state.status); } catch (_) {}
@@ -4616,6 +4713,11 @@ async function boot() {
     });
   }
   await restoreSources().catch((error) => toast(error.message));
+  await loadDocumentProfiles().catch((error) => {
+    state.documentProfiles = [];
+    syncComposeProfileSelect();
+    toast(error.message);
+  });
   state.capture.sessions = loadCaptureSessions();
   // Sweep any stale cross-tab session locks before we render. Per-key
   // getHolder() only fires for thoughts the user actually opens, but

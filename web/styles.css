@@ -1838,6 +1838,33 @@ textarea:focus-visible {
   font-weight: 500;
 }
 
+.tf-profile-row > div,
+.tf-profile-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tf-profile-select {
+  width: min(100%, 28rem);
+}
+
+.tf-validation-valid {
+  color: var(--tf-color-success, #237804);
+  font-weight: 700;
+}
+
+.tf-validation-invalid,
+.tf-validation-issues {
+  color: var(--tf-color-error, #a8071a);
+}
+
+.tf-validation-issues ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
 .tf-capture-preview-body {
   display: grid;
   gap: 8px;

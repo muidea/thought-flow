@@ -22,7 +22,7 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	for _, dir := range []string{ws.RootPath, ws.ThoughtsPath, ws.TopicsPath, ws.AttachmentsPath, ws.RuntimePath, ws.JobsPath} {
+	for _, dir := range []string{ws.RootPath, ws.ThoughtsPath, ws.TopicsPath, ws.AttachmentsPath, ws.DocumentFormatsPath, ws.RuntimePath, ws.JobsPath} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatalf("expected directory %s: %v", dir, err)
@@ -36,6 +36,9 @@ func TestOpenCreatesWorkspaceDirectories(t *testing.T) {
 	}
 	if ws.RuntimePath != dataDir || ws.JobsPath != filepath.Join(dataDir, "jobs") {
 		t.Fatalf("runtime paths = %#v", ws)
+	}
+	if ws.DocumentFormatsPath != filepath.Join(root, "document-formats") {
+		t.Fatalf("document formats path = %q", ws.DocumentFormatsPath)
 	}
 }
 
@@ -56,7 +59,7 @@ func TestRuntimeStatusCreatesWritableRuntimeDirectory(t *testing.T) {
 
 	status := RuntimeStatus(ws)
 
-	if status.Status != "ready" || !status.Writable || status.RuntimePath != ws.RuntimePath || status.Error != "" {
+	if status.Status != "ready" || !status.Writable || status.RuntimePath != ws.RuntimePath || status.DocumentFormatsPath != ws.DocumentFormatsPath || status.Error != "" {
 		t.Fatalf("RuntimeStatus() = %#v", status)
 	}
 	info, err := os.Stat(ws.RuntimePath)

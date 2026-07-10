@@ -741,3 +741,15 @@ verify 期间观察到 `session_context` 30-60s 后 `open_questions` 为空,曾�
 LLM enrichment **完全工作**,响应时间 8-20s 不等(取决于 LLM provider 实时负载)。前次 verify 看到 `open_questions count: 0` 是因为 30-60s 轮询命中了 LLM 富化**完成前**的中间状态(API 返回 keyword 提取结果,LLM 还在跑,15-20s 后才被 UpdateSessionContext 写回)。前次 verify 副发现误报,无需任何代码收口。
 
 教训:verify LLM 端到端时,**采样时间必须覆盖 LLM 响应时间上限**(`llm.timeout_seconds = 600` 下至少 90-120s),并在时间序列上做轮询,不能单点观察。
+
+## 2026-07-10 Capture DocumentProfile 收口
+
+已按 `doc/thoughtflow-capture-document-profile-design.md` 完成主链收口：
+
+1. 新增内置 note、research report、design doc、blog post Format，以及工作区 `document-formats` 自定义发布目录。
+2. `internal/pkg/documentprofile` 统一负责解析、版本/hash、Registry、受限模板渲染和严格校验；已发布版本被改写时隔离新匹配并保留历史快照解析。
+3. Capture context 动态注入 Profile Catalog，持久化候选 Profile、置信度、匹配依据、参数和 readiness。
+4. typed archive 通过结构化 `DocumentDraft` 生成、repair、确定性渲染和 validation；无 Preview、invalid 或 stale Preview 均拒绝 Commit，落盘正文与 Preview 一致。
+5. Thought Markdown front matter、Scratchpad v3、Capture update/supplement/reopen 和 Compose draft/save 均携带 `DocumentProfileRef`。
+6. Profile query/validate/publish/reload API 与 Capture profile 切换 API 已接入；Web Capture 展示匹配和校验状态，Compose 从 Profile API 动态生成选择项。
+7. `[document_profiles]` 配置控制整体能力；`capture_context_system_path` 仅用于协议覆盖，不再作为扩充文档类型的入口。

@@ -596,6 +596,37 @@ func TestStoreMigratesV1FilesToV2OnLoad(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesV2FileToV3DocumentProfileShape(t *testing.T) {
+	root := t.TempDir()
+	legacy := persistedFile{Version: 2, Scratchpad: Scratchpad{
+		SessionID: "legacy-v2",
+		Content:   "preserved",
+		SessionContext: SessionContext{
+			CandidateTitle: "Legacy title",
+		},
+	}}
+	raw, _ := json.MarshalIndent(legacy, "", "  ")
+	if err := os.WriteFile(filepath.Join(root, "legacy-v2.json"), raw, 0o644); err != nil {
+		t.Fatalf("write v2: %v", err)
+	}
+	store := New(root)
+	got, err := store.Get("legacy-v2")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Content != "preserved" || got.SessionContext.CandidateTitle != "Legacy title" {
+		t.Fatalf("legacy fields lost: %+v", got)
+	}
+	if got.SessionContext.CandidateProfileID != "" || got.ArchivePreview != nil {
+		t.Fatalf("v3 fields should start empty: %+v", got)
+	}
+	raw, _ = os.ReadFile(filepath.Join(root, "legacy-v2.json"))
+	var migrated persistedFile
+	if err := json.Unmarshal(raw, &migrated); err != nil || migrated.Version != formatVersion {
+		t.Fatalf("migrated file = %+v err=%v", migrated, err)
+	}
+}
+
 func TestStoreSkipsUnknownFutureVersion(t *testing.T) {
 	root := t.TempDir()
 	future := persistedFile{Version: 999, Scratchpad: Scratchpad{SessionID: "future"}}

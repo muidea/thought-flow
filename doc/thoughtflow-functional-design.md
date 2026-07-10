@@ -332,7 +332,7 @@ scratchpad.context_updated ──┘                │
 #### 3.5.1 职责
 
 1. 维护 Web 侧整理篮，将 Notes、Search、Topics 和 Capture 候选统一为 `ComposeSource`。
-2. 基于整理篮生成草稿。接口和落盘目录统一使用 `/api/compose*` 与 `compose/drafts/{draft_id}.yaml`。
+2. 基于整理篮和 DocumentProfile 生成结构化草稿，确定性渲染并校验。接口和落盘目录统一使用 `/api/compose*` 与 `compose/drafts/{draft_id}.yaml`。
 3. 保存草稿时通过 capture 创建新的 Thought，并保留所有来源链接。
 4. 草稿历史、引用映射和生成参数作为 Compose 次级区域，不进入 Search 或 Notes 主流程。
 
@@ -479,8 +479,9 @@ Web 端按 `Overview / Capture / Notes / Search / Topics / Compose` 六个主入
 | `POST` | `/api/capture/sessions/{id}/context` | `SessionContext` | `{scratchpad}` | 400 invalid |
 | `POST` | `/api/capture/sessions/{id}/intent` | `{intent: none|menu|llm}` | `{scratchpad}` | — |
 | `POST` | `/api/capture/sessions/{id}/strategy` | `{strategy: new\|update_thought\|supplement, thought_id?}` | `{scratchpad}` | 400 strategy_required |
+| `POST` | `/api/capture/sessions/{id}/profile` | `{profile_id, version?}` | `{scratchpad}` | 404 profile_not_found |
 | `GET` | `/api/capture/sessions/{id}/archive/preview` | — | `ArchivePreview` | 400 empty_content |
-| `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed?:true}` | `CaptureResult` | 409 locked, 400 diff_required |
+| `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed?:true}` | `CaptureResult` | 409 preview_required/stale/format_invalid/locked |
 | `DELETE` | `/api/capture/sessions/{id}` | — | `{deleted:true}` | — |
 
 ### 5.2 Thought
@@ -512,12 +513,22 @@ Web 端按 `Overview / Capture / Notes / Search / Topics / Compose` 六个主入
 | Method | Path | Query / Body | 200 Response | 说明 |
 |---|---|---|---|---|
 | `GET` | `/api/search` | `q`, `tags?`, `limit?`, `include_candidates?` | `SearchResultView{results,candidates?}` | 关键词搜索；不暴露专题 ID、时间筛选、模式切换或 score explain |
-| `POST` | `/api/compose/drafts` | `{sources[], selected_thought_ids?, prompt?, goal?, format?}` | `ComposeDraft` | 创建整理草稿 |
+| `POST` | `/api/compose/drafts` | `{sources[], selected_thought_ids?, prompt?, goal?, profile_id?, profile_version?, parameters?}` | `ComposeDraft` | 创建并校验 Profile 草稿 |
 | `GET` | `/api/compose/drafts` | — | `[]ComposeDraft` | 查询整理草稿列表 |
 | `GET` | `/api/compose/drafts/{id}` | — | `ComposeDraft` | 查询整理草稿详情 |
 | `POST` | `/api/compose/drafts/{id}/save` | `{draft?, title?, tags?}` | `{thought}` | 保存为 Thought 并保留来源链接 |
 
-### 5.5 系统 & 实时
+### 5.5 DocumentProfile
+
+| Method | Path | 说明 |
+|---|---|---|
+| `GET` | `/api/document-profiles` | 查询已启用 Profile 和 Registry issues |
+| `GET` | `/api/document-profiles/{id}?version=N` | 查询指定或最新版本 |
+| `POST` | `/api/document-profiles/validate` | 校验未发布 DocumentFormat |
+| `POST` | `/api/document-profiles/publish` | 原子发布不可变版本 |
+| `POST` | `/api/document-profiles/reload` | 重载自定义格式；冲突隔离且保留历史快照 |
+
+### 5.6 系统 & 实时
 
 | Method | Path | 说明 |
 |---|---|---|
@@ -644,7 +655,10 @@ type ComposeDraft struct {
     ID             string          `json:"id"`
     Sources        []ComposeSource `json:"sources"`
     Goal           string          `json:"goal"`
-    Format         string          `json:"format"`
+    DocumentProfile *DocumentProfileRef `json:"document_profile"`
+    Parameters       map[string]string   `json:"parameters,omitempty"`
+    DocumentDraft    *DocumentDraft      `json:"document_draft,omitempty"`
+    Validation       *ArchiveValidation  `json:"validation,omitempty"`
     Content        string          `json:"content"`
     SourceLinks    []string        `json:"source_links"`
     Status         string          `json:"status"` // draft|saved

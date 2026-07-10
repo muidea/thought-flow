@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +133,7 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeList(&buf, "suggested_topic_ids", thought.SuggestedTopicIDs)
 	writeURLFollowups(&buf, "url_followups", thought.URLFollowups)
 	writeBlockScalar(&buf, "expansion_plan", thought.ExpansionPlan)
+	writeDocumentProfile(&buf, thought.DocumentProfile)
 	writeScalar(&buf, "capture_status", thought.CaptureStatus)
 	writeScalar(&buf, "refine_status", thought.RefineStatus)
 	writeScalar(&buf, "index_status", thought.IndexStatus)
@@ -348,6 +350,7 @@ func knownThoughtFrontMatterKey(key string) bool {
 		"suggested_topic_ids",
 		"url_followups",
 		"expansion_plan",
+		"document_profile",
 		"capture_status",
 		"refine_status",
 		"index_status",
@@ -419,6 +422,8 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.URLFollowups = parseURLFollowups(lines, &idx)
 		case "expansion_plan":
 			thought.ExpansionPlan = parseBlockScalar(lines, &idx)
+		case "document_profile":
+			thought.DocumentProfile = parseDocumentProfile(lines, &idx)
 		case "capture_status":
 			thought.CaptureStatus = value
 		case "refine_status":
@@ -431,6 +436,49 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.Errors = parseErrors(lines, &idx, value)
 		}
 	}
+}
+
+func writeDocumentProfile(buf *bytes.Buffer, ref *models.DocumentProfileRef) {
+	if ref == nil || strings.TrimSpace(ref.ProfileID) == "" {
+		return
+	}
+	buf.WriteString("document_profile:\n")
+	_, _ = fmt.Fprintf(buf, "  family: %q\n", ref.Family)
+	_, _ = fmt.Fprintf(buf, "  profile_id: %q\n", ref.ProfileID)
+	_, _ = fmt.Fprintf(buf, "  version: %d\n", ref.Version)
+	_, _ = fmt.Fprintf(buf, "  content_hash: %q\n", ref.ContentHash)
+}
+
+func parseDocumentProfile(lines []string, idx *int) *models.DocumentProfileRef {
+	ref := &models.DocumentProfileRef{}
+	for j := *idx + 1; j < len(lines); j++ {
+		raw := lines[j]
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if !strings.HasPrefix(raw, "  ") && !strings.HasPrefix(raw, "\t") {
+			break
+		}
+		key, value, ok := splitKV(strings.TrimSpace(raw))
+		if !ok {
+			continue
+		}
+		switch key {
+		case "family":
+			ref.Family = unquote(value)
+		case "profile_id":
+			ref.ProfileID = unquote(value)
+		case "version":
+			ref.Version, _ = strconv.Atoi(unquote(value))
+		case "content_hash":
+			ref.ContentHash = unquote(value)
+		}
+		*idx = j
+	}
+	if strings.TrimSpace(ref.ProfileID) == "" {
+		return nil
+	}
+	return ref
 }
 
 // parseBlockScalar reads a YAML `key: |` block scalar. The header line

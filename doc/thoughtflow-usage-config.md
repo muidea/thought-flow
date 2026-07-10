@@ -55,6 +55,7 @@ go run ./cmd/thoughtflow
 thoughts/              原子笔记 Markdown
 topics/                专题 YAML、专题 Markdown、membership 和审批草稿
 attachments/           附件目录
+document-formats/      自定义 DocumentFormat 草稿和已发布版本
 ```
 
 默认运行状态目录是：
@@ -127,6 +128,15 @@ state_dir = "./thoughtflow-runtime"
 [capture]
 duplicate_policy = "warn"
 
+[document_profiles]
+enabled = true
+custom_dir = ""
+default_profile_id = "builtin.note"
+max_match_candidates = 10
+max_format_bytes = 131072
+max_sections = 32
+max_repair_attempts = 2
+
 [refiner]
 concurrency = 2
 url_fetch_timeout_seconds = 30
@@ -164,7 +174,7 @@ timeout_seconds = 30
 
 1. `search.duckdb_path` 为相对路径时，会解析到 `runtime.state_dir` 下。
 2. 当前进程启动时显式设置服务名为 `thoughtflow`，因此模板不需要配置 `endpointName`。
-3. `llm.api_key` 为空时，摘要、专题缝合和 Compose 整理使用本地规则 provider。
+3. `llm.api_key` 为空时，摘要、专题缝合、Profile 匹配和结构化文档生成使用本地规则 provider。
 4. `embedding.api_key` 为空时，服务使用 deterministic local embedding，仍可完成本地采集、搜索和专题匹配。
 5. `workspace.auto_init_git` 当前是配置模型字段；实际提交能力由 `git_sync.enabled` 和本机 Git 仓库/身份状态决定。
 6. 配置目录和运行状态目录应保持物理分离。配置目录存放 `application.toml`，运行状态目录存放 jobs、logs、DuckDB 等运行态文件。
@@ -215,12 +225,14 @@ chat_model = "gpt-4o-mini"
 timeout_seconds = 30
 ```
 
-Capture 多轮对话的 system prompt 可以按文件加载，便于为不同业务模板维护不同定义。未配置时使用内置通用 prompt（源码位置：`assets/prompts/capture_context_system.md`）；相对路径会按配置目录解析：
+Capture 多轮对话的 system prompt 可以按文件加载，用于覆盖 Profile 匹配与上下文抽取协议。未配置时使用内置 prompt（源码位置：`assets/prompts/capture_context_system.md`）；相对路径会按配置目录解析：
 
 ```toml
 [llm.prompts]
 capture_context_system_path = "prompts/capture-context-research.md"
 ```
+
+该 prompt 不是扩充文档类型的正式入口。新增调研报告、设计文档或团队模板时，应在 `document-formats/drafts` 编写 YAML front matter + 受限 Markdown 模板，经 validate/publish 后写入 `document-formats/published/<profile-id>/vN.md`。发布版本不可覆盖，Capture 和 Compose 会通过同一 Registry、Renderer 和 Validator 使用它。
 
 配置 OpenAI-compatible embedding provider：
 
@@ -257,6 +269,7 @@ GET  /api/capture/sessions/active
 GET  /api/capture/sessions
 POST /api/capture/sessions/{id}/messages
 POST /api/capture/sessions/{id}/context
+POST /api/capture/sessions/{id}/profile
 GET  /api/capture/sessions/{id}/archive/preview
 POST /api/capture/sessions/{id}/archive
 
@@ -278,6 +291,12 @@ POST /api/compose/drafts
 GET  /api/compose/drafts
 GET  /api/compose/drafts/{draft_id}
 POST /api/compose/drafts/{draft_id}/save
+
+GET  /api/document-profiles
+GET  /api/document-profiles/{id}?version=N
+POST /api/document-profiles/validate
+POST /api/document-profiles/publish
+POST /api/document-profiles/reload
 
 GET  /api/jobs
 GET  /api/jobs/{id}

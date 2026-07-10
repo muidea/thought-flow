@@ -14,19 +14,20 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig
-	Workspace WorkspaceConfig
-	Runtime   RuntimeConfig
-	Capture   CaptureConfig
-	Refiner   RefinerConfig
-	Expander  ExpanderConfig
-	GitSync   GitSyncConfig
-	Search    SearchConfig
-	Topic     TopicConfig
-	Events    EventsConfig
-	LLM       LLMConfig
-	Embedding EmbeddingConfig
-	Reader    ReaderConfig
+	Server           ServerConfig
+	Workspace        WorkspaceConfig
+	Runtime          RuntimeConfig
+	Capture          CaptureConfig
+	Refiner          RefinerConfig
+	Expander         ExpanderConfig
+	GitSync          GitSyncConfig
+	Search           SearchConfig
+	Topic            TopicConfig
+	Events           EventsConfig
+	LLM              LLMConfig
+	Embedding        EmbeddingConfig
+	Reader           ReaderConfig
+	DocumentProfiles DocumentProfilesConfig
 }
 
 type ServerConfig struct {
@@ -45,6 +46,16 @@ type RuntimeConfig struct {
 
 type CaptureConfig struct {
 	DuplicatePolicy string
+}
+
+type DocumentProfilesConfig struct {
+	Enabled            bool
+	CustomDir          string
+	DefaultProfileID   string
+	MaxMatchCandidates int
+	MaxFormatBytes     int
+	MaxSections        int
+	MaxRepairAttempts  int
 }
 
 type RefinerConfig struct {
@@ -198,6 +209,14 @@ func defaultConfig() Config {
 		Capture: CaptureConfig{
 			DuplicatePolicy: "warn",
 		},
+		DocumentProfiles: DocumentProfilesConfig{
+			Enabled:            true,
+			DefaultProfileID:   "builtin.note",
+			MaxMatchCandidates: 10,
+			MaxFormatBytes:     131072,
+			MaxSections:        32,
+			MaxRepairAttempts:  2,
+		},
 		Refiner: RefinerConfig{
 			Concurrency:        2,
 			URLFetchTimeout:    30 * time.Second,
@@ -258,6 +277,13 @@ func applyFrameworkOverrides(cfg *Config, configDir string) {
 	cfg.Workspace.AutoInitGit = configBool(appConfig, "workspace.auto_init_git", cfg.Workspace.AutoInitGit)
 	cfg.Runtime.StateDir = configString(appConfig, "runtime.state_dir", cfg.Runtime.StateDir)
 	cfg.Capture.DuplicatePolicy = configString(appConfig, "capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
+	cfg.DocumentProfiles.Enabled = configBool(appConfig, "document_profiles.enabled", cfg.DocumentProfiles.Enabled)
+	cfg.DocumentProfiles.CustomDir = configPath(appConfig, "document_profiles.custom_dir", cfg.DocumentProfiles.CustomDir, configDir)
+	cfg.DocumentProfiles.DefaultProfileID = configString(appConfig, "document_profiles.default_profile_id", cfg.DocumentProfiles.DefaultProfileID)
+	cfg.DocumentProfiles.MaxMatchCandidates = configInt(appConfig, "document_profiles.max_match_candidates", cfg.DocumentProfiles.MaxMatchCandidates)
+	cfg.DocumentProfiles.MaxFormatBytes = configInt(appConfig, "document_profiles.max_format_bytes", cfg.DocumentProfiles.MaxFormatBytes)
+	cfg.DocumentProfiles.MaxSections = configInt(appConfig, "document_profiles.max_sections", cfg.DocumentProfiles.MaxSections)
+	cfg.DocumentProfiles.MaxRepairAttempts = configInt(appConfig, "document_profiles.max_repair_attempts", cfg.DocumentProfiles.MaxRepairAttempts)
 	cfg.Refiner.Concurrency = configInt(appConfig, "refiner.concurrency", cfg.Refiner.Concurrency)
 	cfg.Refiner.URLFetchTimeoutRaw = configInt(appConfig, "refiner.url_fetch_timeout_seconds", cfg.Refiner.URLFetchTimeoutRaw)
 	cfg.Refiner.URLFetchTimeout = time.Duration(cfg.Refiner.URLFetchTimeoutRaw) * time.Second

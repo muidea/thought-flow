@@ -328,3 +328,21 @@ func TestCleanupOrphanThoughtTempFilesMissingDirIsNoop(t *testing.T) {
 		t.Fatalf("missing dir should be a no-op, got %v", err)
 	}
 }
+
+func TestThoughtDocumentProfileRoundTrip(t *testing.T) {
+	thought := models.Thought{
+		ID:   "20260710-120000-profile",
+		Type: models.ThoughtTypeText,
+		DocumentProfile: &models.DocumentProfileRef{
+			Family:      models.DocumentFamilyDesign,
+			ProfileID:   models.DocumentProfileBuiltinDesignDoc,
+			Version:     1,
+			ContentHash: "sha256:test",
+		},
+	}
+	raw := RenderThought(thought, models.ThoughtContent{AINotes: "body"})
+	parsed, _ := ParseThought(raw)
+	if parsed.DocumentProfile == nil || *parsed.DocumentProfile != *thought.DocumentProfile {
+		t.Fatalf("document profile = %+v", parsed.DocumentProfile)
+	}
+}

@@ -12,9 +12,20 @@ import (
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
 )
+
+type composeDocumentGenerator struct{}
+
+func (composeDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
+	for _, section := range req.Profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: strings.Repeat("完整内容。", 40)}
+	}
+	return models.DocumentDraft{Title: "Generated Design", Summary: "Summary", Sections: sections}, nil
+}
 
 // stubCapture is an in-memory implementation of CaptureSink. It
 // records every call so the test can assert the source was set to
@@ -151,6 +162,37 @@ func TestServiceCreateDraftHappyPath(t *testing.T) {
 	}
 	if synth.lastReq.Format != models.ComposeFormatOutline {
 		t.Fatalf("format = %q", synth.lastReq.Format)
+	}
+}
+
+func TestServiceCreateDraftAndSaveUsesDocumentProfile(t *testing.T) {
+	svc, sink, _ := newTestService(t)
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	svc.SetDocumentProfiles(registry, composeDocumentGenerator{}, 1)
+	writeThought(t, svc.workspace.RootPath, "20260609-0001-profile", "Seed", "source body")
+	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
+		Sources:        []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-profile"}},
+		Goal:           "Produce a design",
+		ProfileID:      models.DocumentProfileBuiltinDesignDoc,
+		ProfileVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if draft.DocumentProfile == nil || draft.DocumentProfile.ProfileID != models.DocumentProfileBuiltinDesignDoc {
+		t.Fatalf("document profile = %+v", draft.DocumentProfile)
+	}
+	if draft.Validation == nil || draft.Validation.Status != models.ArchiveValidationValid || draft.DocumentDraft == nil {
+		t.Fatalf("structured draft validation = %+v draft=%+v", draft.Validation, draft.DocumentDraft)
+	}
+	if _, err := svc.SaveDraft(context.Background(), draft.ID, models.ComposeSaveRequest{}); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if len(sink.calls) != 1 || sink.calls[0].DocumentProfile == nil || sink.calls[0].DocumentProfile.ContentHash != draft.DocumentProfile.ContentHash {
+		t.Fatalf("capture command profile = %+v", sink.calls)
 	}
 }
 

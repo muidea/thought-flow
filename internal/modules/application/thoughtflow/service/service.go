@@ -28,6 +28,7 @@ import (
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
@@ -55,6 +56,11 @@ type Service struct {
 	config           appconfig.Config
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
+	documentProfiles *documentprofile.Registry
+}
+
+func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry) {
+	s.documentProfiles = registry
 }
 
 type gitQueryReader interface {
@@ -88,6 +94,15 @@ type eventPublisher interface {
 
 type backgroundTaskAcceptor interface {
 	AsyncFunction(function func()) error
+}
+
+func decodeJSONBody(req *http.Request, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(req.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	return nil
 }
 
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scratchpadService *capturebiz.ScratchpadService, refinerService *refinerbiz.Service, composeService *composebiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, scratchpadStore scratchpadStore, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
@@ -148,6 +163,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/context", engine.POST, s.handleSessionContext)
 	s.registry.AddHandler("/api/capture/sessions/:id/intent", engine.POST, s.handleSessionIntent)
 	s.registry.AddHandler("/api/capture/sessions/:id/strategy", engine.POST, s.handleSessionStrategy)
+	s.registry.AddHandler("/api/capture/sessions/:id/profile", engine.POST, s.handleSessionProfile)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive", engine.POST, s.handleSessionArchive)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
@@ -158,6 +174,11 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/compose/drafts", engine.POST, s.handleCreateComposeDraft)
 	s.registry.AddHandler("/api/compose/drafts/:id", engine.GET, s.handleGetComposeDraft)
 	s.registry.AddHandler("/api/compose/drafts/:id/save", engine.POST, s.handleSaveComposeDraft)
+	s.registry.AddHandler("/api/document-profiles", engine.GET, s.handleListDocumentProfiles)
+	s.registry.AddHandler("/api/document-profiles/validate", engine.POST, s.handleValidateDocumentProfile)
+	s.registry.AddHandler("/api/document-profiles/reload", engine.POST, s.handleReloadDocumentProfiles)
+	s.registry.AddHandler("/api/document-profiles/publish", engine.POST, s.handlePublishDocumentProfile)
+	s.registry.AddHandler("/api/document-profiles/:id", engine.GET, s.handleGetDocumentProfile)
 	s.registry.AddHandler("/api/topics", engine.GET, s.handleListTopics)
 	s.registry.AddHandler("/api/topics", engine.POST, s.handleCreateTopic)
 	s.registry.AddHandler("/api/topics/:id/refresh", engine.POST, s.handleRefreshTopic)
@@ -675,6 +696,95 @@ func (s *Service) handleSaveComposeDraft(ctx context.Context, res http.ResponseW
 		return
 	}
 	writeJSON(res, req, http.StatusAccepted, result)
+}
+
+func (s *Service) handleListDocumentProfiles(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.documentProfiles == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.profile.unavailable", "document profile registry is not ready")
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{
+		"profiles": s.documentProfiles.ListProfiles(),
+		"issues":   s.documentProfiles.Issues(),
+	})
+}
+
+func (s *Service) handleGetDocumentProfile(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.documentProfiles == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.profile.unavailable", "document profile registry is not ready")
+		return
+	}
+	id := strings.TrimSpace(pathID(req.URL.Path, "/api/document-profiles/"))
+	version, _ := strconv.Atoi(req.URL.Query().Get("version"))
+	var profile documentprofile.DocumentProfile
+	var err error
+	if version > 0 {
+		profile, err = s.documentProfiles.Resolve(models.DocumentProfileRef{ProfileID: id, Version: version})
+	} else {
+		profile, err = s.documentProfiles.ResolveLatest(id)
+	}
+	if err != nil {
+		writeError(res, req, http.StatusNotFound, "thoughtflow.profile.not_found", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, profile)
+}
+
+func (s *Service) handleValidateDocumentProfile(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.documentProfiles == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.profile.unavailable", "document profile registry is not ready")
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSONBody(req, &body); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.profile.invalid", err.Error())
+		return
+	}
+	result := s.documentProfiles.ValidateFormat([]byte(body.Content))
+	status := http.StatusOK
+	if !result.Valid {
+		status = http.StatusUnprocessableEntity
+	}
+	writeJSON(res, req, status, result)
+}
+
+func (s *Service) handleReloadDocumentProfiles(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.documentProfiles == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.profile.unavailable", "document profile registry is not ready")
+		return
+	}
+	writeJSON(res, req, http.StatusOK, s.documentProfiles.Reload())
+}
+
+func (s *Service) handlePublishDocumentProfile(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.documentProfiles == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.profile.unavailable", "document profile registry is not ready")
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSONBody(req, &body); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.profile.invalid", err.Error())
+		return
+	}
+	profile, err := s.documentProfiles.Publish([]byte(body.Content))
+	if err != nil {
+		status := http.StatusUnprocessableEntity
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		writeError(res, req, status, "thoughtflow.profile.invalid", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusCreated, profile)
 }
 
 func (s *Service) handleListTopics(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -1969,6 +2079,36 @@ func (s *Service) handleSessionStrategy(ctx context.Context, res http.ResponseWr
 	writeJSON(res, req, http.StatusOK, sp)
 }
 
+func (s *Service) handleSessionProfile(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	_ = ctx
+	if s.scratchpadSvc == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+		return
+	}
+	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
+	sessionID = strings.TrimSuffix(sessionID, "/profile")
+	var body struct {
+		ProfileID string `json:"profile_id"`
+		Version   int    `json:"version"`
+	}
+	if err := decodeJSONBody(req, &body); err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_json", err.Error())
+		return
+	}
+	sp, err := s.scratchpadSvc.SetDocumentProfile(sessionID, body.ProfileID, body.Version)
+	if err != nil {
+		status := http.StatusBadRequest
+		code := "thoughtflow.profile.not_found"
+		if errors.Is(err, documentprofile.ErrProfileConflict) {
+			status = http.StatusConflict
+			code = "thoughtflow.profile.conflict"
+		}
+		writeError(res, req, status, code, err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, sp)
+}
+
 // handleArchivePreview renders the read-only preview the UI shows
 // before commit lands (PRD §3.1). The preview is persisted back
 // onto the scratchpad so a re-entry into the capture page surfaces
@@ -2029,7 +2169,7 @@ func (s *Service) handleArchivePreview(ctx context.Context, res http.ResponseWri
 		}
 		current = &snapshot
 	}
-	preview, err := s.scratchpadSvc.BuildArchivePreview(sp, current)
+	preview, err := s.scratchpadSvc.PrepareArchive(ctx, sp, current)
 	if err != nil {
 		if errors.Is(err, capturebiz.ErrDiffRequired) {
 			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", err.Error())
@@ -2129,6 +2269,18 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 		}
 		if errors.Is(err, capturebiz.ErrLocked) {
 			writeError(res, req, http.StatusConflict, "thoughtflow.capture.locked", err.Error())
+			return
+		}
+		if errors.Is(err, capturebiz.ErrArchivePreviewRequired) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.archive.preview_required", err.Error())
+			return
+		}
+		if errors.Is(err, capturebiz.ErrArchivePreviewStale) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.archive.preview_stale", err.Error())
+			return
+		}
+		if errors.Is(err, capturebiz.ErrArchiveFormatInvalid) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.archive.format_invalid", err.Error())
 			return
 		}
 		// Capture-side validation (empty content / invalid command)

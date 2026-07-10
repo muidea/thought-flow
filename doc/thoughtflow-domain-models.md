@@ -207,6 +207,14 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `suggested_topic_ids` | []string | 建议关联专题 |
 | `archive_readiness` | enum | `diverging`、`converging`、`ready` |
 | `next_questions` | []string | 建议追问或补充方向 |
+| `candidate_document_family` | string | 候选文档语义大类 |
+| `candidate_profile_id` | string | Registry 中的候选 Profile ID |
+| `candidate_profile_version` | int | 候选 Profile 版本 |
+| `profile_confidence` | int | `0..100` 匹配置信度 |
+| `profile_match_reason` | string | 匹配依据 |
+| `profile_explicit` | bool | 是否由用户显式选择 |
+| `document_parameters` | map | Profile 输入参数 |
+| `missing_profile_inputs` | []string | 仍缺失的关键输入，最多 3 项 |
 
 功能定义：
 
@@ -232,12 +240,17 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `source_links` | []string | 来源链接 |
 | `related_topics` | []string | 关联专题 |
 | `diff` | ThoughtDiff | `update_thought` 时必填 |
+| `document_profile` | DocumentProfileRef | 冻结的 family、ID、version 和 content hash |
+| `parameters` | map | 本次生成使用的 Profile 参数 |
+| `validation` | ArchiveValidation | `valid`/`invalid`、issues 和 repair 次数 |
+| `context_hash` | string | Preview 参与输入的稳定 hash |
 
 功能定义：
 
 1. 在对话流内以卡片形式展示归档内容。
 2. `update_thought` 必须展示 diff。
-3. 用户触发归档后，预览展示完成即落地为 Thought 或 patch；自然语言保存目标由 LLM 判断，`/save` 仅作为可选显式命令前缀。
+3. 非 note Profile 只有在 Preview 校验通过且 context/profile hash 未过期时才能落地为 Thought 或 patch。
+4. Commit 正文必须逐字使用 Preview body；自然语言保存目标由 LLM 判断，`/save` 仅作为可选显式命令前缀。
 
 ### 3.7 Topic
 
@@ -497,7 +510,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | --- | --- | --- |
 | `items` | []ComposeSource | 已选来源 |
 | `goal` | string | 整理目标 |
-| `default_format` | enum | `summary`、`outline`、`report` |
+| `default_profile` | DocumentProfileRef | Compose 默认文档 Profile |
 | `updated_at` | time | 最近更新时间 |
 
 `ComposeSource` 字段：
@@ -529,7 +542,11 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 | `id` | string | 草稿 ID |
 | `sources` | []ComposeSource | 输入来源 |
 | `goal` | string | 用户目标 |
-| `format` | enum | `summary`、`outline`、`report` |
+| `document_profile` | DocumentProfileRef | 冻结的生成 Profile |
+| `parameters` | map | Profile 输入参数 |
+| `document_draft` | DocumentDraft | 结构化标题、摘要、章节和引用 |
+| `validation` | ArchiveValidation | 确定性渲染校验结果 |
+| `format` | string | 旧草稿兼容字段，新建草稿不再以硬编码枚举驱动 |
 | `content` | string | AI 生成内容 |
 | `source_links` | []string | 原子笔记链接 |
 | `model` | string | 使用模型，未配置 AI 时为 `local-rule` |
@@ -542,7 +559,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 功能定义：
 
-1. 从整理篮来源生成摘要、大纲或报告。
+1. 从整理篮来源按 Registry 中的内置或自定义 Profile 生成严格文档。
 2. 配置 `llm.api_key` 时使用 OpenAI-compatible chat model 生成 Markdown 草稿；未配置时使用本地规则整理。
 3. 默认写入 `compose/drafts/{draft_id}.yaml`，作为独立草稿仓库。
 4. 用户保存后通过 capture 创建新的 Thought，`source` 标记为 `compose`，并保留来源链接。

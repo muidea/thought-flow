@@ -114,22 +114,23 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	thoughtID := models.NewThoughtID(now, original)
 	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	thought := models.Thought{
-		ID:            thoughtID,
-		Type:          cmd.Type,
-		Source:        source,
-		UserTitle:     strings.TrimSpace(cmd.Title),
-		URL:           strings.TrimSpace(cmd.URL),
-		Path:          relPath,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ContentHash:   contentHash,
-		UserTags:      normalizeList(cmd.Tags),
-		TopicIDs:      normalizeList(cmd.TopicHints),
-		Errors:        errorRefs,
-		CaptureStatus: captureStatus,
-		RefineStatus:  models.RefineStatusPending,
-		IndexStatus:   models.IndexStatusPending,
-		TopicStatus:   models.TopicStatusUnmatched,
+		ID:              thoughtID,
+		Type:            cmd.Type,
+		Source:          source,
+		UserTitle:       strings.TrimSpace(cmd.Title),
+		URL:             strings.TrimSpace(cmd.URL),
+		Path:            relPath,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		ContentHash:     contentHash,
+		UserTags:        normalizeList(cmd.Tags),
+		TopicIDs:        normalizeList(cmd.TopicHints),
+		Errors:          errorRefs,
+		CaptureStatus:   captureStatus,
+		RefineStatus:    models.RefineStatusPending,
+		IndexStatus:     models.IndexStatusPending,
+		TopicStatus:     models.TopicStatusUnmatched,
+		DocumentProfile: cloneDocumentProfileRef(cmd.DocumentProfile),
 	}
 	thought.DisplayTitle = displayTitle(thought, original)
 	content := models.ThoughtContent{
@@ -299,6 +300,9 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if request.TopicIDs != nil {
 		thought.TopicIDs = append([]string(nil), (*request.TopicIDs)...)
 	}
+	if request.DocumentProfile != nil {
+		thought.DocumentProfile = cloneDocumentProfileRef(request.DocumentProfile)
+	}
 	thought.UpdatedAt = now
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.ThoughtSnapshot{}, err
@@ -388,7 +392,18 @@ func patchKeys(request models.ThoughtPatchRequest) []string {
 	if request.TopicIDs != nil {
 		keys = append(keys, "topic_ids")
 	}
+	if request.DocumentProfile != nil {
+		keys = append(keys, "document_profile")
+	}
 	return keys
+}
+
+func cloneDocumentProfileRef(ref *models.DocumentProfileRef) *models.DocumentProfileRef {
+	if ref == nil {
+		return nil
+	}
+	copy := *ref
+	return &copy
 }
 
 func normalizeTags(tags []string) []string {

@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"thoughtflow/internal/pkg/models"
 )
 
 // Message is one entry in the scratchpad's chat log. We store the
@@ -64,20 +66,29 @@ type Draft struct {
 // "absent" — so the JSON contract has zero-value defaults the
 // service can rely on.
 type SessionContext struct {
-	Topic             string          `json:"topic"`
-	Goal              string          `json:"goal"`
-	ConfirmedFacts    []string        `json:"confirmed_facts"`
-	OpenQuestions     []string        `json:"open_questions"`
-	Conflicts         []string        `json:"conflicts"`
-	CandidateTitle    string          `json:"candidate_title"`
-	CandidateTags     []string        `json:"candidate_tags"`
-	CandidateSummary  string          `json:"candidate_summary"`
-	CandidateBody     string          `json:"candidate_body"`
-	SourceLinks       []string        `json:"source_links"`
-	RelatedThoughtIDs []string        `json:"related_thought_ids"`
-	SuggestedTopicIDs []string        `json:"suggested_topic_ids"`
-	ArchiveIntent     ArchiveIntent   `json:"archive_intent"`
-	ArchiveStrategy   ArchiveStrategy `json:"archive_strategy"`
+	Topic                   string            `json:"topic"`
+	Goal                    string            `json:"goal"`
+	ConfirmedFacts          []string          `json:"confirmed_facts"`
+	OpenQuestions           []string          `json:"open_questions"`
+	Conflicts               []string          `json:"conflicts"`
+	CandidateTitle          string            `json:"candidate_title"`
+	CandidateTags           []string          `json:"candidate_tags"`
+	CandidateSummary        string            `json:"candidate_summary"`
+	CandidateBody           string            `json:"candidate_body"`
+	SourceLinks             []string          `json:"source_links"`
+	RelatedThoughtIDs       []string          `json:"related_thought_ids"`
+	SuggestedTopicIDs       []string          `json:"suggested_topic_ids"`
+	ArchiveIntent           ArchiveIntent     `json:"archive_intent"`
+	ArchiveStrategy         ArchiveStrategy   `json:"archive_strategy"`
+	CandidateDocumentFamily string            `json:"candidate_document_family"`
+	CandidateProfileID      string            `json:"candidate_profile_id"`
+	CandidateProfileVersion int               `json:"candidate_profile_version"`
+	ProfileConfidence       int               `json:"profile_confidence"`
+	ProfileMatchReason      string            `json:"profile_match_reason"`
+	ProfileExplicit         bool              `json:"profile_explicit"`
+	DocumentParameters      map[string]string `json:"document_parameters"`
+	MissingProfileInputs    []string          `json:"missing_profile_inputs"`
+	ArchiveReadiness        string            `json:"archive_readiness"`
 }
 
 // ArchiveIntent captures WHO is driving the archive — the user via a
@@ -122,15 +133,19 @@ type ThoughtDiff struct {
 // confirmed is what the commit path enforces — there is no "I
 // thought I was archiving X but got Y" drift.
 type ArchivePreview struct {
-	ThoughtID     string          `json:"thought_id,omitempty"`
-	Title         string          `json:"title"`
-	Body          string          `json:"body"`
-	Tags          []string        `json:"tags"`
-	SourceLinks   []string        `json:"source_links"`
-	RelatedTopics []string        `json:"related_topics"`
-	Strategy      ArchiveStrategy `json:"strategy"`
-	Diff          *ThoughtDiff    `json:"diff,omitempty"`
-	GeneratedAt   time.Time       `json:"generated_at"`
+	ThoughtID       string                    `json:"thought_id,omitempty"`
+	Title           string                    `json:"title"`
+	Body            string                    `json:"body"`
+	Tags            []string                  `json:"tags"`
+	SourceLinks     []string                  `json:"source_links"`
+	RelatedTopics   []string                  `json:"related_topics"`
+	Strategy        ArchiveStrategy           `json:"strategy"`
+	Diff            *ThoughtDiff              `json:"diff,omitempty"`
+	GeneratedAt     time.Time                 `json:"generated_at"`
+	DocumentProfile models.DocumentProfileRef `json:"document_profile"`
+	Parameters      map[string]string         `json:"parameters,omitempty"`
+	Validation      models.ArchiveValidation  `json:"validation"`
+	ContextHash     string                    `json:"context_hash"`
 }
 
 // Scratchpad is the wire-stable JSON shape persisted to disk. The
@@ -187,7 +202,9 @@ type Summary struct {
 //	    UpdatedAt)
 //	2 — adds SessionContext, ArchiveIntent, ArchiveStrategy,
 //	    ArchivePreview, SourceThoughtID (PRD §3.1 / §3.1.1).
-const formatVersion = 2
+//
+// v3 adds document profile matching and validated archive preview fields.
+const formatVersion = 3
 
 // persistedFile is the disk layout. We wrap Scratchpad with a
 // version field so future migrations have a hook.
@@ -534,7 +551,7 @@ func (s *Store) writeFile(sp Scratchpad) error {
 // loadFromDisk walks the rootPath at startup and re-hydrates the
 // in-memory map. Corrupt files are logged and skipped; unknown
 // future-version files are skipped without crashing; v1 files are
-// transparently migrated to the v2 shape so the in-memory map only
+// transparently migrated to the current shape so the in-memory map only
 // ever holds current-version scratchpads. Migration failures are
 // logged and the file is dropped — better to lose one stale draft
 // than to wedge the whole store.
@@ -564,22 +581,22 @@ func (s *Store) loadFromDisk() error {
 			log.Printf("scratchpad: parse %s: %v", entry.Name(), err)
 			continue
 		}
-		// v1 → v2 migration. The JSON shape is a strict superset
-		// (v1 fields all still exist on v2 with the same JSON
+		// v1/v2 → current migration. The JSON shape is a strict superset
+		// (older fields all still exist with the same JSON
 		// tags), so deserialising into a v2 struct already yields
 		// zero-valued SessionContext / ArchiveIntent / etc. We do
 		// not need a separate v1 mirror struct; we just stamp the
 		// current version and write the file back so subsequent
 		// reads see v2 only.
-		if pf.Version == 1 {
+		if pf.Version == 1 || pf.Version == 2 {
 			pf.Version = formatVersion
 			if migrated, mErr := json.MarshalIndent(pf, "", "  "); mErr == nil {
 				if wErr := os.WriteFile(path, migrated, 0o644); wErr != nil {
-					log.Printf("scratchpad: persist v1→v2 %s: %v", entry.Name(), wErr)
+					log.Printf("scratchpad: persist legacy migration %s: %v", entry.Name(), wErr)
 					// Migration write failed; still load from memory.
 				}
 			} else {
-				log.Printf("scratchpad: marshal v1→v2 %s: %v", entry.Name(), mErr)
+				log.Printf("scratchpad: marshal legacy migration %s: %v", entry.Name(), mErr)
 			}
 		} else if pf.Version != formatVersion {
 			log.Printf("scratchpad: skip %s: unknown version %d", entry.Name(), pf.Version)
@@ -672,6 +689,15 @@ func cloneScratchpad(sp Scratchpad) Scratchpad {
 		copy(ids, sp.SessionContext.SuggestedTopicIDs)
 		out.SessionContext.SuggestedTopicIDs = ids
 	}
+	if sp.SessionContext.DocumentParameters != nil {
+		out.SessionContext.DocumentParameters = make(map[string]string, len(sp.SessionContext.DocumentParameters))
+		for key, value := range sp.SessionContext.DocumentParameters {
+			out.SessionContext.DocumentParameters[key] = value
+		}
+	}
+	if sp.SessionContext.MissingProfileInputs != nil {
+		out.SessionContext.MissingProfileInputs = append([]string(nil), sp.SessionContext.MissingProfileInputs...)
+	}
 	if sp.ArchivePreview != nil {
 		preview := *sp.ArchivePreview
 		if sp.ArchivePreview.Tags != nil {
@@ -697,6 +723,15 @@ func cloneScratchpad(sp Scratchpad) Scratchpad {
 				diff.ChangedFields = fields
 			}
 			preview.Diff = &diff
+		}
+		if sp.ArchivePreview.Parameters != nil {
+			preview.Parameters = make(map[string]string, len(sp.ArchivePreview.Parameters))
+			for key, value := range sp.ArchivePreview.Parameters {
+				preview.Parameters[key] = value
+			}
+		}
+		if sp.ArchivePreview.Validation.Issues != nil {
+			preview.Validation.Issues = append([]models.ValidationIssue(nil), sp.ArchivePreview.Validation.Issues...)
 		}
 		out.ArchivePreview = &preview
 	}

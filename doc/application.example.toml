@@ -30,6 +30,17 @@ state_dir = "./thoughtflow-runtime"
 # - "allow"：直接允许重复内容。
 duplicate_policy = "warn"
 
+[document_profiles]
+# Capture 和 Compose 是否启用 DocumentProfile 严格生成链。
+enabled = true
+# 自定义 DocumentFormat 根目录；为空时使用 <workspace>/document-formats。
+custom_dir = ""
+default_profile_id = "builtin.note"
+max_match_candidates = 10
+max_format_bytes = 131072
+max_sections = 32
+max_repair_attempts = 2
+
 [expander]
 # 扩展流水线总超时时间，单位秒。
 # 0 表示使用内置默认值；远程模型响应较慢时可适当调大。
@@ -55,7 +66,8 @@ chat_model = "gpt-4o-mini"
 timeout_seconds = 30
 
 [llm.prompts]
-# 可选：采集会话上下文的系统提示词文件。
+# 可选：采集会话上下文匹配和抽取协议的系统提示词文件。
+# 扩充文档类型请发布 DocumentFormat，不要通过替换 system prompt 实现。
 # 相对路径按 <config-dir> 解析，便于把业务提示词和 application.toml 放在一起管理。
 capture_context_system_path = ""
 

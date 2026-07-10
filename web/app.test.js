@@ -427,6 +427,9 @@ function loadAppFunctionsWith(opts = {}) {
       saveCaptureSessions,
       rememberCaptureSession,
       renderArchivePreviewCard,
+      renderArchivePreviewBody,
+      renderCaptureContextRows,
+      renderDocumentProfileOptions,
       renderCaptureBubbleBody,
       handleCaptureComposerKeydown,
       handleTabClick,
@@ -2497,4 +2500,36 @@ test("formatPatchFeedback picks the right message per PATCH shape", () => {
   assert.match(app.formatPatchFeedback({ topic_ids: ["tt1"] }, snap), /capture\.feedback\.moved_to_topic/);
   // Unknown patch shapes still produce a sensible saved-path message.
   assert.match(app.formatPatchFeedback({}, snap), /capture\.session\.saved_path/);
+});
+
+test("document profile UI renders dynamic choices and strict validation issues", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  app._state.documentProfiles = [
+    { name: "Note", description: "Flexible note", ref: { profile_id: "builtin.note", version: 1, family: "note" } },
+    { name: "Design Doc", description: "Technical design", ref: { profile_id: "builtin.design-doc", version: 1, family: "design" } },
+  ];
+  const options = app.renderDocumentProfileOptions("builtin.design-doc", 1);
+  assert.match(options, /builtin\.design-doc/);
+  assert.match(options, /selected/);
+
+  const context = app.renderCaptureContextRows({
+    candidate_profile_id: "builtin.design-doc",
+    candidate_profile_version: 1,
+    candidate_document_family: "design",
+    profile_confidence: 96,
+    profile_match_reason: "Explicit design request",
+  }, { includeBody: true }).join("");
+  assert.match(context, /data-capture-profile-select/);
+  assert.match(context, /96%/);
+  assert.match(context, /Explicit design request/);
+
+  const preview = app.renderArchivePreviewBody({
+    title: "Design",
+    body: "# Design",
+    document_profile: { profile_id: "builtin.design-doc", version: 1 },
+    validation: { status: "invalid", issues: [{ code: "missing", message: "Missing rollback section" }] },
+  });
+  assert.match(preview, /builtin\.design-doc/);
+  assert.match(preview, /document_profile\.validation_invalid/);
+  assert.match(preview, /Missing rollback section/);
 });

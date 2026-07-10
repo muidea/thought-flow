@@ -11,9 +11,23 @@ import (
 	mcevent "github.com/muidea/magicCommon/event"
 
 	"thoughtflow/internal/pkg/ai"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/scratchpad"
 )
+
+type stubDocumentGenerator struct {
+	calls int
+}
+
+func (s *stubDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+	s.calls++
+	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
+	for _, section := range req.Profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: strings.Repeat("完整的设计内容与验证依据。", 24)}
+	}
+	return models.DocumentDraft{Title: "订单幂等设计", Summary: "设计摘要", Sections: sections}, nil
+}
 
 // memoryScratchpad is the in-memory test double for the scratchpad
 // store. It mirrors the production store's contract (Get returns
@@ -1668,6 +1682,114 @@ type stubCapture struct {
 	lastApplyRaw       []byte
 	lastSessionID      string
 	lastApplySessionID string
+}
+
+func TestScratchpadServiceTypedArchiveRequiresValidFreshPreviewAndCommitsExactBody(t *testing.T) {
+	store := newMemoryScratchpad()
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	generator := &stubDocumentGenerator{}
+	captureStub := &stubCapture{captureResult: models.CaptureResult{Thought: models.Thought{ID: "thought-design", Type: models.ThoughtTypeText}}}
+	svc := NewScratchpadService(store,
+		WithCapture(captureStub),
+		WithDocumentProfiles(registry, generator, 10, 1),
+	)
+	sp := scratchpad.Scratchpad{
+		SessionID:       "typed",
+		Content:         "请整理为设计文档",
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:          "订单幂等设计",
+			CandidateSummary:        "需要明确目标、方案、测试和回滚。",
+			CandidateBody:           "订单写入需要避免重复请求造成重复扣款。",
+			CandidateDocumentFamily: models.DocumentFamilyDesign,
+			CandidateProfileID:      models.DocumentProfileBuiltinDesignDoc,
+			CandidateProfileVersion: 1,
+			ProfileConfidence:       100,
+			ProfileExplicit:         true,
+		},
+	}
+	if _, err := store.Save(sp); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := svc.Commit(context.Background(), sp.SessionID); !errors.Is(err, ErrArchivePreviewRequired) {
+		t.Fatalf("Commit without preview error = %v", err)
+	}
+
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid || preview.ContextHash == "" {
+		t.Fatalf("preview validation = %+v", preview.Validation)
+	}
+	sp.ArchivePreview = &preview
+	if _, err := store.Save(sp); err != nil {
+		t.Fatalf("Save preview: %v", err)
+	}
+	if _, err := svc.Commit(context.Background(), sp.SessionID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if captureStub.captureCmd.Content != preview.Body {
+		t.Fatalf("committed content differs from preview\ncommit: %q\npreview: %q", captureStub.captureCmd.Content, preview.Body)
+	}
+	if captureStub.captureCmd.DocumentProfile == nil || captureStub.captureCmd.DocumentProfile.ContentHash != preview.DocumentProfile.ContentHash {
+		t.Fatalf("committed profile = %+v, preview = %+v", captureStub.captureCmd.DocumentProfile, preview.DocumentProfile)
+	}
+
+	stale := scratchpad.Scratchpad{
+		SessionID:       "stale",
+		Content:         sp.Content,
+		ArchiveStrategy: sp.ArchiveStrategy,
+		SessionContext:  sp.SessionContext,
+		ArchivePreview:  &preview,
+	}
+	stale.SessionContext.CandidateBody += " changed"
+	if _, err := store.Save(stale); err != nil {
+		t.Fatalf("Save stale: %v", err)
+	}
+	if _, err := svc.Commit(context.Background(), stale.SessionID); !errors.Is(err, ErrArchivePreviewStale) {
+		t.Fatalf("Commit stale preview error = %v", err)
+	}
+
+	invalid := stale
+	invalid.SessionID = "invalid"
+	invalid.SessionContext = sp.SessionContext
+	invalid.ArchivePreview = &preview
+	invalid.ArchivePreview.Validation.Status = models.ArchiveValidationInvalid
+	if _, err := store.Save(invalid); err != nil {
+		t.Fatalf("Save invalid: %v", err)
+	}
+	if _, err := svc.Commit(context.Background(), invalid.SessionID); !errors.Is(err, ErrArchiveFormatInvalid) {
+		t.Fatalf("Commit invalid preview error = %v", err)
+	}
+}
+
+func TestBuildCaptureCommandKeepsURLPhysicalTypeForNoteProfile(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	sp := scratchpad.Scratchpad{
+		Content: "https://example.com/article",
+		SessionContext: scratchpad.SessionContext{
+			CandidateBody: "https://example.com/article",
+		},
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Body: "https://example.com/article",
+			DocumentProfile: models.DocumentProfileRef{
+				Family:    models.DocumentFamilyNote,
+				ProfileID: models.DocumentProfileBuiltinNote,
+				Version:   1,
+			},
+		},
+	}
+	cmd, err := svc.BuildCaptureCommand(sp)
+	if err != nil {
+		t.Fatalf("BuildCaptureCommand: %v", err)
+	}
+	if cmd.Type != models.ThoughtTypeURL {
+		t.Fatalf("type = %q, want url", cmd.Type)
+	}
 }
 
 func (s *stubCapture) Capture(_ context.Context, cmd models.CaptureCommand) (models.CaptureResult, error) {

@@ -10,6 +10,7 @@ import (
 	"github.com/muidea/magicCommon/task"
 
 	"thoughtflow/internal/modules/capture/biz"
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/thoughtlock"
@@ -53,6 +54,10 @@ func NewScratchpadService(store biz.ScratchpadStore, options ...biz.ScratchpadSe
 // WithCapture re-exports biz.WithCapture for the application layer.
 func WithCapture(c biz.CaptureCommitter) biz.ScratchpadServiceOption {
 	return biz.WithCapture(c)
+}
+
+func WithDocumentProfiles(registry biz.ProfileRegistry, generator ai.DocumentGenerationProvider, maxMatchCandidates, maxRepairAttempts int) biz.ScratchpadServiceOption {
+	return biz.WithDocumentProfiles(registry, generator, maxMatchCandidates, maxRepairAttempts)
 }
 
 func setCurrent(service *biz.Service) {

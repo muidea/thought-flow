@@ -16,6 +16,7 @@ import (
 
 	mcevent "github.com/muidea/magicCommon/event"
 
+	"thoughtflow/assets/documentformats"
 	capturebiz "thoughtflow/internal/modules/capture/biz"
 	composebiz "thoughtflow/internal/modules/compose/biz"
 	refinerbiz "thoughtflow/internal/modules/refiner/biz"
@@ -24,6 +25,7 @@ import (
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -35,6 +37,47 @@ import (
 	"thoughtflow/internal/pkg/topicstore"
 	webassets "thoughtflow/web"
 )
+
+func TestDocumentProfileHandlersListValidatePublishReloadAndGet(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	service := &Service{documentProfiles: registry}
+	ctx := context.Background()
+
+	listRes := httptest.NewRecorder()
+	service.handleListDocumentProfiles(ctx, listRes, httptest.NewRequest(http.MethodGet, "/api/document-profiles", nil))
+	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), models.DocumentProfileBuiltinDesignDoc) {
+		t.Fatalf("list status=%d body=%s", listRes.Code, listRes.Body.String())
+	}
+
+	invalidRes := httptest.NewRecorder()
+	service.handleValidateDocumentProfile(ctx, invalidRes, httptest.NewRequest(http.MethodPost, "/api/document-profiles/validate", strings.NewReader(`{"content":"invalid"}`)))
+	if invalidRes.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("validate invalid status=%d body=%s", invalidRes.Code, invalidRes.Body.String())
+	}
+
+	raw := strings.Replace(documentformats.NoteV1, "builtin.note", "custom.api-note", 1)
+	publishBody, _ := json.Marshal(map[string]string{"content": raw})
+	publishRes := httptest.NewRecorder()
+	service.handlePublishDocumentProfile(ctx, publishRes, httptest.NewRequest(http.MethodPost, "/api/document-profiles/publish", strings.NewReader(string(publishBody))))
+	if publishRes.Code != http.StatusCreated {
+		t.Fatalf("publish status=%d body=%s", publishRes.Code, publishRes.Body.String())
+	}
+
+	getRes := httptest.NewRecorder()
+	service.handleGetDocumentProfile(ctx, getRes, httptest.NewRequest(http.MethodGet, "/api/document-profiles/custom.api-note?version=1", nil))
+	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), "custom.api-note") {
+		t.Fatalf("get status=%d body=%s", getRes.Code, getRes.Body.String())
+	}
+
+	reloadRes := httptest.NewRecorder()
+	service.handleReloadDocumentProfiles(ctx, reloadRes, httptest.NewRequest(http.MethodPost, "/api/document-profiles/reload", nil))
+	if reloadRes.Code != http.StatusOK || !strings.Contains(reloadRes.Body.String(), "profile_count") {
+		t.Fatalf("reload status=%d body=%s", reloadRes.Code, reloadRes.Body.String())
+	}
+}
 
 func TestHandleWebServesEmbeddedIndex(t *testing.T) {
 	service := &Service{}
