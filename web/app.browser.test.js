@@ -499,6 +499,17 @@ test("browser smoke matrix declares cross-browser targets", () => {
   assert.deepEqual(browserTargets.map((target) => target.name), ["chrome", "firefox", "safari"]);
 });
 
+test("browser fixture serves the document profile catalog used during boot and refresh", async (t) => {
+  const server = await startFixtureServer();
+  t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/document-profiles`);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.data.issues, []);
+  assert.ok(payload.data.profiles.some((profile) => profile.ref?.profile_id === "builtin.note"));
+  assert.ok(payload.data.profiles.some((profile) => profile.ref?.profile_id === "builtin.design-doc"));
+});
+
 function hashNavigationScript(hash) {
   return new Function(`
     const nextHash = ${JSON.stringify(hash)};
@@ -1645,6 +1656,26 @@ function startFixtureServer(options = {}) {
           return json(res, api(composeSourcesState));
         }
         break;
+      case "/api/document-profiles":
+        return json(res, api({
+          issues: [],
+          profiles: [
+            {
+              ref: { family: "note", profile_id: "builtin.note", version: 1 },
+              name: "Note",
+              description: "Flexible note",
+              enabled: true,
+              auto_match: { enabled: true, priority: 0 },
+            },
+            {
+              ref: { family: "design", profile_id: "builtin.design-doc", version: 1 },
+              name: "Design document",
+              description: "Structured design document",
+              enabled: true,
+              auto_match: { enabled: true, priority: 20 },
+            },
+          ],
+        }));
       case "/api/thoughts":
         if (req.method === "GET") {
           return json(res, api([
