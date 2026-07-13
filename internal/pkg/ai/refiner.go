@@ -859,6 +859,14 @@ func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context,
 	if len(resp.Choices) == 0 {
 		return "", errors.New("chat completion returned no choices")
 	}
+	if strings.EqualFold(strings.TrimSpace(resp.Choices[0].FinishReason), "length") {
+		return "", ProviderError{
+			Code:       "thoughtflow.ai.output_truncated",
+			StatusCode: http.StatusBadGateway,
+			Message:    "chat completion stopped because the output token limit was reached",
+			Retryable:  true,
+		}
+	}
 	return resp.Choices[0].Message.Content, nil
 }
 

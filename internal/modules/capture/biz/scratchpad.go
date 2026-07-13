@@ -672,7 +672,42 @@ func hasSessionContext(ctx scratchpad.SessionContext) bool {
 }
 
 func sessionContextReplyText(ctx scratchpad.SessionContext) string {
-	return strings.TrimSpace(ctx.CandidateSummary)
+	summary := strings.TrimSpace(ctx.CandidateSummary)
+	body := strings.TrimSpace(ctx.CandidateBody)
+	if summary == "" {
+		return body
+	}
+	if body == "" {
+		return summary
+	}
+	summaryKey := compactText(summary)
+	bodyKey := compactText(body)
+	if summaryKey == bodyKey || strings.Contains(summaryKey, bodyKey) {
+		return summary
+	}
+	if strings.Contains(bodyKey, summaryKey) {
+		return body
+	}
+	if captureReplyNeedsBody(summary, body) {
+		return summary + "\n\n" + body
+	}
+	return summary
+}
+
+func captureReplyNeedsBody(summary, body string) bool {
+	for _, marker := range []string{"下面是", "如下", "具体如下", "更新后的", "结构化工作笔记", "整理结果"} {
+		if strings.Contains(summary, marker) {
+			return true
+		}
+	}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") ||
+			strings.HasPrefix(line, "**") || strings.HasPrefix(line, "1. ") {
+			return true
+		}
+	}
+	return false
 }
 
 func appendContextReplyMessage(messages []scratchpad.Message, reply string, at time.Time) []scratchpad.Message {

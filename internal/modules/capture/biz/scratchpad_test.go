@@ -1923,6 +1923,27 @@ func TestAppendContextReplyMessageDedupesExistingAIReply(t *testing.T) {
 	}
 }
 
+func TestSessionContextReplyTextIncludesStructuredContinuation(t *testing.T) {
+	ctx := scratchpad.SessionContext{
+		CandidateSummary: "下面是更新后的结构化工作笔记，候选实体、关系和不变量保持稳定。",
+		CandidateBody:    "## 候选实体\n\n- Credential\n\n## 一致性约束\n\n- 同一类型只能有一条有效凭证。",
+	}
+	reply := sessionContextReplyText(ctx)
+	if !strings.Contains(reply, ctx.CandidateSummary) || !strings.Contains(reply, "## 候选实体") || !strings.Contains(reply, "## 一致性约束") {
+		t.Fatalf("sessionContextReplyText omitted structured continuation: %q", reply)
+	}
+}
+
+func TestSessionContextReplyTextAvoidsDuplicateBody(t *testing.T) {
+	ctx := scratchpad.SessionContext{
+		CandidateSummary: "## 当前结论\n\n完整内容",
+		CandidateBody:    "## 当前结论\n\n完整内容",
+	}
+	if reply := sessionContextReplyText(ctx); reply != ctx.CandidateSummary {
+		t.Fatalf("sessionContextReplyText duplicated body: %q", reply)
+	}
+}
+
 func TestScratchpadServiceCommitRepeatAppendsToExistingThought(t *testing.T) {
 	store := newMemoryScratchpad()
 	// Pre-stage: scratchpad already committed to thought-1.

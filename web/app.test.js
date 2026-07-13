@@ -2323,6 +2323,26 @@ test("capture context text supplements thin summary with richer candidate body",
   assert.match(html, /JSONL、CSV/);
 });
 
+test("persisted complete context reply suppresses duplicate synthetic bubble", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  const ctx = {
+    candidate_summary: "下面是更新后的结构化工作笔记。",
+    candidate_body: "## 候选实体\n\n- Credential\n\n## 一致性约束\n\n- 同一类型只能有一条有效凭证。",
+  };
+  app._state.capture.sessionId = "s1";
+  app._state.capture.activeScratchpad = { session_id: "s1", session_context: ctx };
+  app._state.capture.messages = [
+    { id: "u1", role: "user", text: "增加一致性约束" },
+    { id: "a1", role: "ai", text: `${ctx.candidate_summary}\n\n${ctx.candidate_body}` },
+  ];
+
+  const message = app.upsertCaptureContextMessage();
+
+  assert.equal(message, null);
+  assert.equal(app._state.capture.messages.length, 2);
+  assert.match(app.renderCaptureBubbleBody(app._state.capture.messages[1]), /一致性约束/);
+});
+
 test("capture context text strips raw input embedded in synthesized sections", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";

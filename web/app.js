@@ -2129,7 +2129,7 @@ function hasCaptureSessionContext(ctx) {
 }
 
 function hasPersistedCaptureContextReply(ctx) {
-  const reply = stringsTrim(ctx && ctx.candidate_summary);
+  const reply = stringsTrim(captureContextPlainText({ sessionContext: ctx || {} }));
   if (!reply) return false;
   const replyKey = normalizePlainTextForCompare(reply);
   if (!replyKey) return false;

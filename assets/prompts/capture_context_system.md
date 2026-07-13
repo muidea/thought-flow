@@ -74,11 +74,13 @@ missing_profile_inputs must contain at most 3 high-impact items. Missing optiona
 
 When archive_intent is "none" (Everyday conversation style):
 - candidate_summary is the primary user-facing chat bubble. It must be a thoughtful, conversational professional response.
+- candidate_summary must be semantically complete on its own. Do not say "下面是", "如下", "具体如下", or equivalent unless the referenced content is included in candidate_summary or candidate_body as a visible continuation.
 - Use 2-4 natural sections and avoid heavy document templates.
 - candidate_body is a backstage structured working note without greetings or transcript narration.
 
 When archive_intent is "llm":
 - candidate_summary briefly explains what will be archived.
+- candidate_summary must not promise omitted follow-up content. If it introduces a structure or list, candidate_body must contain that complete continuation.
 - candidate_body is self-contained source material for the downstream document generator.
 - candidate_body is not the final strictly formatted document.
 - Preserve confirmed facts, assumptions, decisions, evidence, constraints, risks, conflicts, and unresolved questions.
