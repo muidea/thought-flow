@@ -38,6 +38,45 @@ func TestLocalProviderRefineIncludesEmbedding(t *testing.T) {
 	}
 }
 
+func TestCompleteDocumentDraftFillsBlankProfileSections(t *testing.T) {
+	req := DocumentGenerationRequest{
+		Profile: documentprofile.DocumentProfile{
+			Name: "Design document",
+			Sections: []documentprofile.SectionSpec{
+				{Key: "background", Required: true},
+				{Key: "goals", Required: true},
+				{Key: "proposal", Required: true},
+			},
+		},
+		Context: DocumentSourceContext{
+			Title:   "Credential management design",
+			Summary: "Manage static API credentials shared by internal services.",
+			Body:    "The design covers DingTalk, WeCom, and Feishu static API credentials. Runtime tokens, callback secrets, versioning, and multi-tenancy are outside the current scope.",
+			Facts:   []string{"Multiple services may share one credential.", "One platform may have multiple apps."},
+		},
+	}
+	draft := models.DocumentDraft{
+		Sections: map[string]models.DocumentSection{
+			"background": {Content: ""},
+			"proposal":   {Content: "Model content must be preserved."},
+		},
+	}
+
+	completed := completeDocumentDraft(req, draft)
+	if completed.Title != req.Context.Title {
+		t.Fatalf("title = %q, want %q", completed.Title, req.Context.Title)
+	}
+	if strings.TrimSpace(completed.Sections["background"].Content) == "" {
+		t.Fatal("background fallback is empty")
+	}
+	if strings.TrimSpace(completed.Sections["goals"].Content) == "" {
+		t.Fatal("goals fallback is empty")
+	}
+	if completed.Sections["proposal"].Content != "Model content must be preserved." {
+		t.Fatalf("proposal was overwritten: %q", completed.Sections["proposal"].Content)
+	}
+}
+
 func TestOpenAICompatibleProviderRefineAndEmbed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("Authorization") != "Bearer test-key" {

@@ -1034,10 +1034,33 @@ func (p *OpenAICompatibleProvider) GenerateDocument(ctx context.Context, req Doc
 	if err := unmarshalFirstJSONObject(content, &draft); err != nil {
 		return models.DocumentDraft{}, fmt.Errorf("parse document draft json: %w", err)
 	}
-	if strings.TrimSpace(draft.Title) == "" || len(draft.Sections) == 0 {
-		return models.DocumentDraft{}, errors.New("document draft is incomplete")
-	}
+	draft = completeDocumentDraft(req, draft)
 	return draft, nil
+}
+
+// completeDocumentDraft keeps a partially valid model response useful. Some
+// OpenAI-compatible providers return every requested section key but leave the
+// content empty, even on repair attempts. The profile renderer correctly
+// rejects that shape, but retrying the same provider response cannot make the
+// archive committable. Fill only missing or blank fields with the same
+// deterministic, source-bounded rules used by the local provider; model-written
+// content is always preserved.
+func completeDocumentDraft(req DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {
+	base := firstNonEmpty(req.Context.Body, req.Context.Summary, strings.Join(req.Context.Facts, "\n"))
+	draft.Title = firstNonEmpty(draft.Title, req.Context.Title, req.Profile.Name)
+	draft.Summary = firstNonEmpty(draft.Summary, req.Context.Summary, firstLine(base))
+	if draft.Sections == nil {
+		draft.Sections = map[string]models.DocumentSection{}
+	}
+	for _, spec := range req.Profile.Sections {
+		section := draft.Sections[spec.Key]
+		if strings.TrimSpace(section.Content) != "" {
+			continue
+		}
+		section.Content = localDocumentSection(spec.Key, base, req)
+		draft.Sections[spec.Key] = section
+	}
+	return draft
 }
 
 func (p *OpenAICompatibleProvider) Embed(ctx context.Context, req EmbedRequest) (models.EmbeddingRecord, error) {
