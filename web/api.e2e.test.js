@@ -894,9 +894,15 @@ test("API e2e", async (t) => {
     });
     assert.equal(create.status, 202, `create delete fixture status=${create.status} body=${create.text}`);
     const thoughtID = envelope(create).data.thought.id;
-    const deleted = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "DELETE", {
-      headers: { "X-Session-Id": "e2e-delete" },
-    });
+    const deleteDeadline = Date.now() + 5000;
+    let deleted;
+    for (;;) {
+      deleted = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "DELETE", {
+        headers: { "X-Session-Id": "e2e-delete" },
+      });
+      if (deleted.status !== 409 || Date.now() > deleteDeadline) break;
+      await sleep(100);
+    }
     assert.equal(deleted.status, 200, `delete status=${deleted.status} body=${deleted.text}`);
     assert.equal(envelope(deleted).data.thought_id, thoughtID);
     const get = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "GET");

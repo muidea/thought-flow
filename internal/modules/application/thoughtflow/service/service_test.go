@@ -1676,6 +1676,59 @@ func TestHandlePatchThoughtSurfacesRefiningAsDistinctCode(t *testing.T) {
 	}
 }
 
+func TestHandleSessionArchiveSurfacesRefiningAsConflict(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "test",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	thoughtID := "20260609-160300-archive-refining"
+	now := time.Date(2026, 6, 9, 16, 3, 0, 0, time.UTC)
+	thought := models.Thought{
+		ID: thoughtID, Type: models.ThoughtTypeText, Source: models.ThoughtSourceManual,
+		Path: filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)), CreatedAt: now, UpdatedAt: now,
+		CaptureStatus: models.CaptureStatusCaptured, RefineStatus: models.RefineStatusRunning,
+		IndexStatus: models.IndexStatusPending, TopicStatus: models.TopicStatusUnmatched,
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{AINotes: "existing full note"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	locker := thoughtlock.New(time.Second)
+	if err := locker.Acquire(thoughtID, thoughtlock.RefinerSessionID); err != nil {
+		t.Fatalf("locker.Acquire(refiner) error = %v", err)
+	}
+	t.Cleanup(func() { locker.Release(thoughtID, thoughtlock.RefinerSessionID) })
+	captureService := capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil, capturebiz.WithLocker(locker))
+	spStore := scratchpad.New(filepath.Join(root, ".scratchpad"))
+	if _, err := spStore.Save(scratchpad.Scratchpad{
+		SessionID: "archive-session", SourceThoughtID: thoughtID,
+		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
+		SessionContext:  scratchpad.SessionContext{CandidateBody: "updated full note"},
+	}); err != nil {
+		t.Fatalf("Save scratchpad: %v", err)
+	}
+	service := &Service{
+		captureService: captureService,
+		scratchpadSvc:  capturebiz.NewScratchpadService(spStore, capturebiz.WithCapture(captureService)),
+		scratchpad:     spStore,
+		workspace:      ws,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/archive-session/archive", strings.NewReader(`{"strategy":"update_thought","thought_id":"`+thoughtID+`","confirmed":true}`))
+	res := httptest.NewRecorder()
+	service.handleSessionArchive(context.Background(), res, req)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "thoughtflow.capture.refining") {
+		t.Fatalf("body missing refining code: %s", res.Body.String())
+	}
+}
+
 func TestHandleThoughtSuggestUsesExtractedTitle(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

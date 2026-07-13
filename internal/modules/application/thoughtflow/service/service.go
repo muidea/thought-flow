@@ -2295,6 +2295,10 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 			writeError(res, req, http.StatusConflict, "thoughtflow.capture.already_committed", err.Error())
 			return
 		}
+		if errors.Is(err, capturebiz.ErrRefining) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.refining", err.Error())
+			return
+		}
 		if errors.Is(err, capturebiz.ErrLocked) {
 			writeError(res, req, http.StatusConflict, "thoughtflow.capture.locked", err.Error())
 			return
