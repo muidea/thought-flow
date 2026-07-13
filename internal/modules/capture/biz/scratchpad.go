@@ -1040,9 +1040,8 @@ func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, vers
 //     pure scratchpad projections. The Preview is straightforward.
 //   - "update_thought": the caller MUST supply currentThought (the
 //     existing on-disk snapshot for the target thought). The preview
-//     includes a ThoughtDiff covering title / tags / body / key
-//     points, and an empty / missing currentThought is rejected with
-//     ErrDiffRequired so the front end can show "diff not ready".
+//     is a complete final document containing both the archived body
+//     and the latest supplement; it intentionally exposes no diff.
 //   - "supplement": currentThought is the parent. The preview
 //     surfaces a backlink in RelatedTopics and the body opens with
 //     "[补充] 前置 thought-{parent.ID}" so the user can edit it down
@@ -1075,6 +1074,9 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 	}
 
 	body := archiveBody(sp)
+	if strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
+		body = fullUpdateArchiveBody(currentThought.Content, body)
+	}
 	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
 		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", currentThought.Thought.ID)
 		if !strings.HasPrefix(body, prefix) {
@@ -1106,22 +1108,6 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 		RelatedTopics: relatedTopics,
 		Strategy:      strategy,
 		GeneratedAt:   now,
-	}
-	if strategy == scratchpad.ArchiveStrategyUpdate {
-		before := ""
-		if currentThought != nil {
-			thought := currentThought.Thought
-			before = thoughtBodyForDiff(thought, currentThought.Content.AINotes)
-		}
-		diff, changed := buildThoughtDiff(before, body, tags, currentThought)
-		preview.Diff = &diff
-		if strategy == scratchpad.ArchiveStrategyUpdate && len(changed) == 0 {
-			// No actual change vs the existing thought — the user
-			// would be confirming an empty update. Surface that as
-			// a soft warning by leaving the diff in place but
-			// the caller can inspect ChangedFields.
-			_ = changed
-		}
 	}
 	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
 		preview.ThoughtID = currentThought.Thought.ID
@@ -1155,7 +1141,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 		Context: ai.DocumentSourceContext{
 			Title:       preview.Title,
 			Summary:     sp.SessionContext.CandidateSummary,
-			Body:        sp.SessionContext.CandidateBody,
+			Body:        preview.Body,
 			Facts:       append([]string(nil), sp.SessionContext.ConfirmedFacts...),
 			Questions:   append([]string(nil), sp.SessionContext.OpenQuestions...),
 			Conflicts:   append([]string(nil), sp.SessionContext.Conflicts...),
@@ -1181,14 +1167,6 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.Body = strings.TrimSpace(rendered.Content)
 	preview.Validation = rendered.Validation
 	preview.GeneratedAt = s.now()
-	if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
-		before := currentThought.Content.AINotes
-		diff, changed := buildThoughtDiff(before, preview.Body, preview.Tags, currentThought)
-		if len(changed) == 0 {
-			diff.ChangedFields = []string{}
-		}
-		preview.Diff = &diff
-	}
 	return preview, nil
 }
 
@@ -1284,65 +1262,31 @@ func (s *ScratchpadService) validateArchivePreview(ctx context.Context, sp scrat
 
 // thoughtBodyForDiff picks the string used as the "before" side
 // of a diff. UserTitle / ExtractedTitle / DisplayTitle are tried
-// in order (the same priority displayTitle() uses) so the diff
-// compares apples to apples; falling back to the AI Notes body when
-// the thought has no surfaced title.
-func thoughtBodyForDiff(thought models.Thought, aiNotes string) string {
-	if title := strings.TrimSpace(thought.UserTitle); title != "" {
-		return title
+// fullUpdateArchiveBody builds the source material for re-archiving an
+// existing thought. Reopen sessions may contain only the latest supplement in
+// CandidateBody after context enrichment, so persisting that projection alone
+// would replace the archived document with a delta. Keep the existing archived
+// body as the baseline and append genuinely new material for the document
+// generator to synthesize into one complete final document.
+func fullUpdateArchiveBody(current models.ThoughtContent, addition string) string {
+	base := firstNonEmptyString(current.AINotes, current.ExtractedContent, current.Original)
+	base = strings.TrimSpace(base)
+	addition = strings.TrimSpace(addition)
+	if base == "" {
+		return addition
 	}
-	if title := strings.TrimSpace(thought.ExtractedTitle); title != "" {
-		return title
+	if addition == "" {
+		return base
 	}
-	return strings.TrimSpace(aiNotes)
-}
-
-// buildThoughtDiff computes the field-level diff between the
-// existing thought and the projected new content. We deliberately
-// keep this on the scratchpad service (not in a separate "diff
-// package") because the inputs are tightly coupled to the
-// scratchpad shape: tags-as-slice, body-as-string, and a
-// "changed fields" set that has to match what the patch will
-// actually update. The function is exported inside the package so
-// tests can exercise it without the scratchpad round-trip.
-func buildThoughtDiff(before, after string, afterTags []string, current *models.ThoughtSnapshot) (scratchpad.ThoughtDiff, []string) {
-	changed := []string{}
-	if strings.TrimSpace(before) != strings.TrimSpace(after) {
-		changed = append(changed, "body")
+	baseKey := compactText(base)
+	additionKey := compactText(addition)
+	if baseKey == additionKey || strings.Contains(additionKey, baseKey) {
+		return addition
 	}
-	if current != nil {
-		existing := append([]string(nil), current.Thought.UserTags...)
-		existing = append(existing, current.Thought.AITags...)
-		if !sameTagSet(existing, afterTags) {
-			changed = append(changed, "tags")
-		}
+	if strings.Contains(baseKey, additionKey) {
+		return base
 	}
-	return scratchpad.ThoughtDiff{
-		Before:        before,
-		After:         after,
-		ChangedFields: changed,
-	}, changed
-}
-
-// sameTagSet returns true when a and b contain the same tags
-// regardless of order and duplicates. Used by buildThoughtDiff
-// to decide whether "tags" belongs in ChangedFields.
-func sameTagSet(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	seen := make(map[string]int, len(a))
-	for _, tag := range a {
-		seen[strings.TrimSpace(tag)]++
-	}
-	for _, tag := range b {
-		key := strings.TrimSpace(tag)
-		if seen[key] <= 0 {
-			return false
-		}
-		seen[key]--
-	}
-	return true
+	return base + "\n\n## 本轮补充信息\n\n" + addition
 }
 
 // archiveBody returns the body that should be shown in archive
@@ -1720,8 +1664,19 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 	if thoughtID == "" {
 		return models.CaptureResult{}, errors.New("capture: update_thought requires source_thought_id")
 	}
-	if _, gerr := s.capture.GetThought(ctx, thoughtID); gerr != nil {
+	current, gerr := s.capture.GetThought(ctx, thoughtID)
+	if gerr != nil {
 		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
+	}
+	// Commit must remain safe even for note-profile callers that reach this
+	// path without a persisted preview. Always project a complete document,
+	// never only the latest supplement, before building the replacement patch.
+	fullBody := fullUpdateArchiveBody(current.Content, archiveBody(sp))
+	if strings.TrimSpace(fullBody) != "" {
+		if sp.ArchivePreview == nil {
+			sp.ArchivePreview = &scratchpad.ArchivePreview{Strategy: scratchpad.ArchiveStrategyUpdate}
+		}
+		sp.ArchivePreview.Body = fullBody
 	}
 	patch, rawBody, err := buildPatchForUpdate(sp)
 	if err != nil {

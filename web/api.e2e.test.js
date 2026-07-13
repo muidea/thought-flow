@@ -667,7 +667,7 @@ test("API e2e", async (t) => {
     assert.ok(Array.isArray(commitData.jobs), "commit must include jobs array");
   });
 
-  await t.test("update_thought preview exposes diff before confirmed update", async () => {
+  await t.test("update_thought preview exposes the full document before confirmed update", async () => {
     const create = await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "update source", content: "Original body for update protection." },
     });
@@ -699,9 +699,9 @@ test("API e2e", async (t) => {
     const previewData = envelope(preview).data.preview;
     assert.equal(previewData.strategy, "update_thought");
     assert.equal(previewData.thought_id, sourceID);
-    assert.ok(previewData.diff, "update preview must include a diff");
-    assert.ok(previewData.diff.changed_fields.includes("body"), "diff must include changed body");
-    assert.ok(previewData.diff.changed_fields.includes("tags"), "diff must include changed tags");
+    assert.equal(previewData.diff, undefined, "update preview must not include a diff");
+    assert.match(previewData.body, /Original body for update protection\./, "preview must retain the archived body");
+    assert.match(previewData.body, /Updated body from protected update flow\./, "preview must include the supplement");
 
     const commitDeadline = Date.now() + 5000;
     let commit;

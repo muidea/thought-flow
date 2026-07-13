@@ -1480,7 +1480,7 @@ func TestScratchpadServiceBuildArchivePreviewUpdateRequiresCurrentThought(t *tes
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewUpdateComputesDiff(t *testing.T) {
+func TestScratchpadServiceBuildArchivePreviewUpdateShowsFullDocumentWithoutDiff(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
 	sp := scratchpad.Scratchpad{
@@ -1497,84 +1497,31 @@ func TestScratchpadServiceBuildArchivePreviewUpdateComputesDiff(t *testing.T) {
 			UserTitle: "Old Body",
 			UserTags:  []string{"a"},
 		},
-		Content: models.ThoughtContent{Original: "old raw"},
+		Content: models.ThoughtContent{AINotes: "## Existing\n\nOriginal archived body."},
 	}
 	preview, err := svc.BuildArchivePreview(sp, current)
 	if err != nil {
 		t.Fatalf("BuildArchivePreview: %v", err)
 	}
-	if preview.Diff == nil {
-		t.Fatalf("Diff should be non-nil for update_thought")
+	if preview.Diff != nil {
+		t.Fatalf("update preview must not expose a diff: %+v", preview.Diff)
 	}
-	if preview.Diff.Before != "Old Body" {
-		t.Fatalf("Diff.Before = %q (should use UserTitle)", preview.Diff.Before)
-	}
-	if preview.Diff.After != "## New Body\n\nchanged" {
-		t.Fatalf("Diff.After = %q", preview.Diff.After)
-	}
-	wantChanged := map[string]bool{"body": true, "tags": true}
-	for _, c := range preview.Diff.ChangedFields {
-		if !wantChanged[c] {
-			t.Fatalf("unexpected changed field: %q", c)
-		}
-		delete(wantChanged, c)
-	}
-	if len(wantChanged) != 0 {
-		t.Fatalf("missing changed fields: %v", wantChanged)
+	if !strings.Contains(preview.Body, "Original archived body.") || !strings.Contains(preview.Body, "changed") {
+		t.Fatalf("preview must contain the existing document and supplement: %q", preview.Body)
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewUpdateDetectsTagOnlyChange(t *testing.T) {
-	store := newMemoryScratchpad()
-	svc := NewScratchpadService(store)
-	sp := scratchpad.Scratchpad{
-		SessionID: "s1",
-		SessionContext: scratchpad.SessionContext{
-			CandidateBody: "same body",
-			CandidateTags: []string{"x", "y"},
-		},
-		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
-	}
-	current := &models.ThoughtSnapshot{
-		Thought: models.Thought{
-			ID:        "thought-1",
-			UserTitle: "same body",
-			UserTags:  []string{"a", "b"},
-		},
-	}
-	preview, err := svc.BuildArchivePreview(sp, current)
-	if err != nil {
-		t.Fatalf("BuildArchivePreview: %v", err)
-	}
-	if len(preview.Diff.ChangedFields) != 1 || preview.Diff.ChangedFields[0] != "tags" {
-		t.Fatalf("expected only tags in changed fields, got %+v", preview.Diff.ChangedFields)
+func TestFullUpdateArchiveBodyAvoidsDuplicatingExistingDocument(t *testing.T) {
+	current := models.ThoughtContent{AINotes: "complete archived document"}
+	if got := fullUpdateArchiveBody(current, "complete archived document"); got != current.AINotes {
+		t.Fatalf("fullUpdateArchiveBody duplicated content: %q", got)
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewUpdateDetectsNoChange(t *testing.T) {
-	store := newMemoryScratchpad()
-	svc := NewScratchpadService(store)
-	sp := scratchpad.Scratchpad{
-		SessionID: "s1",
-		SessionContext: scratchpad.SessionContext{
-			CandidateBody: "same",
-			CandidateTags: []string{"a", "b"},
-		},
-		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
-	}
-	current := &models.ThoughtSnapshot{
-		Thought: models.Thought{
-			ID:        "thought-1",
-			UserTitle: "same",
-			UserTags:  []string{"a", "b"},
-		},
-	}
-	preview, err := svc.BuildArchivePreview(sp, current)
-	if err != nil {
-		t.Fatalf("BuildArchivePreview: %v", err)
-	}
-	if len(preview.Diff.ChangedFields) != 0 {
-		t.Fatalf("expected no changed fields, got %+v", preview.Diff.ChangedFields)
+func TestFullUpdateArchiveBodyAppendsSupplementToExistingDocument(t *testing.T) {
+	got := fullUpdateArchiveBody(models.ThoughtContent{AINotes: "complete archived document"}, "new confirmed detail")
+	if !strings.Contains(got, "complete archived document") || !strings.Contains(got, "new confirmed detail") {
+		t.Fatalf("fullUpdateArchiveBody = %q", got)
 	}
 }
 
@@ -1617,18 +1564,6 @@ func TestScratchpadServiceBuildArchivePreviewUnknownStrategyDefaultsToNew(t *tes
 	}
 	if preview.Strategy != scratchpad.ArchiveStrategyNew {
 		t.Fatalf("Strategy = %q (unknown should default to new)", preview.Strategy)
-	}
-}
-
-func TestScratchpadServiceSameTagSetIgnoresOrderAndDuplicates(t *testing.T) {
-	a := []string{"a", "b", "a"}
-	b := []string{"b", "a", "a"}
-	if !sameTagSet(a, b) {
-		t.Fatalf("sameTagSet should ignore order and duplicates")
-	}
-	c := []string{"a", "b", "c"}
-	if sameTagSet(a, c) {
-		t.Fatalf("sameTagSet should detect different sets")
 	}
 }
 
@@ -2165,7 +2100,8 @@ func TestScratchpadServiceCommitUpdateThoughtFiresPatchWithSource(t *testing.T) 
 	if captureStub.patchReq.Body != nil {
 		t.Fatalf("Body should be empty for AI Notes update, got %v", captureStub.patchReq.Body)
 	}
-	if captureStub.patchReq.AINotes == nil || *captureStub.patchReq.AINotes != "## New Body\n\n- updated synthesis" {
+	if captureStub.patchReq.AINotes == nil ||
+		!strings.Contains(*captureStub.patchReq.AINotes, "## New Body\n\n- updated synthesis") {
 		t.Fatalf("AINotes = %v", captureStub.patchReq.AINotes)
 	}
 	// The update lands on the source file, so the scratchpad is marked
@@ -2442,7 +2378,9 @@ func TestScratchpadServiceReopenCommitUpdatesSourceThought(t *testing.T) {
 	if captureStub.patchReq.Body != nil {
 		t.Fatalf("patched body should be empty for AI Notes update, got %v", captureStub.patchReq.Body)
 	}
-	if captureStub.patchReq.AINotes == nil || *captureStub.patchReq.AINotes != "## Final\n\n- latest synthesis" {
+	if captureStub.patchReq.AINotes == nil ||
+		!strings.Contains(*captureStub.patchReq.AINotes, "previous archive") ||
+		!strings.Contains(*captureStub.patchReq.AINotes, "## Final\n\n- latest synthesis") {
 		t.Fatalf("patched ai notes = %v", captureStub.patchReq.AINotes)
 	}
 	if captureStub.patchReq.Title == nil || *captureStub.patchReq.Title != "Updated Title" {
