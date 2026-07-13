@@ -18,15 +18,72 @@ import (
 
 type stubDocumentGenerator struct {
 	calls int
+	errs  []error
 }
 
 func (s *stubDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
 	s.calls++
+	if idx := s.calls - 1; idx < len(s.errs) && s.errs[idx] != nil {
+		return models.DocumentDraft{}, s.errs[idx]
+	}
 	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
 	for _, section := range req.Profile.Sections {
 		sections[section.Key] = models.DocumentSection{Content: strings.Repeat("完整的设计内容与验证依据。", 24)}
 	}
 	return models.DocumentDraft{Title: "订单幂等设计", Summary: "设计摘要", Sections: sections}, nil
+}
+
+func TestPrepareArchiveRetriesMalformedDocumentJSON(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	generator := &stubDocumentGenerator{errs: []error{errors.New("parse document draft json: invalid character 'æ' after object key:value pair")}}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, generator, 10, 2))
+	sp := scratchpad.Scratchpad{
+		SessionID: "malformed-retry", ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "完整设计", CandidateSummary: "设计摘要", CandidateBody: strings.Repeat("完整设计正文。", 80),
+			CandidateDocumentFamily: models.DocumentFamilyDesign, CandidateProfileID: models.DocumentProfileBuiltinDesignDoc, CandidateProfileVersion: 1,
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if generator.calls != 2 {
+		t.Fatalf("generator calls = %d, want 2", generator.calls)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid {
+		t.Fatalf("preview validation = %+v", preview.Validation)
+	}
+}
+
+func TestPrepareArchiveFallsBackAfterRepeatedMalformedDocumentJSON(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	malformed := errors.New("parse document draft json: invalid character 'æ' after object key:value pair")
+	generator := &stubDocumentGenerator{errs: []error{malformed, malformed, malformed}}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, generator, 10, 2))
+	sp := scratchpad.Scratchpad{
+		SessionID: "malformed-fallback", ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "完整设计", CandidateSummary: "设计摘要", CandidateBody: strings.Repeat("完整设计正文。", 80),
+			CandidateDocumentFamily: models.DocumentFamilyDesign, CandidateProfileID: models.DocumentProfileBuiltinDesignDoc, CandidateProfileVersion: 1,
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive fallback: %v", err)
+	}
+	if generator.calls != 3 {
+		t.Fatalf("generator calls = %d, want 3", generator.calls)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid || !strings.Contains(preview.Body, "完整设计正文") {
+		t.Fatalf("fallback preview = %+v body=%q", preview.Validation, preview.Body)
+	}
 }
 
 // memoryScratchpad is the in-memory test double for the scratchpad

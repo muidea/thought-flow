@@ -1188,7 +1188,18 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
 		draft, err = s.documentGenerator.GenerateDocument(ctx, request)
 		if err != nil {
-			return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document: %w", err)
+			if !recoverableArchiveDocumentGenerationError(err) {
+				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document: %w", err)
+			}
+			if attempt < s.maxRepairAttempts {
+				slog.Warn("archive document generation returned malformed output; retrying", "attempt", attempt+1, "max_attempts", s.maxRepairAttempts+1, "error", err)
+				continue
+			}
+			slog.Warn("archive document generation remained malformed; using local fallback", "attempts", attempt+1, "error", err)
+			draft, err = ai.NewLocalRefineProvider().GenerateDocument(ctx, request)
+			if err != nil {
+				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document fallback: %w", err)
+			}
 		}
 		rendered = documentprofile.Render(profile, draft, parameters)
 		rendered.Validation.RepairCount = attempt
@@ -1203,6 +1214,17 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.Validation = rendered.Validation
 	preview.GeneratedAt = s.now()
 	return preview, nil
+}
+
+func recoverableArchiveDocumentGenerationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "parse document draft json") {
+		return true
+	}
+	var providerErr ai.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Code == "thoughtflow.ai.output_truncated"
 }
 
 func (s *ScratchpadService) resolveArchiveProfile(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (documentprofile.DocumentProfile, error) {
