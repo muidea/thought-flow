@@ -360,6 +360,45 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	return nil
 }
 
+func (s *Store) DeleteThought(ctx context.Context, thoughtID string) (err error) {
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return errors.New("thought id is required")
+	}
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, statement := range []string{
+		`DELETE FROM thought_contents WHERE thought_id = ?`,
+		`DELETE FROM thought_embeddings WHERE thought_id = ?`,
+		`DELETE FROM thoughts WHERE id = ?`,
+	} {
+		if _, err = tx.ExecContext(ctx, statement, thoughtID); err != nil {
+			return err
+		}
+	}
+	for _, table := range tables {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE thought_id = ?`, table.name), thoughtID); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.markFTSDirty()
+	return nil
+}
+
 func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecord) error {
 	if record.ThoughtID == "" {
 		return errors.New("thought id is required")

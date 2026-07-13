@@ -153,6 +153,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/thoughts/:id/suggest", engine.GET, s.handleThoughtSuggest)
 	s.registry.AddHandler("/api/thoughts/:id", engine.GET, s.handleGetThought)
 	s.registry.AddHandler("/api/thoughts/:id", "PATCH", s.handlePatchThought)
+	s.registry.AddHandler("/api/thoughts/:id", "DELETE", s.handleDeleteThought)
 	s.registry.AddHandler("/api/thoughts/:id/reopen-session", engine.POST, s.handleReopenSession)
 	s.registry.AddHandler("/api/capture/sessions", engine.POST, s.handleCreateSession)
 	s.registry.AddHandler("/api/capture/sessions", engine.GET, s.handleListSessions)
@@ -424,6 +425,33 @@ func (s *Service) handlePatchThought(ctx context.Context, res http.ResponseWrite
 		snapshot.GitCommits = s.gitQueries.RecentCommits(ctx, snapshot.Thought.Path, thoughtID, 5)
 	}
 	writeJSON(res, req, http.StatusOK, snapshot)
+}
+
+func (s *Service) handleDeleteThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	thoughtID := pathID(req.URL.Path, "/api/thoughts/")
+	if thoughtID == "" || strings.Contains(thoughtID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "thought id is required")
+		return
+	}
+	sessionID := strings.TrimSpace(req.Header.Get("X-Session-Id"))
+	if sessionID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.session_required", "X-Session-Id header is required")
+		return
+	}
+	if err := s.captureService.DeleteThought(ctx, thoughtID, sessionID); err != nil {
+		switch {
+		case errors.Is(err, capturebiz.ErrLocked):
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.locked", err.Error())
+		case errors.Is(err, capturebiz.ErrRefining):
+			writeError(res, req, http.StatusConflict, "thoughtflow.capture.refining", err.Error())
+		case errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file"):
+			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.not_found", err.Error())
+		default:
+			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.delete_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{"thought_id": thoughtID, "deleted": true})
 }
 
 func (s *Service) handleRetryRefine(ctx context.Context, res http.ResponseWriter, req *http.Request) {

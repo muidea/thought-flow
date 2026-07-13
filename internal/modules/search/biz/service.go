@@ -50,7 +50,10 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 	if ok {
 		switch domainEvent.ResourceType {
 		case models.ResourceTypeThought:
-			if domainEvent.ResourceID != "" {
+			switch domainEvent.EventType {
+			case models.EventThoughtDeleted:
+				_ = s.DeleteThought(context.Background(), domainEvent.ResourceID)
+			case models.EventThoughtCaptured, models.EventThoughtRefined, models.EventThoughtPatched, models.EventThoughtExpanded:
 				_, _ = s.IndexAsyncWithEmbedding(domainEvent.ResourceID, eventEmbedding(domainEvent.Payload))
 			}
 		case models.ResourceTypeTopic:
@@ -60,6 +63,13 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 	if result != nil {
 		result.Set(nil, nil)
 	}
+}
+
+func (s *Service) DeleteThought(ctx context.Context, thoughtID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("search service is not ready")
+	}
+	return s.store.DeleteThought(ctx, thoughtID)
 }
 
 func (s *Service) IndexAsync(thoughtID string) (models.Job, error) {

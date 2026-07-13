@@ -124,6 +124,38 @@ func TestIndexAndSearchThought(t *testing.T) {
 	}
 }
 
+func TestDeleteThoughtRemovesSearchAndEmbeddingRecords(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	thought := models.Thought{ID: "thought-delete", UserTitle: "Disposable note", DisplayTitle: "Disposable note"}
+	if err := store.IndexThought(ctx, thought, models.ThoughtContent{AINotes: "unique disposable content"}); err != nil {
+		t.Fatalf("IndexThought() error = %v", err)
+	}
+	if err := store.IndexEmbedding(ctx, models.EmbeddingRecord{
+		ThoughtID: thought.ID, Model: "test", Dimension: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("IndexEmbedding() error = %v", err)
+	}
+	if err := store.DeleteThought(ctx, thought.ID); err != nil {
+		t.Fatalf("DeleteThought() error = %v", err)
+	}
+	result, err := store.Search(ctx, models.SearchQuery{Query: "disposable", Mode: "keyword", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.Total != 0 || len(result.Items) != 0 {
+		t.Fatalf("deleted thought remains searchable: %+v", result)
+	}
+	status := store.VectorRuntimeStatus(ctx)
+	if status.EmbeddingRecords != 0 || status.VectorRows != 0 {
+		t.Fatalf("deleted embedding remains: %+v", status)
+	}
+}
+
 func TestRecoverableDuckDBOpenErrorDetection(t *testing.T) {
 	cases := []struct {
 		err  error

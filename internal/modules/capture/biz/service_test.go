@@ -87,6 +87,31 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	}
 }
 
+func TestDeleteThoughtRemovesMarkdown(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{ID: "local", RootPath: root, ThoughtsPath: filepath.Join(root, "thoughts")}
+	if err := os.MkdirAll(ws.ThoughtsPath, 0o755); err != nil {
+		t.Fatalf("mkdir thoughts: %v", err)
+	}
+	service := NewService(ws, nil, nil)
+	result, err := service.Capture(context.Background(), models.CaptureCommand{
+		Type: models.ThoughtTypeText, Content: "invalid note to remove", Title: "Invalid note",
+	})
+	if err != nil {
+		t.Fatalf("Capture() error = %v", err)
+	}
+	path := filepath.Join(root, filepath.FromSlash(result.Thought.Path))
+	if err := service.DeleteThought(context.Background(), result.Thought.ID, "delete-session"); err != nil {
+		t.Fatalf("DeleteThought() error = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted markdown still exists: %v", err)
+	}
+	if _, err := service.GetThought(context.Background(), result.Thought.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("GetThought() after delete error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestCaptureDuplicateContentWarnsWithoutDropping(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{

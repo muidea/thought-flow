@@ -117,6 +117,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"thought.refined",
 		"thought.refine_failed",
 		"thought.expanded",
+		"thought.deleted",
 		"search.index_updated",
 		"search.index_failed",
 		"search.reindex_started",

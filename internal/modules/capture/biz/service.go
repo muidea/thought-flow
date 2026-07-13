@@ -183,6 +183,62 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
 }
 
+func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string) error {
+	_ = ctx
+	if s == nil || s.workspace == nil {
+		return errors.New("capture service is not ready")
+	}
+	thoughtID = strings.TrimSpace(thoughtID)
+	if thoughtID == "" {
+		return errors.New("thought id is required")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	thought, _, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		return err
+	}
+	if s.locker != nil {
+		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
+			if errors.Is(err, ErrLocked) {
+				if holder, ok := s.locker.Holder(thoughtID); ok && holder == thoughtlock.RefinerSessionID {
+					return ErrRefining
+				}
+			}
+			return err
+		}
+		defer s.locker.Release(thoughtID, sessionID)
+	}
+	targetPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(thought.Path))
+	if err := os.Remove(targetPath); err != nil {
+		return err
+	}
+	now := s.now()
+	eventutil.Post(s.eventHub, models.DomainEvent{
+		EventType:      models.EventThoughtDeleted,
+		SourceUnit:     "capture",
+		OccurredAt:     now,
+		WorkspaceID:    s.workspace.ID,
+		ResourceType:   models.ResourceTypeThought,
+		ResourceID:     thoughtID,
+		PayloadVersion: 1,
+		Payload:        map[string]any{"thought_id": thoughtID, "path": thought.Path, "deleted_by": sessionID},
+	})
+	eventutil.Post(s.eventHub, models.DomainEvent{
+		EventType:      models.EventGitCommitRequested,
+		SourceUnit:     "capture",
+		OccurredAt:     now,
+		WorkspaceID:    s.workspace.ID,
+		ResourceType:   models.ResourceTypeThought,
+		ResourceID:     thoughtID,
+		PayloadVersion: 1,
+		Payload:        models.GitCommitRequestedPayload{Paths: []string{thought.Path}, Reason: "delete", ResourceIDs: []string{thoughtID}},
+	})
+	return nil
+}
+
 // PatchThought applies a partial update to a thought in place. Pointer
 // fields in the request distinguish "field absent" from "field present
 // with empty value" — the absent case leaves the existing value alone,

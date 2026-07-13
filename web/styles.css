@@ -2428,3 +2428,15 @@ textarea:focus-visible {
   color: var(--tf-color-danger, #d4380d);
   border-color: var(--tf-color-danger, #d4380d);
 }
+
+.tf-thought-delete {
+  color: var(--tf-color-danger, #d4380d);
+  border-color: var(--tf-color-danger, #d4380d);
+}
+
+.tf-thought-delete:hover,
+.tf-thought-delete:focus-visible {
+  color: #fff;
+  border-color: var(--tf-color-danger, #d4380d);
+  background: var(--tf-color-danger, #d4380d);
+}

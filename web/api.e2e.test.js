@@ -888,6 +888,21 @@ test("API e2e", async (t) => {
     assert.ok(res.status >= 400, `expected 4xx for unknown thought, got ${res.status}`);
   });
 
+  await t.test("delete thought removes the note", async () => {
+    const create = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "delete me", content: "invalid temporary note" },
+    });
+    assert.equal(create.status, 202, `create delete fixture status=${create.status} body=${create.text}`);
+    const thoughtID = envelope(create).data.thought.id;
+    const deleted = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "DELETE", {
+      headers: { "X-Session-Id": "e2e-delete" },
+    });
+    assert.equal(deleted.status, 200, `delete status=${deleted.status} body=${deleted.text}`);
+    assert.equal(envelope(deleted).data.thought_id, thoughtID);
+    const get = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "GET");
+    assert.equal(get.status, 404, `deleted thought get status=${get.status} body=${get.text}`);
+  });
+
   await t.test("unknown route returns 404 envelope", async () => {
     const res = await request(server.baseURL, "/api/this-route-does-not-exist", "GET");
     assert.equal(res.status, 404);

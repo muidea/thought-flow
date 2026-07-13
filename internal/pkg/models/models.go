@@ -101,6 +101,7 @@ const (
 	EventJobUpdated                       = "job.updated"
 	EventThoughtPatched                   = "thought.patched"
 	EventThoughtExpanded                  = "thought.expanded"
+	EventThoughtDeleted                   = "thought.deleted"
 )
 
 type Workspace struct {

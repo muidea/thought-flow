@@ -1479,6 +1479,7 @@ function renderThoughtDetailPanel(snapshot) {
     <div class="tf-description-list">${renderDescription(metaRows)}</div>
     <div class="tf-action-row">
       <button class="tf-btn" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
+      <button class="tf-btn tf-thought-delete" data-delete-thought="${escapeHTML(thought.id || "")}" data-delete-title="${escapeHTML(title)}" type="button">${escapeHTML(t("thoughts.action.delete"))}</button>
     </div>
     <div class="preview-box markdown-rendered">${renderMarkdown(sections.join("\n\n"))}</div>
   </div>`;
@@ -1568,6 +1569,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   const status = $("#thought-status-detail");
   if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
   bindThoughtReopenButtons(document);
+  bindThoughtDeleteButtons(document);
   const addCompose = $("#drawer-add-compose");
   if (addCompose) addCompose.disabled = false;
   const retry = $("#retry-refine");
@@ -4087,6 +4089,48 @@ function bindThoughtReopenButtons(root = document) {
       reopenThoughtInCapture(button.dataset.reopenCapture).catch((error) => toast(error.message));
     });
   });
+}
+
+function bindThoughtDeleteButtons(root = document) {
+  root.querySelectorAll("[data-delete-thought]").forEach((button) => {
+    if (button.dataset.deleteBound === "1") return;
+    button.dataset.deleteBound = "1";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteThought(button.dataset.deleteThought, button.dataset.deleteTitle).catch((error) => toast(error.message));
+    });
+  });
+}
+
+async function deleteThought(thoughtId, title = "") {
+  const id = String(thoughtId || "").trim();
+  if (!id) return;
+  const confirmed = await confirmAction(
+    t("thoughts.action.delete_title"),
+    t("thoughts.action.delete_confirm", { title: title || id }),
+  );
+  if (!confirmed) return;
+  await api(`/api/thoughts/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-Session-Id": `delete-${Date.now()}` },
+  });
+  state.notes = (state.notes || []).filter((thought) => thought.id !== id);
+  state.selectedThoughts.delete(id);
+  for (const [key, source] of Array.from(state.composeSources.entries())) {
+    if (source?.source_id === id) state.composeSources.delete(key);
+  }
+  persistSources();
+  broadcastSourcesChange();
+  state.activeThoughtId = "";
+  state.activeThoughtSnapshot = null;
+  state.capture.thoughtSnapshots.delete(id);
+  closeDrawer("thought-drawer");
+  renderEmptyThoughtPanels();
+  renderThoughtsList();
+  renderComposeSources();
+  renderSidebarBadges();
+  navigateHash(buildRouteHash("thoughts", {}, {}), { force: true });
+  toast(t("thoughts.action.delete_done"));
 }
 
 function applyScratchpadToCaptureState(sp, options = {}) {
