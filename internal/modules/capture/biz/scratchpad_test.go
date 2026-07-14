@@ -25,6 +25,20 @@ type oversizedDocumentGenerator struct {
 	calls int
 }
 
+type duplicateSectionDocumentGenerator struct {
+	body string
+}
+
+func (g *duplicateSectionDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
+	for _, section := range req.Profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: "有效的" + section.Key + "内容。"}
+	}
+	sections["background"] = models.DocumentSection{Content: g.body}
+	sections["proposal"] = models.DocumentSection{Content: g.body}
+	return models.DocumentDraft{Title: "凭证中心设计", Summary: "设计摘要", Sections: sections}, nil
+}
+
 func (g *oversizedDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
 	g.calls++
 	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
@@ -125,6 +139,36 @@ func TestPrepareArchiveFallsBackWhenRemoteDocumentRemainsTooLong(t *testing.T) {
 	}
 	if len([]rune(preview.Body)) > 30000 || !strings.Contains(preview.Body, "当前完整方案内容") {
 		t.Fatalf("fallback body chars=%d, content missing=%v", len([]rune(preview.Body)), !strings.Contains(preview.Body, "当前完整方案内容"))
+	}
+}
+
+func TestPrepareArchiveCompactsDuplicateRemoteDocumentSections(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	fullBody := "# 完整设计\n\n## 唯一核心章节\n\n" + strings.Repeat("完整方案内容与实现细节。", 100)
+	generator := &duplicateSectionDocumentGenerator{body: fullBody}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, generator, 10, 1))
+	sp := scratchpad.Scratchpad{
+		SessionID: "duplicate-remote-sections", ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "凭证中心设计", CandidateSummary: "统一管理静态凭证。", CandidateBody: fullBody,
+			CandidateDocumentFamily: models.DocumentFamilyDesign, CandidateProfileID: models.DocumentProfileBuiltinDesignDoc, CandidateProfileVersion: 1,
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid {
+		t.Fatalf("preview validation = %+v", preview.Validation)
+	}
+	if got := strings.Count(preview.Body, "## 唯一核心章节"); got != 1 {
+		t.Fatalf("unique core heading count = %d, want 1\n%s", got, preview.Body)
+	}
+	if !strings.Contains(preview.Body, "## 背景与问题\n\n统一管理静态凭证。") {
+		t.Fatalf("background was not compacted to summary:\n%s", preview.Body)
 	}
 }
 
@@ -1652,6 +1696,47 @@ func TestFullUpdateArchiveBodyAppendsSupplementToExistingDocument(t *testing.T) 
 	got := fullUpdateArchiveBody(models.ThoughtContent{AINotes: "complete archived document"}, "new confirmed detail")
 	if !strings.Contains(got, "complete archived document") || !strings.Contains(got, "new confirmed detail") {
 		t.Fatalf("fullUpdateArchiveBody = %q", got)
+	}
+}
+
+func TestFullUpdateArchiveBodyPrefersCompleteOverlappingCandidate(t *testing.T) {
+	sections := "## 背景\n\n" + strings.Repeat("统一凭证管理的背景说明。\n", 50) + "\n## 方案\n\n" + strings.Repeat("完整方案与安全约束。\n", 50)
+	candidate := "# 当前完整设计\n\n" + sections
+	duplicatedCurrent := "# 旧归档包装\n\n## 背景与问题\n\n" + sections + "\n## 方案设计\n\n" + sections
+	got := fullUpdateArchiveBody(models.ThoughtContent{AINotes: duplicatedCurrent}, candidate)
+	if got != strings.TrimSpace(candidate) {
+		t.Fatalf("fullUpdateArchiveBody should prefer complete overlapping candidate: got %d chars, want %d", len([]rune(got)), len([]rune(candidate)))
+	}
+}
+
+func TestFullUpdateArchiveBodyReplacesDuplicatedWrapperContainingCandidate(t *testing.T) {
+	sections := "## 背景\n\n" + strings.Repeat("统一凭证管理的背景说明。\n", 50) + "\n## 方案\n\n" + strings.Repeat("完整方案与安全约束。\n", 50)
+	candidate := "# 当前完整设计\n\n" + sections
+	duplicatedCurrent := candidate + "\n\n## 旧归档重复区\n\n" + sections
+	got := fullUpdateArchiveBody(models.ThoughtContent{AINotes: duplicatedCurrent}, candidate)
+	if got != strings.TrimSpace(candidate) {
+		t.Fatalf("fullUpdateArchiveBody retained duplicated wrapper: got %d chars, want %d", len([]rune(got)), len([]rune(candidate)))
+	}
+}
+
+func TestPrepareArchiveDoesNotFeedPersistedPreviewBackIntoGeneration(t *testing.T) {
+	svc := NewScratchpadService(newMemoryScratchpad())
+	sp := scratchpad.Scratchpad{
+		SessionID:       "preview-output-not-source",
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext:  scratchpad.SessionContext{CandidateTitle: "当前标题", CandidateBody: "当前候选正文"},
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Body:       "不应再次进入生成链路的旧预览",
+			Strategy:   scratchpad.ArchiveStrategyNew,
+			Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if preview.Body != "当前候选正文" {
+		t.Fatalf("PrepareArchive body = %q", preview.Body)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -1148,7 +1149,12 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 }
 
 func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
-	preview, err := s.BuildArchivePreview(sp, currentThought)
+	// A persisted preview is output, not source material. Feeding it back into a
+	// fresh generation recursively nests the previous rendered document and can
+	// multiply every section on each preview/re-archive attempt.
+	source := sp
+	source.ArchivePreview = nil
+	preview, err := s.BuildArchivePreview(source, currentThought)
 	if err != nil {
 		return scratchpad.ArchivePreview{}, err
 	}
@@ -1198,9 +1204,13 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			usedLocalFallback = true
 		}
 		if usedLocalFallback {
-			draft = compactLocalArchiveDraft(request, draft)
+			draft = compactArchiveDraft(request, draft)
 		}
 		rendered = documentprofile.Render(profile, draft, parameters)
+		if !usedLocalFallback && rendered.Validation.Status == models.ArchiveValidationValid {
+			draft = compactArchiveDraft(request, draft)
+			rendered = documentprofile.Render(profile, draft, parameters)
+		}
 		rendered.Validation.RepairCount = attempt
 		if rendered.Validation.Status == models.ArchiveValidationValid {
 			break
@@ -1211,7 +1221,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	if rendered.Validation.Status != models.ArchiveValidationValid {
 		fallbackDraft, fallbackErr := ai.NewLocalRefineProvider().GenerateDocument(ctx, request)
 		if fallbackErr == nil {
-			fallbackDraft = compactLocalArchiveDraft(request, fallbackDraft)
+			fallbackDraft = compactArchiveDraft(request, fallbackDraft)
 			fallbackRendered := documentprofile.Render(profile, fallbackDraft, parameters)
 			fallbackRendered.Validation.RepairCount = s.maxRepairAttempts + 1
 			if fallbackRendered.Validation.Status == models.ArchiveValidationValid {
@@ -1227,32 +1237,112 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	return preview, nil
 }
 
-func compactLocalArchiveDraft(request ai.DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {
+func compactArchiveDraft(request ai.DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {
 	base := strings.TrimSpace(request.Context.Body)
-	if base == "" || len(draft.Sections) == 0 {
+	if len(draft.Sections) == 0 {
 		return draft
 	}
-	preferred := []string{"proposal", "findings", "analysis", "body"}
-	fullKey := ""
-	for _, key := range preferred {
-		if _, ok := draft.Sections[key]; ok {
-			fullKey = key
-			break
-		}
-	}
-	if fullKey == "" && len(request.Profile.Sections) > 0 {
-		fullKey = request.Profile.Sections[0].Key
-	}
+	orderedKeys := preferredArchiveSectionKeys(request, draft)
+	fullKey := orderedKeys[0]
 	baseKey := compactText(base)
-	replacement := firstNonEmptyString(strings.TrimSpace(request.Context.Summary), "完整材料见本文核心方案章节。")
-	for key, section := range draft.Sections {
-		if key == fullKey || !strings.Contains(compactText(section.Content), baseKey) {
+	for _, key := range orderedKeys[1:] {
+		section := draft.Sections[key]
+		if baseKey == "" || !containsSubstantialArchiveText(compactText(section.Content), baseKey) {
 			continue
 		}
-		section.Content = replacement
+		section.Content = archiveDuplicateReplacement(request, key, fullKey)
 		draft.Sections[key] = section
 	}
+
+	// A valid remote response can still place the same complete source document
+	// in several profile sections. Keep the richest copy in the semantically
+	// preferred section and collapse later near-identical copies before render.
+	for index, keepKey := range orderedKeys {
+		keep := compactText(draft.Sections[keepKey].Content)
+		if len([]rune(keep)) < 500 {
+			continue
+		}
+		for _, duplicateKey := range orderedKeys[index+1:] {
+			duplicate := compactText(draft.Sections[duplicateKey].Content)
+			if !archiveTextNearlyDuplicate(keep, duplicate) {
+				continue
+			}
+			section := draft.Sections[duplicateKey]
+			section.Content = archiveDuplicateReplacement(request, duplicateKey, keepKey)
+			draft.Sections[duplicateKey] = section
+		}
+	}
 	return draft
+}
+
+func preferredArchiveSectionKeys(request ai.DocumentGenerationRequest, draft models.DocumentDraft) []string {
+	keys := make([]string, 0, len(draft.Sections))
+	seen := map[string]struct{}{}
+	appendKey := func(key string) {
+		if _, ok := draft.Sections[key]; !ok {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, key := range []string{"proposal", "findings", "analysis", "body"} {
+		appendKey(key)
+	}
+	for _, spec := range request.Profile.Sections {
+		appendKey(spec.Key)
+	}
+	remaining := make([]string, 0, len(draft.Sections))
+	for key := range draft.Sections {
+		remaining = append(remaining, key)
+	}
+	sort.Strings(remaining)
+	for _, key := range remaining {
+		appendKey(key)
+	}
+	return keys
+}
+
+func containsSubstantialArchiveText(content, source string) bool {
+	if len([]rune(source)) < 500 || len(content) < len(source) {
+		return false
+	}
+	return strings.Contains(content, source)
+}
+
+func archiveTextNearlyDuplicate(left, right string) bool {
+	leftRunes := len([]rune(left))
+	rightRunes := len([]rune(right))
+	if leftRunes < 500 || rightRunes < 500 {
+		return false
+	}
+	shorter, longer := left, right
+	shorterRunes, longerRunes := leftRunes, rightRunes
+	if shorterRunes > longerRunes {
+		shorter, longer = longer, shorter
+		shorterRunes, longerRunes = longerRunes, shorterRunes
+	}
+	return float64(shorterRunes)/float64(longerRunes) >= 0.8 && strings.Contains(longer, shorter)
+}
+
+func archiveDuplicateReplacement(request ai.DocumentGenerationRequest, key, keepKey string) string {
+	if key == "background" {
+		if summary := strings.TrimSpace(request.Context.Summary); summary != "" {
+			return summary
+		}
+	}
+	label := map[string]string{
+		"proposal": "方案设计",
+		"findings": "研究发现",
+		"analysis": "分析",
+		"body":     "正文",
+	}[keepKey]
+	if label == "" {
+		label = keepKey
+	}
+	return fmt.Sprintf("相关完整内容已统一收敛至“%s”章节，本节不重复展开。", label)
 }
 
 func recoverableArchiveDocumentGenerationError(err error) bool {
@@ -1380,9 +1470,75 @@ func fullUpdateArchiveBody(current models.ThoughtContent, addition string) strin
 		return addition
 	}
 	if strings.Contains(baseKey, additionKey) {
+		if completeArchiveDocument(addition) && hasRepeatedArchiveHeadings(base) {
+			return addition
+		}
 		return base
 	}
+	if completeArchiveDocument(addition) && archiveTextLineCoverage(base, addition) >= 0.65 {
+		return addition
+	}
 	return base + "\n\n## 本轮补充信息\n\n" + addition
+}
+
+func completeArchiveDocument(value string) bool {
+	if len([]rune(strings.TrimSpace(value))) < 1000 {
+		return false
+	}
+	headings := 0
+	for _, line := range strings.Split(value, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			headings++
+		}
+	}
+	return headings >= 3
+}
+
+func hasRepeatedArchiveHeadings(value string) bool {
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(value, "\n") {
+		line = compactText(line)
+		if !strings.HasPrefix(line, "##") || len([]rune(line)) < 4 {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			return true
+		}
+		seen[line] = struct{}{}
+	}
+	return false
+}
+
+func archiveTextLineCoverage(container, candidate string) float64 {
+	available := map[string]struct{}{}
+	for _, line := range strings.Split(container, "\n") {
+		line = compactText(line)
+		if len([]rune(line)) >= 8 {
+			available[line] = struct{}{}
+		}
+	}
+	matchedWeight := 0
+	totalWeight := 0
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(candidate, "\n") {
+		line = compactText(line)
+		weight := len([]rune(line))
+		if weight < 8 {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		totalWeight += weight
+		if _, ok := available[line]; ok {
+			matchedWeight += weight
+		}
+	}
+	if totalWeight == 0 {
+		return 0
+	}
+	return float64(matchedWeight) / float64(totalWeight)
 }
 
 // archiveBody returns the body that should be shown in archive
