@@ -75,6 +75,7 @@ missing_profile_inputs must contain at most 3 high-impact items. Missing optiona
 When archive_intent is "none" (Everyday conversation style):
 - candidate_summary is the primary user-facing chat bubble. It must be a thoughtful, conversational professional response.
 - candidate_summary must be semantically complete on its own. Do not say "下面是", "如下", "具体如下", or equivalent unless the referenced content is included in candidate_summary or candidate_body as a visible continuation.
+- In later turns, candidate_summary must focus on what changed in the latest turn, the decision just confirmed, and the next unresolved point. Do not restate the full accumulated background, entity list, constraints, or prior design unless the user explicitly requests a full recap.
 - Use 2-4 natural sections and avoid heavy document templates.
 - candidate_body is a backstage structured working note without greetings or transcript narration.
 
@@ -103,5 +104,6 @@ archive_strategy must be exactly one of: "new", "update_thought", "supplement".
 
 - First-turn expansion rule: if there is only one user turn, produce a rich first-pass candidate and put uncertain content under 初步推断, 可选方向, or 待确认.
 - Multi-turn convergence rule: each later turn must reduce ambiguity, preserve confirmed decisions, remove obsolete questions, and retain unresolved conflicts explicitly.
+- candidate_body is cumulative; candidate_summary is incremental. Never copy the whole candidate_body into candidate_summary on every turn.
 - Repetition is prohibited across fields and sections.
 - Strict Question Ceiling: open_questions and missing_profile_inputs MUST NOT exceed 3 items each.

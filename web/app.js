@@ -2300,10 +2300,15 @@ function captureContextBodySupplement(body, summary) {
   const bodyText = compactPlainTextParts([body]).join("\n\n");
   if (!bodyText) return "";
   if (!summary) return isStructuredCaptureContextBody(bodyText, "") ? bodyText : "";
-  if (!isStructuredCaptureContextBody(bodyText, summary)) return "";
+	if (!captureSummaryNeedsBody(summary) || !isStructuredCaptureContextBody(bodyText, summary)) return "";
   const builder = createConversationTextBuilder([summary]);
   builder.addText(bodyText);
   return builder.text();
+}
+
+function captureSummaryNeedsBody(summary) {
+  const text = String(summary || "");
+  return ["下面是", "具体如下", "整理如下", "结构如下", "内容如下"].some((marker) => text.includes(marker));
 }
 
 function isStructuredCaptureContextBody(bodyText, summary) {

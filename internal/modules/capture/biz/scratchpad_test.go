@@ -21,6 +21,19 @@ type stubDocumentGenerator struct {
 	errs  []error
 }
 
+type oversizedDocumentGenerator struct {
+	calls int
+}
+
+func (g *oversizedDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+	g.calls++
+	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
+	for _, section := range req.Profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: strings.Repeat("重复的完整历史版本内容。", 500)}
+	}
+	return models.DocumentDraft{Title: "超长设计", Summary: "摘要", Sections: sections}, nil
+}
+
 func (s *stubDocumentGenerator) GenerateDocument(_ context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
 	s.calls++
 	if idx := s.calls - 1; idx < len(s.errs) && s.errs[idx] != nil {
@@ -83,6 +96,35 @@ func TestPrepareArchiveFallsBackAfterRepeatedMalformedDocumentJSON(t *testing.T)
 	}
 	if preview.Validation.Status != models.ArchiveValidationValid || !strings.Contains(preview.Body, "完整设计正文") {
 		t.Fatalf("fallback preview = %+v body=%q", preview.Validation, preview.Body)
+	}
+}
+
+func TestPrepareArchiveFallsBackWhenRemoteDocumentRemainsTooLong(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	generator := &oversizedDocumentGenerator{}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, generator, 10, 1))
+	sp := scratchpad.Scratchpad{
+		SessionID: "oversized-fallback", ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle: "最终设计", CandidateSummary: "完整设计摘要", CandidateBody: "# 最终设计\n\n" + strings.Repeat("当前完整方案内容。", 700),
+			CandidateDocumentFamily: models.DocumentFamilyDesign, CandidateProfileID: models.DocumentProfileBuiltinDesignDoc, CandidateProfileVersion: 1,
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive oversized fallback: %v", err)
+	}
+	if generator.calls != 2 {
+		t.Fatalf("generator calls = %d, want 2", generator.calls)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid {
+		t.Fatalf("preview validation = %+v", preview.Validation)
+	}
+	if len([]rune(preview.Body)) > 30000 || !strings.Contains(preview.Body, "当前完整方案内容") {
+		t.Fatalf("fallback body chars=%d, content missing=%v", len([]rune(preview.Body)), !strings.Contains(preview.Body, "当前完整方案内容"))
 	}
 }
 
@@ -1492,6 +1534,37 @@ func TestScratchpadServiceBuildArchivePreviewIncludesMissingAIHistory(t *testing
 	}
 }
 
+func TestArchiveBodyDoesNotAppendHistoricalFullDocumentRevisions(t *testing.T) {
+	current := "# 最终设计\n\n" + strings.Repeat("当前完整方案内容。", 180)
+	sp := scratchpad.Scratchpad{
+		SessionContext: scratchpad.SessionContext{CandidateBody: current},
+		Messages: []scratchpad.Message{
+			{Role: "user", Text: "第一轮"},
+			{Role: "ai", Text: "# 旧版设计\n\n" + strings.Repeat("旧版完整方案。", 180)},
+			{Role: "user", Text: "第二轮"},
+			{Role: "ai", Text: current},
+		},
+	}
+	if got := archiveBody(sp); got != current {
+		t.Fatalf("archiveBody appended historical full documents: got %d chars, want %d", len([]rune(got)), len([]rune(current)))
+	}
+}
+
+func TestArchiveBodyIgnoresInvalidPersistedPreview(t *testing.T) {
+	sp := scratchpad.Scratchpad{
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext:  scratchpad.SessionContext{CandidateBody: "# 当前完整版本\n\n有效正文"},
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Body:       strings.Repeat("无效超长旧预览", 1000),
+			Strategy:   scratchpad.ArchiveStrategyNew,
+			Validation: models.ArchiveValidation{Status: models.ArchiveValidationInvalid},
+		},
+	}
+	if got := archiveBody(sp); got != sp.SessionContext.CandidateBody {
+		t.Fatalf("archiveBody reused invalid preview: chars=%d", len([]rune(got)))
+	}
+}
+
 func TestScratchpadServiceBuildArchivePreviewDoesNotUseRawScratchpadContent(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
@@ -1912,9 +1985,10 @@ func TestScratchpadServiceCommitFreshUsesPersistedArchivePreviewBody(t *testing.
 		},
 		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
 		ArchivePreview: &scratchpad.ArchivePreview{
-			Title:    "preview title",
-			Body:     "preview body shown to the user",
-			Strategy: scratchpad.ArchiveStrategyNew,
+			Title:      "preview title",
+			Body:       "preview body shown to the user",
+			Strategy:   scratchpad.ArchiveStrategyNew,
+			Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
 		},
 	})
 	captureStub := &stubCapture{
@@ -1945,9 +2019,10 @@ func TestScratchpadServiceCommitUpdateUsesPersistedArchivePreviewBody(t *testing
 		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		SourceThoughtID: "thought-source",
 		ArchivePreview: &scratchpad.ArchivePreview{
-			Title:    "preview title",
-			Body:     "preview body shown to the user",
-			Strategy: scratchpad.ArchiveStrategyUpdate,
+			Title:      "preview title",
+			Body:       "preview body shown to the user",
+			Strategy:   scratchpad.ArchiveStrategyUpdate,
+			Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
 		},
 	})
 	captureStub := &stubCapture{
@@ -1998,6 +2073,16 @@ func TestSessionContextReplyTextAvoidsDuplicateBody(t *testing.T) {
 	}
 	if reply := sessionContextReplyText(ctx); reply != ctx.CandidateSummary {
 		t.Fatalf("sessionContextReplyText duplicated body: %q", reply)
+	}
+}
+
+func TestSessionContextReplyTextKeepsCumulativeStructuredBodyOutOfOrdinaryTurn(t *testing.T) {
+	ctx := scratchpad.SessionContext{
+		CandidateSummary: "已确认新增一致性约束，下一步需要确定凭证粒度。",
+		CandidateBody:    "## 候选实体\n\n- Credential\n\n## 一致性约束\n\n- 同一类型只能有一条有效凭证。",
+	}
+	if reply := sessionContextReplyText(ctx); reply != ctx.CandidateSummary {
+		t.Fatalf("ordinary reply repeated cumulative body: %q", reply)
 	}
 }
 

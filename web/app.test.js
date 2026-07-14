@@ -2288,7 +2288,7 @@ test("capture context text prefers synthesized summary over mechanical context f
   assert.doesNotMatch(html, /整理, 主题/);
 });
 
-test("capture context text supplements thin summary with richer candidate body", () => {
+test("capture context text keeps cumulative candidate body out of an ordinary reply", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.capture.sessionId = "s1";
   app._state.capture.activeScratchpad = {
@@ -2318,9 +2318,9 @@ test("capture context text supplements thin summary with richer candidate body",
   const html = app.renderCaptureBubbleBody(message);
 
   assert.match(html, /可以按一个可配置的采集工具继续收敛/);
-  assert.match(html, /当前收敛结论/);
-  assert.match(html, /Golang 实现/);
-  assert.match(html, /JSONL、CSV/);
+	assert.doesNotMatch(html, /当前收敛结论/);
+	assert.doesNotMatch(html, /Golang 实现/);
+	assert.doesNotMatch(html, /JSONL、CSV/);
 });
 
 test("persisted complete context reply suppresses duplicate synthetic bubble", () => {

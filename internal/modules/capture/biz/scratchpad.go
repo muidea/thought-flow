@@ -686,7 +686,7 @@ func sessionContextReplyText(ctx scratchpad.SessionContext) string {
 		return summary
 	}
 	if strings.Contains(bodyKey, summaryKey) {
-		return body
+		return summary
 	}
 	if captureReplyNeedsBody(summary, body) {
 		return summary + "\n\n" + body
@@ -695,15 +695,9 @@ func sessionContextReplyText(ctx scratchpad.SessionContext) string {
 }
 
 func captureReplyNeedsBody(summary, body string) bool {
-	for _, marker := range []string{"下面是", "如下", "具体如下", "更新后的", "结构化工作笔记", "整理结果"} {
+	_ = body
+	for _, marker := range []string{"下面是", "具体如下", "整理如下", "结构如下", "内容如下"} {
 		if strings.Contains(summary, marker) {
-			return true
-		}
-	}
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") ||
-			strings.HasPrefix(line, "**") || strings.HasPrefix(line, "1. ") {
 			return true
 		}
 	}
@@ -1185,6 +1179,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	}
 	var rendered documentprofile.RenderResult
 	var draft models.DocumentDraft
+	usedLocalFallback := false
 	for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
 		draft, err = s.documentGenerator.GenerateDocument(ctx, request)
 		if err != nil {
@@ -1200,6 +1195,10 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			if err != nil {
 				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document fallback: %w", err)
 			}
+			usedLocalFallback = true
+		}
+		if usedLocalFallback {
+			draft = compactLocalArchiveDraft(request, draft)
 		}
 		rendered = documentprofile.Render(profile, draft, parameters)
 		rendered.Validation.RepairCount = attempt
@@ -1209,11 +1208,51 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 		request.PreviousDraft = &draft
 		request.RepairIssues = append([]models.ValidationIssue(nil), rendered.Validation.Issues...)
 	}
+	if rendered.Validation.Status != models.ArchiveValidationValid {
+		fallbackDraft, fallbackErr := ai.NewLocalRefineProvider().GenerateDocument(ctx, request)
+		if fallbackErr == nil {
+			fallbackDraft = compactLocalArchiveDraft(request, fallbackDraft)
+			fallbackRendered := documentprofile.Render(profile, fallbackDraft, parameters)
+			fallbackRendered.Validation.RepairCount = s.maxRepairAttempts + 1
+			if fallbackRendered.Validation.Status == models.ArchiveValidationValid {
+				draft = fallbackDraft
+				rendered = fallbackRendered
+			}
+		}
+	}
 	preview.Title = firstNonEmptyString(strings.TrimSpace(draft.Title), preview.Title)
 	preview.Body = strings.TrimSpace(rendered.Content)
 	preview.Validation = rendered.Validation
 	preview.GeneratedAt = s.now()
 	return preview, nil
+}
+
+func compactLocalArchiveDraft(request ai.DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {
+	base := strings.TrimSpace(request.Context.Body)
+	if base == "" || len(draft.Sections) == 0 {
+		return draft
+	}
+	preferred := []string{"proposal", "findings", "analysis", "body"}
+	fullKey := ""
+	for _, key := range preferred {
+		if _, ok := draft.Sections[key]; ok {
+			fullKey = key
+			break
+		}
+	}
+	if fullKey == "" && len(request.Profile.Sections) > 0 {
+		fullKey = request.Profile.Sections[0].Key
+	}
+	baseKey := compactText(base)
+	replacement := firstNonEmptyString(strings.TrimSpace(request.Context.Summary), "完整材料见本文核心方案章节。")
+	for key, section := range draft.Sections {
+		if key == fullKey || !strings.Contains(compactText(section.Content), baseKey) {
+			continue
+		}
+		section.Content = replacement
+		draft.Sections[key] = section
+	}
+	return draft
 }
 
 func recoverableArchiveDocumentGenerationError(err error) bool {
@@ -1358,6 +1397,7 @@ func fullUpdateArchiveBody(current models.ThoughtContent, addition string) strin
 func archiveBody(sp scratchpad.Scratchpad) string {
 	if sp.ArchivePreview != nil &&
 		strings.TrimSpace(sp.ArchivePreview.Body) != "" &&
+		sp.ArchivePreview.Validation.Status == models.ArchiveValidationValid &&
 		(sp.ArchivePreview.Strategy == "" || sp.ArchivePreview.Strategy == sp.ArchiveStrategy) {
 		return strings.TrimSpace(sp.ArchivePreview.Body)
 	}
@@ -1370,6 +1410,13 @@ func archiveBody(sp scratchpad.Scratchpad) string {
 		base = body
 	} else {
 		base = richerArchiveText(body, summary)
+	}
+	// A long structured candidate body is already the cumulative result of the
+	// multi-turn conversation. Appending every historical AI bubble here would
+	// concatenate older full-document revisions and can grow the archive source
+	// far beyond the document profile limit.
+	if len([]rune(base)) >= 1000 {
+		return strings.TrimSpace(base)
 	}
 	return completeArchiveBodyWithAIHistory(base, sp.Messages)
 }
@@ -1731,7 +1778,10 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 	fullBody := fullUpdateArchiveBody(current.Content, archiveBody(sp))
 	if strings.TrimSpace(fullBody) != "" {
 		if sp.ArchivePreview == nil {
-			sp.ArchivePreview = &scratchpad.ArchivePreview{Strategy: scratchpad.ArchiveStrategyUpdate}
+			sp.ArchivePreview = &scratchpad.ArchivePreview{
+				Strategy:   scratchpad.ArchiveStrategyUpdate,
+				Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
+			}
 		}
 		sp.ArchivePreview.Body = fullBody
 	}
