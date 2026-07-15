@@ -192,7 +192,9 @@ func writeTime(buf *bytes.Buffer, key string, value time.Time) {
 	if value.IsZero() {
 		return
 	}
-	_, _ = fmt.Fprintf(buf, "%s: %q\n", key, value.Format(time.RFC3339))
+	// RFC3339Nano keeps sub-second precision so list ordering by updated_at
+	// remains stable when multiple thoughts are captured within the same second.
+	_, _ = fmt.Fprintf(buf, "%s: %q\n", key, value.UTC().Format(time.RFC3339Nano))
 }
 
 func writeList(buf *bytes.Buffer, key string, values []string) {
@@ -265,7 +267,7 @@ func writeIndentedTime(buf *bytes.Buffer, indent string, key string, value time.
 	if value.IsZero() {
 		return
 	}
-	_, _ = fmt.Fprintf(buf, "%s%s: %q\n", indent, key, value.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(buf, "%s%s: %q\n", indent, key, value.UTC().Format(time.RFC3339Nano))
 }
 
 func unknownFrontMatterLines(raw []byte) []string {
@@ -634,11 +636,19 @@ func parseList(lines []string, idx *int) []string {
 }
 
 func parseTime(value string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return time.Time{}
 	}
-	return parsed
+	// Prefer nanosecond precision; fall back to second-precision timestamps
+	// written by older ThoughtFlow versions.
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC()
+	}
+	return time.Time{}
 }
 
 func parseSection(text string, section string) string {

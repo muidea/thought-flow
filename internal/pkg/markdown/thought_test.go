@@ -63,6 +63,89 @@ func TestWriteAndReadThought(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadThoughtPreservesSubSecondTimestamps(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 9, 14, 30, 10, 123456789, time.UTC)
+	thought := models.Thought{
+		ID:            "20260609-143010-nanos",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     "Nano precision",
+		Path:          filepath.ToSlash(ThoughtRelativePath("20260609-143010-nanos")),
+		CreatedAt:     now,
+		UpdatedAt:     now.Add(25 * time.Millisecond),
+		ContentHash:   models.ContentHash("nano"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusPending,
+		IndexStatus:   models.IndexStatusPending,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	if err := WriteThought(root, thought, models.ThoughtContent{Original: "nano"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(thought.Path)))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(raw), "2026-06-09T14:30:10.123456789Z") {
+		t.Fatalf("expected nanosecond timestamp in front matter, got:\n%s", raw)
+	}
+	got, _, err := ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if !got.CreatedAt.Equal(thought.CreatedAt) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, thought.CreatedAt)
+	}
+	if !got.UpdatedAt.Equal(thought.UpdatedAt) {
+		t.Fatalf("UpdatedAt = %v, want %v", got.UpdatedAt, thought.UpdatedAt)
+	}
+}
+
+func TestReadThoughtAcceptsLegacySecondPrecisionTimestamps(t *testing.T) {
+	root := t.TempDir()
+	thoughtID := "20260609-143010-legacy"
+	relPath := filepath.ToSlash(ThoughtRelativePath(thoughtID))
+	targetPath := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	raw := `---
+id: "20260609-143010-legacy"
+type: "text"
+source: "manual"
+path: "thoughts/2026/06/20260609-143010-legacy.md"
+created_at: "2026-06-09T14:30:10Z"
+updated_at: "2026-06-09T14:30:11Z"
+content_hash: "sha256:legacy"
+capture_status: "captured"
+refine_status: "pending"
+index_status: "pending"
+topic_status: "unmatched"
+errors: []
+---
+
+## Original
+
+legacy note
+`
+	if err := os.WriteFile(targetPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	got, _, err := ReadThought(root, thoughtID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	wantCreated := time.Date(2026, 6, 9, 14, 30, 10, 0, time.UTC)
+	wantUpdated := time.Date(2026, 6, 9, 14, 30, 11, 0, time.UTC)
+	if !got.CreatedAt.Equal(wantCreated) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, wantCreated)
+	}
+	if !got.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("UpdatedAt = %v, want %v", got.UpdatedAt, wantUpdated)
+	}
+}
+
 func TestReadThoughtPreservesHeadingsInsideSections(t *testing.T) {
 	root := t.TempDir()
 	thoughtID := "20260610-091500-headings"

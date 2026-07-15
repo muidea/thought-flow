@@ -191,6 +191,9 @@ func TestListThoughtsReturnsWorkspaceThoughts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capture(first) error = %v", err)
 	}
+	// Sub-second gap: timestamps must retain nanosecond precision through the
+	// markdown round-trip so list order stays recent-first within the same second.
+	time.Sleep(10 * time.Millisecond)
 	second, err := service.Capture(context.Background(), models.CaptureCommand{Type: models.ThoughtTypeText, Content: "Second listed thought"})
 	if err != nil {
 		t.Fatalf("Capture(second) error = %v", err)
@@ -203,12 +206,8 @@ func TestListThoughtsReturnsWorkspaceThoughts(t *testing.T) {
 	if len(thoughts) != 2 {
 		t.Fatalf("thoughts = %#v", thoughts)
 	}
-	ids := map[string]bool{}
-	for _, thought := range thoughts {
-		ids[thought.ID] = true
-	}
-	if !ids[first.Thought.ID] || !ids[second.Thought.ID] {
-		t.Fatalf("thought ids = %#v", ids)
+	if thoughts[0].ID != second.Thought.ID || thoughts[1].ID != first.Thought.ID {
+		t.Fatalf("expected recent-first order, got %#v (first=%s second=%s)", thoughts, first.Thought.ID, second.Thought.ID)
 	}
 }
 
