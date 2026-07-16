@@ -142,7 +142,7 @@ function makeDomStub(initial = {}) {
       style: {},
     };
   }
-  nodes["dashboard-events"] = makeElementStub("div");
+  nodes["dashboard-capture-sessions"] = makeElementStub("div");
   nodes["settings-drawer-event-list"] = makeElementStub("div");
   const sessionsPanel = {
     dataset: {},
@@ -392,6 +392,8 @@ function loadAppFunctionsWith(opts = {}) {
       renderSearchResultItem,
       renderComposeSourcesItem,
       renderThoughtsList,
+      renderDashboardCaptureSessionItem,
+      renderDashboardCaptureSessions,
       renderTopics,
       runSearch,
       renderSearchIdle,
@@ -824,7 +826,7 @@ test("app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)", ()
   assert.doesNotMatch(html, /search\.recency_label/);
 });
 
-test("appendEvent feeds overview and drawer activity lists with dashboard limit", () => {
+test("appendEvent keeps internal events in the settings drawer", () => {
   const dom = makeDomStub();
   const app = loadAppFunctionsWith({ dom });
 
@@ -833,29 +835,23 @@ test("appendEvent feeds overview and drawer activity lists with dashboard limit"
     resource_id: "draft-1",
   }));
 
-  const dashboard = dom.nodes["dashboard-events"];
   const drawer = dom.nodes["settings-drawer-event-list"];
-  assert.equal(dashboard.children.length, 1);
   assert.equal(drawer.children.length, 1);
-  assert.match(dashboard.children[0].innerHTML, /compose\.draft_created/);
-  assert.match(dashboard.children[0].innerHTML, /compose:draft-1/);
-  assert.equal(dashboard.children[0].dataset.eventType, "compose.draft_created");
   assert.equal(drawer.children[0].dataset.resourceId, "draft-1");
 
-  for (let i = 0; i < 9; i += 1) {
+  for (let i = 0; i < 61; i += 1) {
     app.appendEvent("search.index_updated", JSON.stringify({
       resource_type: "thought",
       resource_id: `thought-${i}`,
     }));
   }
 
-  assert.equal(dashboard.children.length, 8);
-  assert.equal(drawer.children.length, 10);
-  assert.match(dashboard.children[0].innerHTML, /thought:thought-8/);
-  assert.doesNotMatch(dashboard.children.map((item) => item.innerHTML).join("\n"), /draft-1/);
+  assert.equal(drawer.children.length, 60);
+  assert.match(drawer.children[0].innerHTML, /thought:thought-60/);
+  assert.doesNotMatch(drawer.children.map((item) => item.innerHTML).join("\n"), /draft-1/);
 });
 
-test("connectEvents subscribes overview activity to every known domain event", () => {
+test("connectEvents sends all domain events to the settings drawer only", () => {
   const dom = makeDomStub();
   const listeners = {};
   let sourceURL = "";
@@ -868,7 +864,6 @@ test("connectEvents subscribes overview activity to every known domain event", (
   app.connectEvents();
 
   assert.equal(sourceURL, "/api/events");
-  assert.equal(dom.nodes["dashboard-events"].dataset.empty, "true");
   assert.equal(dom.nodes["settings-drawer-event-list"].dataset.empty, "true");
   for (const type of app.DOMAIN_EVENT_TYPES) {
     assert.equal(typeof listeners[type], "function", `${type} should be subscribed`);
@@ -882,10 +877,27 @@ test("connectEvents subscribes overview activity to every known domain event", (
     data: JSON.stringify({ resource_type: "compose", resource_id: "draft-2" }),
   });
 
-  assert.equal(dom.nodes["dashboard-events"].dataset.empty, undefined);
   assert.equal(dom.nodes["settings-drawer-event-list"].dataset.empty, undefined);
-  assert.equal(dom.nodes["dashboard-events"].children.length, 1);
-  assert.match(dom.nodes["dashboard-events"].children[0].innerHTML, /compose:draft-2/);
+  assert.equal(dom.nodes["settings-drawer-event-list"].children.length, 1);
+  assert.match(dom.nodes["settings-drawer-event-list"].children[0].innerHTML, /compose:draft-2/);
+});
+
+test("renderDashboardCaptureSessions shows recent capture sessions, not event details", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.capture.sessions = [
+    { sessionId: "older", title: "Earlier conversation", updatedAt: "2026-07-10T08:00:00Z" },
+    { sessionId: "latest", title: "Latest conversation", thoughtId: "thought-1", updatedAt: "2026-07-11T08:00:00Z" },
+  ];
+
+  app.renderDashboardCaptureSessions();
+
+  const html = dom.nodes["dashboard-capture-sessions"].innerHTML;
+  assert.match(html, /Latest conversation/);
+  assert.match(html, /Earlier conversation/);
+  assert.match(html, /data-dashboard-session-id="latest"/);
+  assert.match(html, /capture\.drawer\.archived/);
+  assert.doesNotMatch(html, /search\.index_updated|resource_id/);
 });
 
 test("buildRouteHash omits empty query fields and keeps the path clean", () => {

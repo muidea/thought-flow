@@ -1350,6 +1350,41 @@ function upsertThoughtRecord(thought, { render = true } = {}) {
   }
 }
 
+const DASHBOARD_CAPTURE_LIMIT = 8;
+
+function renderDashboardCaptureSessionItem(session) {
+  const label = captureSessionLabel(session);
+  const status = session.thoughtId ? t("capture.drawer.archived") : t("capture.drawer.draft");
+  return `
+    <article class="result-item" data-dashboard-session-id="${escapeHTML(session.sessionId || "")}">
+      <strong>${escapeHTML(label)}</strong>
+      <div class="result-meta">${escapeHTML(status)} · ${escapeHTML(fmtDate(session.updatedAt))}</div>
+    </article>
+  `;
+}
+
+// The overview deliberately renders persisted capture sessions instead of the
+// live domain-event stream. Sessions are user-visible conversation history and
+// can be reopened; events contain background implementation details.
+function renderDashboardCaptureSessions() {
+  const list = $("#dashboard-capture-sessions");
+  if (!list) return;
+  const sessions = (state.capture.sessions || []).slice(0, DASHBOARD_CAPTURE_LIMIT);
+  if (sessions.length === 0) {
+    list.innerHTML = `<div class="tf-empty">${escapeHTML(t("empty.no_capture"))}</div>`;
+    return;
+  }
+  list.innerHTML = sessions.map((session) => renderDashboardCaptureSessionItem(session)).join("");
+  list.querySelectorAll("[data-dashboard-session-id]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const sessionID = item.dataset.dashboardSessionId;
+      if (!sessionID) return;
+      navigateHash(buildRouteHash("capture"), { force: true });
+      switchCaptureSession(sessionID);
+    });
+  });
+}
+
 function renderThoughtListItem(thought) {
   const title = thoughtDisplayTitle(thought) || thought.id || "";
   const updatedAt = fmtDate(thought.updated_at || thought.created_at);
@@ -1618,11 +1653,10 @@ async function refreshNotesRuntime() {
       ]));
     }
   }
-  // Copy the last few events from the dashboard summary so opening the
-  // notes runtime card feels live. The dashboard already receives every
-  // event; the clone is cheap and avoids a second SSE connection.
+  // The overview is intentionally capture-only. The runtime card still
+  // exposes the full event stream by cloning the settings event list.
   if (eventsNode) {
-    const source = $("#dashboard-events");
+    const source = $("#settings-drawer-event-list");
     const items = source
       ? Array.from(source.children).filter((item) => item?.classList?.contains?.("event-item")).slice(0, 6)
       : [];
@@ -2708,6 +2742,7 @@ function rememberCaptureSession(session) {
     source: session.source || "server",
   });
   state.capture.sessions = filtered.slice(0, 12);
+  renderDashboardCaptureSessions();
   if (isCaptureSessionsDrawerOpen()) {
     renderCaptureSessionsDrawer();
   }
@@ -2786,6 +2821,7 @@ async function refreshCaptureSessionsFromServer() {
       }))
       .slice(0, 24);
     redrawCaptureSessionsList();
+    renderDashboardCaptureSessions();
   }
   // The server also exposes last_active_session_id — the scratchpad
   // the boot path should land the user on. We surface it through
@@ -2910,6 +2946,7 @@ async function deleteCaptureSession(sessionId) {
   await api(`/api/capture/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
   const deleted = (state.capture.sessions || []).find((item) => item.sessionId === id);
   state.capture.sessions = (state.capture.sessions || []).filter((item) => item.sessionId !== id);
+  renderDashboardCaptureSessions();
   saveCaptureSessions();
   if (state.capture.sessionId === id) {
     if (state.capture.activeThoughtId && window.tflowSessionLock) {
@@ -4385,13 +4422,10 @@ const CAPTURE_EVENT_TYPES = new Set([
 ]);
 
 function connectEvents() {
-  // PR3: events flow into the settings drawer (full stream with filters)
-  // and the dashboard summary. The notes runtime card reuses the same
-  // DOM as the dashboard summary by reading #dashboard-events via cloning.
+  // The settings drawer owns the full event stream. The overview is backed
+  // by persisted capture history, so it never receives internal SSE events.
   const drawerList = $("#settings-drawer-event-list");
-  const dashboardList = $("#dashboard-events");
   renderEventEmptyState(drawerList);
-  renderEventEmptyState(dashboardList);
   const source = new EventSource("/api/events");
   source.onmessage = (event) => appendEvent("message", event.data);
   DOMAIN_EVENT_TYPES.forEach((type) => {
@@ -4399,7 +4433,7 @@ function connectEvents() {
       appendEvent(type, event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
-      if (type === "thought.captured") loadThoughts().catch(() => {});
+      if (type.startsWith("thought.")) loadThoughts().catch(() => {});
       // scratchpad.* and thought.* events are routed to a single
       // capture-aware dispatcher. The dispatcher re-fetches the
       // relevant scratchpad / thought payload and re-renders the
@@ -4414,7 +4448,7 @@ function connectEvents() {
     });
   });
   source.onerror = () => {
-    if (!hasEventItems(drawerList) && !hasEventItems(dashboardList)) {
+    if (!hasEventItems(drawerList)) {
       appendEvent("events", t("toast.sse_reconnecting"));
     }
   };
@@ -4531,11 +4565,9 @@ async function handleCaptureEvent(type, rawData) {
 }
 
 function appendEvent(type, data) {
-  // PR3: events are appended to the dashboard summary and to the settings
-  // drawer event tab. The notes runtime card is populated on demand by
-  // refreshNotesRuntime() so it doesn't churn on every SSE tick.
+  // Keep operational events out of the overview. They remain available in
+  // the settings drawer for diagnostics and in the notes runtime card.
   const drawerList = $("#settings-drawer-event-list");
-  const dashboardList = $("#dashboard-events");
   const item = document.createElement("article");
   item.className = "event-item";
   let parsed = data;
@@ -4551,7 +4583,6 @@ function appendEvent(type, data) {
   item.dataset.resourceId = resourceID;
   item.innerHTML = `<strong>${escapeHTML(type)}</strong><div class="event-meta">${escapeHTML(parsed)}</div>`;
   prependEventItem(drawerList, item);
-  prependEventItem(dashboardList, item.cloneNode(true), 8);
   applyEventFilter();
 }
 
@@ -4671,8 +4702,9 @@ function bind() {
   $("#settings-drawer-reset-event-filter")?.addEventListener("click", () => resetEventFilter());
   $("#settings-help-visible")?.addEventListener("change", (event) => setHelpVisible(event.target.checked));
   $("#notes-runtime-refresh")?.addEventListener("click", () => refreshNotesRuntime().catch((error) => toast(error.message)));
-  $("#open-events-from-dashboard")?.addEventListener("click", () => {
-    openSettingsDrawer("settings-drawer-events");
+  $("#open-captures-from-dashboard")?.addEventListener("click", () => {
+    navigateHash(buildRouteHash("capture"), { force: true });
+    openCaptureSessionsDrawer();
   });
   $("#save-compose").addEventListener("click", () => saveComposeDraft().catch((error) => toast(error.message)));
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
@@ -4818,6 +4850,7 @@ async function boot() {
     toast(error.message);
   });
   state.capture.sessions = loadCaptureSessions();
+  renderDashboardCaptureSessions();
   // Sweep any stale cross-tab session locks before we render. Per-key
   // getHolder() only fires for thoughts the user actually opens, but
   // a tab that crashed (or was force-killed) can leave lock entries
