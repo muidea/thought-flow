@@ -159,7 +159,6 @@ func TestStoreRejectsEmptySources(t *testing.T) {
 	}
 }
 
-
 func TestStoreAllowsEmptyContentWhenGenerating(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

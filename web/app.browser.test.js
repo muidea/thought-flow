@@ -655,6 +655,106 @@ test("compose sources load from the backend", async (t) => {
   }
 });
 
+test("compose draft reader opens preview and supports edit/preview toggle", async (t) => {
+  const server = await startFixtureServer();
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+
+  for (const viewport of viewports()) {
+    const browser = await target.launch(viewport);
+    try {
+      const page = await connectPage(browser);
+      await page.send("Page.enable");
+      await page.navigate(`${baseURL}/`);
+      await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+      await setPageHash(page, "#/write");
+      await page.waitForExpression(() => document.querySelector("#page-compose")?.classList.contains("active"));
+      await page.waitForExpression(() => document.querySelectorAll("#compose-writing [data-compose-id]").length > 0);
+
+      const layout = await page.evaluate(() => {
+        const workspace = document.querySelector(".tf-compose-workspace");
+        const list = document.querySelector(".tf-compose-list-pane");
+        const main = document.querySelector(".tf-compose-main-pane");
+        if (!workspace || !list || !main) return null;
+        const ws = workspace.getBoundingClientRect();
+        const lr = list.getBoundingClientRect();
+        const mr = main.getBoundingClientRect();
+        return {
+          wsWidth: ws.width,
+          listWidth: lr.width,
+          mainWidth: mr.width,
+          stacked: mr.top >= lr.bottom - 1,
+        };
+      });
+      assert.ok(layout, `compose workspace missing on ${viewport.name}`);
+      if (viewport.width >= 760) {
+        assert.ok(layout.mainWidth > layout.listWidth, `main should be wider than list on ${viewport.name}: ${JSON.stringify(layout)}`);
+        assert.ok(layout.listWidth <= 320, `list too wide on ${viewport.name}: ${layout.listWidth}`);
+      } else {
+        assert.ok(layout.stacked || layout.mainWidth >= layout.wsWidth * 0.9, `narrow layout should stack/full-width on ${viewport.name}: ${JSON.stringify(layout)}`);
+      }
+
+      await page.evaluate(() => {
+        document.querySelector('#compose-writing [data-compose-id="draft-1"]')?.click();
+      });
+      await page.waitForExpression(() => {
+        const preview = document.querySelector("#compose-preview");
+        return preview && !preview.hidden && /Smoke test draft/.test(preview.textContent || "");
+      });
+
+      const previewState = await page.evaluate(() => ({
+        previewHidden: document.querySelector("#compose-preview")?.hidden,
+        editorHidden: document.querySelector("#compose-output")?.hidden,
+        previewHTML: document.querySelector("#compose-preview")?.innerHTML || "",
+        editDisabled: document.querySelector("#compose-mode-edit")?.disabled,
+        saveDisabled: document.querySelector("#save-compose")?.disabled,
+        previewPressed: document.querySelector("#compose-mode-preview")?.getAttribute("aria-pressed"),
+      }));
+      assert.equal(previewState.previewHidden, false, `preview should show on ${viewport.name}`);
+      assert.equal(previewState.editorHidden, true, `editor should hide on ${viewport.name}`);
+      assert.match(previewState.previewHTML, /<h1>Smoke test draft<\/h1>/);
+      assert.match(previewState.previewHTML, /<li>alpha<\/li>/);
+      assert.equal(previewState.editDisabled, false);
+      assert.equal(previewState.saveDisabled, false);
+      assert.equal(previewState.previewPressed, "true");
+
+      // Keyboard: focus Edit and activate.
+      await page.evaluate(() => {
+        const edit = document.querySelector("#compose-mode-edit");
+        edit?.focus();
+        edit?.click();
+      });
+      await page.waitForExpression(() => {
+        const editor = document.querySelector("#compose-output");
+        return editor && !editor.hidden;
+      });
+      await page.evaluate(() => {
+        const editor = document.querySelector("#compose-output");
+        editor.value = "# Edited in browser\n\n- gamma";
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await page.evaluate(() => document.querySelector("#compose-mode-preview")?.click());
+      await page.waitForExpression(() => {
+        const preview = document.querySelector("#compose-preview");
+        return preview && !preview.hidden && /Edited in browser/.test(preview.textContent || "");
+      });
+      const afterToggle = await page.evaluate(() => ({
+        previewHTML: document.querySelector("#compose-preview")?.innerHTML || "",
+        editorHidden: document.querySelector("#compose-output")?.hidden,
+      }));
+      assert.match(afterToggle.previewHTML, /<h1>Edited in browser<\/h1>/);
+      assert.equal(afterToggle.editorHidden, true);
+    } finally {
+      await browser.close();
+    }
+  }
+});
+
 test("capture composer starts a new session, persists a thought, and shows the conversation", async (t) => {
   const server = await startFixtureServer({ autoCommit: true });
   t.after(() => server.close());
@@ -1661,7 +1761,7 @@ function startFixtureServer(options = {}) {
           goal: "Smoke test draft",
           format: "summary",
           status: "draft",
-          content: "# Smoke test draft",
+          content: "# Smoke test draft\n\n- alpha\n- beta\n\n```js\nconst n = 1;\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
           created_at: "2026-06-09T00:00:00Z",
           updated_at: "2026-06-09T00:00:00Z",
         }));

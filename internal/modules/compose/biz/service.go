@@ -77,6 +77,12 @@ type Service struct {
 	// same request fingerprint so double-clicks do not mint two jobs.
 	inflightMu sync.Mutex
 	inflight   map[string]models.Job
+
+	// draftMu serializes a generating worker's final existence-check/write
+	// with DeleteDraft. Without it, a worker can observe a placeholder,
+	// have that placeholder deleted, then recreate it when it persists the
+	// completed body.
+	draftMu sync.Mutex
 }
 
 func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry, generator ai.DocumentGenerationProvider, maxRepairAttempts int) {
@@ -317,6 +323,10 @@ func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fi
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
 		if s.draftStore != nil {
+			// A failed worker also writes the placeholder. Serialize that
+			// fallback with DeleteDraft for the same no-resurrection rule as
+			// the successful path above.
+			s.draftMu.Lock()
 			if existing, loadErr := s.draftStore.GetDraft(context.Background(), job.ResourceID); loadErr == nil {
 				now := s.now()
 				existing.Status = models.ComposeStatusFailed
@@ -346,6 +356,7 @@ func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fi
 					})
 				}
 			}
+			s.draftMu.Unlock()
 		}
 		return
 	}
@@ -535,9 +546,13 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 	// source list itself is the authoritative record of which
 	// thoughts the user picked, so we do not duplicate it here.
 
-	// If this CreateDraft is filling an async placeholder and the
-	// user deleted that placeholder mid-run, do not recreate it.
+	// If this CreateDraft is filling an async placeholder, serialize the
+	// existence check and write with DeleteDraft. The check alone is not
+	// sufficient: delete may otherwise remove the file immediately before
+	// SaveDraft recreates it.
 	if opt.DraftID != "" {
+		s.draftMu.Lock()
+		defer s.draftMu.Unlock()
 		if _, loadErr := s.draftStore.GetDraft(ctx, opt.DraftID); loadErr != nil {
 			return models.ComposeDraft{}, errComposeDraftDeleted
 		}
@@ -587,6 +602,10 @@ func (s *Service) DeleteDraft(ctx context.Context, draftID string) error {
 	if draftID == "" {
 		return errors.New("draft id is required")
 	}
+	// Keep removal atomic with a background worker's final placeholder
+	// check/write so deletion cannot be followed by a stale writeback.
+	s.draftMu.Lock()
+	defer s.draftMu.Unlock()
 	draft, err := s.draftStore.GetDraft(ctx, draftID)
 	if err != nil {
 		// Idempotent delete: missing file is success.

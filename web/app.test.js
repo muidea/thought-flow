@@ -104,6 +104,49 @@ function makeElementStub(tagName = "div") {
 // Build a minimal DOM stub with input values that the page serializers read
 // and that restoreRoutePage writes. Backed by a plain object so tests can
 // inspect and mutate inputs between operations. Other selectors return null.
+
+function installComposeReaderDom(dom) {
+  const mk = (extra = {}) => ({
+    textContent: "",
+    innerHTML: "",
+    value: "",
+    hidden: true,
+    disabled: false,
+    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
+    setAttribute() {},
+    removeAttribute() {},
+    getAttribute: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    ...extra,
+  });
+  dom.nodes["compose-writing"] = mk({ hidden: false, querySelectorAll: () => [] });
+  dom.nodes["compose-main-title"] = mk({ hidden: false });
+  dom.nodes["compose-main-meta"] = mk({ hidden: false });
+  dom.nodes["compose-mode-preview"] = mk({ hidden: false, disabled: true });
+  dom.nodes["compose-mode-edit"] = mk({ hidden: false, disabled: true });
+  dom.nodes["save-compose"] = mk({ hidden: false, disabled: true });
+  dom.nodes["compose-reader-empty"] = mk({ hidden: false });
+  dom.nodes["compose-reader-loading"] = mk({ hidden: true });
+  dom.nodes["compose-preview"] = mk({ hidden: true });
+  dom.nodes["compose-output"] = mk({ hidden: true, value: "" });
+  dom.nodes["compose-save-result"] = mk({ hidden: true });
+  dom.nodes["compose-goal"] = { value: "" };
+  dom.nodes["compose-format"] = {
+    value: "",
+    selectedOptions: [{ dataset: { version: "0" } }],
+  };
+  dom.nodes["confirm-modal"] = {
+    classList: { add() {}, remove() {}, contains: () => false },
+    setAttribute() {},
+    querySelectorAll: () => [],
+    querySelector: () => null,
+  };
+  dom.nodes["confirm-title"] = { textContent: "" };
+  dom.nodes["confirm-message"] = { textContent: "" };
+  return dom;
+}
+
 function makeDomStub(initial = {}) {
   const store = { ...initial };
   const controls = ["search-query", "search-tags",
@@ -381,6 +424,15 @@ function loadAppFunctionsWith(opts = {}) {
       thoughtLinksForDisplay,
       renderComposeDraft,
       renderComposeDrafts,
+      syncComposeLocalContentFromEditor,
+      confirmDiscardComposeEdits,
+      saveComposeDraft,
+      loadComposeDraft,
+      clearComposeReader,
+      composeReaderState,
+      isComposeReaderDirty,
+      setComposeReaderMode,
+      renderComposeReader,
       composeTitleFromContent,
       outlineFromText,
       outlineText,
@@ -740,6 +792,235 @@ test("renderComposeDraft keeps source links out of the editable body", () => {
   assert.equal((content.match(/\[\[thoughts\/one\.md\]\]/g) || []).length, 1);
   assert.doesNotMatch(content, /\[\[thoughts\/two\.md\]\]/);
   assert.doesNotMatch(content, /### Sources/);
+});
+
+
+test("compose reader defaults to preview and hides textarea", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url) => {
+      if (String(url).includes("/api/compose/drafts/d-1")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              id: "d-1",
+              goal: "Outline",
+              status: "draft",
+              format: "outline",
+              content: "# Title\n\n- item\n\n```js\nconst x = 1;\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
+              updated_at: "2026-07-18T00:00:00Z",
+            },
+            error: null,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ data: [], error: null }) };
+    },
+  });
+  await app.loadComposeDraft("d-1");
+  assert.equal(app.composeReaderState().mode, "preview");
+  assert.equal(app.composeReaderState().activeDraftID, "d-1");
+  assert.equal(dom.nodes["compose-output"].hidden, true);
+  assert.equal(dom.nodes["compose-preview"].hidden, false);
+  assert.equal(dom.nodes["compose-reader-empty"].hidden, true);
+  assert.equal(dom.nodes["compose-mode-edit"].disabled, false);
+  assert.equal(dom.nodes["save-compose"].disabled, false);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<h1>Title<\/h1>/);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<li>item<\/li>/);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<pre><code[\s\S]*const x = 1/);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<table>/);
+});
+
+test("compose reader edit to preview keeps local content", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url) => {
+      if (String(url).includes("/api/compose/drafts/d-1")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: { id: "d-1", goal: "G", status: "draft", content: "original body", format: "summary" },
+            error: null,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ data: [], error: null }) };
+    },
+  });
+  await app.loadComposeDraft("d-1");
+  app.setComposeReaderMode("edit");
+  assert.equal(dom.nodes["compose-output"].hidden, false);
+  assert.equal(dom.nodes["compose-preview"].hidden, true);
+  assert.equal(dom.nodes["compose-output"].value, "original body");
+  dom.nodes["compose-output"].value = "## Edited\n\nnew list\n\n- a";
+  app.composeReaderState().localContent = dom.nodes["compose-output"].value;
+  assert.equal(app.isComposeReaderDirty(), true);
+  app.setComposeReaderMode("preview");
+  assert.equal(dom.nodes["compose-preview"].hidden, false);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<h2>Edited<\/h2>/);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /new list/);
+  app.setComposeReaderMode("edit");
+  assert.equal(dom.nodes["compose-output"].value, "## Edited\n\nnew list\n\n- a");
+});
+
+test("compose reader preview uses local edits not original draft body", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        data: { id: "d-1", goal: "G", status: "draft", content: "SERVER BODY", format: "summary" },
+        error: null,
+      }),
+    }),
+  });
+  await app.loadComposeDraft("d-1");
+  app.setComposeReaderMode("edit");
+  dom.nodes["compose-output"].value = "LOCAL ONLY";
+  app.syncComposeLocalContentFromEditor();
+  app.setComposeReaderMode("preview");
+  assert.match(dom.nodes["compose-preview"].innerHTML, /LOCAL ONLY/);
+  assert.doesNotMatch(dom.nodes["compose-preview"].innerHTML, /SERVER BODY/);
+});
+
+test("compose reader dirty switch can cancel and keep edits", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  let fetched = [];
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url) => {
+      fetched.push(String(url));
+      const id = String(url).includes("d-2") ? "d-2" : "d-1";
+      return {
+        ok: true,
+        json: async () => ({
+          data: { id, goal: id, status: "draft", content: `body-${id}`, format: "summary" },
+          error: null,
+        }),
+      };
+    },
+  });
+  await app.loadComposeDraft("d-1");
+  app.setComposeReaderMode("edit");
+  dom.nodes["compose-output"].value = "dirty text";
+  app.syncComposeLocalContentFromEditor();
+  assert.equal(app.isComposeReaderDirty(), true);
+
+  const pending = app.loadComposeDraft("d-2");
+  // confirmDiscardComposeEdits -> confirmAction parks on pendingConfirm
+  await new Promise((r) => setImmediate(r));
+  assert.equal(typeof app._state.pendingConfirm, "function");
+  app._state.pendingConfirm(false); // stay
+  await pending;
+  assert.equal(app.composeReaderState().activeDraftID, "d-1");
+  assert.equal(app.composeReaderState().localContent, "dirty text");
+
+  const pending2 = app.loadComposeDraft("d-2");
+  await new Promise((r) => setImmediate(r));
+  app._state.pendingConfirm(true); // discard
+  await pending2;
+  assert.equal(app.composeReaderState().activeDraftID, "d-2");
+  assert.equal(app.isComposeReaderDirty(), false);
+  assert.equal(app.composeReaderState().localContent, "body-d-2");
+});
+
+test("compose reader disables actions for generating failed and saved", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const statuses = {
+    "d-gen": { id: "d-gen", status: "generating", goal: "G", content: "" },
+    "d-fail": { id: "d-fail", status: "failed", goal: "G", content: "boom" },
+    "d-saved": { id: "d-saved", status: "saved", goal: "G", content: "# Saved\n\nok", saved_thought_id: "t-1" },
+  };
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url) => {
+      const key = Object.keys(statuses).find((id) => String(url).includes(id));
+      return { ok: true, json: async () => ({ data: statuses[key], error: null }) };
+    },
+  });
+
+  await app.loadComposeDraft("d-gen");
+  assert.equal(dom.nodes["compose-reader-loading"].hidden, false);
+  assert.equal(dom.nodes["compose-output"].hidden, true);
+  assert.equal(dom.nodes["compose-mode-edit"].disabled, true);
+  assert.equal(dom.nodes["save-compose"].disabled, true);
+
+  await app.loadComposeDraft("d-fail", { force: true });
+  assert.equal(dom.nodes["compose-mode-edit"].disabled, true);
+  assert.equal(dom.nodes["save-compose"].disabled, true);
+  assert.equal(dom.nodes["compose-preview"].hidden, false);
+
+  await app.loadComposeDraft("d-saved", { force: true });
+  assert.equal(dom.nodes["compose-mode-edit"].disabled, true);
+  assert.equal(dom.nodes["save-compose"].disabled, true);
+  assert.equal(dom.nodes["compose-preview"].hidden, false);
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<h1>Saved<\/h1>/);
+  assert.equal(dom.nodes["compose-save-result"].hidden, false);
+  assert.match(dom.nodes["compose-save-result"].innerHTML, /#\/notes\?id=t-1/);
+
+  await app.loadComposeDraft("d-fail", { force: true });
+  assert.equal(dom.nodes["compose-save-result"].hidden, true);
+  assert.equal(dom.nodes["compose-save-result"].innerHTML, "");
+});
+
+test("saving a compose draft keeps its reader preview and Thought link", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url, init = {}) => {
+      const target = String(url);
+      if (target.includes("/api/compose/drafts/d-1/save")) {
+        assert.equal(init.method, "POST");
+        return { ok: true, json: async () => ({ data: { thought: { id: "thought-saved" } }, error: null }) };
+      }
+      if (target.includes("/api/compose/drafts/d-1")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: { id: "d-1", goal: "Goal", status: "draft", content: "# Original", format: "summary" },
+            error: null,
+          }),
+        };
+      }
+      if (target.includes("/api/compose/drafts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: "d-1", goal: "Goal", status: "saved", content: "# Edited", saved_thought_id: "thought-saved", format: "summary" }],
+            error: null,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ data: {}, error: null }) };
+    },
+  });
+
+  await app.loadComposeDraft("d-1");
+  app.setComposeReaderMode("edit");
+  dom.nodes["compose-output"].value = "# Edited";
+  app.syncComposeLocalContentFromEditor();
+
+  const saving = app.saveComposeDraft();
+  await new Promise((resolve) => setImmediate(resolve));
+  app._state.pendingConfirm(true);
+  await saving;
+
+  assert.equal(app._state.composeDraft.status, "saved");
+  assert.equal(app.composeReaderState().mode, "preview");
+  assert.match(dom.nodes["compose-preview"].innerHTML, /<h1>Edited<\/h1>/);
+  assert.equal(dom.nodes["compose-save-result"].hidden, false);
+  assert.match(dom.nodes["compose-save-result"].innerHTML, /#\/notes\?id=thought-saved/);
+  assert.equal(dom.nodes["save-compose"].disabled, true);
 });
 
 test("composeTitleFromContent prefers the first markdown heading", () => {

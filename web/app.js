@@ -25,6 +25,14 @@ const state = {
   composeGenerating: false,
   composeActiveJobId: "",
   composeGenerationPollTimer: null,
+  // Compose reader UI: preview/edit mode with local unsaved content.
+  composeReader: {
+    activeDraftID: "",
+    mode: "preview", // preview | edit
+    localContent: "",
+    loadedContent: "",
+    status: "",
+  },
   documentProfiles: [],
   documentProfileIssues: [],
   activeThoughtId: "",
@@ -592,15 +600,21 @@ function setButtonLoading(button, loading, loadingLabel) {
 function confirmAction(title, message) {
   const modal = $("#confirm-modal");
   if (!modal) return Promise.resolve(true);
-  $("#confirm-title").textContent = title;
-  $("#confirm-message").textContent = message;
+  const titleNode = $("#confirm-title");
+  const messageNode = $("#confirm-message");
+  if (titleNode) titleNode.textContent = title;
+  if (messageNode) messageNode.textContent = message;
   if (activeFocusRelease) {
     try { activeFocusRelease(); } catch (_) { /* ignore */ }
     activeFocusRelease = null;
   }
   modal.classList.add("open");
   modal.setAttribute("aria-hidden", "false");
-  activeFocusRelease = trapFocus(modal, document.activeElement);
+  try {
+    activeFocusRelease = trapFocus(modal, document.activeElement);
+  } catch (_) {
+    activeFocusRelease = null;
+  }
   return new Promise((resolve) => {
     state.pendingConfirm = resolve;
   });
@@ -4397,9 +4411,169 @@ function setComposeGenerateBusy(busy) {
   }
 }
 
+function composeReaderState() {
+  if (!state.composeReader || typeof state.composeReader !== "object") {
+    state.composeReader = {
+      activeDraftID: "",
+      mode: "preview",
+      localContent: "",
+      loadedContent: "",
+      status: "",
+    };
+  }
+  return state.composeReader;
+}
+
+function isComposeReaderDirty() {
+  const reader = composeReaderState();
+  if (!reader.activeDraftID) return false;
+  return String(reader.localContent || "") !== String(reader.loadedContent || "");
+}
+
+function syncComposeLocalContentFromEditor() {
+  const reader = composeReaderState();
+  if (reader.mode !== "edit") return;
+  const output = $("#compose-output");
+  if (output) reader.localContent = output.value;
+}
+
+async function confirmDiscardComposeEdits(actionLabel = "") {
+  if (!isComposeReaderDirty()) return true;
+  const message = actionLabel
+    ? t("compose.unsaved_confirm_action", { action: actionLabel })
+    : t("compose.unsaved_confirm");
+  return confirmAction(t("compose.unsaved_title"), message);
+}
+
+function clearComposeReader() {
+  state.composeDraft = null;
+  state.composeReader = {
+    activeDraftID: "",
+    mode: "preview",
+    localContent: "",
+    loadedContent: "",
+    status: "",
+  };
+  renderComposeReader();
+}
+
+function setComposeReaderMode(mode) {
+  const reader = composeReaderState();
+  if (!reader.activeDraftID) return;
+  const next = mode === "edit" ? "edit" : "preview";
+  if (reader.mode === "edit" && next === "preview") {
+    syncComposeLocalContentFromEditor();
+  }
+  // saved drafts are read-only; generating/failed cannot enter edit.
+  const status = reader.status || state.composeDraft?.status || "draft";
+  if (next === "edit" && status !== "draft") return;
+  reader.mode = next;
+  renderComposeReader();
+}
+
+function composeDraftMetaLabel(draft) {
+  if (!draft) return "";
+  const status = draft.status || "draft";
+  const statusLabel = t(`compose.status.${status}`) || status;
+  const profile = profileByID(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
+  const formatLabel = profile ? profileLabel(profile) : (draft.format || t("compose.format.summary"));
+  const when = fmtDate(draft.updated_at || draft.created_at);
+  return `${statusLabel} · ${formatLabel} · ${when}`;
+}
+
+function renderComposeReader() {
+  const reader = composeReaderState();
+  const draft = state.composeDraft;
+  const empty = $("#compose-reader-empty");
+  const loading = $("#compose-reader-loading");
+  const preview = $("#compose-preview");
+  const editor = $("#compose-output");
+  const saveResult = $("#compose-save-result");
+  const title = $("#compose-main-title");
+  const meta = $("#compose-main-meta");
+  const btnPreview = $("#compose-mode-preview");
+  const btnEdit = $("#compose-mode-edit");
+  const btnSave = $("#save-compose");
+
+  const hasDraft = Boolean(draft && reader.activeDraftID);
+  const status = hasDraft ? (draft.status || reader.status || "draft") : "";
+  const canEdit = status === "draft";
+  const canSave = status === "draft" && String(reader.localContent || "").trim() !== "";
+  const mode = reader.mode === "edit" && canEdit ? "edit" : "preview";
+  if (reader.mode !== mode) reader.mode = mode;
+
+  if (title) {
+    title.textContent = hasDraft
+      ? (draft.goal || draft.id || t("compose.reader_empty_title"))
+      : t("compose.reader_empty_title");
+  }
+  if (meta) {
+    meta.textContent = hasDraft ? composeDraftMetaLabel(draft) : t("compose.reader_empty_hint");
+  }
+
+  if (btnPreview) {
+    btnPreview.disabled = !hasDraft || status === "generating";
+    btnPreview.setAttribute("aria-pressed", mode === "preview" ? "true" : "false");
+  }
+  if (btnEdit) {
+    btnEdit.disabled = !canEdit;
+    btnEdit.setAttribute("aria-pressed", mode === "edit" ? "true" : "false");
+  }
+  if (btnSave) btnSave.disabled = !canSave;
+
+  const showEmpty = !hasDraft;
+  const showLoading = hasDraft && status === "generating";
+  const showEditor = hasDraft && !showLoading && mode === "edit" && canEdit;
+  const showPreview = hasDraft && !showLoading && !showEditor;
+
+  if (empty) empty.hidden = !showEmpty;
+  if (loading) {
+    loading.hidden = !showLoading;
+    if (showLoading) loading.textContent = t("compose.generating_body");
+  }
+  if (preview) {
+    preview.hidden = !showPreview;
+    if (showPreview) {
+      const body = String(reader.localContent || "");
+      if (!body.trim() && status === "failed") {
+        preview.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.failed_body"))}</div>`;
+      } else if (!body.trim()) {
+        preview.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty"))}</div>`;
+      } else {
+        preview.innerHTML = renderMarkdown(body);
+      }
+    } else {
+      preview.innerHTML = "";
+    }
+  }
+  if (editor) {
+    editor.hidden = !showEditor;
+    if (showEditor) {
+      if (editor.value !== reader.localContent) editor.value = reader.localContent;
+    }
+  }
+  if (saveResult) {
+    // The saved Thought link belongs to the currently rendered draft. Never
+    // retain a previous draft's link after switching or clearing the reader.
+    const savedThoughtID = hasDraft && status === "saved" ? String(draft.saved_thought_id || "").trim() : "";
+    if (savedThoughtID) {
+      saveResult.hidden = false;
+      saveResult.innerHTML = `<a class="tf-btn" href="#/notes?id=${encodeURIComponent(savedThoughtID)}">${escapeHTML(t("compose.view_saved"))}</a>`;
+    } else {
+      saveResult.hidden = true;
+      saveResult.innerHTML = "";
+    }
+  }
+}
+
 async function deleteComposeDraft(draftId, title = "") {
   const id = String(draftId || "").trim();
   if (!id) return;
+  if (composeReaderState().activeDraftID === id) {
+    syncComposeLocalContentFromEditor();
+    const discard = await confirmDiscardComposeEdits(t("compose.delete"));
+    if (!discard) return;
+  }
   const confirmed = await confirmAction(
     t("compose.delete_title"),
     t("compose.delete_confirm", { title: title || id }),
@@ -4408,14 +4582,8 @@ async function deleteComposeDraft(draftId, title = "") {
   await api(`/api/compose/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
   const deletedActiveJob = (state.composeDrafts || []).some((draft) => draft.id === id && draft.job_id === state.composeActiveJobId);
   state.composeDrafts = (state.composeDrafts || []).filter((draft) => draft.id !== id);
-  if (state.composeDraft?.id === id) {
-    state.composeDraft = null;
-    const output = $("#compose-output");
-    if (output) output.value = "";
-    const save = $("#save-compose");
-    if (save) save.disabled = true;
-    const result = $("#compose-save-result");
-    if (result) result.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty"))}</div>`;
+  if (state.composeDraft?.id === id || composeReaderState().activeDraftID === id) {
+    clearComposeReader();
   }
   if (deletedActiveJob) {
     clearComposeGenerationLock();
@@ -4429,22 +4597,54 @@ async function loadComposeDrafts() {
   state.composeDrafts = await api("/api/compose/drafts");
   renderComposeDrafts();
   renderSidebarBadges();
+  const reader = composeReaderState();
+  if (reader.activeDraftID && !isComposeReaderDirty()) {
+    const latest = (state.composeDrafts || []).find((d) => d.id === reader.activeDraftID);
+    if (latest && (latest.status || "") !== (reader.status || "")) {
+      // Status advanced (e.g. generating → draft); reload full body once.
+      loadComposeDraft(reader.activeDraftID, { force: true }).catch(() => {});
+    } else if (latest) {
+      reader.status = latest.status || reader.status;
+      if (state.composeDraft?.id === latest.id) state.composeDraft = { ...state.composeDraft, ...latest };
+      renderComposeReader();
+    }
+  }
 }
 
-async function loadComposeDraft(draftId) {
+async function loadComposeDraft(draftId, options = {}) {
   if (!draftId) return;
+  const force = Boolean(options.force);
+  const reader = composeReaderState();
+  if (!force && reader.activeDraftID && reader.activeDraftID !== draftId) {
+    syncComposeLocalContentFromEditor();
+    const discard = await confirmDiscardComposeEdits(t("compose.switch_draft_action"));
+    if (!discard) return;
+  } else if (!force && reader.activeDraftID === draftId && isComposeReaderDirty()) {
+    // Re-clicking the same draft with dirty edits: keep local content.
+    renderComposeDrafts();
+    renderComposeReader();
+    return;
+  }
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
   state.composeDraft = draft;
-  $("#compose-goal").value = draft.goal || "";
+  const content = renderComposeDraft(draft);
+  const status = draft.status || "draft";
+  state.composeReader = {
+    activeDraftID: draft.id || draftId,
+    mode: status === "draft" || status === "saved" ? "preview" : "preview",
+    localContent: content,
+    loadedContent: content,
+    status,
+  };
+  if ($("#compose-goal")) $("#compose-goal").value = draft.goal || "";
   syncComposeProfileSelect(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
-  $("#compose-output").value = renderComposeDraft(draft);
-  $("#save-compose").disabled = (draft.status || "draft") !== "draft";
-  if (draft.status === "generating") {
+  if (status === "generating") {
     toast(t("toast.compose_generate_inflight"));
-  } else if (draft.status === "failed") {
+  } else if (status === "failed") {
     toast(t("toast.compose_generate_failed"));
   }
   renderComposeDrafts();
+  renderComposeReader();
 }
 
 function renderComposeDraft(draft) {
@@ -4465,9 +4665,19 @@ async function saveComposeDraft() {
     toast(t("toast.generate_writing_first"));
     return;
   }
+  syncComposeLocalContentFromEditor();
+  const reader = composeReaderState();
+  if ((state.composeDraft.status || "draft") !== "draft") {
+    toast(t("toast.compose_save_unavailable"));
+    return;
+  }
+  const content = String(reader.localContent || "").trim();
+  if (!content) {
+    toast(t("toast.writing_content_required"));
+    return;
+  }
   const confirmed = await confirmAction(t("compose.confirm_title"), t("compose.confirm_message"));
   if (!confirmed) return;
-  const content = $("#compose-output").value.trim();
   const result = await api(`/api/compose/drafts/${encodeURIComponent(state.composeDraft.id)}/save`, {
     method: "POST",
     body: JSON.stringify({
@@ -4482,9 +4692,23 @@ async function saveComposeDraft() {
   await persistSources();
   broadcastSourcesChange();
   renderComposeSources();
-  $("#compose-save-result").innerHTML = `<a class="tf-btn" href="#/notes?id=${encodeURIComponent(result.thought.id)}">${escapeHTML(t("compose.view_saved"))}</a>`;
-  $("#save-compose").disabled = true;
-  state.composeDraft = null;
+  state.composeDraft = {
+    ...state.composeDraft,
+    Content: content,
+    content,
+    Status: "saved",
+    status: "saved",
+    SavedThoughtID: result.thought.id,
+    saved_thought_id: result.thought.id,
+  };
+  state.composeReader = {
+    ...reader,
+    mode: "preview",
+    localContent: content,
+    loadedContent: content,
+    status: "saved",
+  };
+  renderComposeReader();
   await loadComposeDrafts();
   window.setTimeout(() => runSearch().catch((error) => toast(error.message)), 1000);
 }
@@ -4613,18 +4837,13 @@ function handleComposeEvent(type, rawData) {
   // draft_created / draft_saved / draft_deleted — refresh the list.
   if (type === "compose.draft_deleted") {
     const deletedID = eventPayload?.draft_id || payload?.resource_id || "";
-    if (deletedID && state.composeDraft?.id === deletedID) {
-      state.composeDraft = null;
-      const output = $("#compose-output");
-      if (output) output.value = "";
-      const save = $("#save-compose");
-      if (save) save.disabled = true;
+    if (deletedID && (state.composeDraft?.id === deletedID || composeReaderState().activeDraftID === deletedID)) {
+      clearComposeReader();
     }
     loadComposeDrafts().then(() => {
       const stillGenerating = (state.composeDrafts || []).some((d) => d.status === "generating");
-      if (!stillGenerating) {
-        clearComposeGenerationLock();
-      }
+      if (!stillGenerating) clearComposeGenerationLock();
+      renderComposeReader();
     }).catch(() => {});
     return;
   }
@@ -4896,6 +5115,16 @@ function bind() {
     openCaptureSessionsDrawer();
   });
   $("#save-compose").addEventListener("click", () => saveComposeDraft().catch((error) => toast(error.message)));
+  $("#compose-mode-preview")?.addEventListener("click", () => setComposeReaderMode("preview"));
+  $("#compose-mode-edit")?.addEventListener("click", () => setComposeReaderMode("edit"));
+  $("#compose-output")?.addEventListener("input", () => {
+    const reader = composeReaderState();
+    if (reader.mode === "edit") {
+      reader.localContent = $("#compose-output")?.value || "";
+      const save = $("#save-compose");
+      if (save) save.disabled = (reader.status || state.composeDraft?.status || "draft") !== "draft" || !String(reader.localContent || "").trim();
+    }
+  });
   $("#refresh-topics").addEventListener("click", () => loadTopics().catch((error) => toast(error.message)));
   $("#topic-filter").addEventListener("input", () => { renderTopics(); persistRouteDebounced(); });
   $("#reset-topic-filter").addEventListener("click", () => { resetTopicFilters(); persistRouteDebounced(); });
@@ -5010,6 +5239,7 @@ function rerenderForLocale() {
   if (state.composeDrafts) {
     try { renderComposeDrafts(); } catch (_) {}
   }
+  try { renderComposeReader(); } catch (_) {}
 }
 
 async function boot() {

@@ -438,22 +438,32 @@
             </div>
             <section class="tf-card">
               <div id="tab-compose-writing" class="tab-panel active">
-                <div class="tf-two-column">
-                  <div>
+                <div class="tf-compose-workspace">
+                  <aside class="tf-compose-list-pane" aria-label="Generated writing list" data-i18n-attr="compose.reader_list_aria" data-i18n-attr-target="aria-label">
                     <div class="tf-selection-bar">
                       <span id="compose-source-count" data-i18n-template="compose.source_count" data-n="0">0 selected sources</span>
                       <button class="tf-btn" id="clear-compose-sources" type="button" disabled data-i18n="compose.clear_sources">Clear sources</button>
                     </div>
                     <div id="compose-writing" class="approval-list" data-i18n-template="compose.writing_empty" data-empty="true">No generated writing.</div>
-                  </div>
-                  <div>
-                    <div class="tf-card-header">
-                      <h3 data-i18n="compose.editor_title">Writing Editor</h3>
-                      <button class="tf-btn" type="button" id="save-compose" disabled data-i18n="compose.save">Save as thought</button>
+                  </aside>
+                  <section class="tf-compose-main-pane" aria-label="Writing reader" data-i18n-attr="compose.reader_main_aria" data-i18n-attr-target="aria-label">
+                    <div class="tf-compose-main-header">
+                      <div class="tf-compose-main-meta">
+                        <h3 id="compose-main-title" data-i18n="compose.reader_empty_title">Select a generated draft</h3>
+                        <div id="compose-main-meta" class="topic-meta" data-i18n="compose.reader_empty_hint">Open a draft from the list to read or edit.</div>
+                      </div>
+                      <div class="tf-compose-main-actions tf-action-row">
+                        <button class="tf-btn" type="button" id="compose-mode-preview" disabled data-i18n="compose.mode_preview" aria-pressed="true">Preview</button>
+                        <button class="tf-btn" type="button" id="compose-mode-edit" disabled data-i18n="compose.mode_edit" aria-pressed="false">Edit</button>
+                        <button class="tf-btn tf-btn-primary" type="button" id="save-compose" disabled data-i18n="compose.save">Save as thought</button>
+                      </div>
                     </div>
-                    <textarea id="compose-output" class="markdown-preview" spellcheck="false" data-i18n-template="compose.empty" data-empty="true">No generated or saved writing yet.</textarea>
-                    <div id="compose-save-result" class="tf-empty" data-i18n="compose.empty">No generated or saved writing yet.</div>
-                  </div>
+                    <div id="compose-reader-empty" class="tf-empty" data-i18n="compose.empty">No generated or saved writing yet.</div>
+                    <div id="compose-reader-loading" class="tf-compose-loading" hidden data-i18n="compose.generating_body">Generating writing…</div>
+                    <div id="compose-preview" class="markdown-preview markdown-rendered tf-compose-preview" hidden></div>
+                    <textarea id="compose-output" class="markdown-preview tf-compose-editor" spellcheck="false" hidden data-i18n-attr="compose.editor_placeholder" data-i18n-attr-target="placeholder" placeholder="Edit writing markdown"></textarea>
+                    <div id="compose-save-result" class="tf-empty" hidden></div>
+                  </section>
                 </div>
               </div>
               <div id="tab-compose-sources" class="tab-panel">

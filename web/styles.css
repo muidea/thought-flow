@@ -757,6 +757,99 @@ p {
   align-items: start;
 }
 
+/* Compose writing workspace: fixed list column + full remaining main pane. */
+.tf-compose-workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.tf-compose-list-pane,
+.tf-compose-main-pane {
+  min-width: 0;
+}
+
+.tf-compose-main-pane {
+  display: grid;
+  gap: 12px;
+}
+
+.tf-compose-main-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tf-compose-main-meta {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.tf-compose-main-meta h3 {
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.tf-compose-main-actions {
+  flex: 0 0 auto;
+}
+
+.tf-compose-preview,
+.tf-compose-editor {
+  width: 100%;
+  max-width: 960px;
+  min-height: 520px;
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.tf-compose-editor {
+  display: block;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.tf-compose-preview {
+  border: 1px solid var(--tf-color-border, var(--line));
+  border-radius: 8px;
+  background: var(--tf-color-bg-container, #fff);
+  padding: 16px 18px;
+}
+
+.tf-compose-preview table,
+.tf-compose-preview pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.tf-compose-preview pre {
+  overflow-x: auto;
+}
+
+.tf-compose-loading {
+  min-height: 200px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--tf-color-border, var(--line));
+  border-radius: 8px;
+  color: var(--tf-color-text-secondary, #667085);
+  background: #fafbfc;
+}
+
+.tf-btn[aria-pressed="true"] {
+  border-color: var(--tf-color-primary, #1677ff);
+  color: var(--tf-color-primary, #1677ff);
+  background: #e6f4ff;
+}
+
+
 .tf-notes-layout {
   grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
 }
@@ -1903,12 +1996,20 @@ textarea.markdown-preview {
   .tf-stat-grid,
   .tf-about-grid,
   .tf-two-column,
+  .tf-compose-workspace,
   .tf-topic-detail-layout,
   .tf-page .capture-form,
   .tf-page .search-form,
   .tf-usage-steps,
   .tf-filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tf-compose-preview,
+  .tf-compose-editor {
+    max-width: none;
+    min-height: 360px;
+    max-height: none;
   }
 
   .tf-filter-grid.tf-topic-filter-bar {
