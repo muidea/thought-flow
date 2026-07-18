@@ -1904,8 +1904,8 @@ function renderTopicMembers(members) {
   });
   node.querySelectorAll("[data-compose-source-id]").forEach((button) => {
     button.addEventListener("click", () => {
+      // Stay on the topic page after enqueueing — only add to the source queue.
       addToComposeSources([button.dataset.composeSourceId]);
-      openComposeSources();
     });
   });
 }
