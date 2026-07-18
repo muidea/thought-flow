@@ -159,6 +159,26 @@ func TestStoreRejectsEmptySources(t *testing.T) {
 	}
 }
 
+
+func TestStoreAllowsEmptyContentWhenGenerating(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	draft, err := store.SaveDraft(context.Background(), models.ComposeDraft{
+		ID:      "generating-1",
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: "a"}},
+		Status:  models.ComposeStatusGenerating,
+	})
+	if err != nil {
+		t.Fatalf("SaveDraft(generating) error = %v", err)
+	}
+	if draft.Status != models.ComposeStatusGenerating {
+		t.Fatalf("status = %q", draft.Status)
+	}
+	if draft.Content != "" {
+		t.Fatalf("content should stay empty for generating placeholder, got %q", draft.Content)
+	}
+}
+
 func TestStoreRejectsEmptyContent(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

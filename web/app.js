@@ -22,6 +22,9 @@ const state = {
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
+  composeGenerating: false,
+  composeActiveJobId: "",
+  composeGenerationPollTimer: null,
   documentProfiles: [],
   documentProfileIssues: [],
   activeThoughtId: "",
@@ -1216,22 +1219,38 @@ function renderComposeDrafts() {
     .map((draft) => {
       const active = state.composeDraft?.id === draft.id ? " active" : "";
       const status = draft.status || "draft";
+      const statusLabel = t(`compose.status.${status}`) || status;
       const profile = profileByID(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
       const formatLabel = profile ? profileLabel(profile) : (draft.format || t("compose.format.summary"));
+      const title = draft.goal || draft.id || "";
       return `
-        <article class="approval-item${active}" data-compose-id="${escapeHTML(draft.id)}">
-          <strong>${escapeHTML(draft.goal || draft.id)}</strong>
-          <div class="topic-meta">
-            <span class="pill">${escapeHTML(status)}</span>
-            <span>${escapeHTML(formatLabel)}</span>
-            <span>${escapeHTML(fmtDate(draft.updated_at || draft.created_at))}</span>
+        <article class="approval-item compose-draft-item${active}" data-compose-id="${escapeHTML(draft.id)}" data-compose-status="${escapeHTML(status)}">
+          <div class="compose-draft-content">
+            <strong class="compose-draft-title">${escapeHTML(title)}</strong>
+            <div class="topic-meta">
+              <span class="pill">${escapeHTML(statusLabel)}</span>
+              <span>${escapeHTML(formatLabel)}</span>
+              <span>${escapeHTML(fmtDate(draft.updated_at || draft.created_at))}</span>
+            </div>
           </div>
+          <button class="compose-draft-delete" type="button" data-delete-compose="${escapeHTML(draft.id)}" data-delete-compose-title="${escapeHTML(title)}" aria-label="${escapeHTML(t("compose.delete"))}" title="${escapeHTML(t("compose.delete"))}">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13m-7 4v5m4-5v5" /></svg>
+          </button>
         </article>
       `;
     })
     .join("");
   list.querySelectorAll("[data-compose-id]").forEach((item) => {
-    item.addEventListener("click", () => loadComposeDraft(item.dataset.composeId).catch((error) => toast(error.message)));
+    item.addEventListener("click", (event) => {
+      if (event.target?.closest?.("[data-delete-compose]")) return;
+      loadComposeDraft(item.dataset.composeId).catch((error) => toast(error.message));
+    });
+  });
+  list.querySelectorAll("[data-delete-compose]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteComposeDraft(button.dataset.deleteCompose, button.dataset.deleteComposeTitle).catch((error) => toast(error.message));
+    });
   });
 }
 
@@ -4273,6 +4292,10 @@ async function retryRefine() {
 
 async function createComposeDraft(event) {
   event.preventDefault();
+  if (state.composeGenerating) {
+    toast(t("toast.compose_generate_inflight"));
+    return;
+  }
   const sources = Array.from(state.composeSources.values());
   if (sources.length === 0) {
     toast(t("toast.add_sources_first"));
@@ -4284,22 +4307,122 @@ async function createComposeDraft(event) {
   const profileSelect = $("#compose-format");
   const selectedProfileID = profileSelect.value;
   const selectedProfileVersion = Number(profileSelect.selectedOptions?.[0]?.dataset.version || 0);
-  const draft = await api("/api/compose/drafts", {
-    method: "POST",
-    body: JSON.stringify({
-      sources,
-      selected_thought_ids: selectedThoughtIds,
-      goal: $("#compose-goal").value.trim(),
-      profile_id: selectedProfileID,
-      profile_version: selectedProfileVersion,
-    }),
-  });
-  state.composeDraft = draft;
-  $("#compose-output").value = renderComposeDraft(draft);
-  $("#save-compose").disabled = (draft.status || "draft") !== "draft";
-  closeDrawer("compose-create-drawer");
-  await loadComposeDrafts();
-  navigateHash(buildRouteHash("compose", {}, {}), { force: true });
+  const submit = event?.submitter || $("#compose-form button[type='submit']");
+  const previousDisabled = submit ? submit.disabled : false;
+  state.composeGenerating = true;
+  setComposeGenerateBusy(true);
+  if (submit) submit.disabled = true;
+  try {
+    // POST returns a queued job immediately; the draft body arrives later
+    // via compose.draft_created / job.updated and loadComposeDrafts.
+    const job = await api("/api/compose/drafts", {
+      method: "POST",
+      body: JSON.stringify({
+        sources,
+        selected_thought_ids: selectedThoughtIds,
+        goal: $("#compose-goal").value.trim(),
+        profile_id: selectedProfileID,
+        profile_version: selectedProfileVersion,
+      }),
+    });
+    state.composeActiveJobId = job?.id || "";
+    state.activeJobId = job?.id || state.activeJobId;
+    toast(t("toast.compose_generate_queued", { id: job?.id || "" }));
+    closeDrawer("compose-create-drawer");
+    await loadComposeDrafts();
+    navigateHash(buildRouteHash("compose", {}, { tab: "writing" }), { force: true });
+    // If the server already finished (fast local provider) clear the busy
+    // flag; otherwise SSE or polling for this exact job will clear it.
+    if (job?.status === "succeeded" || job?.status === "failed" || job?.status === "canceled") {
+      clearComposeGenerationLock();
+    } else {
+      scheduleComposeGenerationPoll();
+    }
+  } catch (error) {
+    clearComposeGenerationLock();
+    if (submit) submit.disabled = previousDisabled;
+    throw error;
+  }
+}
+
+function clearComposeGenerationLock() {
+  if (state.composeGenerationPollTimer) {
+    window.clearTimeout(state.composeGenerationPollTimer);
+    state.composeGenerationPollTimer = null;
+  }
+  state.composeGenerating = false;
+  state.composeActiveJobId = "";
+  setComposeGenerateBusy(false);
+}
+
+function scheduleComposeGenerationPoll() {
+  if (!state.composeGenerating || state.composeGenerationPollTimer) return;
+  state.composeGenerationPollTimer = window.setTimeout(async () => {
+    state.composeGenerationPollTimer = null;
+    if (!state.composeGenerating) return;
+    try {
+      await loadComposeDrafts();
+      const active = (state.composeDrafts || []).find((draft) => draft.job_id === state.composeActiveJobId);
+      if (!active || active.status !== "generating") {
+        clearComposeGenerationLock();
+        return;
+      }
+    } catch (_) {
+      // Keep the lock and retry: a transient list failure must not allow a
+      // duplicate submit while the server-side job remains active.
+    }
+    scheduleComposeGenerationPoll();
+  }, 1500);
+}
+
+function setComposeGenerateBusy(busy) {
+  const buttons = [
+    $("#open-compose-create"),
+    $("#open-compose-create-sources"),
+    $("#compose-form button[type='submit']"),
+  ].filter(Boolean);
+  for (const button of buttons) {
+    if (busy) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    } else {
+      button.removeAttribute("aria-busy");
+      // re-enable create buttons only when sources remain available
+      if (button.id === "open-compose-create" || button.id === "open-compose-create-sources") {
+        button.disabled = state.composeSources.size === 0;
+      } else {
+        button.disabled = false;
+      }
+    }
+  }
+}
+
+async function deleteComposeDraft(draftId, title = "") {
+  const id = String(draftId || "").trim();
+  if (!id) return;
+  const confirmed = await confirmAction(
+    t("compose.delete_title"),
+    t("compose.delete_confirm", { title: title || id }),
+  );
+  if (!confirmed) return;
+  await api(`/api/compose/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const deletedActiveJob = (state.composeDrafts || []).some((draft) => draft.id === id && draft.job_id === state.composeActiveJobId);
+  state.composeDrafts = (state.composeDrafts || []).filter((draft) => draft.id !== id);
+  if (state.composeDraft?.id === id) {
+    state.composeDraft = null;
+    const output = $("#compose-output");
+    if (output) output.value = "";
+    const save = $("#save-compose");
+    if (save) save.disabled = true;
+    const result = $("#compose-save-result");
+    if (result) result.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty"))}</div>`;
+  }
+  if (deletedActiveJob) {
+    clearComposeGenerationLock();
+  }
+  renderComposeDrafts();
+  renderSidebarBadges();
+  toast(t("compose.delete_done"));
 }
 
 async function loadComposeDrafts() {
@@ -4312,23 +4435,15 @@ async function loadComposeDraft(draftId) {
   if (!draftId) return;
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
   state.composeDraft = draft;
-  state.composeSources = new Map(state.composeSources);
-  for (const source of draft.sources || []) {
-    if (source && source.source_type && source.source_id) {
-      state.composeSources.set(`${source.source_type}::${source.source_id}`, {
-        source_type: source.source_type,
-        source_id: source.source_id,
-        title: source.title || "",
-      });
-    }
-  }
-  await persistSources();
-  broadcastSourcesChange();
-  renderComposeSources();
   $("#compose-goal").value = draft.goal || "";
   syncComposeProfileSelect(draft.document_profile?.profile_id || "", draft.document_profile?.version || 0);
   $("#compose-output").value = renderComposeDraft(draft);
   $("#save-compose").disabled = (draft.status || "draft") !== "draft";
+  if (draft.status === "generating") {
+    toast(t("toast.compose_generate_inflight"));
+  } else if (draft.status === "failed") {
+    toast(t("toast.compose_generate_failed"));
+  }
   renderComposeDrafts();
 }
 
@@ -4409,6 +4524,7 @@ const DOMAIN_EVENT_TYPES = [
   "job.updated",
   "compose.draft_created",
   "compose.draft_saved",
+  "compose.draft_deleted",
 ];
 
 const CAPTURE_EVENT_TYPES = new Set([
@@ -4434,6 +4550,9 @@ function connectEvents() {
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
       if (type.startsWith("thought.")) loadThoughts().catch(() => {});
+      if (type === "compose.draft_created" || type === "compose.draft_saved" || type === "compose.draft_deleted" || type === "job.updated") {
+        handleComposeEvent(type, event.data);
+      }
       // scratchpad.* and thought.* events are routed to a single
       // capture-aware dispatcher. The dispatcher re-fetches the
       // relevant scratchpad / thought payload and re-renders the
@@ -4452,6 +4571,76 @@ function connectEvents() {
       appendEvent("events", t("toast.sse_reconnecting"));
     }
   };
+}
+
+// handleComposeEvent refreshes the writing list when a generate job
+// progresses or a draft is materialised. It also clears the local
+// composeGenerating lock once the active job leaves a non-terminal state.
+function handleComposeEvent(type, rawData) {
+  let payload = null;
+  try { payload = JSON.parse(rawData); } catch (_) { payload = null; }
+  const eventPayload = payload?.payload || payload || {};
+  if (type === "job.updated") {
+    const job = eventPayload;
+    const jobType = job?.type || "";
+    const jobID = job?.id || "";
+    if (jobType && jobType !== "compose_generate" && jobID !== state.composeActiveJobId) {
+      // Unrelated jobs still may not need a compose refresh.
+    } else if (jobType === "compose_generate" || jobID === state.composeActiveJobId || !jobType) {
+      loadComposeDrafts().catch(() => {});
+      const status = job?.status || "";
+      if (status === "succeeded" || status === "failed" || status === "canceled") {
+        if (jobID && jobID === state.composeActiveJobId) {
+          clearComposeGenerationLock();
+          if (status === "succeeded") {
+            toast(t("toast.compose_generate_ready"));
+            // The server consumes only this request's sources after it
+            // materialises the draft. Re-read the shared queue so the UI
+            // keeps any sources added while generation was running.
+            restoreSources().catch(() => {});
+            // Prefer the finished draft if resource_id is present.
+            if (job?.resource_id) {
+              loadComposeDraft(job.resource_id).catch(() => {});
+            }
+          } else if (status === "failed") {
+            toast(t("toast.compose_generate_failed"));
+          }
+        }
+      }
+    }
+    return;
+  }
+  // draft_created / draft_saved / draft_deleted — refresh the list.
+  if (type === "compose.draft_deleted") {
+    const deletedID = eventPayload?.draft_id || payload?.resource_id || "";
+    if (deletedID && state.composeDraft?.id === deletedID) {
+      state.composeDraft = null;
+      const output = $("#compose-output");
+      if (output) output.value = "";
+      const save = $("#save-compose");
+      if (save) save.disabled = true;
+    }
+    loadComposeDrafts().then(() => {
+      const stillGenerating = (state.composeDrafts || []).some((d) => d.status === "generating");
+      if (!stillGenerating) {
+        clearComposeGenerationLock();
+      }
+    }).catch(() => {});
+    return;
+  }
+  loadComposeDrafts().catch(() => {});
+  const draft = eventPayload;
+  if (draft && draft.status && draft.status !== "generating") {
+    if (!state.composeActiveJobId || draft.job_id === state.composeActiveJobId) {
+      clearComposeGenerationLock();
+      if (draft.status === "draft" && draft.id) {
+        // Auto-open the freshly generated draft when the user is on compose.
+        if (state.route?.page === "compose") {
+          loadComposeDraft(draft.id).catch(() => {});
+        }
+      }
+    }
+  }
 }
 
 // handleCaptureEvent routes scratchpad and thought SSE events into the

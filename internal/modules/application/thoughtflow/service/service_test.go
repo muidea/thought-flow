@@ -869,6 +869,7 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 		composedraft.New(root),
 		jobstore.New(ws.JobsPath),
 		nil,
+		nil,
 		fakeComposeProvider{body: "# Compose draft\n\nPicked notes."},
 		captureService,
 	)
@@ -903,22 +904,26 @@ func TestHandleSaveComposeDraftMaterializesThought(t *testing.T) {
 	createRes := httptest.NewRecorder()
 	createReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts", createBody)
 	service.handleCreateComposeDraft(ctx, createRes, createReq)
-	if createRes.Code != http.StatusOK {
+	if createRes.Code != http.StatusAccepted {
 		t.Fatalf("create status = %d, body = %s", createRes.Code, createRes.Body.String())
 	}
 	var created struct {
-		Data models.ComposeDraft `json:"data"`
+		Data models.Job `json:"data"`
 	}
 	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
 		t.Fatalf("Unmarshal(create) error = %v", err)
 	}
+	if created.Data.ID == "" || created.Data.ResourceID == "" {
+		t.Fatalf("created job = %#v", created.Data)
+	}
+	ready := waitComposeDraftReady(t, composeService, created.Data.ResourceID)
 
 	saveBody := strings.NewReader(`{
 		"content":"# Saved Research Outline\n\nPicked notes.\n\n### Sources\n\n- [[` + left.Thought.Path + `]]\n- [[` + right.Thought.Path + `]]",
 		"tags":["compose","outline"]
 	}`)
 	res := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+created.Data.ID+"/save", saveBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+ready.ID+"/save", saveBody)
 
 	service.handleSaveComposeDraft(ctx, res, req)
 
@@ -982,6 +987,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 		ws,
 		composedraft.New(root),
 		jobstore.New(ws.JobsPath),
+		nil,
 		nil,
 		fakeComposeProvider{body: "# Draft"},
 		nil,
@@ -1059,6 +1065,7 @@ func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 		composedraft.New(root),
 		jobstore.New(ws.JobsPath),
 		nil,
+		nil,
 		fakeComposeProvider{body: "# Cloud compose draft\n\nGenerated from provider."},
 		captureService,
 	)
@@ -1084,20 +1091,21 @@ func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 	createReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts", createBody)
 	service.handleCreateComposeDraft(ctx, createRes, createReq)
 
-	if createRes.Code != http.StatusOK {
+	if createRes.Code != http.StatusAccepted {
 		t.Fatalf("create status = %d, body = %s", createRes.Code, createRes.Body.String())
 	}
 	var createPayload struct {
-		Data models.ComposeDraft `json:"data"`
+		Data models.Job `json:"data"`
 	}
 	if err := json.Unmarshal(createRes.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("Unmarshal(create) error = %v", err)
 	}
-	if createPayload.Data.ID == "" || createPayload.Data.Status != "draft" {
-		t.Fatalf("created draft = %#v", createPayload.Data)
+	if createPayload.Data.ID == "" || createPayload.Data.ResourceID == "" {
+		t.Fatalf("created job = %#v", createPayload.Data)
 	}
-	if createPayload.Data.Model != "fake-cloud" || !strings.Contains(createPayload.Data.Content, "Cloud compose draft") {
-		t.Fatalf("draft should come from compose provider, got %#v", createPayload.Data)
+	ready := waitComposeDraftReady(t, composeService, createPayload.Data.ResourceID)
+	if ready.Model != "fake-cloud" || !strings.Contains(ready.Content, "Cloud compose draft") {
+		t.Fatalf("draft should come from compose provider, got %#v", ready)
 	}
 
 	listRes := httptest.NewRecorder()
@@ -1107,7 +1115,7 @@ func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
 	}
 	getRes := httptest.NewRecorder()
-	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/drafts/"+createPayload.Data.ID, nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/drafts/"+ready.ID, nil)
 	service.handleGetComposeDraft(ctx, getRes, getReq)
 	if getRes.Code != http.StatusOK {
 		t.Fatalf("get status = %d, body = %s", getRes.Code, getRes.Body.String())
@@ -1115,20 +1123,91 @@ func TestHandleComposeDraftPersistsAndSavesWithHistory(t *testing.T) {
 
 	saveBody := strings.NewReader(`{"content":"# Draft goal\n\nAccepted compose."}`)
 	saveRes := httptest.NewRecorder()
-	saveReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+createPayload.Data.ID+"/save", saveBody)
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/compose/drafts/"+ready.ID+"/save", saveBody)
 	service.handleSaveComposeDraft(ctx, saveRes, saveReq)
 
 	if saveRes.Code != http.StatusAccepted {
 		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
 	}
 	drafts := composedraft.New(root)
-	saved, err := drafts.GetDraft(ctx, createPayload.Data.ID)
+	saved, err := drafts.GetDraft(ctx, ready.ID)
 	if err != nil {
 		t.Fatalf("GetDraft(saved) error = %v", err)
 	}
 	if saved.Status != "saved" || saved.SavedThoughtID == "" || saved.SavedAt == nil {
 		t.Fatalf("saved draft = %#v", saved)
 	}
+}
+
+func TestHandleDeleteComposeDraft(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "test",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	if err := os.MkdirAll(ws.JobsPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	composeService := composebiz.NewService(
+		ws,
+		composedraft.New(root),
+		jobstore.New(ws.JobsPath),
+		nil,
+		nil,
+		fakeComposeProvider{body: "# To delete\n\nBody."},
+		nil,
+	)
+	service := &Service{composeService: composeService, workspace: ws}
+	ctx := context.Background()
+
+	// Seed a ready draft via sync CreateDraft path used by the service.
+	draft, err := composeService.CreateDraft(ctx, models.ComposeRequest{
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "s-1", Title: "S"}},
+		Goal:    "delete me",
+		Format:  models.ComposeFormatSummary,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	delRes := httptest.NewRecorder()
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/compose/drafts/"+draft.ID, nil)
+	service.handleDeleteComposeDraft(ctx, delRes, delReq)
+	if delRes.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", delRes.Code, delRes.Body.String())
+	}
+	getRes := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/compose/drafts/"+draft.ID, nil)
+	service.handleGetComposeDraft(ctx, getRes, getReq)
+	if getRes.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status = %d", getRes.Code)
+	}
+
+	// Idempotent delete.
+	delRes2 := httptest.NewRecorder()
+	delReq2 := httptest.NewRequest(http.MethodDelete, "/api/compose/drafts/"+draft.ID, nil)
+	service.handleDeleteComposeDraft(ctx, delRes2, delReq2)
+	if delRes2.Code != http.StatusOK {
+		t.Fatalf("idempotent delete status = %d body=%s", delRes2.Code, delRes2.Body.String())
+	}
+}
+
+func waitComposeDraftReady(t *testing.T, service *composebiz.Service, draftID string) models.ComposeDraft {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		draft, err := service.GetDraft(context.Background(), draftID)
+		if err == nil && draft.Status == models.ComposeStatusDraft && strings.TrimSpace(draft.Content) != "" {
+			return draft
+		}
+		if err == nil && draft.Status == models.ComposeStatusFailed {
+			t.Fatalf("compose draft failed: %#v", draft)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for compose draft %s", draftID)
+	return models.ComposeDraft{}
 }
 
 type fakeComposeProvider struct {

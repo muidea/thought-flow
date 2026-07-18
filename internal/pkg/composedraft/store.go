@@ -45,7 +45,10 @@ func (s *Store) SaveDraft(_ context.Context, draft models.ComposeDraft) (models.
 	if len(draft.Sources) == 0 {
 		return models.ComposeDraft{}, errors.New("sources are required")
 	}
-	if strings.TrimSpace(draft.Content) == "" {
+	// Generating placeholders may ship without content; ready/failed
+	// drafts still require a non-empty body so list/get never surface
+	// an empty approval card as if generation already finished.
+	if strings.TrimSpace(draft.Content) == "" && draft.Status != models.ComposeStatusGenerating {
 		return models.ComposeDraft{}, errors.New("content is required")
 	}
 	if len(draft.History) == 0 {
@@ -134,8 +137,8 @@ func (s *Store) MarkSaved(_ context.Context, draftID string, content string, tho
 	return draft, nil
 }
 
-// Delete removes a draft file. The HTTP layer exposes this only to
-// tests; the Web drawer does not currently surface a delete button.
+// Delete removes a draft file. Used by compose.DeleteDraft and the
+// DELETE /api/compose/drafts/{id} HTTP surface.
 func (s *Store) Delete(_ context.Context, draftID string) error {
 	path, err := s.draftPath(draftID)
 	if err != nil {

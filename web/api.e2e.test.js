@@ -477,6 +477,16 @@ test("API e2e", async (t) => {
     });
     const thoughtId = envelope(thoughtRes).data.thought.id;
 
+    const queue = await request(server.baseURL, "/api/compose/sources", "PUT", {
+      body: {
+        sources: [
+          { source_type: "thought", source_id: thoughtId },
+          { source_type: "search_result", source_id: "keep-for-next", title: "Keep for next draft" },
+        ],
+      },
+    });
+    assert.equal(queue.status, 200, `compose source queue status=${queue.status} body=${queue.text}`);
+
     const create = await request(server.baseURL, "/api/compose/drafts", "POST", {
       body: {
         sources: [{ source_type: "thought", source_id: thoughtId }],
@@ -485,17 +495,87 @@ test("API e2e", async (t) => {
         format: "summary",
       },
     });
-    assert.equal(create.status, 200, `compose create status=${create.status} body=${create.text}`);
-    const draftId = envelope(create).data.id;
+    // Async generate returns a queued job (202) with resource_id = draft id.
+    assert.equal(create.status, 202, `compose create status=${create.status} body=${create.text}`);
+    const job = envelope(create).data;
+    assert.ok(job && job.id, `compose job missing id: ${create.text}`);
+    const draftId = job.resource_id || job.id;
     assert.ok(draftId);
 
-    const get = await request(server.baseURL, `/api/compose/drafts/${draftId}`, "GET");
-    assert.equal(get.status, 200);
+    // Wait for the background generate to materialise draft content.
+    let ready = null;
+    for (let i = 0; i < 50; i++) {
+      const get = await request(server.baseURL, `/api/compose/drafts/${draftId}`, "GET");
+      if (get.status === 200) {
+        const draft = envelope(get).data;
+        if (draft && draft.status === "draft" && draft.content) {
+          ready = draft;
+          break;
+        }
+        if (draft && draft.status === "failed") {
+          assert.fail(`compose draft failed: ${get.text}`);
+        }
+      }
+      await sleep(50);
+    }
+    assert.ok(ready, "compose draft did not become ready in time");
+
+    let queueAfterGenerate = null;
+    for (let i = 0; i < 50; i++) {
+      const response = await request(server.baseURL, "/api/compose/sources", "GET");
+      if (response.status === 200 && envelope(response).data.sources.map((source) => source.source_id).join(",") === "keep-for-next") {
+        queueAfterGenerate = response;
+        break;
+      }
+      await sleep(50);
+    }
+    assert.ok(queueAfterGenerate, "generated sources were not cleared from the queue");
+
+    // A second create with the same sources/goal should reuse the in-flight
+    // or just-finished fingerprint path without erroring.
+    const createAgain = await request(server.baseURL, "/api/compose/drafts", "POST", {
+      body: {
+        sources: [{ source_type: "thought", source_id: thoughtId }],
+        selected_thought_ids: [thoughtId],
+        goal: "compose from e2e",
+        format: "summary",
+      },
+    });
+    assert.ok([200, 202].includes(createAgain.status), `second compose create status=${createAgain.status}`);
 
     const save = await request(server.baseURL, `/api/compose/drafts/${draftId}/save`, "POST", {
       body: { content: "E2E saved compose", title: "compose from e2e" },
     });
     assert.ok([200, 202, 400].includes(save.status), `compose save status=${save.status}`);
+
+    // Create another draft and delete it without saving.
+    const createDel = await request(server.baseURL, "/api/compose/drafts", "POST", {
+      body: {
+        sources: [{ source_type: "thought", source_id: thoughtId }],
+        goal: "compose to delete",
+        format: "summary",
+      },
+    });
+    assert.equal(createDel.status, 202, `compose create-for-delete status=${createDel.status}`);
+    const delJob = envelope(createDel).data;
+    const delDraftId = delJob.resource_id || delJob.id;
+    let delReady = false;
+    for (let i = 0; i < 50; i++) {
+      const get = await request(server.baseURL, `/api/compose/drafts/${delDraftId}`, "GET");
+      if (get.status === 200) {
+        const draft = envelope(get).data;
+        if (draft && (draft.status === "draft" || draft.status === "failed" || draft.status === "generating")) {
+          delReady = true;
+          break;
+        }
+      }
+      await sleep(50);
+    }
+    assert.ok(delReady, "draft for delete never appeared");
+    const del = await request(server.baseURL, `/api/compose/drafts/${delDraftId}`, "DELETE");
+    assert.equal(del.status, 200, `compose delete status=${del.status} body=${del.text}`);
+    const gone = await request(server.baseURL, `/api/compose/drafts/${delDraftId}`, "GET");
+    assert.ok([404, 500].includes(gone.status), `get after delete status=${gone.status}`);
   });
 
   await t.test("capture session recovery round-trips through active and reuse_last", async () => {

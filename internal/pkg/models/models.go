@@ -21,8 +21,10 @@ const (
 	ComposeFormatOutline = "outline"
 	ComposeFormatReport  = "report"
 
-	ComposeStatusDraft = "draft"
-	ComposeStatusSaved = "saved"
+	ComposeStatusDraft      = "draft"
+	ComposeStatusGenerating = "generating"
+	ComposeStatusFailed     = "failed"
+	ComposeStatusSaved      = "saved"
 
 	DocumentFamilyNote     = "note"
 	DocumentFamilyResearch = "research"
@@ -66,18 +68,20 @@ const (
 	JobStatusFailed    = "failed"
 	JobStatusCanceled  = "canceled"
 
-	JobTypeGitCommit  = "git_commit"
-	JobTypeRefine     = "refine"
-	JobTypeIndex      = "index"
-	JobTypeReindex    = "reindex"
-	JobTypeTopicMatch = "topic_match"
-	JobTypeTopicWeave = "topic_weave"
-	JobTypeExpand     = "expand"
+	JobTypeGitCommit       = "git_commit"
+	JobTypeRefine          = "refine"
+	JobTypeIndex           = "index"
+	JobTypeReindex         = "reindex"
+	JobTypeTopicMatch      = "topic_match"
+	JobTypeTopicWeave      = "topic_weave"
+	JobTypeExpand          = "expand"
+	JobTypeComposeGenerate = "compose_generate"
 
-	ResourceTypeThought   = "thought"
-	ResourceTypeWorkspace = "workspace"
-	ResourceTypeTopic     = "topic"
-	ResourceTypeSession   = "scratchpad_session"
+	ResourceTypeThought      = "thought"
+	ResourceTypeWorkspace    = "workspace"
+	ResourceTypeTopic        = "topic"
+	ResourceTypeSession      = "scratchpad_session"
+	ResourceTypeComposeDraft = "compose_draft"
 
 	EventThoughtCaptured                  = "thought.captured"
 	EventThoughtRefineStarted             = "thought.refine_started"
@@ -874,25 +878,29 @@ type ComposeSaveRequest struct {
 // ComposeDraft is the on-disk and over-the-wire shape of a compose
 // draft. The YAML-backed file lives at
 // workspace/compose/drafts/{draft_id}.yaml. The status transitions
+// generating → draft (or failed) during async generation, then
 // draft → saved when the user commits the draft to a Thought.
 type ComposeDraft struct {
-	ID              string                `json:"id" yaml:"id"`
-	Sources         []ComposeSource       `json:"sources" yaml:"sources"`
-	Goal            string                `json:"goal" yaml:"goal"`
-	Format          string                `json:"format" yaml:"format"`
-	DocumentProfile *DocumentProfileRef   `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
-	Parameters      map[string]string     `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	DocumentDraft   *DocumentDraft        `json:"document_draft,omitempty" yaml:"document_draft,omitempty"`
-	Validation      *ArchiveValidation    `json:"validation,omitempty" yaml:"validation,omitempty"`
-	Content         string                `json:"content" yaml:"content"`
-	SourceLinks     []string              `json:"source_links" yaml:"source_links"`
-	Model           string                `json:"model" yaml:"model"`
-	Status          string                `json:"status" yaml:"status"`
-	SavedThoughtID  string                `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
-	History         []ComposeDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
-	CreatedAt       time.Time             `json:"created_at" yaml:"created_at"`
-	UpdatedAt       time.Time             `json:"updated_at" yaml:"updated_at"`
-	SavedAt         *time.Time            `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
+	ID                 string                `json:"id" yaml:"id"`
+	Sources            []ComposeSource       `json:"sources" yaml:"sources"`
+	Goal               string                `json:"goal" yaml:"goal"`
+	Format             string                `json:"format" yaml:"format"`
+	DocumentProfile    *DocumentProfileRef   `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+	Parameters         map[string]string     `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	DocumentDraft      *DocumentDraft        `json:"document_draft,omitempty" yaml:"document_draft,omitempty"`
+	Validation         *ArchiveValidation    `json:"validation,omitempty" yaml:"validation,omitempty"`
+	Content            string                `json:"content" yaml:"content"`
+	SourceLinks        []string              `json:"source_links" yaml:"source_links"`
+	Model              string                `json:"model" yaml:"model"`
+	Status             string                `json:"status" yaml:"status"`
+	RequestFingerprint string                `json:"request_fingerprint,omitempty" yaml:"request_fingerprint,omitempty"`
+	JobID              string                `json:"job_id,omitempty" yaml:"job_id,omitempty"`
+	GenerationPrompt   string                `json:"generation_prompt,omitempty" yaml:"generation_prompt,omitempty"`
+	SavedThoughtID     string                `json:"saved_thought_id,omitempty" yaml:"saved_thought_id,omitempty"`
+	History            []ComposeDraftHistory `json:"history,omitempty" yaml:"history,omitempty"`
+	CreatedAt          time.Time             `json:"created_at" yaml:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at" yaml:"updated_at"`
+	SavedAt            *time.Time            `json:"saved_at,omitempty" yaml:"saved_at,omitempty"`
 }
 
 type ComposeDraftHistory struct {

@@ -114,7 +114,7 @@ func newTestService(t *testing.T) (*Service, *stubCapture, *stubSynthesis) {
 	}
 	sink := &stubCapture{}
 	synth := &stubSynthesis{body: "# Compose\n\nHello.", model: "stub-model"}
-	svc := NewService(ws, composedraft.New(root), jobstore.New(ws.JobsPath), nil, synth, sink)
+	svc := NewService(ws, composedraft.New(root), jobstore.New(ws.JobsPath), nil, nil, synth, sink)
 	svc.SetModel(synth.model)
 	return svc, sink, synth
 }
@@ -605,6 +605,327 @@ func TestServiceSaveDraftRejectsMissingService(t *testing.T) {
 	_, err := s.SaveDraft(context.Background(), "x", models.ComposeSaveRequest{})
 	if err == nil {
 		t.Fatalf("expected error from nil service")
+	}
+}
+
+func TestServiceDeleteDraftRemovesFileAndIsIdempotent(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	writeThought(t, svc.workspace.RootPath, "20260609-0001-del", "Delete seed", "body")
+	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-del"}},
+		Goal:    "to delete",
+		Format:  models.ComposeFormatSummary,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if err := svc.DeleteDraft(context.Background(), draft.ID); err != nil {
+		t.Fatalf("DeleteDraft: %v", err)
+	}
+	if _, err := svc.GetDraft(context.Background(), draft.ID); err == nil {
+		t.Fatalf("expected missing draft after delete")
+	}
+	// Idempotent second delete.
+	if err := svc.DeleteDraft(context.Background(), draft.ID); err != nil {
+		t.Fatalf("DeleteDraft(idempotent): %v", err)
+	}
+	if err := svc.DeleteDraft(context.Background(), ""); err == nil {
+		t.Fatalf("empty draft id should error")
+	}
+}
+
+func TestServiceDeleteDraftCancelsInflightGenerate(t *testing.T) {
+	svc, _, synth := newTestService(t)
+	gate := make(chan struct{})
+	slow := &blockingSynthesis{stub: synth, gate: gate}
+	svc.synthesis = slow
+	writeThought(t, svc.workspace.RootPath, "20260609-0001-delgen", "Delgen seed", "body")
+
+	job, err := svc.CreateDraftAsync(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-delgen"}},
+		Goal:    "delete while generating",
+		Format:  models.ComposeFormatSummary,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraftAsync: %v", err)
+	}
+	// Placeholder exists while blocked.
+	if _, err := svc.GetDraft(context.Background(), job.ResourceID); err != nil {
+		t.Fatalf("GetDraft(placeholder): %v", err)
+	}
+	if err := svc.DeleteDraft(context.Background(), job.ResourceID); err != nil {
+		t.Fatalf("DeleteDraft: %v", err)
+	}
+	close(gate)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var final models.Job
+	for time.Now().Before(deadline) {
+		final, err = svc.jobs.Get(job.ID)
+		if err == nil && (final.Status == models.JobStatusCanceled || final.Status == models.JobStatusSucceeded || final.Status == models.JobStatusFailed) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Draft must stay gone — worker must not recreate it.
+	if _, err := svc.GetDraft(context.Background(), job.ResourceID); err == nil {
+		t.Fatalf("deleted draft was recreated by worker")
+	}
+	if final.Status != models.JobStatusCanceled && final.Status != models.JobStatusFailed {
+		// canceled is preferred; failed is acceptable if synthesize raced before delete guard.
+		t.Fatalf("job status = %q, want canceled (or failed)", final.Status)
+	}
+}
+
+func TestServiceCreateDraftAsyncQueuesJobAndMaterialisesDraft(t *testing.T) {
+	svc, _, synth := newTestService(t)
+	root := svc.workspace.RootPath
+	writeThought(t, root, "20260609-0001-async", "Async seed", "async body")
+	if _, err := svc.SaveBasket(context.Background(), []models.ComposeSource{
+		{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-async", Title: "Async seed"},
+		{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "keep-next", Title: "Keep for next draft"},
+	}); err != nil {
+		t.Fatalf("SaveBasket: %v", err)
+	}
+
+	job, err := svc.CreateDraftAsync(context.Background(), models.ComposeRequest{
+		Sources: []models.ComposeSource{
+			{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-async", Title: "Async seed"},
+		},
+		Goal:   "Async goal",
+		Format: models.ComposeFormatSummary,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraftAsync: %v", err)
+	}
+	if job.ID == "" || job.Type != models.JobTypeComposeGenerate {
+		t.Fatalf("job = %#v", job)
+	}
+	if job.ResourceID == "" {
+		t.Fatalf("job.ResourceID empty")
+	}
+	// Placeholder should exist immediately.
+	placeholder, err := svc.GetDraft(context.Background(), job.ResourceID)
+	if err != nil {
+		t.Fatalf("GetDraft(placeholder): %v", err)
+	}
+	if placeholder.Status != models.ComposeStatusGenerating && placeholder.Status != models.ComposeStatusDraft {
+		t.Fatalf("placeholder status = %q", placeholder.Status)
+	}
+	if placeholder.RequestFingerprint == "" {
+		t.Fatalf("placeholder fingerprint empty")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var ready models.ComposeDraft
+	var storedJob models.Job
+	for time.Now().Before(deadline) {
+		ready, err = svc.GetDraft(context.Background(), job.ResourceID)
+		if err == nil && ready.Status == models.ComposeStatusFailed {
+			t.Fatalf("draft failed: %#v", ready)
+		}
+		storedJob, err = svc.jobs.Get(job.ID)
+		if err == nil &&
+			ready.Status == models.ComposeStatusDraft &&
+			strings.TrimSpace(ready.Content) != "" &&
+			storedJob.Status == models.JobStatusSucceeded {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ready.Status != models.ComposeStatusDraft || !strings.Contains(ready.Content, "Hello") {
+		t.Fatalf("ready draft = %#v", ready)
+	}
+	if synth.calls < 1 {
+		t.Fatalf("synth.calls = %d", synth.calls)
+	}
+	if storedJob.Status != models.JobStatusSucceeded {
+		t.Fatalf("job status = %q", storedJob.Status)
+	}
+	basket, err := svc.GetBasket(context.Background())
+	if err != nil {
+		t.Fatalf("GetBasket: %v", err)
+	}
+	if len(basket.Sources) != 1 || basket.Sources[0].SourceID != "keep-next" {
+		t.Fatalf("basket after successful generation = %#v", basket.Sources)
+	}
+}
+
+func TestServiceCreateDraftAsyncDedupesIdenticalInflightRequests(t *testing.T) {
+	svc, _, synth := newTestService(t)
+	// Slow synthesis so both clicks land while the first job is still open.
+	synth.body = "# Slow compose\n\nBody."
+	gate := make(chan struct{})
+	slow := &blockingSynthesis{stub: synth, gate: gate}
+	svc.synthesis = slow
+
+	root := svc.workspace.RootPath
+	writeThought(t, root, "20260609-0001-dedupe", "Dedupe seed", "dedupe body")
+	req := models.ComposeRequest{
+		Sources: []models.ComposeSource{
+			{SourceType: models.ComposeSourceTypeThought, SourceID: "20260609-0001-dedupe", Title: "Dedupe seed"},
+		},
+		Goal:   "Dedupe goal",
+		Format: models.ComposeFormatOutline,
+	}
+
+	job1, err := svc.CreateDraftAsync(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateDraftAsync(1): %v", err)
+	}
+	job2, err := svc.CreateDraftAsync(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateDraftAsync(2): %v", err)
+	}
+	if job1.ID != job2.ID {
+		t.Fatalf("expected same job, got %q vs %q", job1.ID, job2.ID)
+	}
+	if job1.ResourceID != job2.ResourceID {
+		t.Fatalf("expected same draft resource, got %q vs %q", job1.ResourceID, job2.ResourceID)
+	}
+
+	close(gate)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		draft, err := svc.GetDraft(context.Background(), job1.ResourceID)
+		if err == nil && draft.Status == models.ComposeStatusDraft && strings.TrimSpace(draft.Content) != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Only one LLM call for the shared fingerprint.
+	if slow.calls() != 1 {
+		t.Fatalf("synth calls = %d, want 1", slow.calls())
+	}
+	drafts, err := svc.ListDrafts(context.Background())
+	if err != nil {
+		t.Fatalf("ListDrafts: %v", err)
+	}
+	count := 0
+	for _, draft := range drafts {
+		if draft.Goal == "Dedupe goal" || draft.RequestFingerprint != "" {
+			// Count drafts created for this request fingerprint.
+			if draft.ID == job1.ResourceID {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected single draft for fingerprint, drafts=%#v", drafts)
+	}
+}
+
+func TestServiceRecoverGeneratingDraftsResumesPersistedJob(t *testing.T) {
+	svc, _, synth := newTestService(t)
+	root := svc.workspace.RootPath
+	const thoughtID = "20260609-0001-recover"
+	writeThought(t, root, thoughtID, "Recovery seed", "recovery body")
+
+	now := time.Now().UTC()
+	fingerprint := composeRequestFingerprint([]models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: thoughtID, Title: "Recovery seed"}}, models.ComposeRequest{
+		Goal:   "Recover generation",
+		Prompt: "Keep the original instruction",
+		Format: models.ComposeFormatSummary,
+	})
+	placeholder, err := svc.draftStore.SaveDraft(context.Background(), models.ComposeDraft{
+		ID:                 "compose-recover-1",
+		Sources:            []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: thoughtID, Title: "Recovery seed"}},
+		Goal:               "Recover generation",
+		Format:             models.ComposeFormatSummary,
+		Content:            "",
+		Status:             models.ComposeStatusGenerating,
+		GenerationPrompt:   "Keep the original instruction",
+		RequestFingerprint: fingerprint,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
+	if err != nil {
+		t.Fatalf("SaveDraft(placeholder): %v", err)
+	}
+	job, err := svc.jobs.Create(models.JobTypeComposeGenerate, models.ResourceTypeComposeDraft, placeholder.ID, "interrupted by restart")
+	if err != nil {
+		t.Fatalf("Create(job): %v", err)
+	}
+	placeholder.JobID = job.ID
+	if _, err := svc.draftStore.SaveDraft(context.Background(), placeholder); err != nil {
+		t.Fatalf("SaveDraft(job id): %v", err)
+	}
+
+	// Construct a fresh service to model the process that survived the restart.
+	restarted := NewService(svc.workspace, svc.draftStore, svc.jobs, nil, nil, synth, nil)
+	restarted.SetModel(synth.model)
+	recovered, err := restarted.RecoverGeneratingDrafts()
+	if err != nil {
+		t.Fatalf("RecoverGeneratingDrafts: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		draft, draftErr := restarted.GetDraft(context.Background(), placeholder.ID)
+		storedJob, jobErr := restarted.jobs.Get(job.ID)
+		if draftErr == nil && jobErr == nil && draft.Status == models.ComposeStatusDraft && storedJob.Status == models.JobStatusSucceeded {
+			if !strings.Contains(draft.Content, "Hello") {
+				t.Fatalf("recovered draft content = %q", draft.Content)
+			}
+			if synth.lastReq.Goal != "Recover generation\n\nKeep the original instruction" {
+				t.Fatalf("recovered prompt lost: %q", synth.lastReq.Goal)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("recovered job %s did not complete", job.ID)
+}
+
+type blockingSynthesis struct {
+	stub *stubSynthesis
+	gate chan struct{}
+	mu   sync.Mutex
+	n    int
+}
+
+func (b *blockingSynthesis) Synthesize(ctx context.Context, req ai.SynthesisRequest) (models.SynthesisDraft, error) {
+	b.mu.Lock()
+	b.n++
+	b.mu.Unlock()
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+		return models.SynthesisDraft{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		return models.SynthesisDraft{}, errors.New("blocking synthesis timed out")
+	}
+	return b.stub.Synthesize(ctx, req)
+}
+
+func (b *blockingSynthesis) calls() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.n
+}
+
+func TestComposeRequestFingerprintStableAndSensitive(t *testing.T) {
+	sources := []models.ComposeSource{
+		{SourceType: "thought", SourceID: "b"},
+		{SourceType: "thought", SourceID: "a"},
+	}
+	req := models.ComposeRequest{Goal: "G", Format: "summary", ProfileID: "p", ProfileVersion: 1}
+	// Source order must not change the fingerprint.
+	left := composeRequestFingerprint(sources, req)
+	right := composeRequestFingerprint([]models.ComposeSource{sources[1], sources[0]}, req)
+	if left == "" || left != right {
+		t.Fatalf("fingerprint unstable: %q vs %q", left, right)
+	}
+	other := composeRequestFingerprint(sources, models.ComposeRequest{Goal: "G2", Format: "summary", ProfileID: "p", ProfileVersion: 1})
+	if other == left {
+		t.Fatalf("fingerprint should change with goal")
+	}
+	changedSource := []models.ComposeSource{{SourceType: "thought", SourceID: "b", Title: "Updated title"}, sources[1]}
+	if composeRequestFingerprint(changedSource, req) == left {
+		t.Fatalf("fingerprint should change with source context")
 	}
 }
 

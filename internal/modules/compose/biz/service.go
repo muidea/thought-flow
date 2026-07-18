@@ -14,13 +14,18 @@ package biz
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/task"
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
@@ -31,12 +36,17 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
+var errComposeDraftDeleted = errors.New("compose draft was deleted")
+
 const (
 	composeSessionID = "compose-session"
 
 	EventComposeDraftCreated = "compose.draft_created"
 	EventComposeDraftSaved   = "compose.draft_saved"
+	EventComposeDraftDeleted = "compose.draft_deleted"
 
+	// composeJobType is the legacy save-as-thought job label used by
+	// SaveDraft. Async generation uses models.JobTypeComposeGenerate.
 	composeJobType = "compose_save"
 )
 
@@ -54,6 +64,7 @@ type Service struct {
 	draftStore        *composedraft.Store
 	jobs              *jobstore.Store
 	eventHub          event.Hub
+	background        task.BackgroundRoutine
 	synthesis         ai.SynthesisProvider
 	capture           CaptureSink
 	now               func() time.Time
@@ -61,6 +72,11 @@ type Service struct {
 	profiles          *documentprofile.Registry
 	documentGenerator ai.DocumentGenerationProvider
 	maxRepairAttempts int
+
+	// inflight guards concurrent CreateDraftAsync calls that share the
+	// same request fingerprint so double-clicks do not mint two jobs.
+	inflightMu sync.Mutex
+	inflight   map[string]models.Job
 }
 
 func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry, generator ai.DocumentGenerationProvider, maxRepairAttempts int) {
@@ -76,6 +92,7 @@ func NewService(
 	draftStore *composedraft.Store,
 	jobs *jobstore.Store,
 	eventHub event.Hub,
+	background task.BackgroundRoutine,
 	synthesis ai.SynthesisProvider,
 	capture CaptureSink,
 ) *Service {
@@ -84,10 +101,12 @@ func NewService(
 		draftStore: draftStore,
 		jobs:       jobs,
 		eventHub:   eventHub,
+		background: background,
 		synthesis:  synthesis,
 		capture:    capture,
 		now:        func() time.Time { return time.Now().UTC() },
 		model:      "local-rule",
+		inflight:   map[string]models.Job{},
 	}
 }
 
@@ -101,6 +120,278 @@ func (s *Service) SetModel(model string) {
 	}
 }
 
+// CreateDraftAsync queues LLM generation as a background job and returns
+// immediately. Identical in-flight requests (same sources/goal/profile/
+// format/parameters fingerprint) reuse the existing job so rapid re-clicks
+// do not produce duplicate drafts.
+func (s *Service) CreateDraftAsync(ctx context.Context, req models.ComposeRequest) (models.Job, error) {
+	if s == nil || s.draftStore == nil {
+		return models.Job{}, errors.New("compose service is not ready")
+	}
+	if s.jobs == nil {
+		return models.Job{}, errors.New("compose jobstore is not ready")
+	}
+	if s.synthesis == nil && (s.profiles == nil || s.documentGenerator == nil) {
+		return models.Job{}, errors.New("compose synthesis provider is not ready")
+	}
+	if len(req.Sources) == 0 {
+		return models.Job{}, errors.New("sources are required")
+	}
+
+	deduped, sourceLinks := dedupeSources(req.Sources)
+	fingerprint := composeRequestFingerprint(deduped, req)
+
+	s.inflightMu.Lock()
+	if cached, ok := s.inflight[fingerprint]; ok {
+		// The map may hold a stale snapshot (status frozen at queue time).
+		// Re-read the job store so a just-finished job is not reused.
+		if live, err := s.jobs.Get(cached.ID); err == nil && jobActive(live) {
+			s.inflight[fingerprint] = live
+			s.inflightMu.Unlock()
+			return live, nil
+		}
+		delete(s.inflight, fingerprint)
+	}
+	if existing, ok := s.findInflightGenerateJob(fingerprint); ok {
+		s.inflight[fingerprint] = existing
+		s.inflightMu.Unlock()
+		return existing, nil
+	}
+
+	now := s.now()
+	draftID := models.NewJobID("compose", now)
+	placeholder := models.ComposeDraft{
+		ID:                 draftID,
+		Sources:            deduped,
+		Goal:               firstNonEmpty(req.Goal, "Compose selected sources"),
+		Format:             firstNonEmpty(req.Format, models.ComposeFormatSummary),
+		Parameters:         cloneStringMap(req.Parameters),
+		Content:            "",
+		SourceLinks:        sourceLinks,
+		Model:              s.model,
+		Status:             models.ComposeStatusGenerating,
+		RequestFingerprint: fingerprint,
+		GenerationPrompt:   req.Prompt,
+		History: []models.ComposeDraftHistory{{
+			Status:  models.ComposeStatusGenerating,
+			Message: "compose generation queued",
+			At:      now,
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if s.profiles != nil {
+		if profile, err := s.resolveComposeProfile(req); err == nil {
+			ref := profile.Ref
+			placeholder.DocumentProfile = &ref
+		}
+	}
+	savedPlaceholder, err := s.draftStore.SaveDraft(ctx, placeholder)
+	if err != nil {
+		s.inflightMu.Unlock()
+		return models.Job{}, err
+	}
+
+	job, err := s.jobs.Create(models.JobTypeComposeGenerate, models.ResourceTypeComposeDraft, savedPlaceholder.ID, "compose generation queued")
+	if err != nil {
+		_ = s.draftStore.Delete(ctx, savedPlaceholder.ID)
+		s.inflightMu.Unlock()
+		return models.Job{}, err
+	}
+	savedPlaceholder.JobID = job.ID
+	if _, saveErr := s.draftStore.SaveDraft(ctx, savedPlaceholder); saveErr != nil {
+		// Job is already queued; keep going so the worker can still finish.
+	}
+	s.inflight[fingerprint] = job
+	s.inflightMu.Unlock()
+
+	eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
+	// Surface the generating placeholder so the writing list updates before
+	// the LLM round-trip completes.
+	if s.eventHub != nil {
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:      EventComposeDraftCreated,
+			SourceUnit:     "compose",
+			OccurredAt:     s.now(),
+			WorkspaceID:    s.workspaceID(),
+			ResourceType:   models.ResourceTypeComposeDraft,
+			ResourceID:     savedPlaceholder.ID,
+			PayloadVersion: 1,
+			Payload:        savedPlaceholder,
+		})
+	}
+
+	s.scheduleGenerateDraftJob(job, req, fingerprint)
+	return job, nil
+}
+
+// RecoverGeneratingDrafts re-schedules active compose jobs found on disk.
+// Jobs are persisted, but their goroutines are not, so this must run after a
+// process restart before a matching request can safely be reused.
+func (s *Service) RecoverGeneratingDrafts() (int, error) {
+	if s == nil || s.jobs == nil || s.draftStore == nil {
+		return 0, errors.New("compose recovery dependencies are not ready")
+	}
+	jobs, err := s.jobs.List()
+	if err != nil {
+		return 0, err
+	}
+	recovered := 0
+	for _, job := range jobs {
+		if job.Type != models.JobTypeComposeGenerate || !jobActive(job) {
+			continue
+		}
+		draft, err := s.draftStore.GetDraft(context.Background(), job.ResourceID)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return recovered, err
+		}
+		if draft.Status != models.ComposeStatusGenerating || (draft.JobID != "" && draft.JobID != job.ID) {
+			continue
+		}
+		req := composeRequestFromDraft(draft)
+		fingerprint := firstNonEmpty(draft.RequestFingerprint, composeRequestFingerprint(draft.Sources, req))
+		s.inflightMu.Lock()
+		if current, ok := s.inflight[fingerprint]; ok && current.ID == job.ID {
+			s.inflightMu.Unlock()
+			continue
+		}
+		s.inflight[fingerprint] = job
+		s.inflightMu.Unlock()
+		s.scheduleGenerateDraftJob(job, req, fingerprint)
+		recovered++
+	}
+	return recovered, nil
+}
+
+func (s *Service) scheduleGenerateDraftJob(job models.Job, req models.ComposeRequest, fingerprint string) {
+	run := func() { s.generateDraftJob(job, req, fingerprint) }
+	if s.background != nil {
+		if err := s.background.AsyncFunction(run); err == nil {
+			return
+		}
+	}
+	go run()
+}
+
+func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fingerprint string) {
+	defer func() {
+		s.inflightMu.Lock()
+		if current, ok := s.inflight[fingerprint]; ok && current.ID == job.ID {
+			delete(s.inflight, fingerprint)
+		}
+		s.inflightMu.Unlock()
+	}()
+
+	// Re-read persisted state before changing it: a delete may have canceled
+	// the job after it was queued but before this goroutine was scheduled.
+	if live, err := s.jobs.Get(job.ID); err == nil {
+		job = live
+	}
+	if !jobActive(job) {
+		return
+	}
+	if job.Status != models.JobStatusRunning {
+		job, _ = s.jobs.MarkRunning(job)
+	}
+	eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
+
+	// Force CreateDraft to update the existing placeholder rather than
+	// minting a second draft id for the same request.
+	_, err := s.CreateDraft(context.Background(), req, createDraftOptions{
+		DraftID:            job.ResourceID,
+		RequestFingerprint: fingerprint,
+		JobID:              job.ID,
+	})
+	if err != nil {
+		// Draft deleted while generating: cancel the job and stop. Do not
+		// recreate a failed placeholder on disk.
+		if errors.Is(err, errComposeDraftDeleted) {
+			job, _ = s.jobs.MarkCanceled(job, "compose draft deleted")
+			eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
+			return
+		}
+		errRef := models.NewErrorRef("thoughtflow.compose.generate_failed", err.Error(), true)
+		job, _ = s.jobs.MarkFailed(job, errRef)
+		eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
+		if s.draftStore != nil {
+			if existing, loadErr := s.draftStore.GetDraft(context.Background(), job.ResourceID); loadErr == nil {
+				now := s.now()
+				existing.Status = models.ComposeStatusFailed
+				existing.UpdatedAt = now
+				existing.JobID = job.ID
+				existing.RequestFingerprint = fingerprint
+				existing.History = append(existing.History, models.ComposeDraftHistory{
+					Status:  models.ComposeStatusFailed,
+					Message: err.Error(),
+					At:      now,
+				})
+				// Persist a non-empty body so SaveDraft's content guard
+				// still accepts the failed placeholder.
+				if strings.TrimSpace(existing.Content) == "" {
+					existing.Content = "_Generation failed._\n\n" + err.Error()
+				}
+				if _, saveErr := s.draftStore.SaveDraft(context.Background(), existing); saveErr == nil && s.eventHub != nil {
+					eventutil.Post(s.eventHub, models.DomainEvent{
+						EventType:      EventComposeDraftCreated,
+						SourceUnit:     "compose",
+						OccurredAt:     now,
+						WorkspaceID:    s.workspaceID(),
+						ResourceType:   models.ResourceTypeComposeDraft,
+						ResourceID:     existing.ID,
+						PayloadVersion: 1,
+						Payload:        existing,
+					})
+				}
+			}
+		}
+		return
+	}
+	// A successful draft consumes only the sources that formed this request.
+	// Sources queued after submit remain available for the next draft.
+	_ = s.removeGeneratedSources(context.Background(), req.Sources)
+	job, _ = s.jobs.MarkSucceeded(job, "compose generation succeeded")
+	eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
+}
+
+func (s *Service) removeGeneratedSources(ctx context.Context, used []models.ComposeSource) error {
+	if s == nil || s.draftStore == nil || len(used) == 0 {
+		return nil
+	}
+	basket, err := s.draftStore.GetBasket(ctx)
+	if err != nil {
+		return err
+	}
+	usedKeys := make(map[string]struct{}, len(used))
+	for _, source := range used {
+		if key := composeSourceKey(source); key != "" {
+			usedKeys[key] = struct{}{}
+		}
+	}
+	if len(usedKeys) == 0 {
+		return nil
+	}
+	remaining := make([]models.ComposeSource, 0, len(basket.Sources))
+	for _, source := range basket.Sources {
+		if _, consumed := usedKeys[composeSourceKey(source)]; !consumed {
+			remaining = append(remaining, source)
+		}
+	}
+	if len(remaining) == len(basket.Sources) {
+		return nil
+	}
+	_, err = s.draftStore.SaveBasket(ctx, remaining)
+	return err
+}
+
+type createDraftOptions struct {
+	DraftID            string
+	RequestFingerprint string
+	JobID              string
+}
+
 // CreateDraft hydrates the incoming sources into ThoughtSnapshots
 // (for thought sources) and context blocks (for search/topic/
 // capture sources), calls the LLM synthesis provider, and persists
@@ -109,15 +400,21 @@ func (s *Service) SetModel(model string) {
 // Sources are deduplicated by (source_type, source_id) and the
 // source_links list is unioned across all sources so the saved
 // Thought can carry a complete provenance trail.
-func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (models.ComposeDraft, error) {
+func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, opts ...createDraftOptions) (models.ComposeDraft, error) {
 	if s == nil || s.draftStore == nil {
 		return models.ComposeDraft{}, errors.New("compose service is not ready")
 	}
-	if s.synthesis == nil {
+	// Document-profile generation can stand in for the free-form
+	// synthesis provider; only fail hard when neither path is ready.
+	if s.synthesis == nil && (s.profiles == nil || s.documentGenerator == nil) {
 		return models.ComposeDraft{}, errors.New("compose synthesis provider is not ready")
 	}
 	if len(req.Sources) == 0 {
 		return models.ComposeDraft{}, errors.New("sources are required")
+	}
+	var opt createDraftOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 
 	deduped, sourceLinks := dedupeSources(req.Sources)
@@ -204,21 +501,32 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (m
 		}
 	}
 
+	draftID := firstNonEmpty(opt.DraftID, synthDraft.ID, models.NewJobID("compose", now))
+	createdAt := now
+	if opt.DraftID != "" && s.draftStore != nil {
+		if existing, err := s.draftStore.GetDraft(ctx, opt.DraftID); err == nil && !existing.CreatedAt.IsZero() {
+			createdAt = existing.CreatedAt
+		}
+	}
+	fingerprint := firstNonEmpty(opt.RequestFingerprint, composeRequestFingerprint(deduped, req))
 	draft := models.ComposeDraft{
-		ID:              firstNonEmpty(synthDraft.ID, models.NewJobID("compose", now)),
-		Sources:         deduped,
-		Goal:            synthReq.Goal,
-		Format:          firstNonEmpty(synthReq.Format, models.ComposeFormatSummary),
-		DocumentProfile: profileRef,
-		Parameters:      cloneStringMap(req.Parameters),
-		DocumentDraft:   structuredDraft,
-		Validation:      validation,
-		Content:         synthDraft.Content,
-		SourceLinks:     sourceLinks,
-		Model:           firstNonEmpty(synthDraft.Model, s.model),
-		Status:          models.ComposeStatusDraft,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                 draftID,
+		Sources:            deduped,
+		Goal:               synthReq.Goal,
+		Format:             firstNonEmpty(synthReq.Format, models.ComposeFormatSummary),
+		DocumentProfile:    profileRef,
+		Parameters:         cloneStringMap(req.Parameters),
+		DocumentDraft:      structuredDraft,
+		Validation:         validation,
+		Content:            synthDraft.Content,
+		SourceLinks:        sourceLinks,
+		Model:              firstNonEmpty(synthDraft.Model, s.model),
+		Status:             models.ComposeStatusDraft,
+		RequestFingerprint: fingerprint,
+		JobID:              opt.JobID,
+		GenerationPrompt:   req.Prompt,
+		CreatedAt:          createdAt,
+		UpdatedAt:          now,
 	}
 	if len(synthDraft.History) > 0 {
 		draft.History = convertHistory(synthDraft.History)
@@ -226,6 +534,14 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (m
 	// Selected_thought_ids travels on the prompt line above; the
 	// source list itself is the authoritative record of which
 	// thoughts the user picked, so we do not duplicate it here.
+
+	// If this CreateDraft is filling an async placeholder and the
+	// user deleted that placeholder mid-run, do not recreate it.
+	if opt.DraftID != "" {
+		if _, loadErr := s.draftStore.GetDraft(ctx, opt.DraftID); loadErr != nil {
+			return models.ComposeDraft{}, errComposeDraftDeleted
+		}
+	}
 
 	saved, err := s.draftStore.SaveDraft(ctx, draft)
 	if err != nil {
@@ -237,8 +553,8 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest) (m
 			SourceUnit:     "compose",
 			OccurredAt:     s.now(),
 			WorkspaceID:    s.workspaceID(),
-			ResourceType:   models.ResourceTypeWorkspace,
-			ResourceID:     s.workspaceID(),
+			ResourceType:   models.ResourceTypeComposeDraft,
+			ResourceID:     saved.ID,
 			PayloadVersion: 1,
 			Payload:        saved,
 		})
@@ -258,6 +574,65 @@ func (s *Service) GetDraft(ctx context.Context, draftID string) (models.ComposeD
 		return models.ComposeDraft{}, errors.New("compose draft store is not ready")
 	}
 	return s.draftStore.GetDraft(ctx, draftID)
+}
+
+// DeleteDraft removes a compose draft file and best-effort cancels any
+// in-flight generate job tied to it. Missing drafts are treated as
+// already-deleted so the UI can stay idempotent.
+func (s *Service) DeleteDraft(ctx context.Context, draftID string) error {
+	if s == nil || s.draftStore == nil {
+		return errors.New("compose draft store is not ready")
+	}
+	draftID = strings.TrimSpace(draftID)
+	if draftID == "" {
+		return errors.New("draft id is required")
+	}
+	draft, err := s.draftStore.GetDraft(ctx, draftID)
+	if err != nil {
+		// Idempotent delete: missing file is success.
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			return nil
+		}
+		return err
+	}
+	if err := s.draftStore.Delete(ctx, draftID); err != nil {
+		return err
+	}
+	// Drop any in-memory inflight slot for this fingerprint so a
+	// subsequent identical generate request can start fresh.
+	if fp := strings.TrimSpace(draft.RequestFingerprint); fp != "" {
+		s.inflightMu.Lock()
+		if current, ok := s.inflight[fp]; ok {
+			if current.ID == draft.JobID || current.ResourceID == draftID {
+				delete(s.inflight, fp)
+			}
+		}
+		s.inflightMu.Unlock()
+	}
+	if s.jobs != nil && strings.TrimSpace(draft.JobID) != "" {
+		if job, jobErr := s.jobs.Get(draft.JobID); jobErr == nil && jobActive(job) {
+			if canceled, cancelErr := s.jobs.MarkCanceled(job, "compose draft deleted"); cancelErr == nil {
+				eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), canceled))
+			}
+		}
+	}
+	if s.eventHub != nil {
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:      EventComposeDraftDeleted,
+			SourceUnit:     "compose",
+			OccurredAt:     s.now(),
+			WorkspaceID:    s.workspaceID(),
+			ResourceType:   models.ResourceTypeComposeDraft,
+			ResourceID:     draftID,
+			PayloadVersion: 1,
+			Payload: map[string]any{
+				"draft_id": draftID,
+				"job_id":   draft.JobID,
+				"status":   draft.Status,
+			},
+		})
+	}
+	return nil
 }
 
 func (s *Service) GetBasket(ctx context.Context) (models.ComposeBasket, error) {
@@ -299,6 +674,12 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 	}
 	if draft.Status == models.ComposeStatusSaved {
 		return models.ComposeSaveResult{}, fmt.Errorf("compose draft %q already saved as thought %q", draftID, draft.SavedThoughtID)
+	}
+	if draft.Status == models.ComposeStatusGenerating {
+		return models.ComposeSaveResult{}, fmt.Errorf("compose draft %q is still generating", draftID)
+	}
+	if draft.Status == models.ComposeStatusFailed {
+		return models.ComposeSaveResult{}, fmt.Errorf("compose draft %q failed generation and cannot be saved", draftID)
 	}
 
 	content := strings.TrimSpace(req.Content)
@@ -671,4 +1052,112 @@ func cloneProfileRef(ref *models.DocumentProfileRef) *models.DocumentProfileRef 
 	}
 	copy := *ref
 	return &copy
+}
+
+func composeRequestFromDraft(draft models.ComposeDraft) models.ComposeRequest {
+	req := models.ComposeRequest{
+		Sources:    append([]models.ComposeSource{}, draft.Sources...),
+		Prompt:     draft.GenerationPrompt,
+		Goal:       draft.Goal,
+		Format:     draft.Format,
+		Parameters: cloneStringMap(draft.Parameters),
+	}
+	if draft.DocumentProfile != nil {
+		req.ProfileID = draft.DocumentProfile.ProfileID
+		req.ProfileVersion = draft.DocumentProfile.Version
+	}
+	return req
+}
+
+func composeRequestFingerprint(sources []models.ComposeSource, req models.ComposeRequest) string {
+	parts := make([]string, 0, len(sources)+8)
+	for _, source := range sources {
+		parts = append(parts, composeSourceFingerprintPart(source))
+	}
+	sort.Strings(parts)
+	parts = append(parts,
+		"goal="+strings.TrimSpace(req.Goal),
+		"format="+strings.TrimSpace(req.Format),
+		"profile="+strings.TrimSpace(req.ProfileID),
+		fmt.Sprintf("profile_version=%d", req.ProfileVersion),
+		"prompt="+strings.TrimSpace(req.Prompt),
+	)
+	if len(req.Parameters) > 0 {
+		keys := make([]string, 0, len(req.Parameters))
+		for key := range req.Parameters {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, key+"="+req.Parameters[key])
+		}
+	}
+	sum := sha1.Sum([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+func composeSourceFingerprintPart(source models.ComposeSource) string {
+	parts := []string{
+		"type=" + strings.TrimSpace(source.SourceType),
+		"id=" + strings.TrimSpace(source.SourceID),
+		"title=" + strings.TrimSpace(source.Title),
+		"snippet=" + strings.TrimSpace(source.Snippet),
+		"link=" + strings.TrimSpace(source.SourceLink),
+	}
+	if len(source.Metadata) > 0 {
+		keys := make([]string, 0, len(source.Metadata))
+		for key := range source.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, "metadata."+key+"="+source.Metadata[key])
+		}
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+func composeSourceKey(source models.ComposeSource) string {
+	sourceType := strings.TrimSpace(source.SourceType)
+	sourceID := strings.TrimSpace(source.SourceID)
+	if sourceType == "" || sourceID == "" {
+		return ""
+	}
+	return sourceType + "\x00" + sourceID
+}
+
+func jobActive(job models.Job) bool {
+	switch job.Status {
+	case models.JobStatusQueued, models.JobStatusRunning, models.JobStatusRetrying:
+		return true
+	default:
+		return false
+	}
+}
+
+// findInflightGenerateJob scans persisted jobs for an active generate job
+// whose draft still carries the same request fingerprint. This covers the
+// process-restart case where the in-memory map is empty but a prior click
+// is still running.
+func (s *Service) findInflightGenerateJob(fingerprint string) (models.Job, bool) {
+	if s == nil || s.jobs == nil || s.draftStore == nil || strings.TrimSpace(fingerprint) == "" {
+		return models.Job{}, false
+	}
+	jobs, err := s.jobs.List()
+	if err != nil {
+		return models.Job{}, false
+	}
+	for _, job := range jobs {
+		if job.Type != models.JobTypeComposeGenerate || !jobActive(job) {
+			continue
+		}
+		draft, err := s.draftStore.GetDraft(context.Background(), job.ResourceID)
+		if err != nil {
+			continue
+		}
+		if draft.RequestFingerprint == fingerprint && draft.Status == models.ComposeStatusGenerating {
+			return job, true
+		}
+	}
+	return models.Job{}, false
 }

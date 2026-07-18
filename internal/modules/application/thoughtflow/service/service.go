@@ -174,6 +174,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/compose/drafts", engine.GET, s.handleListComposeDrafts)
 	s.registry.AddHandler("/api/compose/drafts", engine.POST, s.handleCreateComposeDraft)
 	s.registry.AddHandler("/api/compose/drafts/:id", engine.GET, s.handleGetComposeDraft)
+	s.registry.AddHandler("/api/compose/drafts/:id", "DELETE", s.handleDeleteComposeDraft)
 	s.registry.AddHandler("/api/compose/drafts/:id/save", engine.POST, s.handleSaveComposeDraft)
 	s.registry.AddHandler("/api/document-profiles", engine.GET, s.handleListDocumentProfiles)
 	s.registry.AddHandler("/api/document-profiles/validate", engine.POST, s.handleValidateDocumentProfile)
@@ -612,12 +613,15 @@ func (s *Service) handleCreateComposeDraft(ctx context.Context, res http.Respons
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_request", "sources is required")
 		return
 	}
-	draft, err := s.composeService.CreateDraft(ctx, request)
+	// Generation runs in the background; the response is the queued job
+	// (resource_id = draft id). Clients poll list/get or listen for
+	// compose.draft_created / job.updated rather than blocking on the LLM.
+	job, err := s.composeService.CreateDraftAsync(ctx, request)
 	if err != nil {
 		writeError(res, req, http.StatusBadGateway, "thoughtflow.compose.generate_failed", err.Error())
 		return
 	}
-	writeJSON(res, req, http.StatusOK, draft)
+	writeJSON(res, req, http.StatusAccepted, job)
 }
 
 func (s *Service) handleListComposeDrafts(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -695,6 +699,24 @@ func (s *Service) handleGetComposeDraft(ctx context.Context, res http.ResponseWr
 		return
 	}
 	writeJSON(res, req, http.StatusOK, draft)
+}
+
+func (s *Service) handleDeleteComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if s.composeService == nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
+		return
+	}
+	draftID := pathID(req.URL.Path, "/api/compose/drafts/")
+	draftID = strings.SplitN(draftID, "/", 2)[0]
+	if draftID == "" {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_request", "draft id is required")
+		return
+	}
+	if err := s.composeService.DeleteDraft(ctx, draftID); err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.delete_failed", err.Error())
+		return
+	}
+	writeJSON(res, req, http.StatusOK, map[string]any{"draft_id": draftID, "deleted": true})
 }
 
 func (s *Service) handleSaveComposeDraft(ctx context.Context, res http.ResponseWriter, req *http.Request) {

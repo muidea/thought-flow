@@ -1638,9 +1638,33 @@ function startFixtureServer(options = {}) {
           }],
         }));
       case "/api/compose/drafts":
+        if (req.method === "POST") {
+          // Mirror the async generate contract: accept and return a job.
+          return json(res, api({
+            id: "job-compose-1",
+            type: "compose_generate",
+            resource_type: "compose_draft",
+            resource_id: "draft-1",
+            status: "queued",
+            message: "compose generation queued",
+          }), 202);
+        }
         return json(res, api([
           { id: "draft-1", goal: "Smoke test draft", format: "summary", status: "draft", created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
         ]));
+      case "/api/compose/drafts/draft-1":
+        if (req.method === "DELETE") {
+          return json(res, api({ draft_id: "draft-1", deleted: true }));
+        }
+        return json(res, api({
+          id: "draft-1",
+          goal: "Smoke test draft",
+          format: "summary",
+          status: "draft",
+          content: "# Smoke test draft",
+          created_at: "2026-06-09T00:00:00Z",
+          updated_at: "2026-06-09T00:00:00Z",
+        }));
       case "/api/compose/sources":
         if (req.method === "GET") return json(res, api(composeSourcesState));
         if (req.method === "PUT") {

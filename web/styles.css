@@ -996,6 +996,66 @@ p {
   background: #e6f4ff;
 }
 
+/* Writing rows have a dedicated layout: the delete affordance floats over
+ * the card edge instead of claiming a text column in the shared result-row. */
+.compose-draft-item {
+  position: relative;
+  padding-right: 44px;
+}
+
+.compose-draft-content {
+  min-width: 0;
+}
+
+.compose-draft-title {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.compose-draft-delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.compose-draft-delete svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.compose-draft-item:hover .compose-draft-delete,
+.compose-draft-delete:focus-visible {
+  opacity: 1;
+}
+
+.compose-draft-delete:hover {
+  border-color: #ffccc7;
+  background: #fff2f0;
+  color: #cf1322;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .compose-draft-delete {
+    opacity: 1;
+  }
+}
+
 .topic-meta,
 .result-meta,
 .event-meta {
@@ -1923,6 +1983,7 @@ textarea.markdown-preview {
 .tf-menu-item:focus-visible,
 .tf-btn:focus-visible,
 button.mini-button:focus-visible,
+button.compose-draft-delete:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {

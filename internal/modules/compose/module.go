@@ -64,7 +64,7 @@ func (m *Module) Weight() int {
 	return 170
 }
 
-func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundRoutine) *cd.Error {
+func (m *Module) Setup(_ context.Context, eventHub event.Hub, backgroundRoutine task.BackgroundRoutine) *cd.Error {
 	cfg := appconfig.Load()
 	ws, err := workspace.Open(context.Background(), cfg)
 	if err != nil {
@@ -79,6 +79,7 @@ func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundR
 		composedraft.New(ws.RootPath),
 		jobstore.New(ws.JobsPath),
 		eventHub,
+		backgroundRoutine,
 		ai.NewSynthesisProvider(cfg.LLM),
 		capture,
 	)
@@ -96,6 +97,9 @@ func (m *Module) Setup(_ context.Context, eventHub event.Hub, _ task.BackgroundR
 		if cfg.DocumentProfiles.AutoReload {
 			m.profileRegistry.StartAutoReload(cfg.DocumentProfiles.ReloadInterval)
 		}
+	}
+	if _, err := m.service.RecoverGeneratingDrafts(); err != nil {
+		return cd.WrapError(cd.Unexpected, err, "recover compose generation jobs")
 	}
 	setCurrent(m.service)
 	return nil
