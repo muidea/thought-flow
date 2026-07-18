@@ -4059,21 +4059,11 @@ function clearComposeSources() {
 function renderComposeSources() {
   const sources = Array.from(state.composeSources.values());
   const ids = sources.map((s) => s.source_id);
-  const count = $("#compose-source-count");
   const list = $("#compose-source-list");
-  const clear = $("#clear-compose-sources");
   const create = $("#open-compose-create");
   const createFromSources = $("#open-compose-create-sources");
   if (create) create.disabled = sources.length === 0;
   if (createFromSources) createFromSources.disabled = sources.length === 0;
-  if (count) {
-    const rendered = t("compose.source_count", { n: sources.length });
-    // Keep the data-n attribute in sync so a later tApply() doesn't reset
-    // the count back to the static value baked into the HTML.
-    count.setAttribute("data-n", String(sources.length));
-    count.textContent = rendered;
-  }
-  if (clear) clear.disabled = sources.length === 0;
   if (list) {
     if (sources.length === 0) {
       list.innerHTML = `<div class="tf-empty">${escapeHTML(t("compose.empty_sources"))}</div>`;
@@ -5142,7 +5132,6 @@ function bind() {
     openComposeSources();
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
-  $("#clear-compose-sources").addEventListener("click", clearComposeSources);
   $("#clear-compose-sources-tab").addEventListener("click", clearComposeSources);
   $("#drawer-add-compose").addEventListener("click", () => addToComposeSources([state.activeThoughtId]));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));

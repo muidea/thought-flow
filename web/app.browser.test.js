@@ -164,18 +164,18 @@ async function runBrowserSmoke(browser, url) {
     const thoughtDrawerOpen = document.querySelector("#thought-drawer")?.classList.contains("open");
     const thoughtDrawerText = document.querySelector("#thought-drawer-content")?.textContent || "";
     document.querySelector("#drawer-add-compose")?.click();
-    await waitUntil(() => document.querySelector("#compose-source-count")?.getAttribute("data-n") === "1");
-    const basketTextAfterDrawer = document.querySelector("#compose-source-count")?.textContent || "";
-    const basketCountAfterDrawer = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
+    await waitUntil(() => document.querySelector("#compose-source-count-sources")?.getAttribute("data-n") === "1");
+    const basketTextAfterDrawer = document.querySelector("#compose-source-count-sources")?.textContent || "";
+    const basketCountAfterDrawer = document.querySelector("#compose-source-count-sources")?.getAttribute("data-n") || "";
     document.querySelector("[data-close-drawer='thought-drawer']")?.click();
     document.querySelector("[data-select-id='thought-1']").checked = true;
     document.querySelector("[data-select-id='thought-1']").dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector("#add-selected-compose").click();
     await waitUntil(() => document.querySelector("#page-compose")?.classList.contains("active"));
-    await waitUntil(() => document.querySelector("#compose-source-count")?.getAttribute("data-n") === "1");
+    await waitUntil(() => document.querySelector("#compose-source-count-sources")?.getAttribute("data-n") === "1");
     const composeActive = document.querySelector("#page-compose")?.classList.contains("active");
-    const basketText = document.querySelector("#compose-source-count")?.textContent || "";
-    const basketCount = document.querySelector("#compose-source-count")?.getAttribute("data-n") || "";
+    const basketText = document.querySelector("#compose-source-count-sources")?.textContent || "";
+    const basketCount = document.querySelector("#compose-source-count-sources")?.getAttribute("data-n") || "";
     document.querySelector("#open-compose-create").click();
     const composeDrawerOpen = document.querySelector("#compose-create-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='compose-create-drawer']")?.click();
@@ -643,10 +643,10 @@ test("compose sources load from the backend", async (t) => {
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     await setPageHash(page, "#/write");
     await page.waitForExpression(() => {
-      const el = document.querySelector("#compose-source-count");
+      const el = document.querySelector("#compose-source-count-sources");
       return el && /2/.test(el.textContent || "");
     });
-    const count = await page.evaluate(() => document.querySelector("#compose-source-count")?.textContent || "");
+    const count = await page.evaluate(() => document.querySelector("#compose-source-count-sources")?.textContent || "");
     assert.match(count, /2/);
     const current = await page.evaluate(() => window.localStorage.getItem("tflow.compose.sources"));
     assert.equal(current, null);
@@ -722,6 +722,21 @@ test("compose draft reader opens preview and supports edit/preview toggle", asyn
       assert.equal(previewState.editDisabled, false);
       assert.equal(previewState.saveDisabled, false);
       assert.equal(previewState.previewPressed, "true");
+
+      const readerWidth = await page.evaluate(() => {
+        const main = document.querySelector(".tf-compose-main-pane");
+        const preview = document.querySelector("#compose-preview");
+        if (!main || !preview) return null;
+        return {
+          main: main.getBoundingClientRect().width,
+          preview: preview.getBoundingClientRect().width,
+        };
+      });
+      assert.ok(readerWidth, `compose reader width missing on ${viewport.name}`);
+      assert.ok(
+        readerWidth.preview >= readerWidth.main - 2,
+        `preview should fill the main pane on ${viewport.name}: ${JSON.stringify(readerWidth)}`
+      );
 
       // Keyboard: focus Edit and activate.
       await page.evaluate(() => {

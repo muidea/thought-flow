@@ -156,8 +156,8 @@ function makeDomStub(initial = {}) {
   // Side-effect nodes (toast, source list, etc.) only need the methods the
   // app touches — they all swallow writes silently so callers don't crash
   // when the test doesn't drive them.
-  const sideEffectNodes = new Set(["toast", "compose-source-count", "compose-source-list",
-    "clear-compose-sources", "compose-sources-list", "compose-source-count-sources",
+  const sideEffectNodes = new Set(["toast", "compose-source-list",
+    "compose-sources-list", "compose-source-count-sources",
     "clear-compose-sources-tab", "open-compose-create", "open-compose-create-sources",
     "selected-count", "add-selected-compose", "clear-selected",
     "topic-rules-summary"]);

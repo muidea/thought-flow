@@ -773,6 +773,7 @@ p {
 .tf-compose-main-pane {
   display: grid;
   gap: 12px;
+  width: 100%;
 }
 
 .tf-compose-main-header {
@@ -800,11 +801,11 @@ p {
 .tf-compose-preview,
 .tf-compose-editor {
   width: 100%;
-  max-width: 960px;
+  max-width: none;
   min-height: 520px;
   max-height: calc(100vh - 260px);
   overflow: auto;
-  margin: 0 auto;
+  margin: 0;
   box-sizing: border-box;
 }
 
