@@ -17,6 +17,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/searchdb"
+	"thoughtflow/internal/pkg/thoughtlock"
 )
 
 type Service struct {
@@ -27,10 +28,24 @@ type Service struct {
 	eventHub   event.Hub
 	background task.BackgroundRoutine
 	embedder   ai.EmbeddingProvider
+	locker     *thoughtlock.Locker
 }
 
-func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, indexPath string) *Service {
-	return &Service{
+const indexerSessionID = thoughtlock.IndexerSessionID
+const indexLockWait = time.Second
+
+type Option func(*Service)
+
+// WithLocker attaches the shared thought lock so indexing cannot write a
+// thought after another workflow has deleted it.
+func WithLocker(locker *thoughtlock.Locker) Option {
+	return func(s *Service) {
+		s.locker = locker
+	}
+}
+
+func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, indexPath string, options ...Option) *Service {
+	service := &Service{
 		workspace:  workspace,
 		jobs:       jobs,
 		store:      store,
@@ -39,6 +54,10 @@ func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *search
 		background: background,
 		embedder:   embedder,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) ID() string {
@@ -98,6 +117,18 @@ func (s *Service) IndexAsyncWithEmbedding(thoughtID string, embedding *models.Em
 }
 
 func (s *Service) IndexThought(ctx context.Context, thoughtID string, embedding *models.EmbeddingRecord) error {
+	locked := false
+	if s.locker != nil {
+		if err := s.locker.AcquireBackground(thoughtID, indexerSessionID, indexLockWait); err != nil {
+			return err
+		}
+		locked = true
+		defer func() {
+			if locked {
+				s.locker.Release(thoughtID, indexerSessionID)
+			}
+		}()
+	}
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {
 		return err
@@ -234,6 +265,11 @@ func (s *Service) indexJob(job models.Job, embedding *models.EmbeddingRecord) {
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	err := s.IndexThought(context.Background(), job.ResourceID, embedding)
 	if err != nil {
+		if errors.Is(err, thoughtlock.ErrLocked) || errors.Is(err, os.ErrNotExist) {
+			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked or deleted")
+			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
+			return
+		}
 		errRef := models.NewErrorRef("thoughtflow.search.index_failed", err.Error(), true)
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))

@@ -66,7 +66,7 @@ type Service struct {
 // pipeline. Sharing the same identity as the refiner signals to the
 // capture module that "the AI is processing" — the user can still
 // see the lock state but the lock TTL applies uniformly.
-const expanderSessionID = "expander"
+const expanderSessionID = thoughtlock.ExpanderSessionID
 
 const expandTopKRelated = 3
 const expandTopKNearTopics = 3
@@ -193,7 +193,7 @@ func (s *Service) ExpandAsync(thoughtID string) (models.Job, error) {
 
 func (s *Service) expandJob(job models.Job) {
 	if s.locker != nil {
-		if err := s.locker.Acquire(job.ResourceID, expanderSessionID); err != nil {
+		if err := s.locker.AcquireBackground(job.ResourceID, expanderSessionID, time.Second); err != nil {
 			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked by an active session")
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
 			return

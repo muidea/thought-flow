@@ -15,6 +15,7 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/searchdb"
+	"thoughtflow/internal/pkg/thoughtlock"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -73,7 +74,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		return cd.WrapError(cd.Unexpected, err, "open duckdb")
 	}
 	m.store = store
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), store, eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.Embedding), dbPath)
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), store, eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.Embedding), dbPath, biz.WithLocker(thoughtlock.Default()))
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)
 	eventHub.Subscribe("thought.refined", m.service)

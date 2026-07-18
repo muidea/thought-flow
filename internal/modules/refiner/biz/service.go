@@ -38,6 +38,8 @@ const skippedUnchangedModel = "cached-unchanged"
 // generic "another session is editing" message.
 var refinerSessionID = thoughtlock.RefinerSessionID
 
+const backgroundLockWait = time.Second
+
 type retryableRefineError struct {
 	err error
 }
@@ -177,7 +179,7 @@ func (s *Service) refineJob(job models.Job, force bool) {
 	// thought. We don't queue or retry — the next background sweep will
 	// pick it up once the session releases the lock or the TTL elapses.
 	if s.locker != nil {
-		if err := s.locker.Acquire(job.ResourceID, refinerSessionID); err != nil {
+		if err := s.locker.AcquireBackground(job.ResourceID, refinerSessionID, backgroundLockWait); err != nil {
 			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked by an active session")
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
 			return

@@ -13,6 +13,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/searchdb"
+	"thoughtflow/internal/pkg/thoughtlock"
 )
 
 func TestRuntimeStatusReportsSearchIndexPath(t *testing.T) {
@@ -107,6 +108,58 @@ func TestGetSearchPreviewReturnsIndexedSnippet(t *testing.T) {
 	}
 	if preview.ThoughtID != thought.ID || preview.Snippet == "" || preview.Path != thought.Path {
 		t.Fatalf("preview = %#v", preview)
+	}
+}
+
+func TestIndexJobSkipsThoughtLockedForDeletion(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:       "local",
+		RootPath: root,
+		JobsPath: filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	store, err := searchdb.Open(context.Background(), filepath.Join(root, ".thoughtflow", "thoughtflow.duckdb"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	thought := models.Thought{
+		ID:           "20260718-073804-delete",
+		DisplayTitle: "Disposable note",
+		Path:         markdown.ThoughtRelativePath("20260718-073804-delete"),
+	}
+	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: "delete me"}); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+
+	jobs := jobstore.New(ws.JobsPath)
+	locker := thoughtlock.New(time.Second)
+	service := NewService(ws, jobs, store, nil, nil, nil, "", WithLocker(locker))
+	if err := locker.Acquire(thought.ID, "delete-session"); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer locker.Release(thought.ID, "delete-session")
+	job, err := jobs.Create(models.JobTypeIndex, models.ResourceTypeThought, thought.ID, "index queued")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	service.indexJob(job, nil)
+
+	storedJob, err := jobs.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if storedJob.Status != models.JobStatusSucceeded || storedJob.Message != "skipped: thought is locked or deleted" {
+		t.Fatalf("job = %#v", storedJob)
+	}
+	indexedThought, _, err := markdown.ReadThought(root, thought.ID)
+	if err != nil {
+		t.Fatalf("ReadThought() error = %v", err)
+	}
+	if indexedThought.IndexStatus == models.IndexStatusIndexed {
+		t.Fatalf("locked thought was indexed: %#v", indexedThought)
 	}
 }
 

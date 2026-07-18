@@ -42,6 +42,38 @@ func TestAcquireContended(t *testing.T) {
 	}
 }
 
+func TestAcquireWithinWaitsForRelease(t *testing.T) {
+	locker := New(time.Second)
+	if err := locker.Acquire("thought-1", "session-A"); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		locker.Release("thought-1", "session-A")
+	}()
+	if err := locker.AcquireWithin("thought-1", "session-B", time.Second); err != nil {
+		t.Fatalf("AcquireWithin() error = %v", err)
+	}
+	if holder, _ := locker.Holder("thought-1"); holder != "session-B" {
+		t.Fatalf("holder = %q, want session-B", holder)
+	}
+}
+
+func TestAcquireBackgroundSkipsInteractiveLock(t *testing.T) {
+	locker := New(time.Second)
+	if err := locker.Acquire("thought-1", "delete-session"); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	started := time.Now()
+	err := locker.AcquireBackground("thought-1", IndexerSessionID, time.Second)
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("AcquireBackground() error = %v, want ErrLocked", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("AcquireBackground waited %s for an interactive lock", elapsed)
+	}
+}
+
 func TestHeartbeatExtends(t *testing.T) {
 	locker := New(50 * time.Millisecond)
 	if err := locker.Acquire("thought-1", "session-A"); err != nil {

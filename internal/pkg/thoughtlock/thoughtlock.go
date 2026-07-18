@@ -42,13 +42,15 @@ import (
 // ErrLocked is returned when the lock is held by another session.
 var ErrLocked = errors.New("thoughtlock: thought is locked by another session")
 
-// RefinerSessionID is the sessionID the refiner module uses when it
-// acquires a thought lock. Callers that fail to acquire and see this
-// sessionID in the holder slot can map the failure to "AI is currently
-// processing this thought" rather than "another browser tab is editing".
-// Centralizing the constant here keeps the capture module's lock-reason
-// detection and the refiner's Acquire calls in sync.
-const RefinerSessionID = "refiner"
+// Workflow session IDs identify background thought mutations. Interactive
+// callers can report these as "AI is processing"; background workers can
+// briefly wait for them to preserve the capture -> refine -> expand -> index
+// pipeline without waiting on a user's editing or deletion lock.
+const (
+	RefinerSessionID  = "refiner"
+	ExpanderSessionID = "expander"
+	IndexerSessionID  = "search-index"
+)
 
 // DefaultTTL is the staleness window. A holder that fails to call
 // Heartbeat within this window is considered abandoned and its lock may
@@ -116,6 +118,46 @@ func (l *Locker) Acquire(thoughtID, sessionID string) error {
 	}
 	l.held[thoughtID] = holder{sessionID: sessionID, expiresAt: l.now().Add(l.ttl)}
 	return nil
+}
+
+// AcquireWithin waits briefly for another workflow to finish its mutation.
+// Interactive callers should use Acquire directly so they can report a
+// conflict immediately; background pipeline stages use this method to retain
+// their event ordering without writing concurrently.
+func (l *Locker) AcquireWithin(thoughtID, sessionID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := l.Acquire(thoughtID, sessionID)
+		if !errors.Is(err, ErrLocked) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// AcquireBackground immediately takes a free lock, waits briefly for a
+// preceding background workflow, and otherwise returns ErrLocked immediately.
+// It deliberately never waits for interactive sessions so user operations
+// retain their existing conflict semantics.
+func (l *Locker) AcquireBackground(thoughtID, sessionID string, timeout time.Duration) error {
+	err := l.Acquire(thoughtID, sessionID)
+	if !errors.Is(err, ErrLocked) {
+		return err
+	}
+	holder, ok := l.Holder(thoughtID)
+	if !ok || !isWorkflowSession(holder) {
+		return err
+	}
+	return l.AcquireWithin(thoughtID, sessionID, timeout)
+}
+
+func isWorkflowSession(sessionID string) bool {
+	switch sessionID {
+	case RefinerSessionID, ExpanderSessionID, IndexerSessionID:
+		return true
+	default:
+		return false
+	}
 }
 
 // Heartbeat extends the lease for the existing holder. It is a no-op
