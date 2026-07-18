@@ -1,7 +1,9 @@
 const { EventEmitter } = require("node:events");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -2286,7 +2288,7 @@ class CDPPage {
     this.pending = new Map();
     this.listeners = new Map();
     this.ready = new Promise((resolve, reject) => {
-      this.ws = new WebSocket(wsURL);
+      this.ws = new DevToolsWebSocket(wsURL);
       this.ws.addEventListener("open", resolve, { once: true });
       this.ws.addEventListener("error", reject, { once: true });
       this.ws.addEventListener("message", (event) => this.handleMessage(event));
@@ -2363,6 +2365,142 @@ class CDPPage {
     }
   }
 }
+
+// Node did not expose a global WebSocket until recent releases. The browser
+// smoke tests connect directly to Chrome's local DevTools endpoint, so use the
+// platform implementation when available and a small RFC 6455 client backed
+// by Node core otherwise. It only implements the text-frame subset CDP uses.
+class NodeWebSocket {
+  constructor(url) {
+    this.listeners = new Map();
+    this.buffer = Buffer.alloc(0);
+    this.connected = false;
+    this.connect(url);
+  }
+
+  addEventListener(type, handler, options = {}) {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push({ handler, once: Boolean(options.once) });
+    this.listeners.set(type, handlers);
+  }
+
+  send(message) {
+    if (!this.connected) throw new Error("WebSocket is not open");
+    const payload = Buffer.from(message);
+    const mask = crypto.randomBytes(4);
+    const header = websocketHeader(0x81, payload.length, true);
+    const masked = Buffer.alloc(payload.length);
+    for (let index = 0; index < payload.length; index++) {
+      masked[index] = payload[index] ^ mask[index % mask.length];
+    }
+    this.socket.write(Buffer.concat([header, mask, masked]));
+  }
+
+  connect(url) {
+    const target = new URL(url);
+    if (target.protocol !== "ws:") {
+      throw new Error(`unsupported DevTools WebSocket protocol: ${target.protocol}`);
+    }
+    const key = crypto.randomBytes(16).toString("base64");
+    const port = Number(target.port || 80);
+    this.socket = net.createConnection({ host: target.hostname, port });
+    this.socket.once("error", (error) => this.emit("error", { error }));
+    this.socket.once("connect", () => {
+      const request = [
+        `GET ${target.pathname}${target.search} HTTP/1.1`,
+        `Host: ${target.host}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Key: ${key}`,
+        "Sec-WebSocket-Version: 13",
+        "",
+        "",
+      ].join("\r\n");
+      this.socket.write(request);
+    });
+    this.socket.on("data", (chunk) => this.receive(chunk));
+  }
+
+  receive(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (!this.connected) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
+      const response = this.buffer.subarray(0, headerEnd).toString("utf8");
+      this.buffer = this.buffer.subarray(headerEnd + 4);
+      if (!response.startsWith("HTTP/1.1 101")) {
+        this.emit("error", { error: new Error(`DevTools WebSocket upgrade failed: ${response.split("\r\n", 1)[0]}`) });
+        this.socket.destroy();
+        return;
+      }
+      this.connected = true;
+      this.emit("open", {});
+    }
+    this.receiveFrames();
+  }
+
+  receiveFrames() {
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      let offset = 2;
+      let length = second & 0x7f;
+      if (length === 126) {
+        if (this.buffer.length < offset + 2) return;
+        length = this.buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (this.buffer.length < offset + 8) return;
+        const value = this.buffer.readBigUInt64BE(offset);
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("WebSocket frame is too large");
+        length = Number(value);
+        offset += 8;
+      }
+      const masked = Boolean(second & 0x80);
+      if (masked) {
+        if (this.buffer.length < offset + 4) return;
+      }
+      const mask = masked ? this.buffer.subarray(offset, offset + 4) : null;
+      offset += masked ? 4 : 0;
+      if (this.buffer.length < offset + length) return;
+      const payload = this.buffer.subarray(offset, offset + length);
+      this.buffer = this.buffer.subarray(offset + length);
+      if (mask) {
+        for (let index = 0; index < payload.length; index++) payload[index] ^= mask[index % mask.length];
+      }
+      const opcode = first & 0x0f;
+      if (opcode === 0x1) this.emit("message", { data: payload.toString("utf8") });
+      if (opcode === 0x8) this.socket.end();
+    }
+  }
+
+  emit(type, event) {
+    const handlers = this.listeners.get(type) || [];
+    this.listeners.set(type, handlers.filter(({ handler, once }) => {
+      handler(event);
+      return !once;
+    }));
+  }
+}
+
+function websocketHeader(firstByte, length, masked) {
+  const maskBit = masked ? 0x80 : 0;
+  if (length < 126) return Buffer.from([firstByte, maskBit | length]);
+  if (length <= 0xffff) {
+    const header = Buffer.alloc(4);
+    header[0] = firstByte;
+    header[1] = maskBit | 126;
+    header.writeUInt16BE(length, 2);
+    return header;
+  }
+  const header = Buffer.alloc(10);
+  header[0] = firstByte;
+  header[1] = maskBit | 127;
+  header.writeBigUInt64BE(BigInt(length), 2);
+  return header;
+}
+
+const DevToolsWebSocket = globalThis.WebSocket || NodeWebSocket;
 
 // PlaywrightPage is a CDPPage-compatible adapter for Playwright Page
 // objects. The smoke matrix only uses a small slice of CDP: enabling
