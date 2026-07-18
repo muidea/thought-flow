@@ -1051,7 +1051,15 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
     await page.send("Log.enable");
     await page.send("Page.enable");
     await page.navigate(`${baseURL}/?lang=en-US`);
+    // #page-dashboard ships with class="active" in static HTML, so waiting
+    // only on that can race boot()/renderRoute(). aria-current is set by
+    // renderRoute after parseRoute, so wait for app ready + the attribute.
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
+    await page.waitForExpression(() => window.__thoughtflowReady === true, 30000);
+    await page.waitForExpression(() => {
+      const active = document.querySelector(".tf-menu-item.active");
+      return active?.getAttribute("aria-current") === "page";
+    });
 
     const structural = await page.evaluate(() => {
       const skip = document.querySelector(".tf-skip-link");
