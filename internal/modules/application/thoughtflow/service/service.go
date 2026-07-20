@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,9 +17,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mcevent "github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/framework/configuration"
 	engine "github.com/muidea/magicEngine/http"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
@@ -30,6 +33,7 @@ import (
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventstream"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/scratchpad"
@@ -54,6 +58,12 @@ type Service struct {
 	stream           *eventstream.Stream
 	workspace        *models.Workspace
 	config           appconfig.Config
+	publicConfigMu   sync.RWMutex
+	publicConfigSet  bool
+	publicEnabled    bool
+	publicBaseURL    string
+	configManager    configuration.ConfigManager
+	serverWatcher    configuration.ConfigChangeHandler
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
 	documentProfiles *documentprofile.Registry
@@ -61,6 +71,67 @@ type Service struct {
 
 func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry) {
 	s.documentProfiles = registry
+}
+
+// SubscribePublicThoughtsConfig applies server-section change events from the
+// framework config manager. Watching the section (rather than a dotted key)
+// matches magicCommon's top-level global config event model.
+func (s *Service) SubscribePublicThoughtsConfig(manager configuration.ConfigManager) error {
+	if manager == nil {
+		return nil
+	}
+	watcher := func(event configuration.ConfigChangeEvent) {
+		s.applyPublicThoughtsConfig(event.NewValue)
+	}
+	if err := manager.Watch("server", watcher); err != nil {
+		return err
+	}
+	if section, err := manager.Get("server"); err == nil {
+		s.applyPublicThoughtsConfig(section)
+	}
+
+	s.publicConfigMu.Lock()
+	previousManager, previousWatcher := s.configManager, s.serverWatcher
+	s.configManager, s.serverWatcher = manager, watcher
+	s.publicConfigMu.Unlock()
+	if previousManager != nil && previousWatcher != nil {
+		_ = previousManager.Unwatch("server", previousWatcher)
+	}
+	return nil
+}
+
+func (s *Service) applyPublicThoughtsConfig(section any) {
+	values, _ := section.(map[string]any)
+	enabled := false
+	if value, ok := values["public_thoughts_enabled"]; ok {
+		switch typed := value.(type) {
+		case bool:
+			enabled = typed
+		case string:
+			parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+			enabled = err == nil && parsed
+		}
+	}
+	baseURL := ""
+	if value, ok := values["public_base_url"]; ok && value != nil {
+		baseURL = strings.TrimRight(strings.TrimSpace(fmt.Sprint(value)), "/")
+	}
+	s.publicConfigMu.Lock()
+	s.publicConfigSet = true
+	s.publicEnabled = enabled
+	s.publicBaseURL = baseURL
+	s.publicConfigMu.Unlock()
+}
+
+func (s *Service) runtimeConfig() appconfig.Config {
+	cfg := s.config
+	s.publicConfigMu.RLock()
+	if s.publicConfigSet {
+		cfg.Server.PublicThoughtsEnabled = s.publicEnabled
+		cfg.Server.PublicBaseURL = s.publicBaseURL
+	}
+	s.publicConfigMu.RUnlock()
+	return cfg
 }
 
 type gitQueryReader interface {
@@ -130,6 +201,13 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scra
 }
 
 func (s *Service) Close() {
+	s.publicConfigMu.Lock()
+	manager, watcher := s.configManager, s.serverWatcher
+	s.configManager, s.serverWatcher = nil, nil
+	s.publicConfigMu.Unlock()
+	if manager != nil && watcher != nil {
+		_ = manager.Unwatch("server", watcher)
+	}
 	if s.shutdownCancel != nil {
 		s.shutdownCancel()
 	}
@@ -155,6 +233,10 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/thoughts/:id", "PATCH", s.handlePatchThought)
 	s.registry.AddHandler("/api/thoughts/:id", "DELETE", s.handleDeleteThought)
 	s.registry.AddHandler("/api/thoughts/:id/reopen-session", engine.POST, s.handleReopenSession)
+	// Register this route regardless of its current configuration. The handler
+	// checks the latest runtime setting so public sharing can be enabled or
+	// disabled through the file watcher's hot reload without restarting.
+	s.registry.AddHandler("/p/thoughts/:id", engine.GET, s.handlePublicThought)
 	s.registry.AddHandler("/api/capture/sessions", engine.POST, s.handleCreateSession)
 	s.registry.AddHandler("/api/capture/sessions", engine.GET, s.handleListSessions)
 	s.registry.AddHandler("/api/capture/sessions/active", engine.GET, s.handleGetActiveSession)
@@ -378,6 +460,172 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 	writeJSON(res, req, http.StatusOK, snapshot)
 }
 
+// handlePublicThought serves the full Thought Markdown document (or a
+// simple HTML view) for external consumers — web search tools, crawlers,
+// RAG ingest pipelines, etc. Unlike GET /api/thoughts/{id} it returns the
+// raw body without the API envelope so a bare HTTP GET yields readable
+// content. Default format is text/markdown; pass ?format=html or Accept:
+// text/html for a minimal HTML page, ?format=json for the same snapshot
+// shape as the private API (still under /p so shareable URLs stay stable).
+func (s *Service) handlePublicThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {
+	if !s.runtimeConfig().Server.PublicThoughtsEnabled {
+		writeError(res, req, http.StatusNotFound, "thoughtflow.public.disabled", "public thought sharing is disabled")
+		return
+	}
+	thoughtID := pathID(req.URL.Path, "/p/thoughts/")
+	if thoughtID == "" || strings.Contains(thoughtID, "/") {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_request", "thought id is required")
+		return
+	}
+	if s.captureService == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.unavailable", "capture service is not ready")
+		return
+	}
+	snapshot, err := s.captureService.GetThought(ctx, thoughtID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			status = http.StatusNotFound
+		}
+		writeError(res, req, status, "thoughtflow.capture.not_found", err.Error())
+		return
+	}
+	raw, err := markdown.ReadThoughtRaw(s.workspace.RootPath, thoughtID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		writeError(res, req, status, "thoughtflow.capture.not_found", err.Error())
+		return
+	}
+	res.Header().Set("Vary", "Accept")
+	format := resolvePublicThoughtFormat(req)
+	if format == "" {
+		writeError(res, req, http.StatusNotAcceptable, "thoughtflow.public.not_acceptable", "requested response format is not available")
+		return
+	}
+	switch format {
+	case "json":
+		writeJSON(res, req, http.StatusOK, snapshot)
+	case "html":
+		writePublicThoughtHTML(res, snapshot, raw)
+	default:
+		writePublicThoughtMarkdown(res, raw)
+	}
+}
+
+func resolvePublicThoughtFormat(req *http.Request) string {
+	if req == nil {
+		return "markdown"
+	}
+	switch strings.ToLower(strings.TrimSpace(req.URL.Query().Get("format"))) {
+	case "html", "htm":
+		return "html"
+	case "json":
+		return "json"
+	case "md", "markdown", "text":
+		return "markdown"
+	}
+	return publicThoughtFormatForAccept(req.Header.Get("Accept"))
+}
+
+func publicThoughtFormatForAccept(accept string) string {
+	if strings.TrimSpace(accept) == "" {
+		return "markdown"
+	}
+	bestFormat := "markdown"
+	bestQuality := -1.0
+	bestSpecificity := -1
+	for _, item := range strings.Split(accept, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(item))
+		if err != nil {
+			continue
+		}
+		format := ""
+		specificity := 2
+		switch strings.ToLower(mediaType) {
+		case "text/html":
+			format = "html"
+		case "application/json":
+			format = "json"
+		case "text/markdown", "text/plain", "*/*":
+			format = "markdown"
+			if mediaType == "*/*" {
+				specificity = 0
+			}
+		default:
+			continue
+		}
+		quality := 1.0
+		if rawQuality, ok := params["q"]; ok {
+			quality, err = strconv.ParseFloat(rawQuality, 64)
+			if err != nil || quality < 0 || quality > 1 {
+				continue
+			}
+		}
+		if quality > 0 && (quality > bestQuality || (quality == bestQuality && specificity > bestSpecificity)) {
+			bestFormat, bestQuality, bestSpecificity = format, quality, specificity
+		}
+	}
+	if bestQuality < 0 {
+		return ""
+	}
+	return bestFormat
+}
+
+func writePublicThoughtMarkdown(res http.ResponseWriter, body []byte) {
+	res.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	res.Header().Set("Cache-Control", "private, max-age=30")
+	res.Header().Set("X-Content-Type-Options", "nosniff")
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write(body)
+}
+
+func writePublicThoughtHTML(res http.ResponseWriter, snapshot models.ThoughtSnapshot, bodyMD []byte) {
+	title := firstNonEmpty(
+		snapshot.Thought.DisplayTitle,
+		snapshot.Thought.UserTitle,
+		snapshot.Thought.ExtractedTitle,
+		snapshot.Thought.ID,
+	)
+	// Keep HTML intentionally minimal and escaped: external tools that
+	// request text/html still get a readable page without pulling in the
+	// SPA or a Markdown renderer dependency on the server.
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
+	b.WriteString("<title>")
+	b.WriteString(htmlEscape(title))
+	b.WriteString("</title>\n</head>\n<body>\n<article>\n<header>\n<h1>")
+	b.WriteString(htmlEscape(title))
+	b.WriteString("</h1>\n")
+	if summary := strings.TrimSpace(snapshot.Thought.Summary); summary != "" {
+		b.WriteString("<p>")
+		b.WriteString(htmlEscape(summary))
+		b.WriteString("</p>\n")
+	}
+	b.WriteString("</header>\n<pre>")
+	b.WriteString(htmlEscape(string(bodyMD)))
+	b.WriteString("</pre>\n</article>\n</body>\n</html>\n")
+	res.Header().Set("Content-Type", "text/html; charset=utf-8")
+	res.Header().Set("Cache-Control", "private, max-age=30")
+	res.Header().Set("X-Content-Type-Options", "nosniff")
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write([]byte(b.String()))
+}
+
+func htmlEscape(value string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	)
+	return replacer.Replace(value)
+}
+
 func (s *Service) handlePatchThought(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	thoughtID := pathID(req.URL.Path, "/api/thoughts/")
 	if thoughtID == "" || strings.Contains(thoughtID, "/") {
@@ -573,7 +821,11 @@ func searchResultActions(thoughtID string, path string) []string {
 		actions = append(actions, "preview", "open_note", "add_to_compose")
 	}
 	actions = append(actions, "topic_impact")
-	if strings.TrimSpace(path) != "" {
+	// copy_path is retained as the action id for UI stability; the Web
+	// now copies the public content URL (/p/thoughts/{id}) when a thought
+	// id is known, falling back to the workspace-relative path only when
+	// no id is available.
+	if strings.TrimSpace(thoughtID) != "" || strings.TrimSpace(path) != "" {
 		actions = append(actions, "copy_path")
 	}
 	return actions
@@ -1203,7 +1455,7 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 }
 
 func (s *Service) handleSystemStatus(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	status := s.systemStatus(ctx, s.config)
+	status := s.systemStatus(ctx, s.runtimeConfig())
 	writeJSON(res, req, http.StatusOK, status)
 }
 
@@ -1416,16 +1668,18 @@ func (s *Service) systemStatus(ctx context.Context, cfg appconfig.Config) models
 		status = "degraded"
 	}
 	return models.SystemStatus{
-		Status:     status,
-		Ready:      ready,
-		Workspace:  workspaceStatus,
-		DuckDB:     duckdbStatus,
-		LLM:        llmStatus,
-		Embedding:  embeddingStatus,
-		Reader:     readerStatus,
-		Git:        gitStatus,
-		Background: backgroundStatus,
-		Events:     eventsStatus,
+		Status:                status,
+		Ready:                 ready,
+		PublicThoughtsEnabled: cfg.Server.PublicThoughtsEnabled,
+		PublicBaseURL:         strings.TrimRight(strings.TrimSpace(cfg.Server.PublicBaseURL), "/"),
+		Workspace:             workspaceStatus,
+		DuckDB:                duckdbStatus,
+		LLM:                   llmStatus,
+		Embedding:             embeddingStatus,
+		Reader:                readerStatus,
+		Git:                   gitStatus,
+		Background:            backgroundStatus,
+		Events:                eventsStatus,
 	}
 }
 
@@ -1657,7 +1911,7 @@ func (s *Service) handleLive(ctx context.Context, res http.ResponseWriter, req *
 }
 
 func (s *Service) handleReady(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	status := s.systemStatus(ctx, s.config)
+	status := s.systemStatus(ctx, s.runtimeConfig())
 	if !status.Ready {
 		writeJSON(res, req, http.StatusServiceUnavailable, status)
 		return

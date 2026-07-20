@@ -1446,7 +1446,7 @@ function renderThoughtListItem(thought) {
         <div class="tf-action-row">
           <button class="mini-button" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
           <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_source"))}</button>
-          ${thought.path ? `<button class="mini-button" data-copy-path="${escapeHTML(thought.path)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button>` : ""}
+          ${(publicThoughtSharingEnabled() && thought.id) ? `<button class="mini-button" data-copy-thought-id="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("search.result.copy_share_link"))}</button>` : ""}
         </div>
       </div>
     </article>
@@ -1500,8 +1500,10 @@ function renderThoughtsList() {
     button.addEventListener("click", () => addToComposeSources([button.dataset.noteCompose]));
   });
   bindThoughtReopenButtons(list);
-  list.querySelectorAll("[data-copy-path]").forEach((button) => {
-    button.addEventListener("click", () => copyPath(button.dataset.copyPath));
+  list.querySelectorAll("[data-copy-thought-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      copyThoughtLink(button.dataset.copyThoughtId || "");
+    });
   });
 }
 
@@ -3939,8 +3941,10 @@ function renderResults(response) {
       openComposeSources();
     });
   });
-  list.querySelectorAll("[data-copy-path]").forEach((button) => {
-    button.addEventListener("click", () => copyPath(button.dataset.copyPath));
+  list.querySelectorAll("[data-copy-thought-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      copyThoughtLink(button.dataset.copyThoughtId || "");
+    });
   });
   updateSelectionControls();
 }
@@ -3952,7 +3956,6 @@ function renderSearchResultItem(item, options = {}) {
     .map((tag) => `<span class="pill">${escapeHTML(tag)}</span>`)
     .join("");
   const thoughtID = item.thought_id || item.id || "";
-  const pathHint = item.path_hint || "";
   const title = item.title || thoughtID;
   const sourceID = item.source_id || thoughtID;
   const actions = new Set(Array.isArray(item.actions) && item.actions.length > 0
@@ -3961,9 +3964,11 @@ function renderSearchResultItem(item, options = {}) {
   const canPreview = actions.has("preview") && thoughtID;
   const canOpen = actions.has("open_note") && thoughtID;
   const canAddSources = actions.has("add_to_compose") && sourceID;
-  const canCopyPath = actions.has("copy_path") && pathHint;
+  const canShare = publicThoughtSharingEnabled() && thoughtID && actions.has("copy_path");
+  const contentURL = thoughtID ? buildThoughtContentURL(thoughtID) : "";
   // SearchResultView 投影只暴露 content-facing 字段: thought_id / title /
   // snippet / tags / topics / source / source_id / path_hint / actions。
+  // 仅在公开内容功能启用后显示可抓取的内容 URL（/p/thoughts/{id}）。
   return `
     <article class="result-item">
       <div class="result-row">
@@ -3977,7 +3982,7 @@ function renderSearchResultItem(item, options = {}) {
           <div class="tf-action-row">
             ${canOpen ? `<button class="mini-button" data-open-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.open"))}</button>` : ""}
             ${canAddSources ? `<button class="mini-button" data-compose-source-id="${escapeHTML(sourceID)}" data-compose-source-title="${escapeHTML(title)}" type="button">${escapeHTML(t("search.result.add_source"))}</button>` : ""}
-            ${canCopyPath ? `<button class="mini-button" data-copy-path="${escapeHTML(pathHint)}" type="button">${escapeHTML(t("search.result.copy_path"))}</button><code>${escapeHTML(pathHint)}</code>` : ""}
+            ${canShare ? `<button class="mini-button" data-copy-thought-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(t("search.result.copy_share_link"))}</button><code>${escapeHTML(contentURL)}</code>` : ""}
           </div>
         </div>
       </div>
@@ -3985,13 +3990,49 @@ function renderSearchResultItem(item, options = {}) {
   `;
 }
 
-function copyPath(path) {
-  if (!path) return;
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(path).then(() => toast(t("toast.path_copied"))).catch(() => toast(path));
+function publicThoughtSharingEnabled() {
+  return state?.status?.public_thoughts_enabled === true;
+}
+
+// publicBaseURL returns the configured share origin when available, otherwise
+// the browser's current origin. Trailing slashes are stripped so callers can
+// safely append path segments.
+function publicBaseURL() {
+  const configured = typeof state?.status?.public_base_url === "string"
+    ? state.status.public_base_url.trim()
+    : "";
+  if (configured) return configured.replace(/\/+$/, "");
+  if (typeof window !== "undefined" && window.location?.origin && window.location.origin !== "null") {
+    return String(window.location.origin).replace(/\/+$/, "");
+  }
+  return "";
+}
+
+// buildThoughtContentURL builds the absolute public content URL that external
+// tools (web search / crawlers / RAG ingest) can GET for full Thought body:
+//   {publicBase}/p/thoughts/{thoughtId}
+// Returns "" when neither a base origin nor a thought id is available.
+function buildThoughtContentURL(thoughtId) {
+  const id = String(thoughtId || "").trim();
+  if (!id || !publicThoughtSharingEnabled()) return "";
+  const base = publicBaseURL();
+  const path = `/p/thoughts/${encodeURIComponent(id)}`;
+  return base ? `${base}${path}` : path;
+}
+
+function copyThoughtLink(thoughtId) {
+  const link = buildThoughtContentURL(thoughtId);
+  if (!link) return;
+  copyText(link, t("toast.share_link_copied"));
+}
+
+function copyText(text, successToast) {
+  if (!text) return;
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast(successToast || text)).catch(() => toast(text));
     return;
   }
-  toast(path);
+  toast(text);
 }
 
 function updateSelectionControls() {

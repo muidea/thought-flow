@@ -490,6 +490,7 @@ Web 端按 `Overview / Capture / Notes / Search / Topics / Compose` 六个主入
 |---|---|---|---|---|
 | `POST` | `/api/thoughts` | `CaptureCommand` | `CaptureResult` | 400 invalid |
 | `GET` | `/api/thoughts/{id}` | — | `ThoughtSnapshot` | 404 not_found |
+| `GET` | `/p/thoughts/{id}` | `format` / `Accept` | 仅在 `server.public_thoughts_enabled=true` 时注册；默认 `text/markdown` 原始全文（无 API envelope）；`html` / `json` 可选 | 404 not_found |
 | `PATCH` | `/api/thoughts/{id}` | `ThoughtPatchRequest` + `X-Session-Id` | `ThoughtSnapshot` | 400 invalid_field, 409 locked |
 | `POST` | `/api/thoughts/{id}/retry-refine` | — | `{job_id}` | 404 not_found |
 | `GET` | `/api/thoughts/{id}/suggest` | — | `ThoughtSuggestion` | 404 not_found |

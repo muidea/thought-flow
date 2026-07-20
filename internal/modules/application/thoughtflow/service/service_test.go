@@ -15,6 +15,7 @@ import (
 	"time"
 
 	mcevent "github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/framework/configuration"
 
 	"thoughtflow/assets/documentformats"
 	capturebiz "thoughtflow/internal/modules/capture/biz"
@@ -497,6 +498,225 @@ func TestHandleGetThoughtIncludesJobsAndGitCommits(t *testing.T) {
 		payload.Data.GitCommits[0].Paths[0] != thought.Path {
 		t.Fatalf("git commit = %#v", payload.Data.GitCommits[0])
 	}
+}
+
+func TestHandlePublicThoughtServesMarkdownByDefault(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{
+		ID:           "local",
+		RootPath:     root,
+		ThoughtsPath: filepath.Join(root, "thoughts"),
+		TopicsPath:   filepath.Join(root, "topics"),
+		JobsPath:     filepath.Join(root, ".thoughtflow", "jobs"),
+	}
+	for _, dir := range []string{ws.ThoughtsPath, ws.TopicsPath, ws.JobsPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+	}
+	thought := models.Thought{
+		ID:            "20260609-143010-public",
+		Type:          models.ThoughtTypeText,
+		Source:        models.ThoughtSourceManual,
+		UserTitle:     "Public thought",
+		DisplayTitle:  "Public thought",
+		Summary:       "shareable body",
+		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-143010-public")),
+		CreatedAt:     time.Date(2026, 6, 9, 14, 30, 10, 0, time.UTC),
+		UpdatedAt:     time.Date(2026, 6, 9, 14, 30, 10, 0, time.UTC),
+		ContentHash:   models.ContentHash("public thought body"),
+		CaptureStatus: models.CaptureStatusCaptured,
+		RefineStatus:  models.RefineStatusRefined,
+		IndexStatus:   models.IndexStatusIndexed,
+		TopicStatus:   models.TopicStatusUnmatched,
+	}
+	content := models.ThoughtContent{Original: "public thought body"}
+	if err := markdown.WriteThought(root, thought, content); err != nil {
+		t.Fatalf("WriteThought() error = %v", err)
+	}
+	service := &Service{
+		captureService: capturebiz.NewService(ws, jobstore.New(ws.JobsPath), nil),
+		workspace:      ws,
+		config: appconfig.Config{
+			Server: appconfig.ServerConfig{PublicThoughtsEnabled: true, PublicBaseURL: "https://share.example.com/"},
+		},
+	}
+	thoughtPath := filepath.Join(root, filepath.FromSlash(thought.Path))
+	raw, err := os.ReadFile(thoughtPath)
+	if err != nil {
+		t.Fatalf("ReadFile(thought) error = %v", err)
+	}
+	raw = []byte(strings.Replace(string(raw), "\n---\n\n", "\nexternal_metadata: \"preserved\"\n---\n\n", 1) + "\n## Custom section\n\nMust remain in the public document.\n")
+	if err := os.WriteFile(thoughtPath, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile(thought) error = %v", err)
+	}
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/p/thoughts/"+thought.ID, nil)
+	service.handlePublicThought(context.Background(), res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	contentType := res.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/markdown") {
+		t.Fatalf("Content-Type = %q, want text/markdown", contentType)
+	}
+	body := res.Body.String()
+	if !strings.Contains(body, "public thought body") {
+		t.Fatalf("markdown body missing original content: %s", body)
+	}
+	if !strings.Contains(body, thought.ID) {
+		t.Fatalf("markdown body missing thought id: %s", body)
+	}
+	if !strings.Contains(body, "external_metadata: \"preserved\"") || !strings.Contains(body, "Must remain in the public document.") {
+		t.Fatalf("markdown response must preserve the exact stored document: %s", body)
+	}
+	// Must not wrap in the API JSON envelope — external tools read raw body.
+	if strings.HasPrefix(strings.TrimSpace(body), "{") {
+		t.Fatalf("public endpoint must not return JSON envelope by default: %s", body)
+	}
+
+	htmlRes := httptest.NewRecorder()
+	htmlReq := httptest.NewRequest(http.MethodGet, "/p/thoughts/"+thought.ID+"?format=html", nil)
+	service.handlePublicThought(context.Background(), htmlRes, htmlReq)
+	if htmlRes.Code != http.StatusOK {
+		t.Fatalf("html status = %d, body = %s", htmlRes.Code, htmlRes.Body.String())
+	}
+	if !strings.Contains(htmlRes.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("html Content-Type = %q", htmlRes.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(htmlRes.Body.String(), "Public thought") {
+		t.Fatalf("html body missing title: %s", htmlRes.Body.String())
+	}
+	if !strings.Contains(htmlRes.Body.String(), "Must remain in the public document.") {
+		t.Fatalf("html body missing raw Markdown content: %s", htmlRes.Body.String())
+	}
+	if htmlRes.Header().Get("Vary") != "Accept" {
+		t.Fatalf("html Vary = %q, want Accept", htmlRes.Header().Get("Vary"))
+	}
+
+	jsonRes := httptest.NewRecorder()
+	jsonReq := httptest.NewRequest(http.MethodGet, "/p/thoughts/"+thought.ID+"?format=json", nil)
+	service.handlePublicThought(context.Background(), jsonRes, jsonReq)
+	if jsonRes.Code != http.StatusOK {
+		t.Fatalf("json status = %d, body = %s", jsonRes.Code, jsonRes.Body.String())
+	}
+	var payload struct {
+		Data models.ThoughtSnapshot `json:"data"`
+	}
+	if err := json.Unmarshal(jsonRes.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal(json) error = %v; body = %s", err, jsonRes.Body.String())
+	}
+	if payload.Data.Thought.ID != thought.ID || !strings.Contains(payload.Data.Content.Original, content.Original) {
+		t.Fatalf("json snapshot = %#v", payload.Data)
+	}
+
+	notAcceptable := httptest.NewRecorder()
+	notAcceptableReq := httptest.NewRequest(http.MethodGet, "/p/thoughts/"+thought.ID, nil)
+	notAcceptableReq.Header.Set("Accept", "text/html;q=0")
+	service.handlePublicThought(context.Background(), notAcceptable, notAcceptableReq)
+	if notAcceptable.Code != http.StatusNotAcceptable {
+		t.Fatalf("not acceptable status = %d, want 406; body = %s", notAcceptable.Code, notAcceptable.Body.String())
+	}
+
+	missing := httptest.NewRecorder()
+	service.handlePublicThought(context.Background(), missing, httptest.NewRequest(http.MethodGet, "/p/thoughts/does-not-exist", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404; body = %s", missing.Code, missing.Body.String())
+	}
+
+	status := service.systemStatus(context.Background(), service.config)
+	if status.PublicBaseURL != "https://share.example.com" {
+		t.Fatalf("PublicBaseURL = %q, want trimmed origin without trailing slash", status.PublicBaseURL)
+	}
+	if !status.PublicThoughtsEnabled {
+		t.Fatalf("PublicThoughtsEnabled = false, want true")
+	}
+
+	disabledService := *service
+	disabledService.config.Server.PublicThoughtsEnabled = false
+	disabled := httptest.NewRecorder()
+	disabledService.handlePublicThought(context.Background(), disabled, httptest.NewRequest(http.MethodGet, "/p/thoughts/"+thought.ID, nil))
+	if disabled.Code != http.StatusNotFound {
+		t.Fatalf("disabled status = %d, want 404; body = %s", disabled.Code, disabled.Body.String())
+	}
+
+}
+
+func TestResolvePublicThoughtFormat(t *testing.T) {
+	cases := []struct {
+		name   string
+		query  string
+		accept string
+		want   string
+	}{
+		{name: "default", want: "markdown"},
+		{name: "query html", query: "html", want: "html"},
+		{name: "query json", query: "json", want: "json"},
+		{name: "query md", query: "md", want: "markdown"},
+		{name: "accept html", accept: "text/html,application/xhtml+xml", want: "html"},
+		{name: "accept json", accept: "application/json", want: "json"},
+		{name: "accept quality", accept: "text/html;q=0, application/json", want: "json"},
+		{name: "accept highest quality", accept: "text/html;q=0.2, application/json;q=0.8", want: "json"},
+		{name: "accept exact over wildcard", accept: "*/*, text/html", want: "html"},
+		{name: "accept no supported type", accept: "text/html;q=0", want: ""},
+		{name: "accept star", accept: "*/*", want: "markdown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/p/thoughts/x", nil)
+			if tc.query != "" {
+				q := req.URL.Query()
+				q.Set("format", tc.query)
+				req.URL.RawQuery = q.Encode()
+			}
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
+			if got := resolvePublicThoughtFormat(req); got != tc.want {
+				t.Fatalf("format = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicThoughtsConfigSubscriptionTracksServerSection(t *testing.T) {
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "application.toml")
+	if err := os.WriteFile(configPath, []byte("[server]\npublic_thoughts_enabled = false\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(initial config) error = %v", err)
+	}
+	manager, err := configuration.CreateSimpleConfigManager(configDir)
+	if err != nil {
+		t.Fatalf("CreateSimpleConfigManager() error = %v", err)
+	}
+	service := &Service{config: appconfig.Config{Server: appconfig.ServerConfig{PublicThoughtsEnabled: false}}}
+	if err := service.SubscribePublicThoughtsConfig(manager); err != nil {
+		t.Fatalf("SubscribePublicThoughtsConfig() error = %v", err)
+	}
+	t.Cleanup(func() {
+		service.Close()
+		_ = manager.Close()
+	})
+	if service.runtimeConfig().Server.PublicThoughtsEnabled {
+		t.Fatalf("initial public thought sharing = true, want false")
+	}
+
+	if err := os.WriteFile(configPath, []byte("[server]\npublic_thoughts_enabled = true\npublic_base_url = \"https://share.example.com/\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(updated config) error = %v", err)
+	}
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		cfg := service.runtimeConfig().Server
+		if cfg.PublicThoughtsEnabled && cfg.PublicBaseURL == "https://share.example.com" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("subscribed server config = %#v, want enabled with updated public base URL", service.runtimeConfig().Server)
 }
 
 func TestHandleListThoughtsReturnsRecentWorkspaceThoughts(t *testing.T) {

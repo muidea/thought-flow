@@ -33,6 +33,17 @@ type Config struct {
 type ServerConfig struct {
 	Host string
 	Port string
+	// PublicThoughtsEnabled explicitly opts into the unauthenticated public
+	// thought endpoint. It defaults to false so making the HTTP server
+	// reachable through a reverse proxy does not publish local notes by
+	// accident.
+	PublicThoughtsEnabled bool
+	// PublicBaseURL is the externally reachable origin (scheme + host[:port],
+	// no trailing slash) used when building shareable thought content URLs.
+	// When empty, the Web UI falls back to window.location.origin; the
+	// server itself never invents a base from listen host (which may be
+	// 0.0.0.0 / 127.0.0.1 and is not always client-reachable).
+	PublicBaseURL string
 }
 
 type WorkspaceConfig struct {
@@ -279,6 +290,8 @@ func applyFrameworkOverrides(cfg *Config, configDir string) {
 	appConfig := applicationConfig()
 	cfg.Server.Host = configString(appConfig, "server.host", cfg.Server.Host)
 	cfg.Server.Port = configString(appConfig, "server.port", cfg.Server.Port)
+	cfg.Server.PublicThoughtsEnabled = configBool(appConfig, "server.public_thoughts_enabled", cfg.Server.PublicThoughtsEnabled)
+	cfg.Server.PublicBaseURL = strings.TrimRight(configString(appConfig, "server.public_base_url", cfg.Server.PublicBaseURL), "/")
 	cfg.Workspace.ContentDir = configString(appConfig, "workspace.content_dir", cfg.Workspace.ContentDir)
 	cfg.Workspace.AutoInitGit = configBool(appConfig, "workspace.auto_init_git", cfg.Workspace.AutoInitGit)
 	cfg.Runtime.StateDir = configString(appConfig, "runtime.state_dir", cfg.Runtime.StateDir)

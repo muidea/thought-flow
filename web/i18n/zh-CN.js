@@ -256,7 +256,7 @@ export const messages = {
   "search.score_label": "分数",
   "search.result.open": "打开",
   "search.result.add_source": "加入成文素材",
-  "search.result.copy_path": "复制路径",
+  "search.result.copy_share_link": "分享链接",
   "search.result.preview": "预览",
   "search.result.select_aria": "选择该笔记",
   "search.guide_title": "如何使用搜索",
@@ -535,7 +535,7 @@ export const messages = {
   "settings.config_docs_desc": "doc/thoughtflow-usage-config.md",
   "settings.prometheus_link": "打开 Prometheus 指标",
 
-  "toast.path_copied": "已复制路径",
+  "toast.share_link_copied": "已复制分享链接",
   "toast.captured": "已采集 {id}",
   "toast.topic_name_required": "专题名称不能为空",
   "toast.topic_created": "专题已创建",

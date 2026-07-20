@@ -117,6 +117,11 @@ doc/application.example.toml
 [server]
 host = "127.0.0.1"
 port = 8080
+# 无鉴权公开内容入口，默认关闭。启用前请确认反向代理与发布范围。
+public_thoughts_enabled = false
+# 对外可访问的 origin（scheme + host[:port]，无尾斜杠），用于拼装可分享内容 URL。
+# 启用公开内容后，留空时 Web UI 回退到浏览器当前 origin。
+# public_base_url = "https://thoughtflow.example.com"
 
 [workspace]
 content_dir = "./thoughtflow-workspace"
@@ -267,6 +272,10 @@ POST /api/thoughts
 GET  /api/thoughts/{id}
 POST /api/thoughts/{id}/retry-refine
 POST /api/thoughts/{id}/reopen-session
+
+# 对外内容 URL（仅在 server.public_thoughts_enabled=true 时注册；供外部搜索 / 爬取 / RAG 直接 GET 全文；默认 text/markdown，无 API envelope）
+# ?format=html|json 或 Accept 协商；UI「分享链接」复制 {public_base_url}/p/thoughts/{id}
+GET  /p/thoughts/{id}
 
 POST /api/capture/sessions
 GET  /api/capture/sessions/active

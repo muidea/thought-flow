@@ -11,6 +11,7 @@ import (
 
 	cd "github.com/muidea/magicCommon/def"
 	"github.com/muidea/magicCommon/event"
+	"github.com/muidea/magicCommon/framework/configuration"
 	"github.com/muidea/magicCommon/framework/plugin/module"
 	"github.com/muidea/magicCommon/task"
 	engine "github.com/muidea/magicEngine/http"
@@ -160,6 +161,9 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	topic.InjectComposeDraftProvider(compose.Current())
 	registry := engine.NewRouteRegistry()
 	m.httpService = service.New(registry, captureService, scratchpadSvc, refinerService, compose.Current(), searchService, topicService, scratchpadStore, gitService, jobs, eventHub, backgroundRoutine, m.stream, ws, cfg)
+	if err := m.httpService.SubscribePublicThoughtsConfig(configuration.GetDefaultConfigManager()); err != nil {
+		slog.Warn("subscribe public thought configuration failed", "error", err)
+	}
 	m.httpService.SetDocumentProfiles(profileRegistry)
 	m.httpService.RegisterRoutes()
 	m.server, err = newGracefulHTTPServer(cfg.Server, registry)

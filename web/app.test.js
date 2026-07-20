@@ -404,7 +404,10 @@ function loadAppFunctionsWith(opts = {}) {
       clearTimeout: () => {},
       setTimeout: () => 0,
       tflow_i18n: stubTflow,
-      location: { hash: opts.hash || "" },
+      location: {
+        hash: opts.hash || "",
+        origin: opts.origin || "http://127.0.0.1:8080",
+      },
       history: { replaceState: () => {} },
       localStorage: storage,
     },
@@ -443,6 +446,7 @@ function loadAppFunctionsWith(opts = {}) {
       navItemAriaCurrent,
       statusBadge,
       renderSearchResultItem,
+      renderThoughtListItem,
       renderComposeSourcesItem,
       renderThoughtsList,
       renderDashboardCaptureSessionItem,
@@ -459,6 +463,10 @@ function loadAppFunctionsWith(opts = {}) {
       displayWorkspace,
       displayRuntimePath,
       buildRouteHash,
+      buildThoughtContentURL,
+      publicBaseURL,
+      publicThoughtSharingEnabled,
+      copyThoughtLink,
       restoreRoutePage,
       refreshRouteData,
       applyRoute,
@@ -616,9 +624,10 @@ test("runtime path display avoids leaking absolute workspace paths", () => {
 
 test("renderSearchResultItem exposes source actions without score details", () => {
   const app = loadAppFunctions();
+  app.appState.status = { public_thoughts_enabled: true };
 
   // SearchResultView 投影不再下放 score / explain 字段，Web 仅暴露
-  // 内容相关字段和可执行动作。
+  // 内容相关字段和可执行动作。复制动作优先给出对外可抓取内容 URL。
   const html = app.renderSearchResultItem({
     thought_id: "thought-1",
     title: "Search Result",
@@ -637,8 +646,52 @@ test("renderSearchResultItem exposes source actions without score details", () =
   assert.match(html, /data-compose-source-id="thought-1"/);
   assert.match(html, /data-compose-source-title="Search Result"/);
   assert.doesNotMatch(html, /data-weave-id="thought-1"/);
-  assert.match(html, /thoughts\/demo\.md/);
+  assert.match(html, /data-copy-thought-id="thought-1"/);
+  assert.match(html, /http:\/\/127\.0\.0\.1:8080\/p\/thoughts\/thought-1/);
   assert.doesNotMatch(html, /tf-explain/);
+});
+
+test("buildThoughtContentURL requires explicit public sharing opt-in", () => {
+  const app = loadAppFunctionsWith({ origin: "http://browser.local:9000" });
+  assert.equal(app.publicThoughtSharingEnabled(), false);
+  assert.equal(app.buildThoughtContentURL("20260609-public"), "");
+
+  app.appState.status = { public_thoughts_enabled: true };
+  assert.equal(
+    app.buildThoughtContentURL("20260609-public"),
+    "http://browser.local:9000/p/thoughts/20260609-public",
+  );
+
+  app.appState.status = {
+    public_thoughts_enabled: true,
+    public_base_url: "https://share.example.com/",
+  };
+  assert.equal(app.publicBaseURL(), "https://share.example.com");
+  assert.equal(
+    app.buildThoughtContentURL("20260609-public"),
+    "https://share.example.com/p/thoughts/20260609-public",
+  );
+  assert.equal(app.buildThoughtContentURL(""), "");
+});
+
+test("public sharing disabled hides all copy affordances", () => {
+  const app = loadAppFunctions();
+  app.appState.status = { public_thoughts_enabled: false };
+
+  const result = app.renderSearchResultItem({
+    thought_id: "thought-1",
+    title: "Search Result",
+    path_hint: "thoughts/demo.md",
+    actions: ["copy_path"],
+  });
+  assert.doesNotMatch(result, /data-copy-thought-id/);
+  assert.doesNotMatch(result, /thoughts\/demo\.md/);
+
+  const note = app.renderThoughtListItem({
+    id: "thought-1",
+    path: "thoughts/demo.md",
+  });
+  assert.doesNotMatch(note, /data-copy-thought-id/);
 });
 
 test("compose sources helper deduplicates and clears sources", () => {

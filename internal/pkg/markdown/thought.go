@@ -92,19 +92,27 @@ func CleanupOrphanThoughtTempFiles(thoughtsPath string) error {
 }
 
 func ReadThought(rootPath string, thoughtID string) (models.Thought, models.ThoughtContent, error) {
-	relPath := ThoughtRelativePath(thoughtID)
-	targetPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
-	if err := workspace.EnsureInside(rootPath, targetPath); err != nil {
-		return models.Thought{}, models.ThoughtContent{}, err
-	}
-	raw, err := os.ReadFile(targetPath)
+	raw, err := ReadThoughtRaw(rootPath, thoughtID)
 	if err != nil {
 		return models.Thought{}, models.ThoughtContent{}, err
 	}
+	relPath := ThoughtRelativePath(thoughtID)
 	thought, content := ParseThought(raw)
 	thought.ID = firstNonEmpty(thought.ID, thoughtID)
 	thought.Path = filepath.ToSlash(relPath)
 	return thought, content, nil
+}
+
+// ReadThoughtRaw returns the exact Markdown document stored for thoughtID.
+// It performs the same workspace-boundary validation as ReadThought so
+// callers that need a lossless representation do not reconstruct paths.
+func ReadThoughtRaw(rootPath string, thoughtID string) ([]byte, error) {
+	relPath := ThoughtRelativePath(thoughtID)
+	targetPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
+	if err := workspace.EnsureInside(rootPath, targetPath); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(targetPath)
 }
 
 func RenderThought(thought models.Thought, content models.ThoughtContent) []byte {

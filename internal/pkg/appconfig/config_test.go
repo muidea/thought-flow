@@ -17,6 +17,9 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	if cfg.Server.Host != "127.0.0.1" || cfg.Server.Port != "8080" {
 		t.Fatalf("server config = %#v", cfg.Server)
 	}
+	if cfg.Server.PublicThoughtsEnabled {
+		t.Fatalf("public thoughts must be disabled by default: %#v", cfg.Server)
+	}
 	if cfg.Workspace.ContentDir != "./thoughtflow-workspace" || cfg.Runtime.StateDir != "./thoughtflow-runtime" || !cfg.Workspace.AutoInitGit {
 		t.Fatalf("workspace config = %#v", cfg.Workspace)
 	}
@@ -66,6 +69,24 @@ port = "9090"
 	cfg := LoadWithConfigDir(configDir)
 	if cfg.Server.Port != "9090" {
 		t.Fatalf("server port = %q", cfg.Server.Port)
+	}
+}
+
+func TestLoadServerPublicBaseURL(t *testing.T) {
+	ResetForTesting()
+	t.Cleanup(ResetForTesting)
+	configDir := t.TempDir()
+	writeApplicationConfig(t, configDir, `[server]
+public_base_url = "https://share.example.com/"
+public_thoughts_enabled = true
+`)
+
+	cfg := LoadWithConfigDir(configDir)
+	if cfg.Server.PublicBaseURL != "https://share.example.com" {
+		t.Fatalf("public_base_url = %q, want trimmed origin without trailing slash", cfg.Server.PublicBaseURL)
+	}
+	if !cfg.Server.PublicThoughtsEnabled {
+		t.Fatalf("public_thoughts_enabled = false, want true")
 	}
 }
 

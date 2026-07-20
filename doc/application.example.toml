@@ -13,6 +13,13 @@
 # 页面服务监听地址。保持 127.0.0.1 可避免局域网暴露。
 host = "127.0.0.1"
 port = 8080
+# 是否启用无鉴权的公开 Thought 内容端点 `/p/thoughts/{id}`。默认关闭；
+# 只有确认部署边界允许公开笔记时才设为 true。
+public_thoughts_enabled = false
+# 对外可访问的 origin（scheme + host[:port]，无尾斜杠），用于拼装
+# 可分享的 Thought 内容 URL：{public_base_url}/p/thoughts/{id}
+# 启用公开内容后，留空时 Web UI 回退到浏览器当前 origin。
+# public_base_url = "https://thoughtflow.example.com"
 
 [workspace]
 # 用户内容目录，保存笔记、专题和附件等可读知识资产。

@@ -349,16 +349,18 @@ type GitCommitRecord struct {
 }
 
 type SystemStatus struct {
-	Status     string                  `json:"status"`
-	Ready      bool                    `json:"ready"`
-	Workspace  WorkspaceRuntimeStatus  `json:"workspace"`
-	DuckDB     DuckDBRuntimeStatus     `json:"duckdb"`
-	LLM        LLMRuntimeStatus        `json:"llm"`
-	Embedding  EmbeddingRuntimeStatus  `json:"embedding"`
-	Reader     ReaderRuntimeStatus     `json:"reader"`
-	Git        GitRuntimeStatus        `json:"git"`
-	Background BackgroundRuntimeStatus `json:"background"`
-	Events     EventsRuntimeStatus     `json:"events"`
+	Status                string                  `json:"status"`
+	Ready                 bool                    `json:"ready"`
+	PublicThoughtsEnabled bool                    `json:"public_thoughts_enabled"`
+	PublicBaseURL         string                  `json:"public_base_url,omitempty"`
+	Workspace             WorkspaceRuntimeStatus  `json:"workspace"`
+	DuckDB                DuckDBRuntimeStatus     `json:"duckdb"`
+	LLM                   LLMRuntimeStatus        `json:"llm"`
+	Embedding             EmbeddingRuntimeStatus  `json:"embedding"`
+	Reader                ReaderRuntimeStatus     `json:"reader"`
+	Git                   GitRuntimeStatus        `json:"git"`
+	Background            BackgroundRuntimeStatus `json:"background"`
+	Events                EventsRuntimeStatus     `json:"events"`
 }
 
 // ReaderRuntimeStatus is the runtime view of the third-party web

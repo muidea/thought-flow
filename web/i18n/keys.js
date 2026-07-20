@@ -200,7 +200,7 @@ export const Key = Object.freeze({
   SearchScoreLabel: "search.score_label",
   SearchResultOpen: "search.result.open",
   SearchResultAddSource: "search.result.add_source",
-  SearchResultCopyPath: "search.result.copy_path",
+  SearchResultCopyShareLink: "search.result.copy_share_link",
   SearchResultPreview: "search.result.preview",
   SearchResultSelectAria: "search.result.select_aria",
   SearchGuideTitle: "search.guide_title",
@@ -482,7 +482,6 @@ export const Key = Object.freeze({
   SettingsGeneralHelpVisibleHelp: "settings.general.help_visible_help",
 
   // Toasts
-  ToastPathCopied: "toast.path_copied",
   ToastCaptured: "toast.captured",
   ToastTopicNameRequired: "toast.topic_name_required",
   ToastTopicCreated: "toast.topic_created",

@@ -256,7 +256,7 @@ export const messages = {
   "search.score_label": "score",
   "search.result.open": "Open",
   "search.result.add_source": "Add as source",
-  "search.result.copy_path": "Copy path",
+  "search.result.copy_share_link": "Share link",
   "search.result.preview": "Preview",
   "search.result.select_aria": "Select thought",
   "search.guide_title": "How to use Search",
@@ -535,7 +535,7 @@ export const messages = {
   "settings.config_docs_desc": "doc/thoughtflow-usage-config.md",
   "settings.prometheus_link": "Open Prometheus metrics",
 
-  "toast.path_copied": "Path copied",
+  "toast.share_link_copied": "Share link copied",
   "toast.captured": "Captured {id}",
   "toast.topic_name_required": "Topic name is required",
   "toast.topic_created": "Topic created",
