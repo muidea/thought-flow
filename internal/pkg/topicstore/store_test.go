@@ -662,3 +662,70 @@ func TestStoreDetailIncludesSessionCandidates(t *testing.T) {
 		t.Fatalf("SessionCandidates not populated: %+v", detail.SessionCandidates)
 	}
 }
+
+func TestSlugifyKeepsCJKAndASCII(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"DuckDB Notes", "duckdb-notes"},
+		{"AntD", "antd"},
+		{"端到端测试专题", "端到端测试专题"},
+		{"Mix中文English", "mix中文english"},
+		{"  ---  ", ""},
+		{"🚀 rocket", "rocket"},
+		{"foo_bar baz", "foo-bar-baz"},
+		{"a--b", "a--b"}, // preserve consecutive dashes for existing directory names
+		{"foo  bar", "foo--bar"},
+	}
+	for _, tc := range cases {
+		if got := Slugify(tc.in); got != tc.want {
+			t.Fatalf("Slugify(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCreateTopicWithChineseName(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	ctx := context.Background()
+
+	topic, err := store.Create(ctx, models.TopicCreateRequest{
+		Name:        "端到端测试专题",
+		Description: "中文专题应能创建可读 slug",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if topic.ID != "端到端测试专题" || topic.Slug != "端到端测试专题" {
+		t.Fatalf("topic id/slug = %q/%q, want 端到端测试专题", topic.ID, topic.Slug)
+	}
+
+	got, err := store.Get(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Name != "端到端测试专题" {
+		t.Fatalf("Get name = %q", got.Name)
+	}
+
+	listed, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != topic.ID {
+		t.Fatalf("List() = %#v", listed)
+	}
+
+	// Pure punctuation / emoji should still get a stable non-empty slug.
+	fallback, err := store.Create(ctx, models.TopicCreateRequest{Name: "🚀🚀"})
+	if err != nil {
+		t.Fatalf("Create(emoji) error = %v", err)
+	}
+	if !strings.HasPrefix(fallback.ID, "topic-") || len(fallback.ID) != len("topic-")+8 {
+		t.Fatalf("fallback slug = %q, want topic-<8hex>", fallback.ID)
+	}
+	again := topicSlugFromName("🚀🚀")
+	if again != fallback.ID {
+		t.Fatalf("topicSlugFromName not stable: %q vs %q", again, fallback.ID)
+	}
+}

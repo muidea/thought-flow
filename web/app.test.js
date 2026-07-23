@@ -422,6 +422,7 @@ function loadAppFunctionsWith(opts = {}) {
     ${code}
     ({
       escapeHTML,
+      api,
       renderMarkdown,
       renderTopicDocumentMarkdown,
       thoughtLinksForDisplay,
@@ -547,6 +548,22 @@ Text with **strong** and \`code\`.
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
 });
 
+test("api sends the active interface locale to the server", async () => {
+  let request;
+  const app = loadAppFunctionsWith({
+    fetch: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ data: { ok: true } }) };
+    },
+  });
+
+  const data = await app.api("/api/topics", { method: "GET", headers: { "X-Request-ID": "test-request" } });
+  assert.deepEqual(JSON.parse(JSON.stringify(data)), { ok: true });
+  assert.equal(request.url, "/api/topics");
+  assert.equal(request.options.headers["Accept-Language"], "en-US");
+  assert.equal(request.options.headers["X-Request-ID"], "test-request");
+});
+
 test("parseRoute maps hash routes to pages and navigation groups", () => {
   const app = loadAppFunctions();
   const route = (hash) => JSON.parse(JSON.stringify(app.parseRoute(hash)));
@@ -559,6 +576,7 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   // Legacy /topics/{id}/review links land on the topic detail workspace.
   assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: {} });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
+  assert.deepEqual(route("#/topics/%E6%9D%83%E9%99%90%E8%AE%A4%E8%AF%81"), { page: "topics", nav: "topics", params: { topicId: "权限认证" }, query: {} });
   // /topics?topic=...&tab=... is an alternate path syntax (no path id);
   // the topic id lives in the query and the page has no in-param topicId.
   assert.deepEqual(route("#/topics?topic=demo&tab=rules"), { page: "topics", nav: "topics", params: {}, query: { topic: "demo", tab: "rules" } });

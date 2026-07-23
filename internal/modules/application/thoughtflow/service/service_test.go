@@ -2946,6 +2946,46 @@ func TestHandleCreateTopicPersistsRulesAndRejectsEmptyName(t *testing.T) {
 	if badRes.Code != http.StatusBadRequest {
 		t.Fatalf("empty name status = %d, want 400; body = %s", badRes.Code, badRes.Body.String())
 	}
+	var badEnv models.APIResponse
+	if err := json.Unmarshal(badRes.Body.Bytes(), &badEnv); err != nil {
+		t.Fatalf("Unmarshal empty-name response: %v", err)
+	}
+	badError, ok := badEnv.Error.(map[string]any)
+	if !ok || badError["message"] != "专题名称或标识不能为空。" {
+		t.Fatalf("localized empty-name error = %#v", badEnv.Error)
+	}
+	if language := badRes.Header().Get("Content-Language"); language != "zh-CN" {
+		t.Fatalf("Content-Language = %q, want zh-CN", language)
+	}
+
+	enReq := httptest.NewRequest(http.MethodPost, "/api/topics", strings.NewReader(`{"name":""}`))
+	enReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	enRes := httptest.NewRecorder()
+	service.handleCreateTopic(ctx, enRes, enReq)
+	var enEnv models.APIResponse
+	if err := json.Unmarshal(enRes.Body.Bytes(), &enEnv); err != nil {
+		t.Fatalf("Unmarshal English empty-name response: %v", err)
+	}
+	enError, ok := enEnv.Error.(map[string]any)
+	if !ok || enError["message"] != "Topic name or identifier is required." {
+		t.Fatalf("localized English empty-name error = %#v", enEnv.Error)
+	}
+}
+
+func TestLocalizedErrorMessageDoesNotExposeInternalErrors(t *testing.T) {
+	zhReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	enReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	enReq.Header.Set("Accept-Language", "en")
+
+	if got := localizedErrorMessage(zhReq, "thoughtflow.capture.commit_failed"); got != "无法归档采集会话。" {
+		t.Fatalf("Chinese message = %q", got)
+	}
+	if got := localizedErrorMessage(enReq, "thoughtflow.capture.commit_failed"); got != "Unable to commit the capture session." {
+		t.Fatalf("English message = %q", got)
+	}
+	if got := localizedErrorMessage(zhReq, "thoughtflow.future.unknown"); got != "请求失败，请重试。" {
+		t.Fatalf("fallback message = %q", got)
+	}
 }
 
 // TestHandleUpdateTopicPersistsRulesAndRejectsBadJSON locks in

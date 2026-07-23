@@ -1929,15 +1929,21 @@ func writeJSON(res http.ResponseWriter, req *http.Request, status int, data any)
 	})
 }
 
-func writeError(res http.ResponseWriter, req *http.Request, status int, code string, message string) {
+func writeError(res http.ResponseWriter, req *http.Request, status int, code string, _ string) {
 	res.Header().Set("Content-Type", "application/json; charset=utf-8")
+	res.Header().Set("Vary", "Accept-Language")
+	if prefersEnglish(req) {
+		res.Header().Set("Content-Language", "en-US")
+	} else {
+		res.Header().Set("Content-Language", "zh-CN")
+	}
 	res.WriteHeader(status)
 	_ = json.NewEncoder(res).Encode(models.APIResponse{
 		RequestID: requestID(req),
 		Data:      nil,
 		Error: map[string]any{
 			"code":    code,
-			"message": message,
+			"message": localizedErrorMessage(req, code),
 		},
 	})
 }

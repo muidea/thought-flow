@@ -108,6 +108,16 @@ let markdownParser = null;
 
 const $ = (selector) => document.querySelector(selector);
 
+function decodeRouteSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (_) {
+    // Keep malformed legacy hashes navigable; API calls will return their
+    // normal validation error instead of the router throwing synchronously.
+    return value;
+  }
+}
+
 function parseRoute(hash) {
   const raw = String(hash || "").replace(/^#\/?/, "");
   const [pathPart, queryPart = ""] = raw.split("?");
@@ -117,10 +127,10 @@ function parseRoute(hash) {
   // Legacy /topics/{id}/review links now land on the topic detail workspace.
   if (parts[0] === "topics" && parts[1] && parts[2] === "review") {
     const detailQuery = { ...query, tab: "detail" };
-    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query: detailQuery };
+    return { page: "topics", nav: "topics", params: { topicId: decodeRouteSegment(parts[1]) }, query: detailQuery };
   }
   if (parts[0] === "topics" && parts[1]) {
-    return { page: "topics", nav: "topics", params: { topicId: parts[1] }, query };
+    return { page: "topics", nav: "topics", params: { topicId: decodeRouteSegment(parts[1]) }, query };
   }
   if (parts[0] === "notes") {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
@@ -645,9 +655,11 @@ function toast(message) {
 }
 
 async function api(path, options = {}) {
+  const locale = window.tflow_i18n?.getLocale?.() || window.navigator?.language || "zh-CN";
+  const { headers: requestHeaders, ...requestOptions } = options;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
+    ...requestOptions,
+    headers: { "Content-Type": "application/json", "Accept-Language": locale, ...(requestHeaders || {}) },
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.error) {

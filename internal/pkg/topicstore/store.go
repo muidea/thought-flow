@@ -2,16 +2,18 @@ package topicstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -53,7 +55,7 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 	if name == "" {
 		return models.Topic{}, errors.New("topic name is required")
 	}
-	slug := Slugify(name)
+	slug := topicSlugFromName(name)
 	if slug == "" {
 		return models.Topic{}, errors.New("topic slug is empty")
 	}
@@ -1500,15 +1502,53 @@ func topicLinkMarker(topicID string) string {
 	return "<!-- topic:" + topicID + " -->"
 }
 
-var slugCleanup = regexp.MustCompile(`[^a-z0-9\-]+`)
+// topicSlugFromName derives a path-safe, unique-friendly topic slug from a
+// display name. Prefer a readable Slugify result (including CJK letters);
+// fall back to a stable hash-based id when the name has no path-safe runes
+// (emoji / pure punctuation).
+func topicSlugFromName(name string) string {
+	if slug := Slugify(name); slug != "" {
+		return slug
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(name)))
+	return "topic-" + hex.EncodeToString(sum[:])[:8]
+}
 
+// Slugify converts a display string into a path-safe topic slug.
+//
+// Rules:
+//   - keep Unicode letters and numbers (Latin, CJK, Hangul, …)
+//   - keep existing '-'
+//   - map '_' and whitespace to '-'
+//   - drop other punctuation / symbols / path-hostile runes (/, \, ., …)
+//   - lower-case Latin letters; CJK is unchanged
+//
+// Consecutive dashes are preserved so that previously generated ASCII
+// slugs (e.g. "foo--bar" from "foo  bar") remain resolvable when the
+// directory name is re-passed through Slugify in topicPath/Get.
+//
+// Empty result means the input had no path-safe content — callers that need
+// a guaranteed non-empty id should use topicSlugFromName.
 func Slugify(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	value = strings.ReplaceAll(value, "_", "-")
-	value = strings.ReplaceAll(value, " ", "-")
-	value = slugCleanup.ReplaceAllString(value, "")
-	value = strings.Trim(value, "-")
-	return value
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case r == '_' || r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			b.WriteByte('-')
+		case r == '-':
+			b.WriteByte('-')
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+			b.WriteRune(unicode.ToLower(r))
+		default:
+			// Drop path-hostile / decorative runes (/, \, ., :, emoji, …).
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func normalizeList(values []string) []string {
