@@ -77,6 +77,7 @@ type Service struct {
 	// same request fingerprint so double-clicks do not mint two jobs.
 	inflightMu sync.Mutex
 	inflight   map[string]models.Job
+	workerWG   sync.WaitGroup
 
 	// draftMu serializes a generating worker's final existence-check/write
 	// with DeleteDraft. Without it, a worker can observe a placeholder,
@@ -273,7 +274,11 @@ func (s *Service) RecoverGeneratingDrafts() (int, error) {
 }
 
 func (s *Service) scheduleGenerateDraftJob(job models.Job, req models.ComposeRequest, fingerprint string) {
-	run := func() { s.generateDraftJob(job, req, fingerprint) }
+	s.workerWG.Add(1)
+	run := func() {
+		defer s.workerWG.Done()
+		s.generateDraftJob(job, req, fingerprint)
+	}
 	if s.background != nil {
 		if err := s.background.AsyncFunction(run); err == nil {
 			return

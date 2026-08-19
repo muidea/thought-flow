@@ -657,6 +657,16 @@ func TestServiceDeleteDraftCancelsInflightGenerate(t *testing.T) {
 		t.Fatalf("DeleteDraft: %v", err)
 	}
 	close(gate)
+	workerDone := make(chan struct{})
+	go func() {
+		svc.workerWG.Wait()
+		close(workerDone)
+	}()
+	select {
+	case <-workerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("compose generation worker did not stop after draft deletion")
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	var final models.Job
