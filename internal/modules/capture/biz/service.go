@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/muidea/magicCommon/event"
 
@@ -99,7 +100,7 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	contentHash := models.ContentHash(original)
 	captureStatus := models.CaptureStatusCaptured
 	errorRefs := []models.ErrorRef{}
-	duplicates, err := findDuplicateThoughts(s.workspace.RootPath, contentHash, "")
+	duplicates, err := findDuplicateThoughtsByContent(s.workspace.RootPath, original, contentHash, "")
 	if err != nil {
 		return models.CaptureResult{}, err
 	}
@@ -114,23 +115,25 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	thoughtID := models.NewThoughtID(now, original)
 	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	thought := models.Thought{
-		ID:              thoughtID,
-		Type:            cmd.Type,
-		Source:          source,
-		UserTitle:       strings.TrimSpace(cmd.Title),
-		URL:             strings.TrimSpace(cmd.URL),
-		Path:            relPath,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		ContentHash:     contentHash,
-		UserTags:        normalizeList(cmd.Tags),
-		TopicIDs:        normalizeList(cmd.TopicHints),
-		Errors:          errorRefs,
-		CaptureStatus:   captureStatus,
-		RefineStatus:    models.RefineStatusPending,
-		IndexStatus:     models.IndexStatusPending,
-		TopicStatus:     models.TopicStatusUnmatched,
-		DocumentProfile: cloneDocumentProfileRef(cmd.DocumentProfile),
+		ID:                thoughtID,
+		Type:              cmd.Type,
+		Source:            source,
+		UserTitle:         strings.TrimSpace(cmd.Title),
+		URL:               strings.TrimSpace(cmd.URL),
+		Path:              relPath,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		ContentHash:       contentHash,
+		UserTags:          normalizeList(cmd.Tags),
+		TopicIDs:          normalizeList(cmd.TopicHints),
+		Errors:            errorRefs,
+		CaptureStatus:     captureStatus,
+		RefineStatus:      models.RefineStatusPending,
+		IndexStatus:       models.IndexStatusPending,
+		TopicStatus:       models.TopicStatusUnmatched,
+		RelatedThoughtIDs: normalizeList(cmd.RelatedThoughtIDs),
+		SuggestedTopicIDs: normalizeList(cmd.SuggestedTopicIDs),
+		DocumentProfile:   cloneDocumentProfileRef(cmd.DocumentProfile),
 	}
 	thought.DisplayTitle = displayTitle(thought, original)
 	content := models.ThoughtContent{
@@ -356,6 +359,15 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if request.TopicIDs != nil {
 		thought.TopicIDs = append([]string(nil), (*request.TopicIDs)...)
 	}
+	if request.Links != nil {
+		content.Links = renderLinks(*request.Links)
+	}
+	if request.RelatedThoughtIDs != nil {
+		thought.RelatedThoughtIDs = normalizeList(*request.RelatedThoughtIDs)
+	}
+	if request.SuggestedTopicIDs != nil {
+		thought.SuggestedTopicIDs = normalizeList(*request.SuggestedTopicIDs)
+	}
 	if request.DocumentProfile != nil {
 		thought.DocumentProfile = cloneDocumentProfileRef(request.DocumentProfile)
 	}
@@ -563,6 +575,95 @@ func findDuplicateThoughts(rootPath string, contentHash string, currentID string
 		duplicates = append(duplicates, thought.ID)
 	}
 	return duplicates, nil
+}
+
+func findDuplicateThoughtsByContent(rootPath, content, contentHash, currentID string) ([]string, error) {
+	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(content) == "" {
+		return []string{}, nil
+	}
+	thoughtsPath := filepath.Join(rootPath, "thoughts")
+	duplicates := []string{}
+	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
+			return nil
+		}
+		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		if thoughtID == currentID {
+			return nil
+		}
+		thought, existing, err := markdown.ReadThought(rootPath, thoughtID)
+		if err != nil {
+			return err
+		}
+		existingBody := firstNonEmptyContent(existing.AINotes, existing.ExtractedContent, existing.Original)
+		if thought.ContentHash == contentHash || nearDuplicateContent(content, existingBody) {
+			duplicates = append(duplicates, thought.ID)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	sort.Strings(duplicates)
+	return duplicates, err
+}
+
+func firstNonEmptyContent(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nearDuplicateContent(left, right string) bool {
+	leftRunes := normalizedContentRunes(left)
+	rightRunes := normalizedContentRunes(right)
+	if len(leftRunes) < 400 || len(rightRunes) < 400 {
+		return false
+	}
+	shorter, longer := leftRunes, rightRunes
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
+	}
+	if float64(len(shorter))/float64(len(longer)) < 0.8 {
+		return false
+	}
+	const width = 8
+	leftSet := runeShingles(shorter, width)
+	rightSet := runeShingles(longer, width)
+	shared := 0
+	for value := range leftSet {
+		if _, ok := rightSet[value]; ok {
+			shared++
+		}
+	}
+	return 2*float64(shared)/float64(len(leftSet)+len(rightSet)) >= 0.92
+}
+
+func normalizedContentRunes(value string) []rune {
+	out := []rune{}
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func runeShingles(value []rune, width int) map[string]struct{} {
+	out := map[string]struct{}{}
+	if len(value) < width {
+		return out
+	}
+	for idx := 0; idx+width <= len(value); idx++ {
+		out[string(value[idx:idx+width])] = struct{}{}
+	}
+	return out
 }
 
 func findDuplicateThoughtRecords(rootPath string, contentHash string, currentID string) ([]models.Thought, error) {

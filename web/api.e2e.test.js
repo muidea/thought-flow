@@ -734,6 +734,11 @@ test("API e2e", async (t) => {
     assert.ok(previewData.preview, "preview response must include preview block");
     assert.equal(previewData.preview.strategy, "new", "fresh session should default to strategy=new");
     assert.ok(typeof previewData.preview.title === "string", "preview.title must be a string");
+    assert.equal(
+      previewData.preview.validation?.status,
+      "valid",
+      `new preview validation=${JSON.stringify(previewData.preview.validation)}`
+    );
 
     // Commit with explicit strategy=new. The LLM is disabled in
     // the e2e harness so the refiner falls back to the local
@@ -779,7 +784,15 @@ test("API e2e", async (t) => {
     const previewData = envelope(preview).data.preview;
     assert.equal(previewData.strategy, "update_thought");
     assert.equal(previewData.thought_id, sourceID);
-    assert.equal(previewData.diff, undefined, "update preview must not include a diff");
+    assert.equal(
+      previewData.validation?.status,
+      "valid",
+      `update preview validation=${JSON.stringify(previewData.validation)}`
+    );
+    assert.ok(previewData.diff, "update preview must include a diff");
+    assert.match(previewData.diff.before, /Original body for update protection\./);
+    assert.match(previewData.diff.after, /Updated body from protected update flow\./);
+    assert.deepEqual(previewData.diff.changed_fields, ["title", "tags", "body"]);
     assert.match(previewData.body, /Original body for update protection\./, "preview must retain the archived body");
     assert.match(previewData.body, /Updated body from protected update flow\./, "preview must include the supplement");
 
@@ -817,12 +830,20 @@ test("API e2e", async (t) => {
     assert.equal(reopenData.scratchpad.source_thought_id, sourceID, "scratchpad must remember the source thought");
     assert.equal(reopenData.scratchpad.title, "reopen source", "scratchpad.title seeded from source thought");
 
-    // Append a follow-up message and commit; the default commit path
-    // should patch the source thought instead of creating a sibling.
+    // Append a follow-up message, preview it, and commit; the default
+    // commit path should patch the source thought instead of creating
+    // a sibling.
     const followup = await request(server.baseURL, `/api/capture/sessions/${newSession}/messages`, "POST", {
       body: { role: "user", text: "Adding a follow-up angle." },
     });
     assert.equal(followup.status, 200, `followup status=${followup.status} body=${followup.text}`);
+
+    const preview = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive/preview`, "GET");
+    assert.equal(preview.status, 200, `reopen preview status=${preview.status} body=${preview.text}`);
+    const previewData = envelope(preview).data.preview;
+    assert.equal(previewData.strategy, "update_thought");
+    assert.equal(previewData.thought_id, sourceID);
+    assert.ok(previewData.diff, "reopen update preview must include a diff");
 
     const commitDeadline = Date.now() + 5000;
     let commit;

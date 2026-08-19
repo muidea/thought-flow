@@ -2008,6 +2008,12 @@ func TestHandleSessionArchiveSurfacesRefiningAsConflict(t *testing.T) {
 		SessionID: "archive-session", SourceThoughtID: thoughtID,
 		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		SessionContext:  scratchpad.SessionContext{CandidateBody: "updated full note"},
+		ArchivePreview: &scratchpad.ArchivePreview{
+			Title:      "updated full note",
+			Body:       "updated full note",
+			Strategy:   scratchpad.ArchiveStrategyUpdate,
+			Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
+		},
 	}); err != nil {
 		t.Fatalf("Save scratchpad: %v", err)
 	}
@@ -2025,6 +2031,32 @@ func TestHandleSessionArchiveSurfacesRefiningAsConflict(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "thoughtflow.capture.refining") {
 		t.Fatalf("body missing refining code: %s", res.Body.String())
+	}
+}
+
+func TestHandleSessionArchiveRequiresConfirmationAndPreview(t *testing.T) {
+	root := t.TempDir()
+	spStore := scratchpad.New(filepath.Join(root, ".scratchpad"))
+	if _, err := spStore.Save(scratchpad.Scratchpad{SessionID: "archive-gate", Content: "candidate"}); err != nil {
+		t.Fatalf("Save scratchpad: %v", err)
+	}
+	service := &Service{
+		scratchpad:    spStore,
+		scratchpadSvc: capturebiz.NewScratchpadService(spStore),
+	}
+
+	withoutConfirmation := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/archive-gate/archive", strings.NewReader(`{"strategy":"new"}`))
+	confirmationRes := httptest.NewRecorder()
+	service.handleSessionArchive(context.Background(), confirmationRes, withoutConfirmation)
+	if confirmationRes.Code != http.StatusBadRequest || !strings.Contains(confirmationRes.Body.String(), "thoughtflow.archive.confirmation_required") {
+		t.Fatalf("confirmation response = %d %s", confirmationRes.Code, confirmationRes.Body.String())
+	}
+
+	withoutPreview := httptest.NewRequest(http.MethodPost, "/api/capture/sessions/archive-gate/archive", strings.NewReader(`{"strategy":"new","confirmed":true}`))
+	previewRes := httptest.NewRecorder()
+	service.handleSessionArchive(context.Background(), previewRes, withoutPreview)
+	if previewRes.Code != http.StatusConflict || !strings.Contains(previewRes.Body.String(), "thoughtflow.archive.preview_required") {
+		t.Fatalf("preview response = %d %s", previewRes.Code, previewRes.Body.String())
 	}
 }
 

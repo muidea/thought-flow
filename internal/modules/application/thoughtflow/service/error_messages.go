@@ -83,6 +83,7 @@ func errorMessageForCode(code string) (english, chinese string) {
 		"thoughtflow.capture.scratchpad.write_failed":    {"Unable to save the capture session.", "无法保存采集会话。"},
 		"thoughtflow.capture.diff_required":              {"Select a source thought before using this strategy.", "使用此策略前请先选择源笔记。"},
 		"thoughtflow.capture.already_committed":          {"This capture session has already been committed.", "该采集会话已归档。"},
+		"thoughtflow.archive.confirmation_required":      {"Confirm the preview before committing.", "归档前请先确认预览。"},
 		"thoughtflow.archive.preview_required":           {"Preview the changes before committing.", "归档前请先预览变更。"},
 		"thoughtflow.archive.preview_stale":              {"The preview is outdated. Refresh it before committing.", "预览已过期，请刷新后再归档。"},
 		"thoughtflow.archive.format_invalid":             {"The capture content does not match the selected document format.", "采集内容不符合所选文档格式。"},

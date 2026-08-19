@@ -249,15 +249,17 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
-	Type            string              `json:"type"`
-	Content         string              `json:"content"`
-	URL             string              `json:"url"`
-	Title           string              `json:"title"`
-	Tags            []string            `json:"tags"`
-	TopicHints      []string            `json:"topic_hints"`
-	Source          string              `json:"source"`
-	Links           []string            `json:"links,omitempty"`
-	DocumentProfile *DocumentProfileRef `json:"document_profile,omitempty"`
+	Type              string              `json:"type"`
+	Content           string              `json:"content"`
+	URL               string              `json:"url"`
+	Title             string              `json:"title"`
+	Tags              []string            `json:"tags"`
+	TopicHints        []string            `json:"topic_hints"`
+	Source            string              `json:"source"`
+	Links             []string            `json:"links,omitempty"`
+	RelatedThoughtIDs []string            `json:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs []string            `json:"suggested_topic_ids,omitempty"`
+	DocumentProfile   *DocumentProfileRef `json:"document_profile,omitempty"`
 }
 
 // ThoughtPatchRequest is the body of PATCH /api/thoughts/:id. Pointer
@@ -265,13 +267,16 @@ type CaptureCommand struct {
 // "field present with empty value" (clear the value). PatchThought
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
-	Title           *string             `json:"title,omitempty"`
-	Body            *string             `json:"body,omitempty"`
-	AINotes         *string             `json:"ai_notes,omitempty"`
-	Tags            *[]string           `json:"tags,omitempty"`
-	AINotesAppend   *string             `json:"ai_notes_append,omitempty"`
-	TopicIDs        *[]string           `json:"topic_ids,omitempty"`
-	DocumentProfile *DocumentProfileRef `json:"document_profile,omitempty"`
+	Title             *string             `json:"title,omitempty"`
+	Body              *string             `json:"body,omitempty"`
+	AINotes           *string             `json:"ai_notes,omitempty"`
+	Tags              *[]string           `json:"tags,omitempty"`
+	AINotesAppend     *string             `json:"ai_notes_append,omitempty"`
+	TopicIDs          *[]string           `json:"topic_ids,omitempty"`
+	Links             *[]string           `json:"links,omitempty"`
+	RelatedThoughtIDs *[]string           `json:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs *[]string           `json:"suggested_topic_ids,omitempty"`
+	DocumentProfile   *DocumentProfileRef `json:"document_profile,omitempty"`
 }
 
 type ThoughtSuggestion struct {

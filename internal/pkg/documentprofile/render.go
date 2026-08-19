@@ -90,13 +90,75 @@ func validateDraft(profile DocumentProfile, draft models.DocumentDraft) []models
 			}
 		}
 	}
+	keys := sortedMapKeys(draft.Sections)
+	for leftIndex, leftKey := range keys {
+		left := compactDocumentText(draft.Sections[leftKey].Content)
+		if len([]rune(left)) < 300 {
+			continue
+		}
+		for _, rightKey := range keys[leftIndex+1:] {
+			right := compactDocumentText(draft.Sections[rightKey].Content)
+			if documentTextNearlyDuplicate(left, right) {
+				issues = append(issues, issue("thoughtflow.profile.section_duplicate", rightKey, fmt.Sprintf("sections %q and %q contain substantially duplicated content", leftKey, rightKey)))
+			}
+		}
+	}
 	return issues
+}
+
+func compactDocumentText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), ""))
+}
+
+func documentTextNearlyDuplicate(left, right string) bool {
+	leftLen := len([]rune(left))
+	rightLen := len([]rune(right))
+	if leftLen < 300 || rightLen < 300 {
+		return false
+	}
+	shorter, longer := left, right
+	shorterLen, longerLen := leftLen, rightLen
+	if shorterLen > longerLen {
+		shorter, longer = longer, shorter
+		shorterLen, longerLen = longerLen, shorterLen
+	}
+	return float64(shorterLen)/float64(longerLen) >= 0.8 && strings.Contains(longer, shorter)
 }
 
 func validateRendered(profile DocumentProfile, content string, references []models.DocumentReference) []models.ValidationIssue {
 	issues := []models.ValidationIssue{}
 	if tokenPattern.MatchString(content) {
 		issues = append(issues, issue("thoughtflow.profile.placeholder_remaining", "", "rendered document contains unresolved placeholders"))
+	}
+	headings := markdownHeadings(content)
+	h1Count := 0
+	seenHeadings := map[string]struct{}{}
+	for _, heading := range headings {
+		if heading.level == 1 {
+			h1Count++
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(heading.text), ""))
+		if key == "" {
+			continue
+		}
+		if _, exists := seenHeadings[key]; exists {
+			issues = append(issues, issue("thoughtflow.profile.heading_duplicate", "", fmt.Sprintf("heading %q appears more than once", heading.text)))
+		} else {
+			seenHeadings[key] = struct{}{}
+		}
+	}
+	if h1Count != 1 {
+		issues = append(issues, issue("thoughtflow.profile.single_title_required", "", fmt.Sprintf("rendered document must contain exactly one level-1 heading; got %d", h1Count)))
+	}
+	for _, phrase := range []string{
+		"请确认后由下游渲染器生成最终 Markdown",
+		"候选正文，供文档生成器使用",
+		"相关完整内容已统一收敛至",
+		"本次归档范围已根据用户最终指令",
+	} {
+		if strings.Contains(content, phrase) {
+			issues = append(issues, issue("thoughtflow.profile.archive_process_text", "", fmt.Sprintf("rendered document contains archive-process text %q", phrase)))
+		}
 	}
 	chars := utf8.RuneCountInString(strings.TrimSpace(content))
 	if profile.Validation.MinimumBodyChars > 0 && chars < profile.Validation.MinimumBodyChars {
@@ -119,6 +181,35 @@ func validateRendered(profile DocumentProfile, content string, references []mode
 		}
 	}
 	return issues
+}
+
+type markdownHeading struct {
+	level int
+	text  string
+}
+
+func markdownHeadings(content string) []markdownHeading {
+	out := []markdownHeading{}
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		level := 0
+		for level < len(trimmed) && trimmed[level] == '#' {
+			level++
+		}
+		if level == 0 || level > 6 || len(trimmed) <= level || trimmed[level] != ' ' {
+			continue
+		}
+		out = append(out, markdownHeading{level: level, text: strings.TrimSpace(trimmed[level+1:])})
+	}
+	return out
 }
 
 func renderReferences(refs []models.DocumentReference) string {

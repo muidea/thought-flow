@@ -391,6 +391,9 @@ func TestLocalProviderFallsBackToNoteWithoutDocumentIntent(t *testing.T) {
 	if result.CandidateProfileID != models.DocumentProfileBuiltinNote || result.CandidateDocumentFamily != models.DocumentFamilyNote {
 		t.Fatalf("profile = %s/%s", result.CandidateDocumentFamily, result.CandidateProfileID)
 	}
+	if result.ArchiveReadiness != "ready" {
+		t.Fatalf("archive readiness = %q, want ready", result.ArchiveReadiness)
+	}
 }
 
 func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T) {

@@ -451,9 +451,12 @@ func (p *LocalRefineProvider) BuildCaptureContext(ctx context.Context, req Captu
 		ProfileExplicit:         explicit || req.Existing.ProfileExplicit,
 		DocumentParameters:      cloneStringMap(req.Existing.DocumentParameters),
 		MissingProfileInputs:    normalizeList(req.Existing.MissingProfileInputs),
-		ArchiveReadiness:        firstNonEmpty(req.Existing.ArchiveReadiness, "converging"),
-		Model:                   "local-rule",
-		GeneratedAt:             time.Now().UTC(),
+		// The local provider has no pending model turn. When it found no explicit
+		// blocker, the deterministic projection is ready for the user's preview;
+		// preserve an existing diverging/converging decision when one is present.
+		ArchiveReadiness: firstNonEmpty(req.Existing.ArchiveReadiness, "ready"),
+		Model:            "local-rule",
+		GeneratedAt:      time.Now().UTC(),
 	}, nil
 }
 

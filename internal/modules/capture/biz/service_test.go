@@ -37,11 +37,13 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	service := NewService(ws, jobstore.New(ws.JobsPath), hub)
 
 	result, err := service.Capture(context.Background(), models.CaptureCommand{
-		Type:    models.ThoughtTypeText,
-		Content: "Remember to design from the source markdown first.",
-		Title:   "Design note",
-		Tags:    []string{"design", "design"},
-		Links:   []string{"thoughts/source.md", "thoughts/source.md"},
+		Type:              models.ThoughtTypeText,
+		Content:           "Remember to design from the source markdown first.",
+		Title:             "Design note",
+		Tags:              []string{"design", "design"},
+		Links:             []string{"thoughts/source.md", "thoughts/source.md"},
+		RelatedThoughtIDs: []string{"thought-2", "thought-2"},
+		SuggestedTopicIDs: []string{"topic-next", "topic-next"},
 	})
 	if err != nil {
 		t.Fatalf("Capture() error = %v", err)
@@ -71,6 +73,12 @@ func TestCaptureTextCreatesAtomicMarkdown(t *testing.T) {
 	}
 	if snapshot.Content.Links != "- [[thoughts/source.md]]" {
 		t.Fatalf("links = %q", snapshot.Content.Links)
+	}
+	if len(snapshot.Thought.RelatedThoughtIDs) != 1 || snapshot.Thought.RelatedThoughtIDs[0] != "thought-2" {
+		t.Fatalf("related thought ids = %v", snapshot.Thought.RelatedThoughtIDs)
+	}
+	if len(snapshot.Thought.SuggestedTopicIDs) != 1 || snapshot.Thought.SuggestedTopicIDs[0] != "topic-next" {
+		t.Fatalf("suggested topic ids = %v", snapshot.Thought.SuggestedTopicIDs)
 	}
 	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(result.Thought.Path)))
 	if err != nil {
@@ -171,6 +179,27 @@ func TestCaptureDuplicateContentWarnsWithoutDropping(t *testing.T) {
 	}
 	if len(duplicates) != 1 || duplicates[0].ID != first.Thought.ID {
 		t.Fatalf("duplicates excluding current = %#v", duplicates)
+	}
+}
+
+func TestCaptureNearDuplicateContentWarns(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{ID: "local", RootPath: root, ThoughtsPath: filepath.Join(root, "thoughts")}
+	if err := os.MkdirAll(ws.ThoughtsPath, 0o755); err != nil {
+		t.Fatalf("mkdir thoughts: %v", err)
+	}
+	service := NewService(ws, nil, nil)
+	base := "# 设计\n\n" + strings.Repeat("统一归档正文必须避免历史版本和重复章节。", 80)
+	if _, err := service.Capture(context.Background(), models.CaptureCommand{Type: models.ThoughtTypeText, Content: base}); err != nil {
+		t.Fatalf("first Capture: %v", err)
+	}
+	near := strings.Replace(base, "# 设计", "# 最终设计", 1)
+	second, err := service.Capture(context.Background(), models.CaptureCommand{Type: models.ThoughtTypeText, Content: near})
+	if err != nil {
+		t.Fatalf("second Capture: %v", err)
+	}
+	if second.Thought.CaptureStatus != models.CaptureStatusDuplicateWarned {
+		t.Fatalf("CaptureStatus = %q, want duplicate_warned", second.Thought.CaptureStatus)
 	}
 }
 
@@ -374,6 +403,28 @@ func TestPatchThought_ReplacesTopicIDs(t *testing.T) {
 	}
 	if len(updated.Thought.TopicIDs) != 2 || updated.Thought.TopicIDs[0] != "topic-2" || updated.Thought.TopicIDs[1] != "topic-1" {
 		t.Fatalf("TopicIDs = %v", updated.Thought.TopicIDs)
+	}
+}
+
+func TestPatchThought_ReplacesLinksAndRelations(t *testing.T) {
+	service, snapshot := patchServiceForTest(t)
+	links := []string{"https://example.com/source"}
+	related := []string{"thought-related"}
+	suggested := []string{"topic-suggested"}
+	req := models.ThoughtPatchRequest{Links: &links, RelatedThoughtIDs: &related, SuggestedTopicIDs: &suggested}
+	rawBody := []byte(`{"links":["https://example.com/source"],"related_thought_ids":["thought-related"],"suggested_topic_ids":["topic-suggested"]}`)
+	updated, err := service.PatchThought(context.Background(), snapshot.Thought.ID, "session-A", req, rawBody)
+	if err != nil {
+		t.Fatalf("PatchThought() error = %v", err)
+	}
+	if updated.Content.Links != "- [[https://example.com/source]]" {
+		t.Fatalf("Links = %q", updated.Content.Links)
+	}
+	if len(updated.Thought.RelatedThoughtIDs) != 1 || updated.Thought.RelatedThoughtIDs[0] != "thought-related" {
+		t.Fatalf("RelatedThoughtIDs = %v", updated.Thought.RelatedThoughtIDs)
+	}
+	if len(updated.Thought.SuggestedTopicIDs) != 1 || updated.Thought.SuggestedTopicIDs[0] != "topic-suggested" {
+		t.Fatalf("SuggestedTopicIDs = %v", updated.Thought.SuggestedTopicIDs)
 	}
 }
 

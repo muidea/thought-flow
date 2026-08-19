@@ -2513,12 +2513,11 @@ func (s *Service) handleArchivePreview(ctx context.Context, res http.ResponseWri
 // {strategy, thought_id} for the menu-driven path. The handler
 // always runs the preview-equivalent validations first: an
 // update_thought / supplement request with no SourceThoughtID
-// returns 400, and the "confirmed" flag is recorded but does not
-// gate the actual commit (the UI is expected to show the preview
-// before this endpoint is hit).
+// returns 400. A persisted preview and explicit confirmation are
+// both required so the server, not only the UI, enforces the archive gate.
 //
 //	POST /api/capture/sessions/{id}/archive
-//	body: {strategy?, thought_id?, confirmed?}
+//	body: {strategy?, thought_id?, confirmed:true}
 func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	if s.scratchpadSvc == nil {
 		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
@@ -2546,6 +2545,23 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 			return
 		}
 	}
+	if !body.Confirmed {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.archive.confirmation_required", "confirmed=true is required")
+		return
+	}
+	if s.scratchpad == nil {
+		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad store is not ready")
+		return
+	}
+	staged, err := s.scratchpad.Get(sessionID)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", err.Error())
+		return
+	}
+	if staged.ArchivePreview == nil {
+		writeError(res, req, http.StatusConflict, "thoughtflow.archive.preview_required", "archive preview is required")
+		return
+	}
 	// Apply the request body's overrides onto the scratchpad so
 	// the underlying Commit can stay strategy-agnostic. The two
 	// side effects (stamp strategy, stamp source_thought_id) are
@@ -2559,13 +2575,9 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 			return
 		}
 	}
-	// If the user explicitly confirmed, stamp the intent so the
-	// scratchpad carries the audit trail.
-	if body.Confirmed {
-		if _, err := s.scratchpadSvc.SetArchiveIntent(sessionID, scratchpad.ArchiveIntentMenu); err != nil {
-			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
-			return
-		}
+	if _, err := s.scratchpadSvc.SetArchiveIntent(sessionID, scratchpad.ArchiveIntentMenu); err != nil {
+		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+		return
 	}
 	result, err := s.scratchpadSvc.Commit(ctx, sessionID)
 	if err != nil {

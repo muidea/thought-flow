@@ -133,19 +133,21 @@ type ThoughtDiff struct {
 // confirmed is what the commit path enforces — there is no "I
 // thought I was archiving X but got Y" drift.
 type ArchivePreview struct {
-	ThoughtID       string                    `json:"thought_id,omitempty"`
-	Title           string                    `json:"title"`
-	Body            string                    `json:"body"`
-	Tags            []string                  `json:"tags"`
-	SourceLinks     []string                  `json:"source_links"`
-	RelatedTopics   []string                  `json:"related_topics"`
-	Strategy        ArchiveStrategy           `json:"strategy"`
-	Diff            *ThoughtDiff              `json:"diff,omitempty"`
-	GeneratedAt     time.Time                 `json:"generated_at"`
-	DocumentProfile models.DocumentProfileRef `json:"document_profile"`
-	Parameters      map[string]string         `json:"parameters,omitempty"`
-	Validation      models.ArchiveValidation  `json:"validation"`
-	ContextHash     string                    `json:"context_hash"`
+	SessionID         string                    `json:"session_id"`
+	ThoughtID         string                    `json:"thought_id,omitempty"`
+	Title             string                    `json:"title"`
+	Body              string                    `json:"body"`
+	Tags              []string                  `json:"tags"`
+	SourceLinks       []string                  `json:"source_links"`
+	RelatedThoughtIDs []string                  `json:"related_thought_ids"`
+	RelatedTopics     []string                  `json:"related_topics"`
+	Strategy          ArchiveStrategy           `json:"strategy"`
+	Diff              *ThoughtDiff              `json:"diff,omitempty"`
+	GeneratedAt       time.Time                 `json:"generated_at"`
+	DocumentProfile   models.DocumentProfileRef `json:"document_profile"`
+	Parameters        map[string]string         `json:"parameters,omitempty"`
+	Validation        models.ArchiveValidation  `json:"validation"`
+	ContextHash       string                    `json:"context_hash"`
 }
 
 // Scratchpad is the wire-stable JSON shape persisted to disk. The
@@ -709,6 +711,11 @@ func cloneScratchpad(sp Scratchpad) Scratchpad {
 			links := make([]string, len(sp.ArchivePreview.SourceLinks))
 			copy(links, sp.ArchivePreview.SourceLinks)
 			preview.SourceLinks = links
+		}
+		if sp.ArchivePreview.RelatedThoughtIDs != nil {
+			ids := make([]string, len(sp.ArchivePreview.RelatedThoughtIDs))
+			copy(ids, sp.ArchivePreview.RelatedThoughtIDs)
+			preview.RelatedThoughtIDs = ids
 		}
 		if sp.ArchivePreview.RelatedTopics != nil {
 			topics := make([]string, len(sp.ArchivePreview.RelatedTopics))

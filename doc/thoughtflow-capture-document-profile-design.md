@@ -654,12 +654,12 @@ LLM 质量审查属于后续增强，只产生 warning 或 repair suggestion，�
 
 ### 10.7 Commit 闸门
 
-1. `note` 可以保留当前无 Preview 时的宽松归档兜底。
-2. 非 `note` Profile 必须存在 Preview。
+1. `note` 与类型化文档统一要求有效 Preview，不保留无 Preview 的宽松归档兜底。
+2. 所有 Profile 必须校验 context/profile hash，并由服务端验证显式确认。
 3. Preview.Validation.Status 必须为 `valid`。
 4. Preview 的 Profile hash 和 ContextHash 必须仍有效。
 5. `BuildCaptureCommand`、`buildPatchForUpdate` 和 supplement 路径必须使用 Preview.Body 与 Preview.DocumentProfile。
-6. typed Thought 禁止回退到 `completeArchiveBodyWithAIHistory`，避免追加“补充整理信息”破坏格式。
+6. 所有 Thought 仅使用累计 `SessionContext` 生成正文，禁止拼接历史 AI 回复，避免追加旧版完整文档或“补充整理信息”。
 
 ## 11. ArchiveStrategy 规则
 

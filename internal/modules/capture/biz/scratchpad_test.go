@@ -3,6 +3,7 @@ package biz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -54,8 +55,8 @@ func (s *stubDocumentGenerator) GenerateDocument(_ context.Context, req ai.Docum
 		return models.DocumentDraft{}, s.errs[idx]
 	}
 	sections := make(map[string]models.DocumentSection, len(req.Profile.Sections))
-	for _, section := range req.Profile.Sections {
-		sections[section.Key] = models.DocumentSection{Content: strings.Repeat("完整的设计内容与验证依据。", 24)}
+	for idx, section := range req.Profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: strings.Repeat(fmt.Sprintf("第%d章节的独立设计内容与验证依据。", idx+1), 24)}
 	}
 	return models.DocumentDraft{Title: "订单幂等设计", Summary: "设计摘要", Sections: sections}, nil
 }
@@ -132,7 +133,7 @@ func TestPrepareArchiveFallsBackWhenRemoteDocumentRemainsTooLong(t *testing.T) {
 		t.Fatalf("PrepareArchive oversized fallback: %v", err)
 	}
 	if generator.calls != 2 {
-		t.Fatalf("generator calls = %d, want 2", generator.calls)
+		t.Fatalf("generator calls = %d, want 2 before local fallback", generator.calls)
 	}
 	if preview.Validation.Status != models.ArchiveValidationValid {
 		t.Fatalf("preview validation = %+v", preview.Validation)
@@ -169,6 +170,80 @@ func TestPrepareArchiveCompactsDuplicateRemoteDocumentSections(t *testing.T) {
 	}
 	if !strings.Contains(preview.Body, "## 背景与问题\n\n统一管理静态凭证。") {
 		t.Fatalf("background was not compacted to summary:\n%s", preview.Body)
+	}
+}
+
+func TestPrepareArchiveRendersAndValidatesNoteProfile(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, nil, 10, 1))
+	sp := scratchpad.Scratchpad{
+		SessionID:       "note-preview",
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:          "最终笔记",
+			CandidateBody:           "# 旧候选标题\n\n只保留一套归档正文。",
+			CandidateDocumentFamily: models.DocumentFamilyNote,
+			CandidateProfileID:      models.DocumentProfileBuiltinNote,
+			CandidateProfileVersion: 1,
+			ArchiveReadiness:        "ready",
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if preview.Validation.Status != models.ArchiveValidationValid || preview.SessionID != sp.SessionID {
+		t.Fatalf("preview = %+v", preview)
+	}
+	if strings.Count(preview.Body, "# ") != 1 || !strings.HasPrefix(preview.Body, "# 最终笔记") {
+		t.Fatalf("note body must have one canonical title:\n%s", preview.Body)
+	}
+}
+
+func TestPrepareArchiveRejectsUnreadyConflictedOrMissingContext(t *testing.T) {
+	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	svc := NewScratchpadService(newMemoryScratchpad(), WithDocumentProfiles(registry, nil, 10, 1))
+	sp := scratchpad.Scratchpad{
+		SessionID:       "invalid-context",
+		ArchiveStrategy: scratchpad.ArchiveStrategyNew,
+		SessionContext: scratchpad.SessionContext{
+			CandidateTitle:          "未收敛笔记",
+			CandidateBody:           "正文",
+			CandidateDocumentFamily: models.DocumentFamilyNote,
+			CandidateProfileID:      models.DocumentProfileBuiltinNote,
+			CandidateProfileVersion: 1,
+			ArchiveReadiness:        "converging",
+			Conflicts:               []string{"方案 A 与方案 B 冲突"},
+			MissingProfileInputs:    []string{"audience"},
+		},
+	}
+	preview, err := svc.PrepareArchive(context.Background(), sp, nil)
+	if err != nil {
+		t.Fatalf("PrepareArchive: %v", err)
+	}
+	if preview.Validation.Status != models.ArchiveValidationInvalid {
+		t.Fatalf("validation = %+v", preview.Validation)
+	}
+	want := map[string]bool{
+		"thoughtflow.profile.input_required":       false,
+		"thoughtflow.archive.not_ready":            false,
+		"thoughtflow.archive.conflicts_unresolved": false,
+	}
+	for _, issue := range preview.Validation.Issues {
+		if _, ok := want[issue.Code]; ok {
+			want[issue.Code] = true
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Fatalf("missing issue %s: %+v", code, preview.Validation.Issues)
+		}
 	}
 }
 
@@ -1392,6 +1467,9 @@ func TestScratchpadServiceUpdateSessionContextReplacesBlock(t *testing.T) {
 	if sp.SessionContext.CandidateBody != "body" {
 		t.Fatalf("CandidateBody not preserved (CandidateBody is NOT trimmed): %q", sp.SessionContext.CandidateBody)
 	}
+	if sp.SessionContext.ArchiveReadiness != "" {
+		t.Fatalf("ArchiveReadiness = %q, want empty when omitted", sp.SessionContext.ArchiveReadiness)
+	}
 }
 
 func TestScratchpadServiceUpdateSessionContextCreatesAbsentSession(t *testing.T) {
@@ -1544,7 +1622,7 @@ func TestScratchpadServiceBuildArchivePreviewUsesRicherSummaryWhenBodyIsRaw(t *t
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewIncludesMissingAIHistory(t *testing.T) {
+func TestScratchpadServiceBuildArchivePreviewDoesNotAppendHistoricalAIRevisions(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
 	sp := scratchpad.Scratchpad{
@@ -1570,8 +1648,8 @@ func TestScratchpadServiceBuildArchivePreviewIncludesMissingAIHistory(t *testing
 	if !strings.Contains(preview.Body, "第二轮整理：需要保留的约束和风险。") {
 		t.Fatalf("Body missing latest synthesis: %q", preview.Body)
 	}
-	if !strings.Contains(preview.Body, "第一轮整理：需要保留的背景和目标。") {
-		t.Fatalf("Body missing prior AI synthesis: %q", preview.Body)
+	if strings.Contains(preview.Body, "第一轮整理：需要保留的背景和目标。") {
+		t.Fatalf("Body must not append obsolete prior AI synthesis: %q", preview.Body)
 	}
 	if strings.Contains(preview.Body, "用户第一轮输入") || strings.Contains(preview.Body, "用户第二轮输入") {
 		t.Fatalf("Body should not archive raw user input: %q", preview.Body)
@@ -1654,7 +1732,7 @@ func TestScratchpadServiceBuildArchivePreviewUpdateRequiresCurrentThought(t *tes
 	}
 }
 
-func TestScratchpadServiceBuildArchivePreviewUpdateShowsFullDocumentWithoutDiff(t *testing.T) {
+func TestScratchpadServiceBuildArchivePreviewUpdateShowsFullDocumentAndDiff(t *testing.T) {
 	store := newMemoryScratchpad()
 	svc := NewScratchpadService(store)
 	sp := scratchpad.Scratchpad{
@@ -1677,8 +1755,8 @@ func TestScratchpadServiceBuildArchivePreviewUpdateShowsFullDocumentWithoutDiff(
 	if err != nil {
 		t.Fatalf("BuildArchivePreview: %v", err)
 	}
-	if preview.Diff != nil {
-		t.Fatalf("update preview must not expose a diff: %+v", preview.Diff)
+	if preview.Diff == nil || !containsStrings(preview.Diff.ChangedFields, "body") {
+		t.Fatalf("update preview must expose a body diff: %+v", preview.Diff)
 	}
 	if !strings.Contains(preview.Body, "Original archived body.") || !strings.Contains(preview.Body, "changed") {
 		t.Fatalf("preview must contain the existing document and supplement: %q", preview.Body)

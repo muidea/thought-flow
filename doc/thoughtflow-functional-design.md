@@ -481,7 +481,7 @@ Web 端按 `Overview / Capture / Notes / Search / Topics / Compose` 六个主入
 | `POST` | `/api/capture/sessions/{id}/strategy` | `{strategy: new\|update_thought\|supplement, thought_id?}` | `{scratchpad}` | 400 strategy_required |
 | `POST` | `/api/capture/sessions/{id}/profile` | `{profile_id, version?}` | `{scratchpad}` | 404 profile_not_found |
 | `GET` | `/api/capture/sessions/{id}/archive/preview` | — | `ArchivePreview` | 400 empty_content |
-| `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed?:true}` | `CaptureResult` | 409 preview_required/stale/format_invalid/locked |
+| `POST` | `/api/capture/sessions/{id}/archive` | `{strategy, confirmed:true}` | `CaptureResult` | 400 confirmation_required；409 preview_required/stale/format_invalid/locked |
 | `DELETE` | `/api/capture/sessions/{id}` | — | `{deleted:true}` | — |
 
 ### 5.2 Thought

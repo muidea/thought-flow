@@ -249,7 +249,7 @@ ThoughtFlow 使用本地 Markdown 作为知识资产事实源，DuckDB 和事件
 
 1. 在对话流内以卡片形式展示归档内容。
 2. `update_thought` 必须展示 diff。
-3. 非 note Profile 只有在 Preview 校验通过且 context/profile hash 未过期时才能落地为 Thought 或 patch。
+3. 所有 Profile（包括 note）只有在 Preview 校验通过且 context/profile hash 未过期时才能落地为 Thought 或 patch。
 4. Commit 正文必须逐字使用 Preview body；自然语言保存目标由 LLM 判断，`/save` 仅作为可选显式命令前缀。
 
 ### 3.7 Topic

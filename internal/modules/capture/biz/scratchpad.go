@@ -344,7 +344,7 @@ func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpa
 		ProfileExplicit:         ctx.ProfileExplicit,
 		DocumentParameters:      cloneStringMap(ctx.DocumentParameters),
 		MissingProfileInputs:    trimNonEmpty(ctx.MissingProfileInputs),
-		ArchiveReadiness:        normalizeArchiveReadiness(ctx.ArchiveReadiness),
+		ArchiveReadiness:        normalizeOptionalArchiveReadiness(ctx.ArchiveReadiness),
 	}
 	if sp.SessionContext.ArchiveIntent == scratchpad.ArchiveIntentNone {
 		sp.SessionContext.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
@@ -1070,8 +1070,8 @@ func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, vers
 //     pure scratchpad projections. The Preview is straightforward.
 //   - "update_thought": the caller MUST supply currentThought (the
 //     existing on-disk snapshot for the target thought). The preview
-//     is a complete final document containing both the archived body
-//     and the latest supplement; it intentionally exposes no diff.
+//     contains the complete final document and a field-level diff
+//     against the existing thought.
 //   - "supplement": currentThought is the parent. The preview
 //     surfaces a backlink in RelatedTopics and the body opens with
 //     "[补充] 前置 thought-{parent.ID}" so the user can edit it down
@@ -1131,21 +1131,59 @@ func (s *ScratchpadService) BuildArchivePreview(sp scratchpad.Scratchpad, curren
 	relatedTopics = uniqueStrings(relatedTopics)
 
 	preview := scratchpad.ArchivePreview{
-		Title:         title,
-		Body:          body,
-		Tags:          tags,
-		SourceLinks:   sourceLinks,
-		RelatedTopics: relatedTopics,
-		Strategy:      strategy,
-		GeneratedAt:   now,
+		SessionID:         sp.SessionID,
+		Title:             title,
+		Body:              body,
+		Tags:              tags,
+		SourceLinks:       sourceLinks,
+		RelatedThoughtIDs: uniqueStrings(sp.SessionContext.RelatedThoughtIDs),
+		RelatedTopics:     relatedTopics,
+		Strategy:          strategy,
+		GeneratedAt:       now,
 	}
 	if strategy == scratchpad.ArchiveStrategySupplement && currentThought != nil {
 		preview.ThoughtID = currentThought.Thought.ID
 	}
 	if strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
 		preview.ThoughtID = currentThought.Thought.ID
+		preview.Diff = buildArchiveDiff(*currentThought, preview)
 	}
 	return preview, nil
+}
+
+func buildArchiveDiff(current models.ThoughtSnapshot, preview scratchpad.ArchivePreview) *scratchpad.ThoughtDiff {
+	beforeBody := firstNonEmptyString(current.Content.AINotes, current.Content.ExtractedContent, current.Content.Original)
+	changed := []string{}
+	if strings.TrimSpace(current.Thought.UserTitle) != strings.TrimSpace(preview.Title) {
+		changed = append(changed, "title")
+	}
+	if !equalStringSets(current.Thought.UserTags, preview.Tags) {
+		changed = append(changed, "tags")
+	}
+	if strings.TrimSpace(beforeBody) != strings.TrimSpace(preview.Body) {
+		changed = append(changed, "body")
+	}
+	return &scratchpad.ThoughtDiff{
+		Before:        strings.TrimSpace(beforeBody),
+		After:         strings.TrimSpace(preview.Body),
+		ChangedFields: changed,
+	}
+}
+
+func equalStringSets(left, right []string) bool {
+	a := uniqueStrings(left)
+	b := uniqueStrings(right)
+	if len(a) != len(b) {
+		return false
+	}
+	sort.Strings(a)
+	sort.Strings(b)
+	for idx := range a {
+		if a[idx] != b[idx] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
@@ -1166,8 +1204,28 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.DocumentProfile = profile.Ref
 	preview.Parameters = parameters
 	preview.ContextHash = archiveContextHash(sp, currentThought, profile.Ref)
-	if profile.Ref.Family == models.DocumentFamilyNote || s.documentGenerator == nil {
-		preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationValid, ValidatedAt: s.now()}
+	if profile.Ref.Family == models.DocumentFamilyNote {
+		if profile.Template == "" {
+			preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationValid, ValidatedAt: s.now()}
+			applyArchiveContextValidation(&preview, sp)
+			return preview, nil
+		}
+		draft := models.DocumentDraft{
+			Title:    preview.Title,
+			Summary:  sp.SessionContext.CandidateSummary,
+			Sections: map[string]models.DocumentSection{"body": {Content: stripDocumentTitle(preview.Body)}},
+		}
+		for idx, link := range preview.SourceLinks {
+			draft.References = append(draft.References, models.DocumentReference{ID: fmt.Sprintf("S%d", idx+1), SourceLink: link})
+		}
+		rendered := documentprofile.Render(profile, draft, parameters)
+		preview.Body = strings.TrimSpace(rendered.Content)
+		preview.Validation = rendered.Validation
+		applyArchiveContextValidation(&preview, sp)
+		preview.GeneratedAt = s.now()
+		if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
+			preview.Diff = buildArchiveDiff(*currentThought, preview)
+		}
 		return preview, nil
 	}
 	request := ai.DocumentGenerationRequest{
@@ -1185,9 +1243,12 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	}
 	var rendered documentprofile.RenderResult
 	var draft models.DocumentDraft
-	usedLocalFallback := false
+	generator := s.documentGenerator
+	if generator == nil {
+		generator = ai.NewLocalRefineProvider()
+	}
 	for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
-		draft, err = s.documentGenerator.GenerateDocument(ctx, request)
+		draft, err = generator.GenerateDocument(ctx, request)
 		if err != nil {
 			if !recoverableArchiveDocumentGenerationError(err) {
 				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document: %w", err)
@@ -1201,15 +1262,12 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			if err != nil {
 				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: generate archive document fallback: %w", err)
 			}
-			usedLocalFallback = true
 		}
-		if usedLocalFallback {
-			draft = compactArchiveDraft(request, draft)
-		}
+		draft = compactArchiveDraft(request, draft)
 		rendered = documentprofile.Render(profile, draft, parameters)
-		if !usedLocalFallback && rendered.Validation.Status == models.ArchiveValidationValid {
-			draft = compactArchiveDraft(request, draft)
-			rendered = documentprofile.Render(profile, draft, parameters)
+		if issue := archiveSourceCoverageIssue(request.Context.Body, rendered.Content); issue != nil {
+			rendered.Validation.Issues = append(rendered.Validation.Issues, *issue)
+			rendered.Validation.Status = models.ArchiveValidationInvalid
 		}
 		rendered.Validation.RepairCount = attempt
 		if rendered.Validation.Status == models.ArchiveValidationValid {
@@ -1223,6 +1281,10 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 		if fallbackErr == nil {
 			fallbackDraft = compactArchiveDraft(request, fallbackDraft)
 			fallbackRendered := documentprofile.Render(profile, fallbackDraft, parameters)
+			if issue := archiveSourceCoverageIssue(request.Context.Body, fallbackRendered.Content); issue != nil {
+				fallbackRendered.Validation.Issues = append(fallbackRendered.Validation.Issues, *issue)
+				fallbackRendered.Validation.Status = models.ArchiveValidationInvalid
+			}
 			fallbackRendered.Validation.RepairCount = s.maxRepairAttempts + 1
 			if fallbackRendered.Validation.Status == models.ArchiveValidationValid {
 				draft = fallbackDraft
@@ -1233,8 +1295,58 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.Title = firstNonEmptyString(strings.TrimSpace(draft.Title), preview.Title)
 	preview.Body = strings.TrimSpace(rendered.Content)
 	preview.Validation = rendered.Validation
+	applyArchiveContextValidation(&preview, sp)
 	preview.GeneratedAt = s.now()
+	if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
+		preview.Diff = buildArchiveDiff(*currentThought, preview)
+	}
 	return preview, nil
+}
+
+func applyArchiveContextValidation(preview *scratchpad.ArchivePreview, sp scratchpad.Scratchpad) {
+	if preview == nil {
+		return
+	}
+	for _, missing := range trimNonEmpty(sp.SessionContext.MissingProfileInputs) {
+		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
+			Code:     "thoughtflow.profile.input_required",
+			Severity: models.ValidationSeverityError,
+			Section:  missing,
+			Message:  fmt.Sprintf("required profile input %q is missing", missing),
+		})
+		preview.Validation.Status = models.ArchiveValidationInvalid
+	}
+	if readiness := strings.TrimSpace(sp.SessionContext.ArchiveReadiness); readiness != "" && readiness != "ready" {
+		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
+			Code:     "thoughtflow.archive.not_ready",
+			Severity: models.ValidationSeverityError,
+			Message:  fmt.Sprintf("archive readiness is %q; resolve the remaining context before archiving", readiness),
+		})
+		preview.Validation.Status = models.ArchiveValidationInvalid
+	}
+	if len(trimNonEmpty(sp.SessionContext.Conflicts)) > 0 {
+		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
+			Code:     "thoughtflow.archive.conflicts_unresolved",
+			Severity: models.ValidationSeverityError,
+			Message:  "session context contains unresolved conflicts",
+		})
+		preview.Validation.Status = models.ArchiveValidationInvalid
+	}
+}
+
+func archiveSourceCoverageIssue(source, rendered string) *models.ValidationIssue {
+	source = strings.TrimSpace(source)
+	if len([]rune(source)) < 1000 {
+		return nil
+	}
+	if strings.Contains(compactText(rendered), compactText(source)) || archiveTextLineCoverage(rendered, source) >= 0.1 {
+		return nil
+	}
+	return &models.ValidationIssue{
+		Code:     "thoughtflow.profile.source_content_missing",
+		Severity: models.ValidationSeverityError,
+		Message:  "rendered document does not preserve enough of the structured source content",
+	}
 }
 
 func compactArchiveDraft(request ai.DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {
@@ -1272,7 +1384,50 @@ func compactArchiveDraft(request ai.DocumentGenerationRequest, draft models.Docu
 			draft.Sections[duplicateKey] = section
 		}
 	}
+	for key, section := range draft.Sections {
+		section.Content = normalizeEmbeddedDocumentSection(section.Content)
+		draft.Sections[key] = section
+	}
 	return draft
+}
+
+func stripDocumentTitle(value string) string {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			return strings.TrimSpace(strings.Join(append(lines[:idx], lines[idx+1:]...), "\n"))
+		}
+		break
+	}
+	return strings.TrimSpace(value)
+}
+
+func normalizeEmbeddedDocumentSection(value string) string {
+	value = stripDocumentTitle(value)
+	lines := strings.Split(value, "\n")
+	inFence := false
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		switch {
+		case strings.HasPrefix(trimmed, "# "):
+			lines[idx] = indent + "### " + strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		case strings.HasPrefix(trimmed, "## "):
+			lines[idx] = indent + "### " + strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func preferredArchiveSectionKeys(request ai.DocumentGenerationRequest, draft models.DocumentDraft) []string {
@@ -1342,7 +1497,10 @@ func archiveDuplicateReplacement(request ai.DocumentGenerationRequest, key, keep
 	if label == "" {
 		label = keepKey
 	}
-	return fmt.Sprintf("相关完整内容已统一收敛至“%s”章节，本节不重复展开。", label)
+	if summary := strings.TrimSpace(request.Context.Summary); summary != "" {
+		return summary
+	}
+	return fmt.Sprintf("本节以“%s”中的已确认内容作为实施依据。", label)
 }
 
 func recoverableArchiveDocumentGenerationError(err error) bool {
@@ -1410,25 +1568,23 @@ func archiveContextHash(sp scratchpad.Scratchpad, currentThought *models.Thought
 }
 
 func (s *ScratchpadService) validateArchivePreview(ctx context.Context, sp scratchpad.Scratchpad) error {
-	typedCandidate := strings.TrimSpace(sp.SessionContext.CandidateProfileID) != "" && sp.SessionContext.CandidateProfileID != models.DocumentProfileBuiltinNote
 	if sp.ArchivePreview == nil {
-		if typedCandidate {
+		if s.profiles != nil {
 			return ErrArchivePreviewRequired
 		}
 		return nil
 	}
 	preview := sp.ArchivePreview
-	if preview.DocumentProfile.ProfileID == "" || preview.DocumentProfile.Family == models.DocumentFamilyNote {
-		return nil
-	}
 	if preview.Validation.Status != models.ArchiveValidationValid {
 		return ErrArchiveFormatInvalid
 	}
-	if s.profiles == nil {
-		return ErrArchivePreviewRequired
+	if preview.DocumentProfile.ProfileID == "" || s.profiles == nil {
+		return nil
 	}
-	if _, err := s.profiles.Resolve(preview.DocumentProfile); err != nil {
-		return fmt.Errorf("%w: %v", ErrArchivePreviewStale, err)
+	if preview.DocumentProfile.ProfileID != "" {
+		if _, err := s.profiles.Resolve(preview.DocumentProfile); err != nil {
+			return fmt.Errorf("%w: %v", ErrArchivePreviewStale, err)
+		}
 	}
 	var current *models.ThoughtSnapshot
 	if sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate || sp.ArchiveStrategy == scratchpad.ArchiveStrategySupplement {
@@ -1545,9 +1701,10 @@ func archiveTextLineCoverage(container, candidate string) float64 {
 // preview and persisted on commit. The LLM-facing contract treats
 // CandidateSummary as the primary user-visible synthesis and
 // CandidateBody as the archive body, but providers can return an
-// incomplete final body. In that case, keep the richest final
-// candidate and append any prior AI synthesis bubbles that are not
-// already represented. Never fall back to scratchpad.Content here:
+// incomplete final body. The cumulative SessionContext remains the
+// single source of truth; historical AI bubbles are never concatenated
+// into the archive because they may be obsolete full-document revisions.
+// Never fall back to scratchpad.Content here:
 // Content is the user's raw capture-session input and must not be
 // persisted into a Thought after archive.
 func archiveBody(sp scratchpad.Scratchpad) string {
@@ -1567,56 +1724,7 @@ func archiveBody(sp scratchpad.Scratchpad) string {
 	} else {
 		base = richerArchiveText(body, summary)
 	}
-	// A long structured candidate body is already the cumulative result of the
-	// multi-turn conversation. Appending every historical AI bubble here would
-	// concatenate older full-document revisions and can grow the archive source
-	// far beyond the document profile limit.
-	if len([]rune(base)) >= 1000 {
-		return strings.TrimSpace(base)
-	}
-	return completeArchiveBodyWithAIHistory(base, sp.Messages)
-}
-
-func completeArchiveBodyWithAIHistory(base string, messages []scratchpad.Message) string {
-	base = strings.TrimSpace(base)
-	additions := []string{}
-	seen := map[string]struct{}{}
-	covered := compactText(base)
-	seenUserTurn := false
-	for _, msg := range messages {
-		switch strings.TrimSpace(msg.Role) {
-		case "user":
-			seenUserTurn = true
-			continue
-		case "ai":
-			if !seenUserTurn {
-				continue
-			}
-		default:
-			continue
-		}
-		text := strings.TrimSpace(msg.Text)
-		key := compactText(text)
-		if text == "" || key == "" {
-			continue
-		}
-		if covered != "" && strings.Contains(covered, key) {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		additions = append(additions, text)
-		covered = compactText(strings.Join(append([]string{covered}, additions...), "\n\n"))
-	}
-	if len(additions) == 0 {
-		return base
-	}
-	if base == "" {
-		return strings.Join(additions, "\n\n")
-	}
-	return base + "\n\n## 补充整理信息\n\n" + strings.Join(additions, "\n\n")
+	return strings.TrimSpace(base)
 }
 
 func richerArchiveText(body, summary string) string {
@@ -1706,7 +1814,14 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 	if len(tags) == 0 {
 		tags = uniqueStrings(sp.Tags)
 	}
-	topicHints := uniqueStrings(sp.TopicHints)
+	topicHints := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.TopicHints...))
+	links := trimNonEmpty(sp.SessionContext.SourceLinks)
+	if sp.ArchivePreview != nil {
+		title = strings.TrimSpace(sp.ArchivePreview.Title)
+		tags = uniqueStrings(sp.ArchivePreview.Tags)
+		topicHints = uniqueStrings(sp.ArchivePreview.RelatedTopics)
+		links = trimNonEmpty(sp.ArchivePreview.SourceLinks)
+	}
 	cmdType := models.ThoughtTypeText
 	typedPreview := sp.ArchivePreview != nil &&
 		strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" &&
@@ -1722,14 +1837,17 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 		profileRef = &ref
 	}
 	return models.CaptureCommand{
-		Type:            cmdType,
-		Content:         content,
-		URL:             "",
-		Title:           title,
-		Tags:            tags,
-		TopicHints:      topicHints,
-		Source:          models.ThoughtSourceScratchpadCommit,
-		DocumentProfile: profileRef,
+		Type:              cmdType,
+		Content:           content,
+		URL:               "",
+		Title:             title,
+		Tags:              tags,
+		TopicHints:        topicHints,
+		Links:             links,
+		RelatedThoughtIDs: previewRelatedThoughtIDs(sp),
+		SuggestedTopicIDs: uniqueStrings(sp.SessionContext.SuggestedTopicIDs),
+		Source:            models.ThoughtSourceScratchpadCommit,
+		DocumentProfile:   profileRef,
 	}, nil
 }
 
@@ -1855,14 +1973,6 @@ func (s *ScratchpadService) commitFresh(ctx context.Context, sp scratchpad.Scrat
 		return result, err
 	}
 	s.publishCommittedEvent(result.Thought.ID, sp.SessionID, "fresh")
-	if err := s.applyDraftToThought(ctx, sp, result.Thought.ID); err != nil {
-		// We do not fail the commit if the draft application trips:
-		// the thought is already on disk, the user can re-issue the
-		// commands through PATCH. Log via returned result (caller can
-		// observe the partial success) but return the original
-		// CaptureResult so the HTTP layer can still return 200.
-		_ = err
-	}
 	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
 		return result, err
 	}
@@ -1973,18 +2083,16 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 }
 
 // commitSupplement is the "supplement" path. It captures a new
-// thought whose body is prefixed with "[补充] 前置
-// thought-{parent.ID}". Updating the parent's RelatedThoughtIDs is
-// a follow-up: it requires extending ThoughtPatchRequest with a
-// RelatedThoughtIDs field (currently absent), so the parent's
-// backlink is left to the next PR. The new thought is fully
-// readable without the parent update.
+// thought related to the source thought, then patches the source
+// thought with the reverse relationship so navigation is
+// bidirectional.
 func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
 	parentID := strings.TrimSpace(sp.SourceThoughtID)
 	if parentID == "" {
 		return models.CaptureResult{}, errors.New("capture: supplement requires source_thought_id")
 	}
-	if _, gerr := s.capture.GetThought(ctx, parentID); gerr != nil {
+	parent, gerr := s.capture.GetThought(ctx, parentID)
+	if gerr != nil {
 		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
 	}
 	cmd, err := s.BuildCaptureCommand(sp)
@@ -1992,6 +2100,7 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 		return models.CaptureResult{}, err
 	}
 	cmd.Source = models.ThoughtSourceScratchpadSupplement
+	cmd.RelatedThoughtIDs = uniqueStrings(append(cmd.RelatedThoughtIDs, parentID))
 	if cmd.DocumentProfile == nil || cmd.DocumentProfile.Family == models.DocumentFamilyNote {
 		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
 		if !strings.HasPrefix(cmd.Content, prefix) {
@@ -2001,6 +2110,16 @@ func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.
 	result, err := s.capture.Capture(ctx, cmd)
 	if err != nil {
 		return models.CaptureResult{}, err
+	}
+	parentRelated := uniqueStrings(append(parent.Thought.RelatedThoughtIDs, result.Thought.ID))
+	parentPatch := models.ThoughtPatchRequest{RelatedThoughtIDs: &parentRelated}
+	parentRaw, err := patchRequestToRawBody(parentPatch)
+	if err != nil {
+		return result, err
+	}
+	sessionID := firstNonEmptyString(s.sessionID, sp.SessionID)
+	if _, err := s.capture.PatchThought(ctx, parentID, sessionID, parentPatch, parentRaw); err != nil {
+		return result, fmt.Errorf("capture: add supplement backlink: %w", err)
 	}
 	if _, err := s.store.MarkCommitted(sp.SessionID, result.Thought.ID); err != nil {
 		return result, err
@@ -2187,6 +2306,27 @@ func buildPatchFromScratchpad(sp scratchpad.Scratchpad, includeBody bool) (*mode
 			req.Body = &body
 			hasAny = true
 		}
+		if sp.ArchivePreview != nil {
+			if title := strings.TrimSpace(sp.ArchivePreview.Title); title != "" {
+				req.Title = &title
+				hasAny = true
+			}
+			tags := uniqueStrings(sp.ArchivePreview.Tags)
+			req.Tags = &tags
+			topics := uniqueStrings(sp.ArchivePreview.RelatedTopics)
+			req.TopicIDs = &topics
+			links := trimNonEmpty(sp.ArchivePreview.SourceLinks)
+			req.Links = &links
+			related := previewRelatedThoughtIDs(sp)
+			req.RelatedThoughtIDs = &related
+			suggested := uniqueStrings(sp.SessionContext.SuggestedTopicIDs)
+			req.SuggestedTopicIDs = &suggested
+			if strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
+				ref := sp.ArchivePreview.DocumentProfile
+				req.DocumentProfile = &ref
+			}
+			hasAny = true
+		}
 	}
 	if topics := uniqueStrings(sp.Draft.TopicIDs); len(topics) > 0 {
 		req.TopicIDs = &topics
@@ -2233,7 +2373,11 @@ func mergedTagSet(sp scratchpad.Scratchpad) []string {
 func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest, []byte, error) {
 	hasAny := false
 	req := models.ThoughtPatchRequest{}
-	if title := strings.TrimSpace(sp.SessionContext.CandidateTitle); title != "" {
+	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.Title) != "" {
+		title := strings.TrimSpace(sp.ArchivePreview.Title)
+		req.Title = &title
+		hasAny = true
+	} else if title := strings.TrimSpace(sp.SessionContext.CandidateTitle); title != "" {
 		req.Title = &title
 		hasAny = true
 	} else if title := strings.TrimSpace(sp.Draft.TitleSet); title != "" {
@@ -2241,6 +2385,9 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		hasAny = true
 	}
 	tags := sp.SessionContext.CandidateTags
+	if sp.ArchivePreview != nil && sp.ArchivePreview.Tags != nil {
+		tags = sp.ArchivePreview.Tags
+	}
 	if len(tags) == 0 {
 		tags = sp.Tags
 	}
@@ -2259,7 +2406,19 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		hasAny = true
 	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {
+		if sp.ArchivePreview != nil {
+			topics = uniqueStrings(sp.ArchivePreview.RelatedTopics)
+		}
 		req.TopicIDs = &topics
+		hasAny = true
+	}
+	if sp.ArchivePreview != nil {
+		links := trimNonEmpty(sp.ArchivePreview.SourceLinks)
+		req.Links = &links
+		related := previewRelatedThoughtIDs(sp)
+		req.RelatedThoughtIDs = &related
+		suggested := uniqueStrings(sp.SessionContext.SuggestedTopicIDs)
+		req.SuggestedTopicIDs = &suggested
 		hasAny = true
 	}
 	if !hasAny {
@@ -2270,6 +2429,13 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 		return nil, nil, err
 	}
 	return &req, raw, nil
+}
+
+func previewRelatedThoughtIDs(sp scratchpad.Scratchpad) []string {
+	if sp.ArchivePreview != nil {
+		return uniqueStrings(sp.ArchivePreview.RelatedThoughtIDs)
+	}
+	return uniqueStrings(sp.SessionContext.RelatedThoughtIDs)
 }
 
 // patchRequestToRawBody marshals a ThoughtPatchRequest to JSON.
@@ -2432,6 +2598,13 @@ func normalizeArchiveReadiness(value string) string {
 	default:
 		return "converging"
 	}
+}
+
+func normalizeOptionalArchiveReadiness(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return normalizeArchiveReadiness(value)
 }
 
 // ErrAlreadyCommitted is returned by BuildCaptureCommand when the

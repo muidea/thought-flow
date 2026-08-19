@@ -74,6 +74,61 @@ func TestRenderRejectsUnknownStructuredCitation(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsNestedDocumentAndArchiveProcessText(t *testing.T) {
+	profile, err := Parse([]byte(documentformats.NoteV1), Limits{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	result := Render(profile, models.DocumentDraft{
+		Title: "Final title",
+		Sections: map[string]models.DocumentSection{
+			"body": {Content: "# Nested title\n\n候选正文，供文档生成器使用"},
+		},
+	}, nil)
+	if result.Validation.Status != models.ArchiveValidationInvalid {
+		t.Fatalf("validation = %+v", result.Validation)
+	}
+	want := map[string]bool{
+		"thoughtflow.profile.single_title_required": false,
+		"thoughtflow.profile.archive_process_text":  false,
+	}
+	for _, issue := range result.Validation.Issues {
+		if _, ok := want[issue.Code]; ok {
+			want[issue.Code] = true
+		}
+	}
+	for code, found := range want {
+		if !found {
+			t.Fatalf("missing issue %s: %+v", code, result.Validation.Issues)
+		}
+	}
+}
+
+func TestRenderRejectsSubstantiallyDuplicatedSections(t *testing.T) {
+	profile, err := Parse([]byte(documentformats.DesignDocV1), Limits{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sections := map[string]models.DocumentSection{}
+	for idx, section := range profile.Sections {
+		sections[section.Key] = models.DocumentSection{Content: fmt.Sprintf("section-%d", idx)}
+	}
+	duplicate := strings.Repeat("完整设计内容不得在多个章节中重复。", 40)
+	sections["background"] = models.DocumentSection{Content: duplicate}
+	sections["proposal"] = models.DocumentSection{Content: duplicate}
+	result := Render(profile, models.DocumentDraft{Title: "Duplicate check", Summary: "summary", Sections: sections}, nil)
+	if result.Validation.Status != models.ArchiveValidationInvalid {
+		t.Fatalf("validation = %+v", result.Validation)
+	}
+	found := false
+	for _, issue := range result.Validation.Issues {
+		found = found || issue.Code == "thoughtflow.profile.section_duplicate"
+	}
+	if !found {
+		t.Fatalf("issues = %+v", result.Validation.Issues)
+	}
+}
+
 func TestRegistryPublishesCustomFormat(t *testing.T) {
 	root := t.TempDir()
 	registry, err := NewRegistry(root, models.DocumentProfileBuiltinNote, Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
