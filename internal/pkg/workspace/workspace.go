@@ -128,6 +128,34 @@ func EnsureInside(rootPath, targetPath string) error {
 	return nil
 }
 
+// EnsureNoSymlinks rejects linked files and directories inside a workspace.
+func EnsureNoSymlinks(rootPath, targetPath string) error {
+	if err := EnsureInside(rootPath, targetPath); err != nil {
+		return err
+	}
+	absRoot, err := filepath.Abs(rootPath)
+	if err != nil {
+		return err
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return err
+	}
+	for cursor := absTarget; ; cursor = filepath.Dir(cursor) {
+		info, e := os.Lstat(cursor)
+		if e == nil && info.Mode()&os.ModeSymlink != 0 {
+			return os.ErrPermission
+		}
+		if e != nil && !os.IsNotExist(e) {
+			return e
+		}
+		if cursor == absRoot || filepath.Dir(cursor) == cursor {
+			break
+		}
+	}
+	return nil
+}
+
 func RuntimeStatus(ws *models.Workspace) models.WorkspaceRuntimeStatus {
 	status := models.WorkspaceRuntimeStatus{Status: "degraded"}
 	if ws == nil {

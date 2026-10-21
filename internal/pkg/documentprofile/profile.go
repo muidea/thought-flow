@@ -34,11 +34,13 @@ type ProfileInput struct {
 }
 
 type ValidationPolicy struct {
-	AllowUnknownSections    bool `yaml:"allow_unknown_sections" json:"allow_unknown_sections"`
-	RequireNonEmptySections bool `yaml:"require_non_empty_sections" json:"require_non_empty_sections"`
-	MinimumBodyChars        int  `yaml:"minimum_body_chars" json:"minimum_body_chars"`
-	MaximumBodyChars        int  `yaml:"maximum_body_chars" json:"maximum_body_chars"`
-	HeadingLevel            int  `yaml:"heading_level" json:"heading_level"`
+	Rules                   []string          `yaml:"rules" json:"rules,omitempty"`
+	SectionHeadings         map[string]string `yaml:"section_headings" json:"section_headings,omitempty"`
+	AllowUnknownSections    bool              `yaml:"allow_unknown_sections" json:"allow_unknown_sections"`
+	RequireNonEmptySections bool              `yaml:"require_non_empty_sections" json:"require_non_empty_sections"`
+	MinimumBodyChars        int               `yaml:"minimum_body_chars" json:"minimum_body_chars"`
+	MaximumBodyChars        int               `yaml:"maximum_body_chars" json:"maximum_body_chars"`
+	HeadingLevel            int               `yaml:"heading_level" json:"heading_level"`
 }
 
 type GenerationPolicy struct {
@@ -46,16 +48,17 @@ type GenerationPolicy struct {
 }
 
 type formatFrontMatter struct {
-	ID          string           `yaml:"id"`
-	Version     int              `yaml:"version"`
-	Name        string           `yaml:"name"`
-	Family      string           `yaml:"family"`
-	Description string           `yaml:"description"`
-	Enabled     bool             `yaml:"enabled"`
-	AutoMatch   AutoMatchPolicy  `yaml:"auto_match"`
-	Inputs      []ProfileInput   `yaml:"inputs"`
-	Validation  ValidationPolicy `yaml:"validation"`
-	Generation  GenerationPolicy `yaml:"generation"`
+	SchemaVersion int              `yaml:"schema_version"`
+	ID            string           `yaml:"id"`
+	Version       int              `yaml:"version"`
+	Name          string           `yaml:"name"`
+	Family        string           `yaml:"family"`
+	Description   string           `yaml:"description"`
+	Enabled       bool             `yaml:"enabled"`
+	AutoMatch     AutoMatchPolicy  `yaml:"auto_match"`
+	Inputs        []ProfileInput   `yaml:"inputs"`
+	Validation    ValidationPolicy `yaml:"validation"`
+	Generation    GenerationPolicy `yaml:"generation"`
 }
 
 type SectionSpec struct {
@@ -64,16 +67,18 @@ type SectionSpec struct {
 }
 
 type DocumentProfile struct {
-	Ref         models.DocumentProfileRef `json:"ref"`
-	Name        string                    `json:"name"`
-	Description string                    `json:"description"`
-	Enabled     bool                      `json:"enabled"`
-	AutoMatch   AutoMatchPolicy           `json:"auto_match"`
-	Inputs      []ProfileInput            `json:"inputs"`
-	Validation  ValidationPolicy          `json:"validation"`
-	Generation  GenerationPolicy          `json:"generation"`
-	Sections    []SectionSpec             `json:"sections"`
-	Template    string                    `json:"-"`
+	SchemaVersion int                       `json:"schema_version"`
+	Snapshot      string                    `json:"-"`
+	Ref           models.DocumentProfileRef `json:"ref"`
+	Name          string                    `json:"name"`
+	Description   string                    `json:"description"`
+	Enabled       bool                      `json:"enabled"`
+	AutoMatch     AutoMatchPolicy           `json:"auto_match"`
+	Inputs        []ProfileInput            `json:"inputs"`
+	Validation    ValidationPolicy          `json:"validation"`
+	Generation    GenerationPolicy          `json:"generation"`
+	Sections      []SectionSpec             `json:"sections"`
+	Template      string                    `json:"-"`
 }
 
 type DocumentProfileDescriptor struct {
@@ -111,7 +116,26 @@ func Parse(raw []byte, limits Limits) (DocumentProfile, error) {
 	if err := yaml.Unmarshal([]byte(frontMatter), &meta); err != nil {
 		return DocumentProfile{}, fmt.Errorf("parse document format front matter: %w", err)
 	}
+	if meta.SchemaVersion >= 2 {
+		decoder := yaml.NewDecoder(strings.NewReader(frontMatter))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&meta); err != nil {
+			return DocumentProfile{}, fmt.Errorf("unsupported profile field: %w", err)
+		}
+	}
+	if meta.SchemaVersion > 2 || meta.SchemaVersion < 0 {
+		return DocumentProfile{}, errors.New("unsupported profile schema")
+	}
+	for _, rule := range meta.Validation.Rules {
+		switch rule {
+		case "design_traceability", "research_evidence", "article_subtype":
+		default:
+			return DocumentProfile{}, fmt.Errorf("unsupported mandatory rule %q", rule)
+		}
+	}
 	profile := DocumentProfile{
+		SchemaVersion: meta.SchemaVersion,
+		Snapshot:      strings.TrimSpace(strings.ReplaceAll(string(raw), "\r\n", "\n")) + "\n",
 		Ref: models.DocumentProfileRef{
 			Family:      strings.TrimSpace(meta.Family),
 			ProfileID:   strings.TrimSpace(meta.ID),
@@ -130,6 +154,27 @@ func Parse(raw []byte, limits Limits) (DocumentProfile, error) {
 	profile.Sections, err = parseSections(profile.Template)
 	if err != nil {
 		return DocumentProfile{}, err
+	}
+	if profile.SchemaVersion == 2 {
+		requiredRule := map[string]string{models.DocumentFamilyDesign: "design_traceability", models.DocumentFamilyResearch: "research_evidence", models.DocumentFamilyArticle: "article_subtype"}[profile.Ref.Family]
+		if requiredRule != "" {
+			found := false
+			for _, rule := range profile.Validation.Rules {
+				found = found || rule == requiredRule
+			}
+			if !found {
+				return DocumentProfile{}, fmt.Errorf("missing mandatory family rule %s", requiredRule)
+			}
+		}
+
+		for _, section := range profile.Sections {
+			if section.Required && profile.Validation.SectionHeadings[section.Key] == "" {
+				return DocumentProfile{}, fmt.Errorf("missing AST heading mapping for %s", section.Key)
+			}
+		}
+		if profile.Validation.HeadingLevel < 2 || profile.Validation.HeadingLevel > 6 {
+			return DocumentProfile{}, errors.New("invalid section heading level")
+		}
 	}
 	if err := validateProfile(profile, limits); err != nil {
 		return DocumentProfile{}, err

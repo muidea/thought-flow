@@ -14,6 +14,15 @@ var DesignDocV1 string
 //go:embed blog-post-v1.md
 var BlogPostV1 string
 
+//go:embed design-doc-v2.md
+var DesignDocV2 string
+
+//go:embed research-report-v2.md
+var ResearchReportV2 string
+
+//go:embed blog-post-v2.md
+var BlogPostV2 string
+
 func Builtins() []string {
-	return []string{NoteV1, ResearchReportV1, DesignDocV1, BlogPostV1}
+	return []string{NoteV1, ResearchReportV1, DesignDocV1, BlogPostV1, DesignDocV2, ResearchReportV2, BlogPostV2}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/muidea/magicCommon/event"
 
 	"thoughtflow/internal/pkg/ai"
+	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/models"
@@ -746,6 +747,7 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		ProfileMatchReason:      firstNonEmptyString(result.ProfileMatchReason, current.SessionContext.ProfileMatchReason),
 		ProfileExplicit:         result.ProfileExplicit || current.SessionContext.ProfileExplicit,
 		DocumentParameters:      mergeStringMaps(current.SessionContext.DocumentParameters, result.DocumentParameters),
+		FrozenProfile:           current.SessionContext.FrozenProfile,
 		MissingProfileInputs:    trimNonEmpty(result.MissingProfileInputs),
 		ArchiveReadiness:        normalizeArchiveReadiness(firstNonEmptyString(result.ArchiveReadiness, current.SessionContext.ArchiveReadiness)),
 	}
@@ -1031,6 +1033,7 @@ func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, vers
 		sp.SessionContext.ProfileConfidence = 0
 		sp.SessionContext.ProfileMatchReason = ""
 		sp.SessionContext.ProfileExplicit = false
+		sp.SessionContext.FrozenProfile = ""
 		sp.ArchivePreview = nil
 		return s.store.Save(sp)
 	}
@@ -1052,6 +1055,7 @@ func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, vers
 	sp.SessionContext.ProfileConfidence = 100
 	sp.SessionContext.ProfileMatchReason = "explicit user profile selection"
 	sp.SessionContext.ProfileExplicit = true
+	sp.SessionContext.FrozenProfile = profile.Snapshot
 	sp.ArchivePreview = nil
 	return s.store.Save(sp)
 }
@@ -1202,8 +1206,12 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	}
 	parameters := profileParameters(profile, sp.SessionContext.DocumentParameters)
 	preview.DocumentProfile = profile.Ref
+	preview.ProfileSnapshot = profile.Snapshot
 	preview.Parameters = parameters
 	preview.ContextHash = archiveContextHash(sp, currentThought, profile.Ref)
+	if currentThought != nil && currentThought.Thought.Document != nil {
+		preview.SourceGeneration = currentThought.Thought.Document.Generation
+	}
 	if profile.Ref.Family == models.DocumentFamilyNote {
 		if profile.Template == "" {
 			preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationValid, ValidatedAt: s.now()}
@@ -1219,7 +1227,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			draft.References = append(draft.References, models.DocumentReference{ID: fmt.Sprintf("S%d", idx+1), SourceLink: link})
 		}
 		rendered := documentprofile.Render(profile, draft, parameters)
-		preview.Body = strings.TrimSpace(rendered.Content)
+		preview.Body = rendered.Content
 		preview.Validation = rendered.Validation
 		applyArchiveContextValidation(&preview, sp)
 		preview.GeneratedAt = s.now()
@@ -1295,6 +1303,23 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.Title = firstNonEmptyString(strings.TrimSpace(draft.Title), preview.Title)
 	preview.Body = strings.TrimSpace(rendered.Content)
 	preview.Validation = rendered.Validation
+	if profile.SchemaVersion == 2 && s.archiveDocuments() != nil {
+		sources := models.SourceManifest{SchemaVersion: 1, Sources: []models.DocumentSource{}}
+		for i, link := range preview.SourceLinks {
+			sources.Sources = append(sources.Sources, models.DocumentSource{ID: fmt.Sprintf("S%d", i+1), Type: "external", Locator: link, VerificationStatus: "unverified"})
+		}
+		candidate, e := s.archiveDocuments().Candidate(ctx, "capture-"+sp.SessionID, preview.Body, preview.Title, profile, parameters, sources, preview.ContextHash)
+		if e != nil {
+			return scratchpad.ArchivePreview{}, e
+		}
+		preview.Document = &candidate
+		for _, i := range candidate.Report.Issues {
+			if i.Severity == "error" {
+				preview.Validation.Status = models.ArchiveValidationInvalid
+				preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{Code: i.Code, Severity: i.Severity, Section: i.Section, Message: i.Basis})
+			}
+		}
+	}
 	applyArchiveContextValidation(&preview, sp)
 	preview.GeneratedAt = s.now()
 	if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
@@ -1515,6 +1540,9 @@ func recoverableArchiveDocumentGenerationError(err error) bool {
 }
 
 func (s *ScratchpadService) resolveArchiveProfile(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (documentprofile.DocumentProfile, error) {
+	if sp.SessionContext.FrozenProfile != "" {
+		return documentprofile.Parse([]byte(sp.SessionContext.FrozenProfile), documentprofile.Limits{})
+	}
 	if s.profiles == nil {
 		return documentprofile.DocumentProfile{Ref: models.DocumentProfileRef{Family: models.DocumentFamilyNote, ProfileID: models.DocumentProfileBuiltinNote, Version: 1}}, nil
 	}
@@ -1561,6 +1589,9 @@ func archiveContextHash(sp scratchpad.Scratchpad, currentThought *models.Thought
 	}{sp.Content, sp.Messages, stableContext, sp.ArchiveStrategy, sp.SourceThoughtID, "", ref}
 	if currentThought != nil {
 		payload.CurrentHash = currentThought.Thought.ContentHash
+		if currentThought.Thought.Document != nil {
+			payload.CurrentHash += ":" + currentThought.Thought.Document.RevisionID
+		}
 	}
 	raw, _ := json.Marshal(payload)
 	sum := sha256.Sum256(raw)
@@ -1712,7 +1743,7 @@ func archiveBody(sp scratchpad.Scratchpad) string {
 		strings.TrimSpace(sp.ArchivePreview.Body) != "" &&
 		sp.ArchivePreview.Validation.Status == models.ArchiveValidationValid &&
 		(sp.ArchivePreview.Strategy == "" || sp.ArchivePreview.Strategy == sp.ArchiveStrategy) {
-		return strings.TrimSpace(sp.ArchivePreview.Body)
+		return sp.ArchivePreview.Body
 	}
 	summary := strings.TrimSpace(sp.SessionContext.CandidateSummary)
 	body := strings.TrimSpace(sp.SessionContext.CandidateBody)
@@ -1837,17 +1868,19 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 		profileRef = &ref
 	}
 	return models.CaptureCommand{
-		Type:              cmdType,
-		Content:           content,
-		URL:               "",
-		Title:             title,
-		Tags:              tags,
-		TopicHints:        topicHints,
-		Links:             links,
-		RelatedThoughtIDs: previewRelatedThoughtIDs(sp),
-		SuggestedTopicIDs: uniqueStrings(sp.SessionContext.SuggestedTopicIDs),
-		Source:            models.ThoughtSourceScratchpadCommit,
-		DocumentProfile:   profileRef,
+		Type:                    cmdType,
+		Content:                 content,
+		URL:                     "",
+		Title:                   title,
+		Tags:                    tags,
+		TopicHints:              topicHints,
+		Links:                   links,
+		RelatedThoughtIDs:       previewRelatedThoughtIDs(sp),
+		SuggestedTopicIDs:       uniqueStrings(sp.SessionContext.SuggestedTopicIDs),
+		Source:                  models.ThoughtSourceScratchpadCommit,
+		DocumentProfile:         profileRef,
+		DocumentParameters:      sp.SessionContext.DocumentParameters,
+		DocumentProfileSnapshot: previewSnapshot(sp),
 	}, nil
 }
 
@@ -2002,6 +2035,10 @@ func (s *ScratchpadService) commitRepeat(ctx context.Context, sp scratchpad.Scra
 	if sessionID == "" {
 		sessionID = sp.SessionID
 	}
+	if sp.ArchivePreview != nil && sp.ArchivePreview.SourceGeneration > 0 {
+		generation := sp.ArchivePreview.SourceGeneration
+		patch.ExpectedDocumentGeneration = &generation
+	}
 	if _, err := s.capture.ApplyDraftInternal(ctx, sp.CommittedThoughtID, sessionID, *patch, rawBody); err != nil {
 		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, err
 	}
@@ -2051,7 +2088,17 @@ func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scra
 		}
 		sp.ArchivePreview.Body = fullBody
 	}
+	if e := s.validateMergedTypedArchive(ctx, sp, current, fullBody); e != nil {
+		return models.CaptureResult{}, e
+	}
 	patch, rawBody, err := buildPatchForUpdate(sp)
+	if patch != nil && current.Thought.Document != nil && sp.ArchivePreview != nil {
+		generation := sp.ArchivePreview.SourceGeneration
+		if generation == 0 {
+			return models.CaptureResult{}, ErrArchivePreviewStale
+		}
+		patch.ExpectedDocumentGeneration = &generation
+	}
 	if err != nil {
 		return models.CaptureResult{}, err
 	}
@@ -2324,6 +2371,8 @@ func buildPatchFromScratchpad(sp scratchpad.Scratchpad, includeBody bool) (*mode
 			if strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
 				ref := sp.ArchivePreview.DocumentProfile
 				req.DocumentProfile = &ref
+				parameters := cloneStringMap(sp.ArchivePreview.Parameters)
+				req.DocumentParameters = &parameters
 			}
 			hasAny = true
 		}
@@ -2403,6 +2452,8 @@ func buildPatchForUpdate(sp scratchpad.Scratchpad) (*models.ThoughtPatchRequest,
 	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
 		ref := sp.ArchivePreview.DocumentProfile
 		req.DocumentProfile = &ref
+		parameters := cloneStringMap(sp.ArchivePreview.Parameters)
+		req.DocumentParameters = &parameters
 		hasAny = true
 	}
 	if topics := uniqueStrings(append(append([]string(nil), sp.SessionContext.SuggestedTopicIDs...), sp.Draft.TopicIDs...)); len(topics) > 0 {
@@ -2707,4 +2758,46 @@ func extractURL(text string) string {
 		}
 	}
 	return ""
+}
+
+func previewSnapshot(sp scratchpad.Scratchpad) string {
+	if sp.ArchivePreview != nil {
+		return sp.ArchivePreview.ProfileSnapshot
+	}
+	return ""
+}
+
+func (s *ScratchpadService) archiveDocuments() *documentflow.Service {
+	if provider, ok := s.capture.(interface{ Documents() *documentflow.Service }); ok {
+		return provider.Documents()
+	}
+	return nil
+}
+
+func (s *ScratchpadService) validateMergedTypedArchive(ctx context.Context, sp scratchpad.Scratchpad, current models.ThoughtSnapshot, body string) error {
+	documents := s.archiveDocuments()
+	if documents == nil || sp.ArchivePreview == nil || sp.ArchivePreview.ProfileSnapshot == "" {
+		return nil
+	}
+	profile, e := documentprofile.Parse([]byte(sp.ArchivePreview.ProfileSnapshot), documentprofile.Limits{})
+	if e != nil {
+		return e
+	}
+	if profile.SchemaVersion != 2 {
+		return nil
+	}
+	sources := models.SourceManifest{SchemaVersion: 1}
+	if sp.ArchivePreview.Document != nil {
+		sources = sp.ArchivePreview.Document.Sources
+	}
+	candidate, e := documents.Candidate(ctx, "capture-"+sp.SessionID, body, sp.ArchivePreview.Title, profile, sp.ArchivePreview.Parameters, sources, sp.ArchivePreview.ContextHash)
+	if e != nil {
+		return e
+	}
+	for _, issue := range candidate.Report.Issues {
+		if issue.Severity == "error" {
+			return ErrArchiveFormatInvalid
+		}
+	}
+	return nil
 }

@@ -131,6 +131,9 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"git.commit_succeeded",
 		"git.commit_failed",
 		"job.updated",
+		"document.revision_created",
+		"document.validation_completed",
+		"document.finalized",
 	} {
 		eventHub.Subscribe(eventID, m.stream)
 	}

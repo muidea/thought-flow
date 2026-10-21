@@ -28,6 +28,7 @@ type Config struct {
 	Embedding        EmbeddingConfig
 	Reader           ReaderConfig
 	DocumentProfiles DocumentProfilesConfig
+	Documents        DocumentsConfig
 }
 
 type ServerConfig struct {
@@ -70,6 +71,17 @@ type DocumentProfilesConfig struct {
 	MaxFormatBytes        int
 	MaxSections           int
 	MaxRepairAttempts     int
+}
+
+// DocumentsConfig controls the delivery workflow independently of template generation.
+type DocumentsConfig struct {
+	Enabled              bool
+	SemanticReview       bool
+	AllowManual          bool
+	ReviewTimeoutSeconds int
+	Concurrency          int
+	MaxRepairAttempts    int
+	Families             []string
 }
 
 type RefinerConfig struct {
@@ -223,6 +235,7 @@ func defaultConfig() Config {
 		Capture: CaptureConfig{
 			DuplicatePolicy: "warn",
 		},
+		Documents: DocumentsConfig{Enabled: true, SemanticReview: true, AllowManual: true, ReviewTimeoutSeconds: 45, Concurrency: 2, MaxRepairAttempts: 2, Families: []string{"design", "research", "article"}},
 		DocumentProfiles: DocumentProfilesConfig{
 			Enabled:               true,
 			DefaultProfileID:      "builtin.note",
@@ -296,6 +309,15 @@ func applyFrameworkOverrides(cfg *Config, configDir string) {
 	cfg.Workspace.AutoInitGit = configBool(appConfig, "workspace.auto_init_git", cfg.Workspace.AutoInitGit)
 	cfg.Runtime.StateDir = configString(appConfig, "runtime.state_dir", cfg.Runtime.StateDir)
 	cfg.Capture.DuplicatePolicy = configString(appConfig, "capture.duplicate_policy", cfg.Capture.DuplicatePolicy)
+	cfg.Documents.Enabled = configBool(appConfig, "documents.enabled", cfg.Documents.Enabled)
+	cfg.Documents.SemanticReview = configBool(appConfig, "documents.semantic_review", cfg.Documents.SemanticReview)
+	cfg.Documents.AllowManual = configBool(appConfig, "documents.allow_manual", cfg.Documents.AllowManual)
+	cfg.Documents.ReviewTimeoutSeconds = configInt(appConfig, "documents.review_timeout_seconds", cfg.Documents.ReviewTimeoutSeconds)
+	cfg.Documents.Concurrency = configInt(appConfig, "documents.concurrency", cfg.Documents.Concurrency)
+	cfg.Documents.MaxRepairAttempts = configInt(appConfig, "documents.max_repair_attempts", cfg.Documents.MaxRepairAttempts)
+	if families := configString(appConfig, "documents.families", strings.Join(cfg.Documents.Families, ",")); families != "" {
+		cfg.Documents.Families = strings.Split(families, ",")
+	}
 	cfg.DocumentProfiles.Enabled = configBool(appConfig, "document_profiles.enabled", cfg.DocumentProfiles.Enabled)
 	cfg.DocumentProfiles.CustomDir = configPath(appConfig, "document_profiles.custom_dir", cfg.DocumentProfiles.CustomDir, configDir)
 	cfg.DocumentProfiles.DefaultProfileID = configString(appConfig, "document_profiles.default_profile_id", cfg.DocumentProfiles.DefaultProfileID)

@@ -32,7 +32,9 @@ import (
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
+	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -68,10 +70,12 @@ type Service struct {
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
 	documentProfiles *documentprofile.Registry
+	documents        *documentflow.Service
 }
 
 func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry) {
 	s.documentProfiles = registry
+	s.configureDocuments()
 }
 
 // SubscribePublicThoughtsConfig applies server-section change events from the
@@ -202,6 +206,9 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scra
 }
 
 func (s *Service) Close() {
+	if s.documents != nil {
+		s.documents.Close()
+	}
 	s.publicConfigMu.Lock()
 	manager, watcher := s.configManager, s.serverWatcher
 	s.configManager, s.serverWatcher = nil, nil
@@ -215,6 +222,7 @@ func (s *Service) Close() {
 }
 
 func (s *Service) RegisterRoutes() {
+	s.registerDocumentRoutes()
 	s.registry.AddHandler("/", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/index.html", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/styles.css", engine.GET, s.handleWeb)
@@ -650,9 +658,19 @@ func (s *Service) handlePatchThought(ctx context.Context, res http.ResponseWrite
 			return
 		}
 	}
+	current, e := s.captureService.GetThought(ctx, thoughtID)
+	if e == nil && current.Thought.Document != nil && (patch.Body != nil || patch.AINotes != nil || patch.AINotesAppend != nil || patch.Title != nil || patch.DocumentProfile != nil || patch.DocumentParameters != nil || patch.Links != nil) {
+		generation, ok := documentGeneration(res, req)
+		if !ok {
+			return
+		}
+		patch.ExpectedDocumentGeneration = &generation
+	}
 	snapshot, err := s.captureService.PatchThought(ctx, thoughtID, sessionID, patch, rawBody)
 	if err != nil {
 		switch {
+		case errors.Is(err, documentstore.ErrConflict):
+			documentError(res, req, err)
 		case errors.Is(err, capturebiz.ErrInvalidPatchField):
 			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.invalid_patch", err.Error())
 		case errors.Is(err, capturebiz.ErrLocked):

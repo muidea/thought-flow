@@ -66,6 +66,7 @@ type Draft struct {
 // "absent" — so the JSON contract has zero-value defaults the
 // service can rely on.
 type SessionContext struct {
+	FrozenProfile           string            `json:"frozen_profile,omitempty"`
 	Topic                   string            `json:"topic"`
 	Goal                    string            `json:"goal"`
 	ConfirmedFacts          []string          `json:"confirmed_facts"`
@@ -133,6 +134,9 @@ type ThoughtDiff struct {
 // confirmed is what the commit path enforces — there is no "I
 // thought I was archiving X but got Y" drift.
 type ArchivePreview struct {
+	SourceGeneration  uint64                    `json:"source_generation,omitempty"`
+	ProfileSnapshot   string                    `json:"profile_snapshot,omitempty"`
+	Document          *models.DocumentSnapshot  `json:"document,omitempty"`
 	SessionID         string                    `json:"session_id"`
 	ThoughtID         string                    `json:"thought_id,omitempty"`
 	Title             string                    `json:"title"`

@@ -196,6 +196,31 @@ func TestServiceCreateDraftAndSaveUsesDocumentProfile(t *testing.T) {
 	}
 }
 
+func TestSaveEditedDraftDoesNotPersistGenerationValidation(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	draft, err := svc.draftStore.SaveDraft(ctx, models.ComposeDraft{
+		ID: "edited-document", Status: models.ComposeStatusDraft,
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeThought, SourceID: "seed"}},
+		Content: "# Generated", DocumentDraft: &models.DocumentDraft{Title: "Generated"},
+		Validation: &models.ArchiveValidation{Status: models.ArchiveValidationValid},
+		Document:   &models.DocumentSnapshot{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.SaveDraft(ctx, draft.ID, models.ComposeSaveRequest{Content: "# Edited"}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := svc.draftStore.GetDraft(ctx, draft.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Document != nil || saved.Validation != nil || saved.DocumentDraft != nil {
+		t.Fatalf("edited save retained generation evidence: %+v", saved)
+	}
+}
+
 func TestServiceCreateDraftRejectsEmptySources(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	_, err := svc.CreateDraft(context.Background(), models.ComposeRequest{})
@@ -946,4 +971,39 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestComposeShutdownCancelsAndJoinsWorker(t *testing.T) {
+	svc, _, stub := newTestService(t)
+	block := &blockingSynthesis{stub: stub, gate: make(chan struct{})}
+	svc.synthesis = block
+	writeThought(t, svc.workspace.RootPath, "20260609-shutdown", "seed", "body")
+	job, e := svc.CreateDraftAsync(context.Background(), models.ComposeRequest{Sources: []models.ComposeSource{{SourceType: "thought", SourceID: "20260609-shutdown"}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	deadline := time.Now().Add(time.Second)
+	for block.calls() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	svc.Close()
+	stored, e := svc.jobs.Get(job.ID)
+	if e != nil || stored.Status != models.JobStatusCanceled {
+		t.Fatalf("worker survived teardown: %+v %v", stored, e)
+	}
+}
+func TestFrozenComposeInputsSurviveSourceChanges(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	before := []models.ThoughtSnapshot{{Thought: models.Thought{ID: "source-1"}, Content: models.ThoughtContent{AINotes: "original exact source  \n"}}}
+	hash, e := svc.saveFrozenInputs("draft-frozen", before)
+	if e != nil {
+		t.Fatal(e)
+	}
+	after, e := svc.readFrozenInputs("draft-frozen", hash)
+	if e != nil || after[0].Content.AINotes != before[0].Content.AINotes {
+		t.Fatal("frozen input changed")
+	}
+	if _, e = svc.readFrozenInputs("draft-frozen", "wrong-hash"); e == nil {
+		t.Fatal("changed snapshot trusted")
+	}
 }

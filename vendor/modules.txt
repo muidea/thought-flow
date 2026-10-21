@@ -177,6 +177,15 @@ github.com/tidwall/pretty
 # github.com/tidwall/sjson v1.2.5
 ## explicit; go 1.14
 github.com/tidwall/sjson
+# github.com/yuin/goldmark v1.7.13
+## explicit; go 1.22
+github.com/yuin/goldmark
+github.com/yuin/goldmark/ast
+github.com/yuin/goldmark/parser
+github.com/yuin/goldmark/renderer
+github.com/yuin/goldmark/renderer/html
+github.com/yuin/goldmark/text
+github.com/yuin/goldmark/util
 # github.com/zeebo/xxh3 v1.1.0
 ## explicit; go 1.22
 github.com/zeebo/xxh3

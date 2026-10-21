@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"thoughtflow/internal/pkg/documentflow"
+	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/workspace"
 )
@@ -27,11 +29,21 @@ func ThoughtRelativePath(thoughtID string) string {
 }
 
 func WriteThought(rootPath string, thought models.Thought, content models.ThoughtContent) error {
+	flow := documentflow.For(rootPath)
+	unlock := flow.Store.Lock(thought.ID)
+	defer unlock()
+	if _, err := flow.SyncProjectionLocked(&thought, &content, false); err != nil {
+		return err
+	}
+	return writeThoughtProjection(rootPath, thought, content)
+}
+
+func writeThoughtProjection(rootPath string, thought models.Thought, content models.ThoughtContent) error {
 	if thought.Path == "" {
 		thought.Path = ThoughtRelativePath(thought.ID)
 	}
 	targetPath := filepath.Join(rootPath, filepath.FromSlash(thought.Path))
-	if err := workspace.EnsureInside(rootPath, targetPath); err != nil {
+	if err := workspace.EnsureNoSymlinks(rootPath, targetPath); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -42,13 +54,28 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 		return err
 	}
 	tmpPath := fmt.Sprintf("%s.%d.tmp", targetPath, time.Now().UnixNano())
-	if err := os.WriteFile(tmpPath, renderThought(thought, content, unknownFrontMatter), 0o644); err != nil {
+	if err := writeProjectionSync(tmpPath, renderThought(thought, content, unknownFrontMatter)); err != nil {
 		return err
 	}
 	defer func() {
 		_ = os.Remove(tmpPath)
 	}()
-	return os.Rename(tmpPath, targetPath)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return err
+	}
+	dir, e := os.Open(filepath.Dir(targetPath))
+	if e != nil {
+		return e
+	}
+	e = dir.Sync()
+	dir.Close()
+	if e != nil {
+		return e
+	}
+	if thought.Document != nil {
+		return documentflow.For(rootPath).ProjectionCommittedLocked(thought.ID, thought.Document.RevisionID)
+	}
+	return nil
 }
 
 // CleanupOrphanThoughtTempFiles removes any *.tmp leftovers from a
@@ -92,14 +119,29 @@ func CleanupOrphanThoughtTempFiles(thoughtsPath string) error {
 }
 
 func ReadThought(rootPath string, thoughtID string) (models.Thought, models.ThoughtContent, error) {
+	flow := documentflow.For(rootPath)
+	unlock := flow.Store.Lock(thoughtID)
+	defer unlock()
 	raw, err := ReadThoughtRaw(rootPath, thoughtID)
 	if err != nil {
 		return models.Thought{}, models.ThoughtContent{}, err
 	}
 	relPath := ThoughtRelativePath(thoughtID)
+	if err := validateThoughtEncoding(raw); err != nil {
+		return models.Thought{}, models.ThoughtContent{}, err
+	}
 	thought, content := ParseThought(raw)
 	thought.ID = firstNonEmpty(thought.ID, thoughtID)
 	thought.Path = filepath.ToSlash(relPath)
+	recover, err := flow.SyncProjectionLocked(&thought, &content, true)
+	if err != nil {
+		return models.Thought{}, models.ThoughtContent{}, err
+	}
+	if recover {
+		if err = writeThoughtProjection(rootPath, thought, content); err != nil {
+			return models.Thought{}, models.ThoughtContent{}, err
+		}
+	}
 	return thought, content, nil
 }
 
@@ -109,7 +151,7 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 func ReadThoughtRaw(rootPath string, thoughtID string) ([]byte, error) {
 	relPath := ThoughtRelativePath(thoughtID)
 	targetPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
-	if err := workspace.EnsureInside(rootPath, targetPath); err != nil {
+	if err := workspace.EnsureNoSymlinks(rootPath, targetPath); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(targetPath)
@@ -123,6 +165,16 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	var buf bytes.Buffer
 	buf.WriteString("---\n")
 	writeScalar(&buf, "id", thought.ID)
+	if thought.Document != nil {
+		writeScalar(&buf, "document_id", thought.Document.DocumentID)
+		writeScalar(&buf, "document_revision_id", thought.Document.RevisionID)
+	}
+	boundary := ""
+	if thought.DocumentProfile != nil || thought.Document != nil {
+		boundary = documentstore.HashJSON(content)
+		writeScalar(&buf, "body_encoding", "sections-v2")
+		writeScalar(&buf, "body_boundary", boundary)
+	}
 	writeScalar(&buf, "type", thought.Type)
 	writeScalar(&buf, "source", thought.Source)
 	writeScalar(&buf, "user_title", thought.UserTitle)
@@ -149,10 +201,16 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeUnknownFrontMatter(&buf, unknownFrontMatter)
 	writeErrors(&buf, thought.Errors)
 	buf.WriteString("---\n\n")
-	writeSection(&buf, "Original", content.Original)
-	writeSection(&buf, "Extracted Content", content.ExtractedContent)
-	writeSection(&buf, "AI Notes", content.AINotes)
-	writeSection(&buf, "Links", content.Links)
+	if boundary != "" {
+		for _, section := range []struct{ name, value string }{{"Original", content.Original}, {"Extracted Content", content.ExtractedContent}, {"AI Notes", content.AINotes}, {"Links", content.Links}} {
+			fmt.Fprintf(&buf, "<!-- thoughtflow:%s:%s:start -->\n## %s\n\n%s<!-- thoughtflow:%s:%s:end -->\n\n", boundary, section.name, section.name, documentstore.Normalize(section.value), boundary, section.name)
+		}
+	} else {
+		writeSection(&buf, "Original", content.Original)
+		writeSection(&buf, "Extracted Content", content.ExtractedContent)
+		writeSection(&buf, "AI Notes", content.AINotes)
+		writeSection(&buf, "Links", content.Links)
+	}
 	return buf.Bytes()
 }
 
@@ -184,6 +242,36 @@ func ParseThought(raw []byte) (models.Thought, models.ThoughtContent) {
 		ExtractedContent: parseSection(text, "Extracted Content"),
 		AINotes:          parseSection(text, "AI Notes"),
 		Links:            parseSection(text, "Links"),
+	}
+	if fm, ok := frontMatterText(raw); ok {
+		boundary := ""
+		encoding := ""
+		for _, line := range strings.Split(fm, "\n") {
+			if strings.HasPrefix(line, "body_boundary:") {
+				boundary = parseScalar(strings.TrimSpace(strings.TrimPrefix(line, "body_boundary:")))
+			}
+			if strings.HasPrefix(line, "body_encoding:") {
+				encoding = parseScalar(strings.TrimSpace(strings.TrimPrefix(line, "body_encoding:")))
+			}
+		}
+		if encoding == "sections-v2" && boundary != "" {
+			values := []*string{&content.Original, &content.ExtractedContent, &content.AINotes, &content.Links}
+			for i, name := range []string{"Original", "Extracted Content", "AI Notes", "Links"} {
+				start := "<!-- thoughtflow:" + boundary + ":" + name + ":start -->\n## " + name + "\n\n"
+				end := "<!-- thoughtflow:" + boundary + ":" + name + ":end -->"
+				a := strings.Index(text, start)
+				if a >= 0 {
+					tail := text[a+len(start):]
+					b := strings.Index(tail, end)
+					if b >= 0 {
+						*values[i] = tail[:b]
+						if strings.TrimSpace(*values[i]) == "" {
+							*values[i] = ""
+						}
+					}
+				}
+			}
+		}
 	}
 	thought.DisplayTitle = displayTitle(thought, content)
 	return thought, content
@@ -341,7 +429,7 @@ func frontMatterKey(line string) (string, bool) {
 
 func knownThoughtFrontMatterKey(key string) bool {
 	switch key {
-	case "id",
+	case "document_id", "document_revision_id", "body_encoding", "body_boundary", "id",
 		"type",
 		"source",
 		"user_title",
@@ -394,6 +482,16 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 		key := strings.TrimSpace(parts[0])
 		value := strings.Trim(strings.TrimSpace(parts[1]), `"`)
 		switch key {
+		case "document_id":
+			if thought.Document == nil {
+				thought.Document = &models.DocumentLink{}
+			}
+			thought.Document.DocumentID = parseScalar(parts[1])
+		case "document_revision_id":
+			if thought.Document == nil {
+				thought.Document = &models.DocumentLink{}
+			}
+			thought.Document.RevisionID = parseScalar(parts[1])
 		case "id":
 			thought.ID = value
 		case "type":
@@ -758,4 +856,66 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ExtractDocumentBody is the sole adapter from a Thought wrapper to delivery bytes.
+func ExtractDocumentBody(content models.ThoughtContent) string {
+	return documentflow.ExtractBody(content)
+}
+
+func parseScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted
+	}
+	return value
+}
+
+func writeProjectionSync(path string, raw []byte) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(raw); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+func validateThoughtEncoding(raw []byte) error {
+	fm, ok := frontMatterText(raw)
+	if !ok {
+		return nil
+	}
+	encoding, boundary := "", ""
+	for _, line := range strings.Split(fm, "\n") {
+		if strings.HasPrefix(line, "body_encoding:") {
+			encoding = parseScalar(strings.TrimPrefix(line, "body_encoding:"))
+		}
+		if strings.HasPrefix(line, "body_boundary:") {
+			boundary = parseScalar(strings.TrimPrefix(line, "body_boundary:"))
+		}
+	}
+	if encoding == "" {
+		return nil
+	}
+	if encoding != "sections-v2" || boundary == "" {
+		return documentstore.ErrInvalid
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	last := 0
+	for _, name := range []string{"Original", "Extracted Content", "AI Notes", "Links"} {
+		start := "<!-- thoughtflow:" + boundary + ":" + name + ":start -->\n## " + name + "\n\n"
+		end := "<!-- thoughtflow:" + boundary + ":" + name + ":end -->"
+		a, b := strings.Index(text, start), strings.Index(text, end)
+		if strings.Count(text, start) != 1 || strings.Count(text, end) != 1 || a < last || b < a+len(start) {
+			return documentstore.ErrInvalid
+		}
+		last = b + len(end)
+	}
+	return nil
 }

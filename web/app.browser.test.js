@@ -1572,6 +1572,21 @@ function startFixtureServer(options = {}) {
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    if (options.documentSnapshot && url.pathname.startsWith("/api/documents/thought-1")) {
+      const snapshot=options.documentSnapshot;
+      if(req.method==="GET")return json(res,api(snapshot));
+      const body=(await readJson(req)) || {};
+      if(url.pathname.endsWith("/revisions")) {
+        snapshot.head.generation++;snapshot.head.working_revision_id=`r-${snapshot.head.generation}`;snapshot.body=body.body;snapshot.contract=body.contract;snapshot.freshness="unavailable";snapshot.report=null;
+        return json(res,api(snapshot));
+      }
+      if(url.pathname.endsWith("/validate")) {
+        snapshot.report={report_id:`v-${snapshot.head.generation}`,revision_id:snapshot.head.working_revision_id,status:"needs_review",issues:[{id:"i1",code:"manual_review",group:"consistency",severity:"warning",human_confirmation:true,basis:"Review this exact revision",suggestion:"Check the source",line:1}]};snapshot.freshness="current";return json(res,api(snapshot.report));
+      }
+      if(url.pathname.endsWith("/finalize")) {
+        snapshot.head.generation++;snapshot.head.finalized_revision_id=body.revision_id;snapshot.finalization={review_method:"structure_and_manual"};return json(res,api(snapshot.finalization));
+      }
+    }
     if (url.pathname.startsWith("/api/capture/sessions/")) {
       const suffix = url.pathname.slice("/api/capture/sessions/".length);
       const [sessionID] = suffix.split("/");
@@ -1910,6 +1925,7 @@ function startFixtureServer(options = {}) {
         return json(res, api({
           thought: {
             id: "thought-1",
+            ...(options.documentSnapshot ? {document_profile:{family:"design",profile_id:"builtin.design-doc",version:2}} : {}),
             display_title: "Browser Thought",
             user_title: "Browser Thought",
             refine_status: "succeeded",
@@ -2556,3 +2572,28 @@ class PlaywrightPage {
     await this.page.waitForFunction(fn, undefined, { timeout, polling: 100 });
   }
 }
+
+
+test("typed document editor separates draft, review, confirmation and pinned export", async (t) => {
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ const snapshot={document_id:"thought-1",head:{generation:1,working_revision_id:"r-1"},body:"# Browser document\n\nA draft.",freshness:"unavailable",contract:{profile_ref:{profile_id:"builtin.design-doc",version:2},parameters:{problem:"A problem",audience:"Engineers"},purpose:"Review",audience:"Engineers",language:"en-US"},source_manifest:{schema_version:1,sources:[]}};
+ const server=await startFixtureServer({documentSnapshot:snapshot});t.after(()=>server.close());
+ const target=browserTargets.find(item=>item.name==="chrome");const browser=await target.launch(viewports()[0]);
+ try {
+  const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US`);
+  await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+  await setPageHash(page,"#/notes?id=thought-1&tab=detail");
+  await page.waitForExpression(()=>!!document.querySelector("[data-document-open=thought-1]"));
+  await page.evaluate(()=>document.querySelector("[data-document-open=thought-1]").click());
+  await page.waitForExpression(()=>document.querySelector(".tf-document-dialog")?.open);
+  assert.equal(await page.evaluate(()=>document.querySelector("[data-document-finalize]").disabled),true);
+  await page.evaluate(()=>{const body=document.querySelector("[data-document-body]");body.value+="\nNew local edit";body.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("[data-document-review-mode]").value="manual";document.querySelector("[data-document-check]").click();});
+  await page.waitForExpression(()=>!!document.querySelector("[data-document-confirm]"));
+  await page.evaluate(()=>{document.querySelector("[data-document-confirm]").checked=true;document.querySelector("[data-document-reason]").value="Checked original evidence for this revision";document.querySelector("[data-document-finalize]").click();});
+  await page.waitForExpression(()=>document.querySelector("[data-document-final-export]")?.hidden===false);
+  const finalHref=await page.evaluate(()=>document.querySelector("[data-document-final-export]").getAttribute("href"));assert.match(finalHref,/r-2.*mode=final/);
+  await page.evaluate(()=>{const body=document.querySelector("[data-document-body]");body.value+="\nNewer unsaved edit";body.dispatchEvent(new Event("input",{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>document.querySelector("[data-document-finalize]").disabled),true);
+  assert.equal(await page.evaluate(()=>document.querySelector("[data-document-final-export]").getAttribute("href")),finalHref);
+ } finally {await browser.close();}
+});

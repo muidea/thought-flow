@@ -2603,3 +2603,15 @@ textarea:focus-visible {
   border-color: var(--tf-color-danger, #d4380d);
   background: var(--tf-color-danger, #d4380d);
 }
+
+.tf-document-dialog { width: min(1300px, 96vw); max-height: 92vh; overflow: auto; background: var(--surface, #fff); color: var(--text, #17212b); border: 1px solid #aab4bf; border-radius: 12px; padding: 1.5rem; }
+.tf-document-dialog::backdrop { background: #0008; }
+.tf-document-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 1.25rem; margin: 1rem 0; }
+.tf-document-dialog textarea { width: 100%; font-family: monospace; line-height: 1.5; }
+.tf-document-dialog label { display: block; margin: .5rem 0; }
+.tf-document-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .5rem; }
+.tf-document-inputs input { width: 100%; }
+.tf-document-issue { padding: .75rem; border: 1px solid #b8c1cb; margin-bottom: .75rem; overflow-wrap: anywhere; }
+.tf-document-issue input:not([type=checkbox]) { width: 100%; }
+.tf-document-dialog aside { max-height: 70vh; overflow: auto; }
+@media (max-width: 760px) { .tf-document-layout { grid-template-columns: 1fr; } }

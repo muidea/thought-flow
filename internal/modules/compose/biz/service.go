@@ -29,7 +29,9 @@ import (
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
+	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -78,6 +80,10 @@ type Service struct {
 	inflightMu sync.Mutex
 	inflight   map[string]models.Job
 	workerWG   sync.WaitGroup
+	workerLife sync.Mutex
+	workCtx    context.Context
+	workCancel context.CancelFunc
+	closed     bool
 
 	// draftMu serializes a generating worker's final existence-check/write
 	// with DeleteDraft. Without it, a worker can observe a placeholder,
@@ -103,7 +109,9 @@ func NewService(
 	synthesis ai.SynthesisProvider,
 	capture CaptureSink,
 ) *Service {
+	workCtx, workCancel := context.WithCancel(context.Background())
 	return &Service{
+		workCtx: workCtx, workCancel: workCancel,
 		workspace:  workspace,
 		draftStore: draftStore,
 		jobs:       jobs,
@@ -145,6 +153,23 @@ func (s *Service) CreateDraftAsync(ctx context.Context, req models.ComposeReques
 		return models.Job{}, errors.New("sources are required")
 	}
 
+	// Resolve and freeze before queueing, including the source bytes the model will see.
+	if s.profiles != nil {
+		profile, e := s.resolveComposeProfile(req)
+		if e != nil {
+			return models.Job{}, e
+		}
+		req.ProfileSnapshot = profile.Snapshot
+		req.ProfileID = profile.Ref.ProfileID
+		req.ProfileVersion = profile.Ref.Version
+		if profile.SchemaVersion == 2 {
+			snapshots, errs := s.hydrateSnapshots(ctx, req.Sources)
+			if len(snapshots) == 0 && len(errs) > 0 {
+				return models.Job{}, errs[0]
+			}
+			req.FrozenSnapshots = snapshots
+		}
+	}
 	deduped, sourceLinks := dedupeSources(req.Sources)
 	fingerprint := composeRequestFingerprint(deduped, req)
 
@@ -191,7 +216,19 @@ func (s *Service) CreateDraftAsync(ctx context.Context, req models.ComposeReques
 		if profile, err := s.resolveComposeProfile(req); err == nil {
 			ref := profile.Ref
 			placeholder.DocumentProfile = &ref
+			placeholder.ProfileSnapshot = profile.Snapshot
+			req.ProfileSnapshot = profile.Snapshot
+			req.ProfileID = ref.ProfileID
+			req.ProfileVersion = ref.Version
 		}
+	}
+	if req.FrozenSnapshots != nil {
+		hash, e := s.saveFrozenInputs(draftID, req.FrozenSnapshots)
+		if e != nil {
+			s.inflightMu.Unlock()
+			return models.Job{}, e
+		}
+		placeholder.FrozenInputHash = hash
 	}
 	savedPlaceholder, err := s.draftStore.SaveDraft(ctx, placeholder)
 	if err != nil {
@@ -255,10 +292,28 @@ func (s *Service) RecoverGeneratingDrafts() (int, error) {
 		if err != nil {
 			return recovered, err
 		}
-		if draft.Status != models.ComposeStatusGenerating || (draft.JobID != "" && draft.JobID != job.ID) {
+		if draft.JobID != "" && draft.JobID != job.ID {
+			continue
+		}
+		if draft.Status == models.ComposeStatusDraft || draft.Status == models.ComposeStatusSaved {
+			_, _ = s.jobs.MarkSucceeded(job, "Recovered completed draft")
+			continue
+		}
+		if job.Status == models.JobStatusRunning {
+			_, _ = s.jobs.MarkCanceled(job, "Interrupted model call has unknown completion; retry explicitly")
+			draft.Status = models.ComposeStatusFailed
+			_, _ = s.draftStore.SaveDraft(context.Background(), draft)
 			continue
 		}
 		req := composeRequestFromDraft(draft)
+		if draft.FrozenInputHash != "" {
+			snapshots, e := s.readFrozenInputs(draft.ID, draft.FrozenInputHash)
+			if e != nil {
+				_, _ = s.jobs.MarkCanceled(job, "Frozen inputs unavailable; explicit retry required")
+				continue
+			}
+			req.FrozenSnapshots = snapshots
+		}
 		fingerprint := firstNonEmpty(draft.RequestFingerprint, composeRequestFingerprint(draft.Sources, req))
 		s.inflightMu.Lock()
 		if current, ok := s.inflight[fingerprint]; ok && current.ID == job.ID {
@@ -274,7 +329,13 @@ func (s *Service) RecoverGeneratingDrafts() (int, error) {
 }
 
 func (s *Service) scheduleGenerateDraftJob(job models.Job, req models.ComposeRequest, fingerprint string) {
+	s.workerLife.Lock()
+	if s.closed {
+		s.workerLife.Unlock()
+		return
+	}
 	s.workerWG.Add(1)
+	s.workerLife.Unlock()
 	run := func() {
 		defer s.workerWG.Done()
 		s.generateDraftJob(job, req, fingerprint)
@@ -311,7 +372,7 @@ func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fi
 
 	// Force CreateDraft to update the existing placeholder rather than
 	// minting a second draft id for the same request.
-	_, err := s.CreateDraft(context.Background(), req, createDraftOptions{
+	_, err := s.CreateDraft(s.workCtx, req, createDraftOptions{
 		DraftID:            job.ResourceID,
 		RequestFingerprint: fingerprint,
 		JobID:              job.ID,
@@ -319,7 +380,7 @@ func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fi
 	if err != nil {
 		// Draft deleted while generating: cancel the job and stop. Do not
 		// recreate a failed placeholder on disk.
-		if errors.Is(err, errComposeDraftDeleted) {
+		if errors.Is(err, errComposeDraftDeleted) || errors.Is(err, context.Canceled) {
 			job, _ = s.jobs.MarkCanceled(job, "compose draft deleted")
 			eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
 			return
@@ -413,6 +474,10 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 
 	deduped, sourceLinks := dedupeSources(req.Sources)
 	snapshots, hydrateErrs := s.hydrateSnapshots(ctx, deduped)
+	if req.FrozenSnapshots != nil {
+		snapshots = req.FrozenSnapshots
+		hydrateErrs = nil
+	}
 	if len(snapshots) == 0 {
 		// We tolerate partial hydration: a missing thought file is
 		// skipped when other source types can still provide context.
@@ -445,6 +510,7 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 
 	var synthDraft models.SynthesisDraft
 	var profileRef *models.DocumentProfileRef
+	var frozenProfile string
 	var structuredDraft *models.DocumentDraft
 	var validation *models.ArchiveValidation
 	var err error
@@ -485,6 +551,7 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 		synthDraft = models.SynthesisDraft{ID: models.NewJobID("compose", now), Goal: synthReq.Goal, Format: req.Format, Content: rendered.Content, SourceLinks: sourceLinks, Model: s.model, Status: models.ComposeStatusDraft, CreatedAt: now, UpdatedAt: now}
 		ref := profile.Ref
 		profileRef = &ref
+		frozenProfile = profile.Snapshot
 		structuredDraft = &doc
 		valid := rendered.Validation
 		validation = &valid
@@ -496,19 +563,24 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 	}
 
 	draftID := firstNonEmpty(opt.DraftID, synthDraft.ID, models.NewJobID("compose", now))
+	frozenHash := ""
 	createdAt := now
 	if opt.DraftID != "" && s.draftStore != nil {
 		if existing, err := s.draftStore.GetDraft(ctx, opt.DraftID); err == nil && !existing.CreatedAt.IsZero() {
 			createdAt = existing.CreatedAt
+			frozenHash = existing.FrozenInputHash
 		}
 	}
 	fingerprint := firstNonEmpty(opt.RequestFingerprint, composeRequestFingerprint(deduped, req))
 	draft := models.ComposeDraft{
+		FrozenInputHash:    frozenHash,
 		ID:                 draftID,
 		Sources:            deduped,
 		Goal:               synthReq.Goal,
 		Format:             firstNonEmpty(synthReq.Format, models.ComposeFormatSummary),
 		DocumentProfile:    profileRef,
+		SourceManifest:     composeSnapshotManifest(deduped, snapshots),
+		ProfileSnapshot:    frozenProfile,
 		Parameters:         cloneStringMap(req.Parameters),
 		DocumentDraft:      structuredDraft,
 		Validation:         validation,
@@ -521,6 +593,19 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 		GenerationPrompt:   req.Prompt,
 		CreatedAt:          createdAt,
 		UpdatedAt:          now,
+	}
+	if profileRef != nil && frozenProfile != "" && s.workspace != nil {
+		profile, e := documentprofile.Parse([]byte(frozenProfile), documentprofile.Limits{})
+		if e != nil {
+			return models.ComposeDraft{}, e
+		}
+		if profile.SchemaVersion == 2 {
+			candidate, e := documentflow.For(s.workspace.RootPath).Candidate(ctx, "compose-"+draftID, draft.Content, structuredDraft.Title, profile, req.Parameters, *draft.SourceManifest, fingerprint)
+			if e != nil {
+				return models.ComposeDraft{}, e
+			}
+			draft.Document = &candidate
+		}
 	}
 	if len(synthDraft.History) > 0 {
 		draft.History = convertHistory(synthDraft.History)
@@ -541,6 +626,9 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return models.ComposeDraft{}, err
+	}
 	saved, err := s.draftStore.SaveDraft(ctx, draft)
 	if err != nil {
 		return models.ComposeDraft{}, err
@@ -694,11 +782,15 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 		return models.ComposeSaveResult{}, fmt.Errorf("compose draft %q failed generation and cannot be saved", draftID)
 	}
 
-	content := strings.TrimSpace(req.Content)
-	if content == "" {
+	content := req.Content
+	if strings.TrimSpace(content) == "" {
 		content = draft.Content
 	}
-	content = stripComposeSourceAppendix(content, draft.SourceLinks)
+	if draft.DocumentProfile != nil {
+		content = documentstore.Normalize(content)
+	} else {
+		content = stripComposeSourceAppendix(content, draft.SourceLinks)
+	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = firstNonEmpty(firstMarkdownHeading(content), deriveComposeTitle(draft))
@@ -709,13 +801,16 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 	}
 
 	cmd := models.CaptureCommand{
-		Type:            models.ThoughtTypeText,
-		Content:         content,
-		Title:           title,
-		Tags:            tags,
-		Source:          models.ThoughtSourceCompose,
-		Links:           dedupeStrings(append([]string{}, draft.SourceLinks...)),
-		DocumentProfile: cloneProfileRef(draft.DocumentProfile),
+		Type:                    models.ThoughtTypeText,
+		Content:                 content,
+		Title:                   title,
+		Tags:                    tags,
+		Source:                  models.ThoughtSourceCompose,
+		Links:                   dedupeStrings(append([]string{}, draft.SourceLinks...)),
+		DocumentProfile:         cloneProfileRef(draft.DocumentProfile),
+		DocumentParameters:      cloneStringMap(draft.Parameters),
+		DocumentProfileSnapshot: draft.ProfileSnapshot,
+		DocumentSources:         draft.SourceManifest,
 	}
 	if draft.SaveCommand != nil {
 		cmd = *draft.SaveCommand
@@ -747,6 +842,34 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 		if jobErr == nil {
 			_, _ = s.jobs.MarkFailed(job, models.NewErrorRef("thoughtflow.compose.save_failed", err.Error(), true))
 		}
+		return models.ComposeSaveResult{}, err
+	}
+	// Generation-time reports cannot attest to an edited save or a Thought
+	// that changed after an earlier capture succeeded. Reattach only evidence
+	// for the exact saved body, and persist invalidation even without a match.
+	saved.Document = nil
+	saved.Validation = nil
+	if cmd.Content != draft.Content {
+		saved.DocumentDraft = nil
+	}
+	if snapshot, e := documentflow.For(s.workspace.RootPath).Get(result.Thought.ID); e == nil && snapshot.Body == documentstore.Normalize(saved.Content) {
+		saved.Document = &snapshot
+		if cmd.Content != draft.Content {
+			saved.DocumentDraft = nil
+		}
+		validation := models.ArchiveValidation{Status: models.ArchiveValidationValid}
+		if snapshot.Report != nil {
+			validation.ValidatedAt = snapshot.Report.CreatedAt
+			for _, issue := range snapshot.Report.Issues {
+				validation.Issues = append(validation.Issues, models.ValidationIssue{Code: issue.Code, Severity: issue.Severity, Section: issue.Section, Message: issue.Basis})
+				if issue.Severity == "error" {
+					validation.Status = models.ArchiveValidationInvalid
+				}
+			}
+		}
+		saved.Validation = &validation
+	}
+	if _, err = s.draftStore.SaveDraft(ctx, saved); err != nil {
 		return models.ComposeSaveResult{}, err
 	}
 	if jobErr == nil {
@@ -1034,6 +1157,9 @@ func convertHistory(in []models.SynthesisDraftHistory) []models.ComposeDraftHist
 }
 
 func (s *Service) resolveComposeProfile(req models.ComposeRequest) (documentprofile.DocumentProfile, error) {
+	if req.ProfileSnapshot != "" {
+		return documentprofile.Parse([]byte(req.ProfileSnapshot), documentprofile.Limits{})
+	}
 	profileID := strings.TrimSpace(req.ProfileID)
 	if profileID == "" {
 		switch strings.TrimSpace(req.Format) {
@@ -1083,11 +1209,12 @@ func cloneProfileRef(ref *models.DocumentProfileRef) *models.DocumentProfileRef 
 
 func composeRequestFromDraft(draft models.ComposeDraft) models.ComposeRequest {
 	req := models.ComposeRequest{
-		Sources:    append([]models.ComposeSource{}, draft.Sources...),
-		Prompt:     draft.GenerationPrompt,
-		Goal:       draft.Goal,
-		Format:     draft.Format,
-		Parameters: cloneStringMap(draft.Parameters),
+		ProfileSnapshot: draft.ProfileSnapshot,
+		Sources:         append([]models.ComposeSource{}, draft.Sources...),
+		Prompt:          draft.GenerationPrompt,
+		Goal:            draft.Goal,
+		Format:          draft.Format,
+		Parameters:      cloneStringMap(draft.Parameters),
 	}
 	if draft.DocumentProfile != nil {
 		req.ProfileID = draft.DocumentProfile.ProfileID
@@ -1098,6 +1225,12 @@ func composeRequestFromDraft(draft models.ComposeDraft) models.ComposeRequest {
 
 func composeRequestFingerprint(sources []models.ComposeSource, req models.ComposeRequest) string {
 	parts := make([]string, 0, len(sources)+8)
+	if req.ProfileSnapshot != "" {
+		parts = append(parts, "profile_snapshot="+documentstore.Hash([]byte(req.ProfileSnapshot)))
+	}
+	if req.FrozenSnapshots != nil {
+		parts = append(parts, "frozen_sources="+documentstore.HashJSON(req.FrozenSnapshots))
+	}
 	for _, source := range sources {
 		parts = append(parts, composeSourceFingerprintPart(source))
 	}
@@ -1178,4 +1311,34 @@ func (s *Service) findInflightGenerateJob(fingerprint string) (models.Job, bool)
 		}
 	}
 	return models.Job{}, false
+}
+
+// Close cancels owned model work and joins all workers before dependencies close.
+func (s *Service) Close() {
+	s.workerLife.Lock()
+	s.closed = true
+	if s.workCancel != nil {
+		s.workCancel()
+	}
+	s.workerLife.Unlock()
+	s.workerWG.Wait()
+}
+
+func composeSnapshotManifest(sources []models.ComposeSource, snapshots []models.ThoughtSnapshot) *models.SourceManifest {
+	manifest := &models.SourceManifest{SchemaVersion: 1, Sources: []models.DocumentSource{}}
+	for i, snapshot := range snapshots {
+		source := models.DocumentSource{ID: fmt.Sprintf("S%d", i+1), ResourceID: snapshot.Thought.ID, Type: "thought", Hash: documentstore.HashJSON(snapshot.Content), Version: documentstore.HashJSON(snapshot.Content), RetrievedAt: time.Now().UTC(), VerificationStatus: "unverified"}
+		for _, candidate := range sources {
+			if candidate.SourceID == snapshot.Thought.ID {
+				source.Type = candidate.SourceType
+				source.Locator = candidate.SourceLink
+				break
+			}
+		}
+		if source.Locator == "" {
+			source.Locator = "thought://" + snapshot.Thought.ID
+		}
+		manifest.Sources = append(manifest.Sources, source)
+	}
+	return manifest
 }

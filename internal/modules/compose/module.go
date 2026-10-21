@@ -110,6 +110,9 @@ func (m *Module) Run(_ context.Context) *cd.Error {
 }
 
 func (m *Module) Teardown(_ context.Context) {
+	if m.service != nil {
+		m.service.Close()
+	}
 	if m.profileRegistry != nil {
 		m.profileRegistry.Close()
 		m.profileRegistry = nil

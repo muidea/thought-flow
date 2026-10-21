@@ -17,6 +17,8 @@ import (
 
 	"github.com/muidea/magicCommon/event"
 
+	"thoughtflow/internal/pkg/documentflow"
+	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
@@ -111,6 +113,9 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		source = models.ThoughtSourceManual
 	}
 	original := originalContent(cmd)
+	if cmd.DocumentProfile != nil {
+		original = cmd.Content
+	}
 	contentHash := models.ContentHash(original)
 	captureStatus := models.CaptureStatusCaptured
 	errorRefs := []models.ErrorRef{}
@@ -132,25 +137,28 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	}
 	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	thought := models.Thought{
-		ID:                thoughtID,
-		Type:              cmd.Type,
-		Source:            source,
-		UserTitle:         strings.TrimSpace(cmd.Title),
-		URL:               strings.TrimSpace(cmd.URL),
-		Path:              relPath,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		ContentHash:       contentHash,
-		UserTags:          normalizeList(cmd.Tags),
-		TopicIDs:          normalizeList(cmd.TopicHints),
-		Errors:            errorRefs,
-		CaptureStatus:     captureStatus,
-		RefineStatus:      models.RefineStatusPending,
-		IndexStatus:       models.IndexStatusPending,
-		TopicStatus:       models.TopicStatusUnmatched,
-		RelatedThoughtIDs: normalizeList(cmd.RelatedThoughtIDs),
-		SuggestedTopicIDs: normalizeList(cmd.SuggestedTopicIDs),
-		DocumentProfile:   cloneDocumentProfileRef(cmd.DocumentProfile),
+		ID:                      thoughtID,
+		Type:                    cmd.Type,
+		Source:                  source,
+		UserTitle:               strings.TrimSpace(cmd.Title),
+		URL:                     strings.TrimSpace(cmd.URL),
+		Path:                    relPath,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+		ContentHash:             contentHash,
+		UserTags:                normalizeList(cmd.Tags),
+		TopicIDs:                normalizeList(cmd.TopicHints),
+		Errors:                  errorRefs,
+		CaptureStatus:           captureStatus,
+		RefineStatus:            models.RefineStatusPending,
+		IndexStatus:             models.IndexStatusPending,
+		TopicStatus:             models.TopicStatusUnmatched,
+		RelatedThoughtIDs:       normalizeList(cmd.RelatedThoughtIDs),
+		SuggestedTopicIDs:       normalizeList(cmd.SuggestedTopicIDs),
+		DocumentProfile:         cloneDocumentProfileRef(cmd.DocumentProfile),
+		DocumentParameters:      cmd.DocumentParameters,
+		DocumentSources:         cmd.DocumentSources,
+		DocumentProfileSnapshot: cmd.DocumentProfileSnapshot,
 	}
 	thought.DisplayTitle = displayTitle(thought, original)
 	content := models.ThoughtContent{
@@ -338,6 +346,19 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if err != nil {
 		return models.ThoughtSnapshot{}, err
 	}
+	if thought.Document != nil && request.ExpectedDocumentGeneration != nil {
+		head, e := s.Documents().Store.Head(thought.ID)
+		if e != nil {
+			return models.ThoughtSnapshot{}, e
+		}
+		if head.Generation != *request.ExpectedDocumentGeneration {
+			return models.ThoughtSnapshot{}, documentstore.ErrConflict
+		}
+	}
+	thought.DocumentExpectedGeneration = request.ExpectedDocumentGeneration
+	if request.DocumentParameters != nil {
+		thought.DocumentParameters = *request.DocumentParameters
+	}
 	now := s.now()
 	if request.Title != nil {
 		title := strings.TrimSpace(*request.Title)
@@ -347,7 +368,10 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 		thought.UserTitle = title
 	}
 	if request.Body != nil {
-		body := strings.TrimSpace(*request.Body)
+		body := *request.Body
+		if thought.DocumentProfile == nil {
+			body = strings.TrimSpace(body)
+		}
 		if body == "" {
 			return models.ThoughtSnapshot{}, errors.New("body must not be empty")
 		}
@@ -356,7 +380,10 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 		thought.ContentHash = models.ContentHash(body)
 	}
 	if request.AINotes != nil {
-		notes := strings.TrimSpace(*request.AINotes)
+		notes := *request.AINotes
+		if thought.DocumentProfile == nil {
+			notes = strings.TrimSpace(notes)
+		}
 		if notes == "" {
 			return models.ThoughtSnapshot{}, errors.New("ai_notes must not be empty")
 		}
@@ -787,3 +814,5 @@ func displayTitle(thought models.Thought, original string) string {
 	}
 	return firstLine
 }
+
+func (s *Service) Documents() *documentflow.Service { return documentflow.For(s.workspace.RootPath) }

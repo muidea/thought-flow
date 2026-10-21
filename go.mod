@@ -9,6 +9,7 @@ require (
 	github.com/muidea/magicCommon v1.5.10
 	github.com/muidea/magicEngine v1.4.9
 	github.com/openai/openai-go v1.12.0
+	github.com/yuin/goldmark v1.7.13
 	golang.org/x/sync v0.19.0
 	gopkg.in/yaml.v3 v3.0.1
 )

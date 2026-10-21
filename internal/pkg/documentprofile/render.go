@@ -26,9 +26,9 @@ func Render(profile DocumentProfile, draft models.DocumentDraft, parameters map[
 		if match := tokenPattern.FindStringSubmatch(trimmed); len(match) == 2 && match[0] == trimmed && strings.HasPrefix(match[1], "section:") {
 			parts := strings.Split(match[1], "|")
 			key := strings.TrimPrefix(parts[0], "section:")
-			content := strings.TrimSpace(draft.Sections[key].Content)
+			content := draft.Sections[key].Content
 			optional := len(parts) == 2 && parts[1] == "optional"
-			if content == "" && optional {
+			if strings.TrimSpace(content) == "" && optional {
 				out = removeTrailingHeading(out)
 				continue
 			}
@@ -52,8 +52,16 @@ func Render(profile DocumentProfile, draft models.DocumentDraft, parameters map[
 		})
 		out = append(out, replaced)
 	}
+	if len(draft.Assumptions) > 0 {
+		out = append(out, "", "## 假设 / Assumptions", "")
+		for _, assumption := range draft.Assumptions {
+			out = append(out, "- "+assumption)
+		}
+	}
 	content := normalizeRendered(strings.Join(out, "\n"))
-	issues = append(issues, validateRendered(profile, content, draft.References)...)
+	if profile.SchemaVersion != 2 {
+		issues = append(issues, validateRendered(profile, content, draft.References)...)
+	}
 	status := models.ArchiveValidationValid
 	for _, issue := range issues {
 		if issue.Severity == models.ValidationSeverityError {
@@ -246,18 +254,7 @@ func removeTrailingHeading(lines []string) []string {
 }
 
 func normalizeRendered(value string) string {
-	lines := strings.Split(strings.TrimSpace(value), "\n")
-	out := []string{}
-	blank := false
-	for _, line := range lines {
-		isBlank := strings.TrimSpace(line) == ""
-		if isBlank && blank {
-			continue
-		}
-		out = append(out, strings.TrimRight(line, " \t"))
-		blank = isBlank
-	}
-	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
+	return strings.TrimRight(strings.ReplaceAll(value, "\r\n", "\n"), "\n") + "\n"
 }
 
 func extractReferenceIDs(content string) []string {

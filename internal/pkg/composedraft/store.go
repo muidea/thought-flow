@@ -153,7 +153,7 @@ func (s *Store) MarkSaved(_ context.Context, draftID string, content string, tho
 	}
 	now := time.Now().UTC()
 	draft.Status = models.ComposeStatusSaved
-	draft.Content = strings.TrimSpace(content)
+	draft.Content = content
 	draft.SavedThoughtID = thought.ID
 	draft.UpdatedAt = now
 	draft.SavedAt = &now

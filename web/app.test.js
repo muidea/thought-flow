@@ -517,6 +517,10 @@ function loadAppFunctionsWith(opts = {}) {
       formatBadgeCount,
       computeSidebarBadgeCounts,
       appendExpansionSections,
+      documentCanFinalize,
+      saveDocumentEditor,
+      composeDocumentParameters,
+      documentSourceInputs,
       appState: state,
     });`,
     context,
@@ -1044,6 +1048,7 @@ test("compose reader disables actions for generating failed and saved", async ()
 });
 
 test("saving a compose draft keeps its reader preview and Thought link", async () => {
+  const editedBody = "\n\n# Edited\n\nLine with hard break  \n";
   const dom = installComposeReaderDom(makeDomStub());
   const app = loadAppFunctionsWith({
     dom,
@@ -1052,6 +1057,7 @@ test("saving a compose draft keeps its reader preview and Thought link", async (
       const target = String(url);
       if (target.includes("/api/compose/drafts/d-1/save")) {
         assert.equal(init.method, "POST");
+        assert.equal(JSON.parse(init.body).content, editedBody);
         return { ok: true, json: async () => ({ data: { thought: { id: "thought-saved" } }, error: null }) };
       }
       if (target.includes("/api/compose/drafts/d-1")) {
@@ -1078,7 +1084,7 @@ test("saving a compose draft keeps its reader preview and Thought link", async (
 
   await app.loadComposeDraft("d-1");
   app.setComposeReaderMode("edit");
-  dom.nodes["compose-output"].value = "# Edited";
+  dom.nodes["compose-output"].value = editedBody;
   app.syncComposeLocalContentFromEditor();
 
   const saving = app.saveComposeDraft();
@@ -3409,4 +3415,24 @@ test("a failed source refresh does not block the next save", async () => {
   assert.equal(writes[0].version, '"4"');
   assert.equal(writes[0].sources[0].source_id, "B");
   assert.equal(app._state.composeSourcesVersion, 5);
+});
+
+
+test("document finalization rejects dirty, stale and hard-error reports", () => {
+ const app=loadAppFunctions();const editor={dirty:false,busy:false,serverChanged:false,snapshot:{freshness:"current",report:{status:"needs_review",issues:[{severity:"warning",human_confirmation:true}]}}};
+ assert.equal(app.documentCanFinalize(editor),true);
+ for(const flag of ["dirty","busy","serverChanged"]){assert.equal(app.documentCanFinalize({...editor,[flag]:true}),false);}
+ editor.snapshot.freshness="stale";assert.equal(app.documentCanFinalize(editor),false);
+ editor.snapshot.freshness="current";editor.snapshot.report.issues=[{severity:"error",human_confirmation:false}];assert.equal(app.documentCanFinalize(editor),false);
+});
+
+test("saving a typed document preserves newer local edits while advancing CAS generation", async () => {
+ let finish;let sent;
+ const app=loadAppFunctionsWith({fetch:async(url,options)=>{sent={url,options};return new Promise(resolve=>finish=()=>resolve({ok:true,json:async()=>({data:{head:{generation:8,working_revision_id:"r-saved"},body:"saved old body",contract:{},source_manifest:{sources:[]}}})}));}});
+ const body={value:"saved old body"};const rows=[];
+ const editor={id:"doc",epoch:1,dirty:true,snapshot:{head:{generation:7},contract:{parameters:{purpose:"decision",audience:"engineer",language:"en"}}},dialog:{querySelectorAll:selector=>rows,querySelector:selector=>body}};
+ const saving=app.saveDocumentEditor(editor);
+ editor.epoch++;body.value="newer local edit";finish();await saving;
+ assert.equal(sent.options.headers["If-Match"],"7");assert.equal(JSON.parse(sent.options.body).body,"saved old body");
+ assert.equal(editor.snapshot.head.generation,8);assert.equal(editor.dirty,true);assert.equal(body.value,"newer local edit");assert.equal(app.documentCanFinalize(editor),false);
 });

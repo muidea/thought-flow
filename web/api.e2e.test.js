@@ -1033,6 +1033,33 @@ test("API e2e", async (t) => {
     assert.equal(get.status, 404, `deleted thought get status=${get.status} body=${get.text}`);
   });
 
+
+  await t.test("typed documents freeze edits, manual reviews, final versions and exact exports", async () => {
+    const profilesRes=await request(server.baseURL,"/api/document-profiles","GET");
+    const profiles=envelope(profilesRes).data.profiles;
+    for(const family of ["design","research","article"]) {
+      const profile=profiles.find(p=>p.ref.family===family);
+      assert.equal(profile.ref.version,2);
+      const parameters=Object.fromEntries(profile.inputs.map(input=>[input.key,"confirmed input"]));parameters.subtype="opinion";
+      const sections=profile.sections.map(section=>`## ${profile.validation.section_headings[section.key]}\n\nG1 D1 T1 Q1 F1 C1: failure and recovery. A limitation and counterexample supported by [S1].`).join("\n\n");
+      const body=`# Typed ${family}\n\n${sections}\n\n- [S1] Source: https://example.org/evidence\n`;
+      const created=await request(server.baseURL,"/api/thoughts","POST",{body:{type:"text",title:`Typed ${family}`,content:body,document_profile:profile.ref,document_parameters:parameters}});
+      assert.equal(created.status,202,created.text);const id=envelope(created).data.thought.id;const base=`/api/documents/${id}`;
+      let response=await request(server.baseURL,base,"GET");assert.equal(response.status,200,response.text);const snapshot=envelope(response).data;
+      response=await request(server.baseURL,base+"/validate","POST",{body:{revision_id:snapshot.head.working_revision_id}});assert.equal(response.status,428);
+      response=await request(server.baseURL,base+"/validate","POST",{headers:{"If-Match":String(snapshot.head.generation)},body:{revision_id:snapshot.head.working_revision_id,review_mode:"manual"}});
+      assert.equal(response.status,200,response.text);const report=envelope(response).data;assert.equal(report.status,"needs_review");
+      const finalize={revision_id:report.revision_id,report_id:report.report_id,operation_id:`final-${family}`,delivery_level:"proposal",confirmations:report.issues.filter(issue=>issue.human_confirmation).map(issue=>({issue_id:issue.id,reason:"Inspected this exact revision and the original evidence."}))};
+      response=await request(server.baseURL,base+"/finalize","POST",{headers:{"If-Match":String(snapshot.head.generation)},body:finalize});assert.equal(response.status,200,response.text);
+      response=await request(server.baseURL,`${base}/revisions/${report.revision_id}/export?mode=final`,"GET");assert.equal(response.status,200,response.text);assert.equal(response.text,snapshot.body);assert.equal(response.headers["x-document-mode"],"final");
+      response=await request(server.baseURL,base,"GET");const finalized=envelope(response).data;
+      response=await request(server.baseURL,base+"/revisions","POST",{headers:{"If-Match":String(finalized.head.generation)},body:{body:"# Incomplete draft\n\nTODO\n"}});assert.equal(response.status,201,response.text);const next=envelope(response).data;
+      response=await request(server.baseURL,base+"/finalize","POST",{headers:{"If-Match":String(next.head.generation)},body:{...finalize,operation_id:`stale-${family}`,revision_id:next.head.working_revision_id}});assert.equal(response.status,409,response.text);
+      response=await request(server.baseURL,`${base}/revisions/${next.head.working_revision_id}/export?mode=final`,"GET");assert.equal(response.status,422);
+      response=await request(server.baseURL,`${base}/revisions/${report.revision_id}/export?mode=final`,"GET");assert.equal(response.text,snapshot.body);
+    }
+  });
+
   await t.test("unknown route returns 404 envelope", async () => {
     const res = await request(server.baseURL, "/api/this-route-does-not-exist", "GET");
     assert.equal(res.status, 404);

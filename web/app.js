@@ -763,6 +763,7 @@ function syncComposeProfileSelect(selectedID = "", selectedVersion = 0) {
   const fallback = profileByID("builtin.note") || state.documentProfiles[0] || null;
   const fallbackRef = profileRef(fallback || {});
   select.innerHTML = renderDocumentProfileOptions(selectedID || fallbackRef.profile_id, selectedVersion || fallbackRef.version);
+ renderComposeDocumentInputs();
 }
 
 async function loadDocumentProfiles() {
@@ -1589,6 +1590,7 @@ function renderThoughtDetailPanel(snapshot) {
     <div class="tf-description-list">${renderDescription(metaRows)}</div>
     <div class="tf-action-row">
       <button class="tf-btn" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
+      ${thought.document_profile && thought.document_profile.family !== "note" ? `<button class="tf-btn" data-document-open="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("document.open"))}</button>` : ""}
       <button class="tf-btn tf-thought-delete" data-delete-thought="${escapeHTML(thought.id || "")}" data-delete-title="${escapeHTML(title)}" type="button">${escapeHTML(t("thoughts.action.delete"))}</button>
     </div>
     <div class="preview-box markdown-rendered">${renderMarkdown(sections.join("\n\n"))}</div>
@@ -1680,6 +1682,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
   bindThoughtReopenButtons(document);
   bindThoughtDeleteButtons(document);
+ bindDocumentButtons(document);
   const addCompose = $("#drawer-add-compose");
   if (addCompose) addCompose.disabled = false;
   const retry = $("#retry-refine");
@@ -4405,6 +4408,7 @@ async function createComposeDraft(event) {
         goal: $("#compose-goal").value.trim(),
         profile_id: selectedProfileID,
         profile_version: selectedProfileVersion,
+ parameters: composeDocumentParameters(),
       }),
     });
     state.composeActiveJobId = job?.id || "";
@@ -4739,8 +4743,8 @@ async function saveComposeDraft() {
     toast(t("toast.compose_save_unavailable"));
     return;
   }
-  const content = String(reader.localContent || "").trim();
-  if (!content) {
+  const content = String(reader.localContent || "");
+  if (!content.trim()) {
     toast(t("toast.writing_content_required"));
     return;
   }
@@ -4789,6 +4793,7 @@ async function refreshTopic() {
 }
 
 const DOMAIN_EVENT_TYPES = [
+ "document.revision_created", "document.validation_completed", "document.finalized",
   "thought.captured",
   "thought.refine_started",
   "thought.refined",
@@ -4836,6 +4841,7 @@ function connectEvents() {
   DOMAIN_EVENT_TYPES.forEach((type) => {
     source.addEventListener(type, (event) => {
       appendEvent(type, event.data);
+ if(type.startsWith("document.")) handleDocumentEvent(event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
       if (type.startsWith("thought.")) loadThoughts().catch(() => {});
@@ -5369,6 +5375,155 @@ async function boot() {
   connectEvents();
   window.setInterval(() => loadDocumentProfiles().catch(() => {}), 5000);
   window.__thoughtflowReady = true;
+}
+
+
+
+// A dialog owns its local editing epoch. Late GET/validation responses cannot
+// overwrite edits or make a report for another revision appear current.
+let documentEditor = null;
+function renderComposeDocumentInputs() {
+ const node = $("#compose-document-inputs");
+ const select = $("#compose-format");
+ if (!node || !select) return;
+ const profile = profileByID(select.value, Number(select.selectedOptions?.[0]?.dataset?.version || 0));
+ node.innerHTML = (profile?.inputs || []).map(input => `<label>${escapeHTML(input.label || input.key)}${input.required ? " *" : ""}<input data-document-parameter="${escapeHTML(input.key)}" value="${escapeHTML(input.default || "")}" ${input.required ? "required" : ""}></label>`).join("");
+ select.onchange = renderComposeDocumentInputs;
+}
+function composeDocumentParameters() {
+ const values = {};
+ document.querySelectorAll("#compose-document-inputs [data-document-parameter]").forEach(input => { values[input.dataset.documentParameter] = input.value.trim(); });
+ return values;
+}
+function bindDocumentButtons(root = document) {
+ root.querySelectorAll("[data-document-open]").forEach(button => {
+  if (button.dataset.documentBound) return;
+  button.dataset.documentBound = "1";
+  button.addEventListener("click", () => openDocumentEditor(button.dataset.documentOpen).catch(error => toast(error.message)));
+ });
+}
+function documentCanFinalize(editor) {
+ const snapshot = editor.snapshot;
+ return !editor.dirty && !editor.busy && !editor.serverChanged && snapshot.freshness === "current" && snapshot.report && !["failed", "running", "not_run"].includes(snapshot.report.status)
+   && !(snapshot.report.issues || []).some(issue => issue.severity === "error" && !issue.human_confirmation);
+}
+async function openDocumentEditor(id) {
+ const snapshot = await api(`/api/documents/${encodeURIComponent(id)}`);
+ documentEditor?.dialog?.remove();
+ const dialog = document.createElement("dialog");
+ dialog.className = "tf-document-dialog";
+ dialog.innerHTML = `<form method="dialog"><button class="tf-btn" type="submit">${escapeHTML(t("common.close"))}</button></form>
+ <h2>${escapeHTML(t("document.open"))}</h2><div data-document-status role="status"></div>
+ <div class="tf-document-layout"><div><div data-document-inputs class="tf-document-inputs"></div>
+ <details><summary>${escapeHTML(t("document.sources"))}</summary><p>${escapeHTML(t("document.evidence_private"))}</p><div data-document-sources></div><button class="tf-btn" data-document-add-source>${escapeHTML(t("document.add_source"))}</button></details>
+ <label>${escapeHTML(t("document.body"))}<textarea data-document-body rows="24" spellcheck="false"></textarea></label></div>
+ <aside data-document-issues></aside></div>
+ <div class="tf-action-row"><button class="tf-btn" data-document-save>${escapeHTML(t("document.save"))}</button>
+ <select data-document-review-mode><option value="semantic">${escapeHTML(t("document.review_semantic"))}</option><option value="manual">${escapeHTML(t("document.review_manual"))}</option></select>
+ <button class="tf-btn" data-document-check>${escapeHTML(t("document.check"))}</button>
+ <select data-document-delivery><option value="proposal">${escapeHTML(t("document.proposal"))}</option><option value="ready_for_use">${escapeHTML(t("document.ready_for_use"))}</option></select>
+ <button class="tf-btn" data-document-finalize>${escapeHTML(t("document.finalize"))}</button>
+ <button class="tf-btn" data-document-repair>${escapeHTML(t("document.repair"))}</button>
+ <a class="tf-btn" data-document-draft-export>${escapeHTML(t("document.export_draft"))}</a>
+ <a class="tf-btn" data-document-final-export>${escapeHTML(t("document.export_final"))}</a></div>`;
+ document.body.appendChild(dialog);
+ const editor = { id, snapshot, dialog, dirty:false, busy:false, epoch:0, serverChanged:false };
+ documentEditor = editor;
+ for(const source of snapshot.source_manifest.sources || [])appendDocumentSource(editor,source);
+ dialog.querySelector("[data-document-add-source]").addEventListener("click",()=>{appendDocumentSource(editor,{source_id:`S${dialog.querySelectorAll("[data-document-source]").length+1}`,type:"external",verification_status:"unverified"});editor.dirty=true;editor.epoch++;renderDocumentStatus(editor);});
+ dialog.querySelector("[data-document-body]").value = snapshot.body;
+ const requiredInputs=profileByID(snapshot.contract.profile_ref.profile_id,snapshot.contract.profile_ref.version)?.inputs || [];
+ const defaults=Object.fromEntries(requiredInputs.map(input=>[input.key,input.default || ""]));
+ const parameters = {...defaults,...snapshot.contract.parameters, title:snapshot.contract.title, purpose:snapshot.contract.purpose, audience:snapshot.contract.audience, language:snapshot.contract.language};
+ dialog.querySelector("[data-document-inputs]").innerHTML = Object.entries(parameters).filter(([key]) => !key.startsWith("_")).map(([key,value]) => `<label>${escapeHTML(key)}<input data-document-input="${escapeHTML(key)}" value="${escapeHTML(value || "")}"></label>`).join("");
+ dialog.addEventListener("input", event => {
+  if(event.target.matches("[data-document-confirm],[data-document-reason],[data-document-delivery]"))editor.operationID=null;
+  if (!event.target.matches("[data-document-body],[data-document-input],[data-document-source] input,[data-document-source] textarea")) return;
+  editor.epoch++; editor.dirty=true; renderDocumentStatus(editor);
+ });
+ dialog.addEventListener("close", () => { if (documentEditor === editor) documentEditor=null;dialog.remove(); });
+ const action = (selector,fn) => dialog.querySelector(selector).addEventListener("click", () => documentEditorAction(editor,fn).catch(error => toast(error.message)));
+ action("[data-document-save]", () => saveDocumentEditor(editor));
+ action("[data-document-check]", async () => {
+  if (editor.dirty) await saveDocumentEditor(editor);
+  if(editor.dirty) return;
+  const revision = editor.snapshot.head.working_revision_id;
+  const report = await api(`/api/documents/${encodeURIComponent(id)}/validate`, {method:"POST",headers:{"If-Match":String(editor.snapshot.head.generation)},body:JSON.stringify({revision_id:revision,review_mode:dialog.querySelector("[data-document-review-mode]").value,operation_id:crypto.randomUUID()})});
+  if (editor.snapshot.head.working_revision_id === report.revision_id) {editor.snapshot.report=report;editor.snapshot.freshness="current";}
+ });
+ action("[data-document-finalize]", async () => {
+  if (!documentCanFinalize({...editor,busy:false})) return;
+  const confirmations = [...dialog.querySelectorAll("[data-document-confirm]")].filter(node => node.checked).map(node => ({issue_id:node.dataset.documentConfirm,reason:dialog.querySelector(`[data-document-reason="${node.dataset.documentConfirm}"]`).value.trim()}));
+  const required = (editor.snapshot.report.issues || []).filter(issue => issue.human_confirmation);
+  if (required.some(issue => !confirmations.some(c => c.issue_id===issue.id && c.reason))) throw new Error(t("document.confirm_required"));
+  const request={revision_id:editor.snapshot.head.working_revision_id,report_id:editor.snapshot.report.report_id,operation_id:editor.operationID || (editor.operationID=crypto.randomUUID()),delivery_level:dialog.querySelector("[data-document-delivery]").value,confirmations};
+  await api(`/api/documents/${encodeURIComponent(id)}/finalize`,{method:"POST",headers:{"If-Match":String(editor.snapshot.head.generation)},body:JSON.stringify(request)});
+  const next=await api(`/api/documents/${encodeURIComponent(id)}`);if(!editor.dirty){editor.snapshot=next;editor.serverChanged=false;}
+ });
+ action("[data-document-repair]", async () => {
+  if(editor.dirty || editor.snapshot.freshness!=="current") return;
+  const selected=[...dialog.querySelectorAll("[data-document-repair-issue]")].filter(node=>node.checked);
+  const sections=[...new Set(selected.map(node=>node.dataset.section).filter(Boolean))];
+  if(!selected.length||!sections.length)throw new Error(t("document.select_issues"));
+  const epoch=editor.epoch;
+  const before=editor.snapshot.body;
+  const next=await api(`/api/documents/${encodeURIComponent(id)}/repair`,{method:"POST",headers:{"If-Match":String(editor.snapshot.head.generation)},body:JSON.stringify({revision_id:editor.snapshot.head.working_revision_id,report_id:editor.snapshot.report.report_id,issue_ids:selected.map(node=>node.dataset.documentRepairIssue),sections})});
+  if(editor.epoch===epoch){showDocumentRepairDiff(editor,before,next.body);editor.serverChanged=false;editor.snapshot=next;dialog.querySelector("[data-document-body]").value=next.body;editor.operationID=null;}else{editor.serverChanged=true;}
+ });
+ renderDocumentStatus(editor);dialog.showModal();
+}
+async function documentEditorAction(editor,fn) {
+ if(editor.busy)return;editor.busy=true;renderDocumentStatus(editor);
+ try{await fn();}finally{editor.busy=false;renderDocumentStatus(editor);}
+}
+async function saveDocumentEditor(editor) {
+ const epoch=editor.epoch;
+ const contract=JSON.parse(JSON.stringify(editor.snapshot.contract));
+ editor.dialog.querySelectorAll("[data-document-input]").forEach(input=>{contract.parameters[input.dataset.documentInput]=input.value;});
+ for(const key of ["purpose","audience","language","title"])contract[key]=contract.parameters[key] || "";
+ const body=editor.dialog.querySelector("[data-document-body]").value;
+ const next=await api(`/api/documents/${encodeURIComponent(editor.id)}/revisions`,{method:"POST",headers:{"If-Match":String(editor.snapshot.head.generation)},body:JSON.stringify({body,contract,...documentSourceInputs(editor)})});
+ editor.snapshot=next;editor.operationID=null;editor.serverChanged=false;
+ editor.dialog.querySelectorAll("[data-document-source]").forEach(row=>{const id=row.querySelector("[data-source-field=source_id]").value.trim();const source=(next.source_manifest.sources || []).find(item=>item.source_id===id);if(source)row._source={...source};});
+ if(editor.epoch===epoch)editor.dirty=false;
+}
+function renderDocumentStatus(editor) {
+ if(!editor.dialog?.isConnected)return;
+ const {snapshot,dialog}=editor;
+ const current=editor.dirty || editor.serverChanged ? t("document.stale") : snapshot.freshness==="current" ? t(`document.${snapshot.report?.status || "not_run"}`) : t("document.not_run");
+ dialog.querySelector("[data-document-status]").textContent=`${current} · ${snapshot.head.working_revision_id} · ${t("document.last_final")}: ${snapshot.head.finalized_revision_id || "—"} · ${snapshot.finalization ? t(`document.method.${snapshot.finalization.review_method}`) : ""} · ${t("document.source_state")}: ${t(`document.source.${snapshot.source_freshness || "snapshot"}`)}`;
+ dialog.querySelector("[data-document-finalize]").disabled=!documentCanFinalize(editor);
+ dialog.querySelector("[data-document-save]").disabled=editor.busy || editor.serverChanged;
+ dialog.querySelector("[data-document-check]").disabled=editor.busy || editor.serverChanged;
+ dialog.querySelector("[data-document-repair]").disabled=editor.busy||editor.dirty||snapshot.freshness!=="current";
+ const draft=dialog.querySelector("[data-document-draft-export]");draft.href=`/api/documents/${encodeURIComponent(editor.id)}/revisions/${encodeURIComponent(snapshot.head.working_revision_id)}/export?mode=draft`;
+ const final=dialog.querySelector("[data-document-final-export]");final.hidden=!snapshot.head.finalized_revision_id;
+ final.href=`/api/documents/${encodeURIComponent(editor.id)}/revisions/${encodeURIComponent(snapshot.head.finalized_revision_id || "")}/export?mode=final`;
+ // Keep entered confirmation reasons during busy/status updates.
+ const container=dialog.querySelector("[data-document-issues]");const reportID=snapshot.report?.report_id || "";
+ if(container.dataset.reportId===reportID)return;container.dataset.reportId=reportID;
+ container.innerHTML=["structure","evidence","consistency","usability"].map(group=>`<section><h3>${escapeHTML(t(`document.group.${group}`))}</h3>${(snapshot.report?.issues || []).filter(issue=>issue.group===group).map(issue=>`<article class="tf-document-issue"><strong>${escapeHTML(issue.code)}</strong><p>${escapeHTML(issue.basis)}</p><blockquote>${escapeHTML(issue.evidence || "")}</blockquote><p>${escapeHTML(issue.suggestion || "")}</p><button class="mini-button" data-document-location="${Number(issue.line || 1)}">${escapeHTML(t("document.locate"))}</button><label><input type="checkbox" data-document-repair-issue="${escapeHTML(issue.id)}" data-section="${escapeHTML(issue.section || "")}">${escapeHTML(t("document.repair_select"))}</label>${issue.human_confirmation ? `<label><input type="checkbox" data-document-confirm="${escapeHTML(issue.id)}">${escapeHTML(t("document.confirm"))}</label><input data-document-reason="${escapeHTML(issue.id)}" placeholder="${escapeHTML(t("document.reason"))}">` : ""}</article>`).join("")}</section>`).join("");
+ container.querySelectorAll("[data-document-location]").forEach(button=>button.addEventListener("click",()=>{const area=dialog.querySelector("[data-document-body]");const line=Number(button.dataset.documentLocation);const start=area.value.split("\n").slice(0,line-1).join("\n").length+(line>1?1:0);area.focus();area.setSelectionRange(start,area.value.indexOf("\n",start)<0?area.value.length:area.value.indexOf("\n",start));}));
+}
+function appendDocumentSource(editor,source) {
+ const row=document.createElement("fieldset");row.dataset.documentSource=source.source_id || "";row._source={...source};
+ row.innerHTML=`<label>${escapeHTML(t("document.source_id"))}<input data-source-field="source_id" value="${escapeHTML(source.source_id || "")}"></label><label>${escapeHTML(t("document.locator"))}<input data-source-field="locator" value="${escapeHTML(source.locator || "")}"></label><label>${escapeHTML(t("document.source_version"))}<input data-source-field="source_version" value="${escapeHTML(source.source_version || "")}"></label><label>${escapeHTML(t("document.evidence"))}<textarea data-source-evidence rows="3"></textarea></label>`;
+ editor.dialog.querySelector("[data-document-sources]").appendChild(row);
+}
+function documentSourceInputs(editor) {
+ const sources=[],evidence={};editor.dialog.querySelectorAll("[data-document-source]").forEach(row=>{const source={...row._source};row.querySelectorAll("[data-source-field]").forEach(input=>source[input.dataset.sourceField]=input.value.trim());const excerpt=row.querySelector("[data-source-evidence]").value;if(excerpt)evidence[source.source_id]=excerpt;sources.push(source);});
+ return {source_manifest:{schema_version:1,sources},evidence};
+}
+function showDocumentRepairDiff(editor,before,after) {
+ let node=editor.dialog.querySelector("[data-document-diff]");if(!node){node=document.createElement("details");node.dataset.documentDiff="";editor.dialog.appendChild(node);}
+ node.innerHTML=`<summary>${escapeHTML(t("document.repair_diff"))}</summary><div class="tf-document-layout"><pre>${escapeHTML(before)}</pre><pre>${escapeHTML(after)}</pre></div>`;
+}
+function handleDocumentEvent(raw) {
+ let event;try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch{return;}
+ const payload=event?.payload || event;const editor=documentEditor;
+ if(!editor||payload.document_id!==editor.id||Number(payload.generation)<=editor.snapshot.head.generation)return;
+ // A notification never replaces text being edited. Reopen to inspect the new HEAD.
+ editor.serverChanged=true;renderDocumentStatus(editor);
 }
 
 boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));

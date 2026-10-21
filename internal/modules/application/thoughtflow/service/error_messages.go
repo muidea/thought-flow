@@ -35,6 +35,19 @@ func prefersEnglish(req *http.Request) bool {
 
 func errorMessageForCode(code string) (english, chinese string) {
 	switch {
+	case code == "thoughtflow.document.conflict":
+		return "The document changed. Reload and review the current revision.", "文档已变更，请刷新后检查当前修订。"
+	case code == "thoughtflow.document.rules":
+		return "Delivery requirements are incomplete. Review the current validation report.", "定稿条件未满足，请检查当前验证报告。"
+	case code == "thoughtflow.document.precondition":
+		return "A document generation (If-Match) is required.", "缺少文档 generation（If-Match）。"
+	case code == "thoughtflow.document.invalid":
+		return "Invalid document request.", "文档请求参数无效。"
+	case code == "thoughtflow.document.unavailable":
+		return "Document review is unavailable. Your draft remains saved.", "文档审查当前不可用，草稿仍可保留。"
+	case code == "thoughtflow.document.not_found":
+		return "Document revision or report was not found.", "未找到文档修订或报告。"
+
 	case strings.HasSuffix(code, ".invalid_json"):
 		return "Request body must be valid JSON.", "请求正文必须是有效的 JSON。"
 	case strings.HasSuffix(code, ".invalid_request"):

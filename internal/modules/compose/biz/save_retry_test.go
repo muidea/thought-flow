@@ -8,8 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	"thoughtflow/assets/documentformats"
 	capturebiz "thoughtflow/internal/modules/capture/biz"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/documentprofile"
+	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -138,5 +141,41 @@ func TestSaveDraftRetriesPersistedReservationAfterMarkSavedFailure(t *testing.T)
 	saved, err := restarted.GetDraft(ctx, draft.ID)
 	if err != nil || saved.SavedThoughtID != captured.ID || saved.Content != draft.Content {
 		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+}
+
+func TestTypedComposeSavePreservesCanonicalMarkdown(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	profile, err := documentprofile.Parse([]byte(documentformats.DesignDocV2), documentprofile.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "\n\n    indented code\r\n\r\n# Saved draft\r\n\r\nHard break  \r\n\r\n## Sources\r\n\r\n- https://example.org/source\r\n"
+	draft, err := svc.draftStore.SaveDraft(ctx, models.ComposeDraft{
+		ID: "typed-roundtrip", Status: models.ComposeStatusDraft, Content: "# Generated",
+		Sources:         []models.ComposeSource{{SourceType: "thought", SourceID: "seed"}},
+		SourceLinks:     []string{"https://example.org/source"},
+		DocumentProfile: &profile.Ref, ProfileSnapshot: profile.Snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.capture = capturebiz.NewService(svc.workspace, svc.jobs, nil)
+	result, err := svc.SaveDraft(ctx, draft.ID, models.ComposeSaveRequest{Content: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, content, err := markdown.ReadThought(svc.workspace.RootPath, result.Thought.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := documentstore.Normalize(body)
+	saved, err := svc.draftStore.GetDraft(ctx, draft.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.AINotes != want || saved.Content != want || saved.SaveCommand.Content != want {
+		t.Fatalf("canonical body changed: thought=%q draft=%q", content.AINotes, saved.Content)
 	}
 }

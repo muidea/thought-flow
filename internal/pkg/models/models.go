@@ -123,32 +123,37 @@ type Workspace struct {
 }
 
 type Thought struct {
-	ID                string              `json:"id"`
-	Type              string              `json:"type"`
-	Source            string              `json:"source"`
-	UserTitle         string              `json:"user_title,omitempty"`
-	ExtractedTitle    string              `json:"extracted_title,omitempty"`
-	DisplayTitle      string              `json:"display_title,omitempty"`
-	URL               string              `json:"url,omitempty"`
-	Path              string              `json:"path"`
-	CreatedAt         time.Time           `json:"created_at"`
-	UpdatedAt         time.Time           `json:"updated_at"`
-	ContentHash       string              `json:"content_hash"`
-	UserTags          []string            `json:"user_tags,omitempty"`
-	AITags            []string            `json:"ai_tags,omitempty"`
-	TopicIDs          []string            `json:"topic_ids,omitempty"`
-	Summary           string              `json:"summary,omitempty"`
-	KeyPoints         []string            `json:"key_points,omitempty"`
-	Errors            []ErrorRef          `json:"errors,omitempty"`
-	CaptureStatus     string              `json:"capture_status"`
-	RefineStatus      string              `json:"refine_status"`
-	IndexStatus       string              `json:"index_status"`
-	TopicStatus       string              `json:"topic_status"`
-	RelatedThoughtIDs []string            `json:"related_thought_ids,omitempty" yaml:"related_thought_ids,omitempty"`
-	SuggestedTopicIDs []string            `json:"suggested_topic_ids,omitempty" yaml:"suggested_topic_ids,omitempty"`
-	URLFollowups      []URLFollowup       `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
-	ExpansionPlan     string              `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
-	DocumentProfile   *DocumentProfileRef `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+	Document                   *DocumentLink       `json:"document,omitempty"`
+	DocumentParameters         map[string]string   `json:"-"`
+	DocumentSources            *SourceManifest     `json:"-"`
+	DocumentProfileSnapshot    string              `json:"-"`
+	DocumentExpectedGeneration *uint64             `json:"-"`
+	ID                         string              `json:"id"`
+	Type                       string              `json:"type"`
+	Source                     string              `json:"source"`
+	UserTitle                  string              `json:"user_title,omitempty"`
+	ExtractedTitle             string              `json:"extracted_title,omitempty"`
+	DisplayTitle               string              `json:"display_title,omitempty"`
+	URL                        string              `json:"url,omitempty"`
+	Path                       string              `json:"path"`
+	CreatedAt                  time.Time           `json:"created_at"`
+	UpdatedAt                  time.Time           `json:"updated_at"`
+	ContentHash                string              `json:"content_hash"`
+	UserTags                   []string            `json:"user_tags,omitempty"`
+	AITags                     []string            `json:"ai_tags,omitempty"`
+	TopicIDs                   []string            `json:"topic_ids,omitempty"`
+	Summary                    string              `json:"summary,omitempty"`
+	KeyPoints                  []string            `json:"key_points,omitempty"`
+	Errors                     []ErrorRef          `json:"errors,omitempty"`
+	CaptureStatus              string              `json:"capture_status"`
+	RefineStatus               string              `json:"refine_status"`
+	IndexStatus                string              `json:"index_status"`
+	TopicStatus                string              `json:"topic_status"`
+	RelatedThoughtIDs          []string            `json:"related_thought_ids,omitempty" yaml:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs          []string            `json:"suggested_topic_ids,omitempty" yaml:"suggested_topic_ids,omitempty"`
+	URLFollowups               []URLFollowup       `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
+	ExpansionPlan              string              `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
+	DocumentProfile            *DocumentProfileRef `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
 }
 
 type DocumentProfileRef struct {
@@ -249,6 +254,9 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
+	DocumentParameters      map[string]string `json:"document_parameters,omitempty" yaml:"document_parameters,omitempty"`
+	DocumentSources         *SourceManifest   `json:"document_sources,omitempty" yaml:"document_sources,omitempty"`
+	DocumentProfileSnapshot string            `json:"-" yaml:"document_profile_snapshot,omitempty"`
 	// ThoughtID is reserved by trusted internal callers for retryable capture.
 	// HTTP callers cannot choose a target ID.
 	ThoughtID         string              `json:"-" yaml:"thought_id,omitempty"`
@@ -270,16 +278,18 @@ type CaptureCommand struct {
 // "field present with empty value" (clear the value). PatchThought
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
-	Title             *string             `json:"title,omitempty"`
-	Body              *string             `json:"body,omitempty"`
-	AINotes           *string             `json:"ai_notes,omitempty"`
-	Tags              *[]string           `json:"tags,omitempty"`
-	AINotesAppend     *string             `json:"ai_notes_append,omitempty"`
-	TopicIDs          *[]string           `json:"topic_ids,omitempty"`
-	Links             *[]string           `json:"links,omitempty"`
-	RelatedThoughtIDs *[]string           `json:"related_thought_ids,omitempty"`
-	SuggestedTopicIDs *[]string           `json:"suggested_topic_ids,omitempty"`
-	DocumentProfile   *DocumentProfileRef `json:"document_profile,omitempty"`
+	ExpectedDocumentGeneration *uint64             `json:"expected_document_generation,omitempty"`
+	DocumentParameters         *map[string]string  `json:"document_parameters,omitempty"`
+	Title                      *string             `json:"title,omitempty"`
+	Body                       *string             `json:"body,omitempty"`
+	AINotes                    *string             `json:"ai_notes,omitempty"`
+	Tags                       *[]string           `json:"tags,omitempty"`
+	AINotesAppend              *string             `json:"ai_notes_append,omitempty"`
+	TopicIDs                   *[]string           `json:"topic_ids,omitempty"`
+	Links                      *[]string           `json:"links,omitempty"`
+	RelatedThoughtIDs          *[]string           `json:"related_thought_ids,omitempty"`
+	SuggestedTopicIDs          *[]string           `json:"suggested_topic_ids,omitempty"`
+	DocumentProfile            *DocumentProfileRef `json:"document_profile,omitempty"`
 }
 
 type ThoughtSuggestion struct {
@@ -866,6 +876,8 @@ type ComposeBasket struct {
 // sources carry their own type discriminator so the server can
 // hydrate Search/Topic/Capture rows in addition to Thought rows.
 type ComposeRequest struct {
+	FrozenSnapshots    []ThoughtSnapshot `json:"-"`
+	ProfileSnapshot    string            `json:"-"`
 	Sources            []ComposeSource   `json:"sources"`
 	SelectedThoughtIDs []string          `json:"selected_thought_ids,omitempty"`
 	Prompt             string            `json:"prompt,omitempty"`
@@ -892,6 +904,10 @@ type ComposeSaveRequest struct {
 // generating → draft (or failed) during async generation, then
 // draft → saved when the user commits the draft to a Thought.
 type ComposeDraft struct {
+	FrozenInputHash    string                `json:"-" yaml:"frozen_input_hash,omitempty"`
+	SourceManifest     *SourceManifest       `json:"source_manifest,omitempty" yaml:"source_manifest,omitempty"`
+	Document           *DocumentSnapshot     `json:"document,omitempty" yaml:"document,omitempty"`
+	ProfileSnapshot    string                `json:"-" yaml:"profile_snapshot,omitempty"`
 	SaveCommand        *CaptureCommand       `json:"-" yaml:"save_command,omitempty"`
 	ID                 string                `json:"id" yaml:"id"`
 	Sources            []ComposeSource       `json:"sources" yaml:"sources"`
