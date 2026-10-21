@@ -31,6 +31,7 @@ import (
 	topicbiz "thoughtflow/internal/modules/topic/biz"
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/composedraft"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/markdown"
@@ -902,6 +903,22 @@ func (s *Service) handleGetComposeBasket(ctx context.Context, res http.ResponseW
 	writeJSON(res, req, http.StatusOK, basket)
 }
 
+// basketWriteVersion requires a snapshot version for external replacement or
+// clear requests. Background consumption uses an atomic delta in the store.
+func basketWriteVersion(res http.ResponseWriter, req *http.Request) (uint64, bool) {
+	raw := strings.TrimSpace(req.Header.Get("If-Match"))
+	if raw == "" {
+		writeError(res, req, http.StatusPreconditionRequired, "thoughtflow.compose.version_required", "reload compose sources and send their version in If-Match")
+		return 0, false
+	}
+	version, err := strconv.ParseUint(strings.Trim(raw, "\""), 10, 64)
+	if err != nil {
+		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_version", "invalid compose basket version")
+		return 0, false
+	}
+	return version, true
+}
+
 func (s *Service) handleSaveComposeBasket(ctx context.Context, res http.ResponseWriter, req *http.Request) {
 	if s.composeService == nil {
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
@@ -914,8 +931,16 @@ func (s *Service) handleSaveComposeBasket(ctx context.Context, res http.Response
 		writeError(res, req, http.StatusBadRequest, "thoughtflow.compose.invalid_json", err.Error())
 		return
 	}
-	basket, err := s.composeService.SaveBasket(ctx, request.Sources)
+	version, ok := basketWriteVersion(res, req)
+	if !ok {
+		return
+	}
+	basket, err := s.composeService.SaveBasket(ctx, request.Sources, version)
 	if err != nil {
+		if errors.Is(err, composedraft.ErrBasketConflict) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.compose.sources_conflict", err.Error())
+			return
+		}
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.sources_failed", err.Error())
 		return
 	}
@@ -927,8 +952,16 @@ func (s *Service) handleClearComposeBasket(ctx context.Context, res http.Respons
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.unavailable", "compose service is not ready")
 		return
 	}
-	basket, err := s.composeService.ClearBasket(ctx)
+	version, ok := basketWriteVersion(res, req)
+	if !ok {
+		return
+	}
+	basket, err := s.composeService.ClearBasket(ctx, version)
 	if err != nil {
+		if errors.Is(err, composedraft.ErrBasketConflict) {
+			writeError(res, req, http.StatusConflict, "thoughtflow.compose.sources_conflict", err.Error())
+			return
+		}
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.compose.sources_failed", err.Error())
 		return
 	}

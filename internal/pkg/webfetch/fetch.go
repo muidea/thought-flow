@@ -13,6 +13,8 @@ import (
 	"time"
 
 	mnet "github.com/muidea/magicCommon/foundation/net"
+
+	"thoughtflow/internal/pkg/appconfig"
 )
 
 type Result struct {
@@ -35,6 +37,8 @@ const maxFollowupLinks = 5
 type Fetcher struct {
 	client        *http.Client
 	readerBaseURL string
+	readerEnabled bool
+	readerAPIKey  string
 }
 
 type Option func(*Fetcher)
@@ -56,11 +60,20 @@ func New(timeout time.Duration, options ...Option) *Fetcher {
 	fetcher := &Fetcher{
 		client:        client,
 		readerBaseURL: "https://r.jina.ai/http://",
+		readerEnabled: true,
 	}
 	for _, option := range options {
 		option(fetcher)
 	}
 	return fetcher
+}
+
+// NewFromConfig is the production constructor shared by all URL pipelines.
+func NewFromConfig(cfg appconfig.ReaderConfig) *Fetcher {
+	f := New(cfg.Timeout, WithReaderBaseURL(cfg.BaseURL))
+	f.readerEnabled = cfg.Enabled
+	f.readerAPIKey = strings.TrimSpace(cfg.APIKey)
+	return f
 }
 
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
@@ -193,10 +206,16 @@ func (f *Fetcher) fetchLocal(ctx context.Context, rawURL string) (Result, error)
 }
 
 func (f *Fetcher) fetchReader(ctx context.Context, rawURL string) (Result, error) {
+	if !f.readerEnabled {
+		return Result{}, errors.New("reader fallback is disabled")
+	}
 	readerURL := f.readerBaseURL + strings.TrimSpace(rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, readerURL, nil)
 	if err != nil {
 		return Result{}, err
+	}
+	if f.readerAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+f.readerAPIKey)
 	}
 	req.Header.Set("User-Agent", "ThoughtFlow/0.1")
 	res, err := f.client.Do(req)

@@ -3,7 +3,6 @@ package refiner
 import (
 	"context"
 	"sync"
-	"time"
 
 	cd "github.com/muidea/magicCommon/def"
 	"github.com/muidea/magicCommon/event"
@@ -64,7 +63,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	if err != nil {
 		return cd.WrapError(cd.Unexpected, err, "open workspace")
 	}
-	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewRefineProvider(cfg.LLM, cfg.Embedding), webfetch.New(30*time.Second), biz.WithLocker(thoughtlock.Default()))
+	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), eventHub, backgroundRoutine, ai.NewRefineProvider(cfg.LLM, cfg.Embedding), webfetch.NewFromConfig(cfg.Reader), biz.WithLocker(thoughtlock.Default()))
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)
 	return nil

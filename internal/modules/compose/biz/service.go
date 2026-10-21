@@ -376,29 +376,7 @@ func (s *Service) removeGeneratedSources(ctx context.Context, used []models.Comp
 	if s == nil || s.draftStore == nil || len(used) == 0 {
 		return nil
 	}
-	basket, err := s.draftStore.GetBasket(ctx)
-	if err != nil {
-		return err
-	}
-	usedKeys := make(map[string]struct{}, len(used))
-	for _, source := range used {
-		if key := composeSourceKey(source); key != "" {
-			usedKeys[key] = struct{}{}
-		}
-	}
-	if len(usedKeys) == 0 {
-		return nil
-	}
-	remaining := make([]models.ComposeSource, 0, len(basket.Sources))
-	for _, source := range basket.Sources {
-		if _, consumed := usedKeys[composeSourceKey(source)]; !consumed {
-			remaining = append(remaining, source)
-		}
-	}
-	if len(remaining) == len(basket.Sources) {
-		return nil
-	}
-	_, err = s.draftStore.SaveBasket(ctx, remaining)
+	_, err := s.draftStore.RemoveSources(ctx, used)
 	return err
 }
 
@@ -607,6 +585,11 @@ func (s *Service) DeleteDraft(ctx context.Context, draftID string) error {
 	if draftID == "" {
 		return errors.New("draft id is required")
 	}
+	unlock, lockErr := s.draftStore.LockDraft(draftID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	// Keep removal atomic with a background worker's final placeholder
 	// check/write so deletion cannot be followed by a stale writeback.
 	s.draftMu.Lock()
@@ -666,18 +649,18 @@ func (s *Service) GetBasket(ctx context.Context) (models.ComposeBasket, error) {
 	return s.draftStore.GetBasket(ctx)
 }
 
-func (s *Service) SaveBasket(ctx context.Context, sources []models.ComposeSource) (models.ComposeBasket, error) {
+func (s *Service) SaveBasket(ctx context.Context, sources []models.ComposeSource, expectedVersion ...uint64) (models.ComposeBasket, error) {
 	if s == nil || s.draftStore == nil {
 		return models.ComposeBasket{}, errors.New("compose draft store is not ready")
 	}
-	return s.draftStore.SaveBasket(ctx, sources)
+	return s.draftStore.SaveBasket(ctx, sources, expectedVersion...)
 }
 
-func (s *Service) ClearBasket(ctx context.Context) (models.ComposeBasket, error) {
+func (s *Service) ClearBasket(ctx context.Context, expectedVersion ...uint64) (models.ComposeBasket, error) {
 	if s == nil || s.draftStore == nil {
 		return models.ComposeBasket{}, errors.New("compose draft store is not ready")
 	}
-	return s.draftStore.ClearBasket(ctx)
+	return s.draftStore.ClearBasket(ctx, expectedVersion...)
 }
 
 // SaveDraft materialises a stored draft as a Thought via the
@@ -692,6 +675,11 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 	if s.draftStore == nil {
 		return models.ComposeSaveResult{}, errors.New("compose draft store is not ready")
 	}
+	unlock, lockErr := s.draftStore.LockDraft(draftID)
+	if lockErr != nil {
+		return models.ComposeSaveResult{}, lockErr
+	}
+	defer unlock()
 	draft, err := s.draftStore.GetDraft(ctx, draftID)
 	if err != nil {
 		return models.ComposeSaveResult{}, err
@@ -729,6 +717,19 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 		Links:           dedupeStrings(append([]string{}, draft.SourceLinks...)),
 		DocumentProfile: cloneProfileRef(draft.DocumentProfile),
 	}
+	if draft.SaveCommand != nil {
+		cmd = *draft.SaveCommand
+		if cmd.ThoughtID == "" {
+			return models.ComposeSaveResult{}, errors.New("compose save reservation is missing its thought ID")
+		}
+	} else {
+		cmd.ThoughtID = models.NewThoughtID(s.now(), "compose:"+draft.ID)
+		draft.SaveCommand = &cmd
+		if _, err := s.draftStore.SaveDraft(ctx, draft); err != nil {
+			return models.ComposeSaveResult{}, err
+		}
+	}
+	content = cmd.Content
 	job, jobErr := s.recordJob(draftID)
 	if jobErr != nil && s.jobs == nil {
 		return models.ComposeSaveResult{}, jobErr
@@ -741,14 +742,16 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 		}
 		return models.ComposeSaveResult{}, fmt.Errorf("compose capture: %w", err)
 	}
+	saved, err := s.draftStore.MarkSaved(ctx, draftID, content, result.Thought)
+	if err != nil {
+		if jobErr == nil {
+			_, _ = s.jobs.MarkFailed(job, models.NewErrorRef("thoughtflow.compose.save_failed", err.Error(), true))
+		}
+		return models.ComposeSaveResult{}, err
+	}
 	if jobErr == nil {
 		job, _ = s.jobs.MarkSucceeded(job, "compose draft saved")
 		eventutil.Post(s.eventHub, jobEvent(s.workspaceID(), job))
-	}
-
-	saved, err := s.draftStore.MarkSaved(ctx, draftID, content, result.Thought)
-	if err != nil {
-		return models.ComposeSaveResult{}, err
 	}
 	if s.eventHub != nil {
 		eventutil.Post(s.eventHub, models.DomainEvent{
@@ -1139,15 +1142,6 @@ func composeSourceFingerprintPart(source models.ComposeSource) string {
 		}
 	}
 	return strings.Join(parts, "\x1f")
-}
-
-func composeSourceKey(source models.ComposeSource) string {
-	sourceType := strings.TrimSpace(source.SourceType)
-	sourceID := strings.TrimSpace(source.SourceID)
-	if sourceType == "" || sourceID == "" {
-		return ""
-	}
-	return sourceType + "\x00" + sourceID
 }
 
 func jobActive(job models.Job) bool {

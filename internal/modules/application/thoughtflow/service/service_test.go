@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1222,6 +1223,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 	]}`)
 	saveRes := httptest.NewRecorder()
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/compose/sources", saveBody)
+	saveReq.Header.Set("If-Match", "0")
 	service.handleSaveComposeBasket(ctx, saveRes, saveReq)
 	if saveRes.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", saveRes.Code, saveRes.Body.String())
@@ -1254,6 +1256,7 @@ func TestHandleComposeBasketPersistsOnServer(t *testing.T) {
 
 	clearRes := httptest.NewRecorder()
 	clearReq := httptest.NewRequest(http.MethodDelete, "/api/compose/sources", nil)
+	clearReq.Header.Set("If-Match", strconv.FormatUint(got.Data.Version, 10))
 	service.handleClearComposeBasket(ctx, clearRes, clearReq)
 	if clearRes.Code != http.StatusOK {
 		t.Fatalf("clear status = %d, body = %s", clearRes.Code, clearRes.Body.String())
@@ -3147,5 +3150,45 @@ func TestHandleSessionIntentRejectsMissingServiceAndEmptyID(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "unavailable") {
 		t.Fatalf("body should carry unavailable code: %s", res.Body.String())
+	}
+}
+
+func TestComposeBasketHTTPRejectsUnversionedAndStaleWrites(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{ID: "test", RootPath: root}
+	compose := composebiz.NewService(ws, composedraft.New(root), nil, nil, nil, nil, nil)
+	service := &Service{composeService: compose, workspace: ws}
+	ctx := context.Background()
+	source := models.ComposeSource{SourceType: "thought", SourceID: "keep"}
+	saved, err := compose.SaveBasket(ctx, []models.ComposeSource{source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		for _, version := range []string{"", "0", "invalid"} {
+			req := httptest.NewRequest(method, "/api/compose/sources", strings.NewReader(`{"sources":[]}`))
+			if version != "" {
+				req.Header.Set("If-Match", version)
+			}
+			res := httptest.NewRecorder()
+			if method == http.MethodPut {
+				service.handleSaveComposeBasket(ctx, res, req)
+			} else {
+				service.handleClearComposeBasket(ctx, res, req)
+			}
+			want := http.StatusConflict
+			if version == "" {
+				want = http.StatusPreconditionRequired
+			} else if version == "invalid" {
+				want = http.StatusBadRequest
+			}
+			if res.Code != want {
+				t.Fatalf("method=%s version=%q status=%d body=%s", method, version, res.Code, res.Body.String())
+			}
+		}
+	}
+	current, err := compose.GetBasket(ctx)
+	if err != nil || current.Version != saved.Version || len(current.Sources) != 1 || current.Sources[0].SourceID != "keep" {
+		t.Fatalf("basket changed: %+v err=%v", current, err)
 	}
 }

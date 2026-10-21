@@ -249,6 +249,9 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
+	// ThoughtID is reserved by trusted internal callers for retryable capture.
+	// HTTP callers cannot choose a target ID.
+	ThoughtID         string              `json:"-" yaml:"thought_id,omitempty"`
 	Type              string              `json:"type"`
 	Content           string              `json:"content"`
 	URL               string              `json:"url"`
@@ -853,6 +856,7 @@ type ComposeSource struct {
 // It intentionally lives in the workspace instead of browser storage
 // so refreshes, tabs, and devices all read the same source list.
 type ComposeBasket struct {
+	Version   uint64          `json:"version" yaml:"version"`
 	Sources   []ComposeSource `json:"sources" yaml:"sources"`
 	UpdatedAt time.Time       `json:"updated_at" yaml:"updated_at"`
 }
@@ -888,6 +892,7 @@ type ComposeSaveRequest struct {
 // generating → draft (or failed) during async generation, then
 // draft → saved when the user commits the draft to a Thought.
 type ComposeDraft struct {
+	SaveCommand        *CaptureCommand       `json:"-" yaml:"save_command,omitempty"`
 	ID                 string                `json:"id" yaml:"id"`
 	Sources            []ComposeSource       `json:"sources" yaml:"sources"`
 	Goal               string                `json:"goal" yaml:"goal"`

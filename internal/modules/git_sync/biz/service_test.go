@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -254,4 +255,112 @@ func runGitForTest(t *testing.T, root string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %s: %v", strings.Join(cmdArgs, " "), strings.TrimSpace(string(raw)), err)
 	}
+}
+
+func TestCommitRecordsDeletionAndPreservesUnrelatedIndex(t *testing.T) {
+	for _, stagedDeletion := range []bool{false, true} {
+		t.Run(fmt.Sprint(stagedDeletion), func(t *testing.T) {
+			root := newCommitTestRepo(t)
+			thought := "thoughts/delete.md"
+			writeCommitTestFile(t, root, thought, "delete me\n")
+			writeCommitTestFile(t, root, "user.md", "original\n")
+			runGitForTest(t, root, "add", "--", thought, "user.md")
+			runGitForTest(t, root, "commit", "-m", "initial")
+			writeCommitTestFile(t, root, "user.md", "staged version\n")
+			writeCommitTestFile(t, root, ".thoughtflow/jobs/private.yaml", "private\n")
+			runGitForTest(t, root, "add", "--", "user.md", ".thoughtflow/jobs/private.yaml")
+			writeCommitTestFile(t, root, "user.md", "unstaged version\n")
+			before := gitOutputForTest(t, root, "ls-files", "--stage", "--", "user.md", ".thoughtflow/jobs/private.yaml")
+			if err := os.Remove(filepath.Join(root, thought)); err != nil {
+				t.Fatal(err)
+			}
+			if stagedDeletion {
+				runGitForTest(t, root, "add", "-A", "--", thought)
+			}
+			svc := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+			record, err := svc.Commit(context.Background(), []string{thought, "topics/optional.yaml"}, []string{"delete"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record.CommitHash == "" {
+				t.Fatal("missing commit")
+			}
+			if got := gitOutputForTest(t, root, "ls-tree", "-r", "--name-only", "HEAD", "--", thought, ".thoughtflow"); got != "" {
+				t.Fatalf("deleted/private file in HEAD: %q", got)
+			}
+			if got := gitOutputForTest(t, root, "show", "HEAD:user.md"); got != "original\n" {
+				t.Fatalf("unrelated content committed: %q", got)
+			}
+			after := gitOutputForTest(t, root, "ls-files", "--stage", "--", "user.md", ".thoughtflow/jobs/private.yaml")
+			if after != before {
+				t.Fatalf("user index changed: before=%q after=%q", before, after)
+			}
+			if got := gitOutputForTest(t, root, "diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD"); got != "D\t"+thought+"\n" {
+				t.Fatalf("commit diff=%q", got)
+			}
+			raw, err := os.ReadFile(filepath.Join(root, "user.md"))
+			if err != nil || string(raw) != "unstaged version\n" {
+				t.Fatalf("working tree changed: %q %v", raw, err)
+			}
+		})
+	}
+}
+
+func TestCommitScopesNewAndNoopCommits(t *testing.T) {
+	for _, withThought := range []bool{false, true} {
+		t.Run(fmt.Sprint(withThought), func(t *testing.T) {
+			root := newCommitTestRepo(t)
+			runGitForTest(t, root, "commit", "--allow-empty", "-m", "initial")
+			writeCommitTestFile(t, root, ".thoughtflow/jobs/private.yaml", "private\n")
+			runGitForTest(t, root, "add", "--", ".thoughtflow/jobs/private.yaml")
+			paths := []string{"topics/never-created.yaml"}
+			if withThought {
+				writeCommitTestFile(t, root, "thoughts/new[1].md", "new\n")
+				paths = append(paths, "thoughts/new[1].md")
+			}
+			svc := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+			if _, err := svc.Commit(context.Background(), paths, nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := gitOutputForTest(t, root, "ls-tree", "-r", "--name-only", "HEAD", "--", ".thoughtflow"); got != "" {
+				t.Fatalf("runtime data committed: %q", got)
+			}
+			if got := gitOutputForTest(t, root, "diff", "--cached", "--name-only"); got != ".thoughtflow/jobs/private.yaml\n" {
+				t.Fatalf("staged files=%q", got)
+			}
+			if withThought && gitOutputForTest(t, root, "show", "HEAD:thoughts/new[1].md") != "new\n" {
+				t.Fatal("new thought missing")
+			}
+		})
+	}
+}
+
+func newCommitTestRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip(err)
+	}
+	root := t.TempDir()
+	runGitForTest(t, root, "init")
+	runGitForTest(t, root, "config", "user.name", "ThoughtFlow Test")
+	runGitForTest(t, root, "config", "user.email", "thoughtflow-test@example.test")
+	return root
+}
+func writeCommitTestFile(t *testing.T, root, path, body string) {
+	t.Helper()
+	full := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+func gitOutputForTest(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	raw, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %s: %v", args, raw, err)
+	}
+	return string(raw)
 }

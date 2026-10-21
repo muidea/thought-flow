@@ -19,6 +19,8 @@ const state = {
   activeTopicId: "",
   selectedThoughts: new Set(),
   composeSources: new Map(),
+  composeSourcesVersion: 0,
+  composeSourcesWrite: Promise.resolve(),
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
@@ -433,19 +435,29 @@ const HELP_VISIBLE_STORAGE_KEY = "tflow.help.visible";
 
 function persistSources() {
   removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
-  const sources = Array.from(state.composeSources.values());
-  if (sources.length === 0) {
-    return api("/api/compose/sources", { method: "DELETE" }).catch((error) => toast(error.message));
-  }
-  return api("/api/compose/sources", {
-    method: "PUT",
-    body: JSON.stringify({ sources }),
-  }).catch((error) => toast(error.message));
+  // Serialize writes from this tab. Other tabs and generation cleanup are
+  // protected by the snapshot version; conflicts reload the current basket.
+  state.composeSourcesWrite = state.composeSourcesWrite.then(async () => {
+    const sources = Array.from(state.composeSources.values());
+    const payload = await api("/api/compose/sources", {
+      method: sources.length === 0 ? "DELETE" : "PUT",
+      headers: { "If-Match": `"${state.composeSourcesVersion}"` },
+      ...(sources.length ? { body: JSON.stringify({ sources }) } : {}),
+    });
+    state.composeSourcesVersion = payload?.version ?? state.composeSourcesVersion;
+    broadcastSourcesChange();
+  }).catch(async (error) => {
+    toast(error.message);
+    await restoreSources().catch(() => {});
+  });
+  return state.composeSourcesWrite;
 }
 
 async function restoreSources() {
   removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
   const payload = await api("/api/compose/sources");
+  if ((payload?.version ?? 0) < state.composeSourcesVersion) return;
+  state.composeSourcesVersion = payload?.version ?? 0;
   const next = new Map();
   for (const source of payload?.sources || []) {
     if (!source || !source.source_type || !source.source_id) continue;
@@ -4077,7 +4089,6 @@ function addToComposeSources(sources, sourceType = "thought") {
     });
   }
   persistSources();
-  broadcastSourcesChange();
   renderComposeSources();
   toast(t("toast.sources_add", { n: state.composeSources.size }));
 }
@@ -4092,7 +4103,6 @@ function removeComposeSource(sourceType, sourceID) {
   state.composeSources = new Map(state.composeSources);
   state.composeSources.delete(key);
   persistSources();
-  broadcastSourcesChange();
   renderComposeSources();
 }
 
@@ -4105,7 +4115,6 @@ function clearSearchSelection() {
 function clearComposeSources() {
   state.composeSources.clear();
   persistSources();
-  broadcastSourcesChange();
   renderComposeSources();
 }
 
@@ -4731,10 +4740,7 @@ async function saveComposeDraft() {
   });
   toast(t("toast.saved", { id: result.thought.id }));
   state.selectedThoughts.clear();
-  state.composeSources.clear();
-  await persistSources();
-  broadcastSourcesChange();
-  renderComposeSources();
+  await restoreSources();
   state.composeDraft = {
     ...state.composeDraft,
     Content: content,

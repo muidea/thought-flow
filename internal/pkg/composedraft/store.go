@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,12 +29,43 @@ import (
 	"thoughtflow/internal/pkg/workspace"
 )
 
+var ErrBasketConflict = errors.New("compose basket changed; reload sources and retry")
+
+var workspaceLocks sync.Map
+
+type storeLocks struct {
+	basket sync.Mutex
+	drafts sync.Map
+}
+
 type Store struct {
 	rootPath string
+	locks    *storeLocks
 }
 
 func New(rootPath string) *Store {
-	return &Store{rootPath: rootPath}
+	root, err := filepath.Abs(rootPath)
+	if err != nil {
+		root = rootPath
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	locks, _ := workspaceLocks.LoadOrStore(root, &storeLocks{})
+	return &Store{rootPath: rootPath, locks: locks.(*storeLocks)}
+}
+
+// LockDraft serializes save/delete operations for a single draft. Callers
+// hold it through capture and MarkSaved so two requests cannot both capture.
+func (s *Store) LockDraft(draftID string) (func(), error) {
+	_, err := s.draftPath(draftID)
+	if err != nil {
+		return nil, err
+	}
+	value, _ := s.locks.drafts.LoadOrStore(strings.TrimSpace(draftID), &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock, nil
 }
 
 func (s *Store) SaveDraft(_ context.Context, draft models.ComposeDraft) (models.ComposeDraft, error) {
@@ -151,6 +183,12 @@ func (s *Store) Delete(_ context.Context, draftID string) error {
 }
 
 func (s *Store) GetBasket(_ context.Context) (models.ComposeBasket, error) {
+	s.locks.basket.Lock()
+	defer s.locks.basket.Unlock()
+	return s.getBasket()
+}
+
+func (s *Store) getBasket() (models.ComposeBasket, error) {
 	path, err := s.basketPath()
 	if err != nil {
 		return models.ComposeBasket{}, err
@@ -170,12 +208,26 @@ func (s *Store) GetBasket(_ context.Context) (models.ComposeBasket, error) {
 	return basket, nil
 }
 
-func (s *Store) SaveBasket(_ context.Context, sources []models.ComposeSource) (models.ComposeBasket, error) {
+func (s *Store) SaveBasket(_ context.Context, sources []models.ComposeSource, expectedVersion ...uint64) (models.ComposeBasket, error) {
+	s.locks.basket.Lock()
+	defer s.locks.basket.Unlock()
+	current, err := s.getBasket()
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	if len(expectedVersion) > 0 && expectedVersion[0] != current.Version {
+		return models.ComposeBasket{}, ErrBasketConflict
+	}
+	return s.writeBasket(sources, current.Version+1)
+}
+
+func (s *Store) writeBasket(sources []models.ComposeSource, version uint64) (models.ComposeBasket, error) {
 	path, err := s.basketPath()
 	if err != nil {
 		return models.ComposeBasket{}, err
 	}
 	basket := models.ComposeBasket{
+		Version:   version,
 		Sources:   normalizeSources(sources),
 		UpdatedAt: time.Now().UTC(),
 	}
@@ -199,8 +251,33 @@ func (s *Store) SaveBasket(_ context.Context, sources []models.ComposeSource) (m
 	return basket, nil
 }
 
-func (s *Store) ClearBasket(ctx context.Context) (models.ComposeBasket, error) {
-	return s.SaveBasket(ctx, []models.ComposeSource{})
+func (s *Store) ClearBasket(ctx context.Context, expectedVersion ...uint64) (models.ComposeBasket, error) {
+	return s.SaveBasket(ctx, []models.ComposeSource{}, expectedVersion...)
+}
+
+// RemoveSources atomically consumes only the sources used by a completed
+// generation. It shares the lock and version sequence with Save/Clear.
+func (s *Store) RemoveSources(_ context.Context, used []models.ComposeSource) (models.ComposeBasket, error) {
+	s.locks.basket.Lock()
+	defer s.locks.basket.Unlock()
+	basket, err := s.getBasket()
+	if err != nil {
+		return models.ComposeBasket{}, err
+	}
+	keys := map[string]bool{}
+	for _, source := range normalizeSources(used) {
+		keys[source.SourceType+"::"+source.SourceID] = true
+	}
+	remaining := []models.ComposeSource{}
+	for _, source := range basket.Sources {
+		if !keys[source.SourceType+"::"+source.SourceID] {
+			remaining = append(remaining, source)
+		}
+	}
+	if len(remaining) == len(basket.Sources) {
+		return basket, nil
+	}
+	return s.writeBasket(remaining, basket.Version+1)
 }
 
 func (s *Store) writeDraft(draft models.ComposeDraft) error {

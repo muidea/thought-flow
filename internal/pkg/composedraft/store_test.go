@@ -2,6 +2,7 @@ package composedraft
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,5 +268,82 @@ func TestStoreNormalizesEmptyFormat(t *testing.T) {
 	}
 	if out.Format != models.ComposeFormatSummary {
 		t.Fatalf("format = %q, want summary", out.Format)
+	}
+}
+
+func TestBasketVersionRejectsStaleSaveAndClear(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := New(root)
+	a := models.ComposeSource{SourceType: "thought", SourceID: "A"}
+	b := models.ComposeSource{SourceType: "thought", SourceID: "B"}
+	original, err := store.SaveBasket(ctx, []models.ComposeSource{a}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A different client saved B before the generation worker consumed A.
+	updated, err := New(root).SaveBasket(ctx, []models.ComposeSource{a, b}, original.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := store.RemoveSources(ctx, []models.ComposeSource{a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(consumed.Sources) != 1 || consumed.Sources[0].SourceID != "B" || consumed.Version != updated.Version+1 {
+		t.Fatalf("basket=%+v", consumed)
+	}
+	if _, err := store.SaveBasket(ctx, []models.ComposeSource{a}, original.Version); !errors.Is(err, ErrBasketConflict) {
+		t.Fatalf("stale save err=%v", err)
+	}
+	if _, err := New(root).ClearBasket(ctx, updated.Version); !errors.Is(err, ErrBasketConflict) {
+		t.Fatalf("stale clear err=%v", err)
+	}
+	reloaded, err := New(root).GetBasket(ctx)
+	if err != nil || len(reloaded.Sources) != 1 || reloaded.Sources[0].SourceID != "B" {
+		t.Fatalf("persisted basket=%+v err=%v", reloaded, err)
+	}
+}
+
+func TestBasketConcurrentConsumptionAndClientUpdate(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		ctx := context.Background()
+		root := t.TempDir()
+		store := New(root)
+		a := models.ComposeSource{SourceType: "thought", SourceID: "A"}
+		b := models.ComposeSource{SourceType: "thought", SourceID: "B"}
+		if _, err := store.SaveBasket(ctx, []models.ComposeSource{a}); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() { <-start; _, err := New(root).RemoveSources(ctx, []models.ComposeSource{a}); errs <- err }()
+		go func() {
+			<-start
+			client := New(root)
+			for {
+				current, err := client.GetBasket(ctx)
+				if err != nil {
+					errs <- err
+					return
+				}
+				_, err = client.SaveBasket(ctx, append(current.Sources, b), current.Version)
+				if errors.Is(err, ErrBasketConflict) {
+					continue
+				}
+				errs <- err
+				return
+			}
+		}()
+		close(start)
+		for j := 0; j < 2; j++ {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+		}
+		result, err := store.GetBasket(ctx)
+		if err != nil || len(result.Sources) != 1 || result.Sources[0].SourceID != "B" {
+			t.Fatalf("iteration=%d basket=%+v err=%v", i, result, err)
+		}
 	}
 }

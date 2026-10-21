@@ -29,6 +29,7 @@ type Service struct {
 	enabled    bool
 	debounce   time.Duration
 
+	commitMu    sync.Mutex
 	mu          sync.Mutex
 	pending     map[string]struct{}
 	resourceIDs map[string]struct{}
@@ -271,48 +272,70 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 	if s.workspace == nil {
 		return models.GitCommitRecord{}, errors.New("workspace is nil")
 	}
-	// Drop paths that don't exist on disk before running `git add`.
-	// Callers (e.g. topic) declare a topic's full intended layout
-	// (topic.yaml / index.md / memberships / approvals) up front;
-	// until the weave-accept path actually writes approvals the
-	// file is absent, and `git add -- <missing>` aborts the entire
-	// add with exit 128. The actual commit still picks up the
-	// files that do exist, and once approvals lands later it will
-	// be tracked normally because git now knows the directory.
-	existing := paths[:0:0]
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	if err := s.ensureRepository(ctx); err != nil {
+		return models.GitCommitRecord{}, err
+	}
+	selected := []string{}
+	pathspecs := []string{}
+	addPathspecs := []string{}
 	for _, path := range paths {
+		path, ok := normalizedCommitPath(path)
+		if !ok || s.isRuntimeCommitPath(path) {
+			continue
+		}
 		targetPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(path))
 		if err := workspace.EnsureInside(s.workspace.RootPath, targetPath); err != nil {
 			return models.GitCommitRecord{}, err
 		}
-		if _, err := os.Stat(targetPath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
+		alreadyStagedDeletion := false
+		info, err := os.Stat(targetPath)
+		if errors.Is(err, os.ErrNotExist) {
+			// A missing, previously tracked path is a deletion. Missing optional
+			// layout files that were never tracked must still be skipped.
+			tracked, gitErr := outputGit(ctx, "-C", s.workspace.RootPath, "ls-files", "-z", "--", ":(literal)"+path)
+			if gitErr != nil {
+				return models.GitCommitRecord{}, gitErr
 			}
+			if len(tracked) == 0 {
+				alreadyStagedDeletion = true
+				// An already-staged deletion has also left the real index.
+				// Check HEAD before treating it as a never-created path.
+				if _, err := outputGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--verify", "HEAD"); err == nil {
+					tracked, gitErr = outputGit(ctx, "-C", s.workspace.RootPath, "ls-tree", "-z", "--name-only", "HEAD", "--", path)
+					if gitErr != nil {
+						return models.GitCommitRecord{}, gitErr
+					}
+				}
+				if len(tracked) == 0 {
+					continue
+				}
+			}
+		} else if err != nil {
 			return models.GitCommitRecord{}, fmt.Errorf("stat %s: %w", targetPath, err)
+		} else if info.IsDir() {
+			return models.GitCommitRecord{}, fmt.Errorf("commit path must be a file: %s", path)
 		}
-		existing = append(existing, path)
-	}
-	if err := s.ensureRepository(ctx); err != nil {
-		return models.GitCommitRecord{}, err
+		selected = append(selected, path)
+		pathspecs = append(pathspecs, ":(literal)"+path)
+		if !alreadyStagedDeletion {
+			addPathspecs = append(addPathspecs, ":(literal)"+path)
+		}
 	}
 	message := commitMessage(resourceIDs)
-	if len(existing) == 0 {
-		// Nothing to add — but the caller may still want a commit
-		// record (e.g. "no-op" autosave). We fall through to the
-		// commit step with --allow-empty so the marker still lands
-		// in the git log.
-		if err := runGit(ctx, "-C", s.workspace.RootPath, "commit", "--allow-empty", "-m", message+" (no-op)"); err != nil {
-			return models.GitCommitRecord{}, err
-		}
-	} else {
-		args := append([]string{"-C", s.workspace.RootPath, "add", "--"}, existing...)
+	if len(addPathspecs) > 0 {
+		args := append([]string{"-C", s.workspace.RootPath, "add", "-A", "--"}, addPathspecs...)
 		if err := runGit(ctx, args...); err != nil {
 			return models.GitCommitRecord{}, err
 		}
-		if err := runGit(ctx, "-C", s.workspace.RootPath, "commit", "-m", message); err != nil {
-			return models.GitCommitRecord{}, err
-		}
+	}
+	args := []string{"-C", s.workspace.RootPath, "commit", "--only", "--allow-empty", "-m", message}
+	if len(pathspecs) > 0 {
+		args = append(append(args, "--"), pathspecs...)
+	}
+	if err := runGit(ctx, args...); err != nil {
+		return models.GitCommitRecord{}, err
 	}
 	hashBytes, err := outputGit(ctx, "-C", s.workspace.RootPath, "rev-parse", "--short", "HEAD")
 	if err != nil {
@@ -321,7 +344,7 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 	return models.GitCommitRecord{
 		CommitHash:  strings.TrimSpace(string(hashBytes)),
 		Message:     message,
-		Paths:       paths,
+		Paths:       selected,
 		ResourceIDs: resourceIDs,
 		CommittedAt: time.Now().UTC(),
 	}, nil

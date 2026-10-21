@@ -298,7 +298,14 @@ test("API e2e", async (t) => {
     const secondIndex = body.findIndex((thought) => thought.id === secondID);
     assert.ok(firstIndex >= 0, `missing first thought in list: ${JSON.stringify(body).slice(0, 400)}`);
     assert.ok(secondIndex >= 0, `missing second thought in list: ${JSON.stringify(body).slice(0, 400)}`);
-    assert.ok(secondIndex < firstIndex, `expected newer thought first, got first=${firstIndex} second=${secondIndex}`);
+    // Refine/index jobs can update the first note after the second capture.
+    // The list contract orders by updated_at, rather than capture order.
+    for (let index = 1; index < body.length; index += 1) {
+      assert.ok(
+        Date.parse(body[index - 1].updated_at) >= Date.parse(body[index].updated_at),
+        `expected recent updates first: ${JSON.stringify(body.map((thought) => ({ id: thought.id, updated_at: thought.updated_at })))}`
+      );
+    }
   });
 
   await t.test("patch thought rejects unknown fields and missing session id", async () => {
@@ -477,7 +484,9 @@ test("API e2e", async (t) => {
     });
     const thoughtId = envelope(thoughtRes).data.thought.id;
 
+    const basket = await request(server.baseURL, "/api/compose/sources", "GET");
     const queue = await request(server.baseURL, "/api/compose/sources", "PUT", {
+      headers: { "If-Match": String(envelope(basket).data.version) },
       body: {
         sources: [
           { source_type: "thought", source_id: thoughtId },
@@ -804,6 +813,13 @@ test("API e2e", async (t) => {
       });
       if (commit.status !== 409) break;
       if (Date.now() > commitDeadline) break;
+      // Background enrichment can invalidate the preview between GET and
+      // confirmation. Refresh it before confirming the current state again.
+      if (envelope(commit).error?.code === "thoughtflow.archive.preview_stale") {
+        const refreshed = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
+        assert.equal(refreshed.status, 200, `refresh preview status=${refreshed.status} body=${refreshed.text}`);
+        assert.equal(envelope(refreshed).data.preview.validation?.status, "valid");
+      }
       await sleep(100);
     }
     assert.equal(commit.status, 200, `update commit status=${commit.status} body=${commit.text}`);
@@ -853,6 +869,13 @@ test("API e2e", async (t) => {
       });
       if (commit.status !== 409) break;
       if (Date.now() > commitDeadline) break;
+      // Background enrichment can invalidate the preview between GET and
+      // confirmation. Refresh it before confirming the current state again.
+      if (envelope(commit).error?.code === "thoughtflow.archive.preview_stale") {
+        const refreshed = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive/preview`, "GET");
+        assert.equal(refreshed.status, 200, `refresh preview status=${refreshed.status} body=${refreshed.text}`);
+        assert.equal(envelope(refreshed).data.preview.validation?.status, "valid");
+      }
       await sleep(100);
     }
     assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);

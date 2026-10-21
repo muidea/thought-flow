@@ -3242,3 +3242,55 @@ test("document profile loader preserves the active compose selection across auto
 
   assert.match(select.innerHTML, /value="custom\.team-rfc"[^>]*selected/);
 });
+
+test("source writes send the last acknowledged version and serialize rapid changes", async () => {
+  const calls = [];
+  let releaseFirst;
+  const firstReply = new Promise((resolve) => { releaseFirst = resolve; });
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push({ version: options.headers["If-Match"], body: JSON.parse(options.body) });
+      const index = calls.length;
+      if (index === 1) await firstReply;
+      return { ok: true, json: async () => ({ data: { version: 4 + index, sources: [] } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 4;
+  app._state.composeSources = new Map([["thought::A", { source_type: "thought", source_id: "A" }]]);
+  const first = app.persistSources();
+  await Promise.resolve();
+  app._state.composeSources.set("thought::B", { source_type: "thought", source_id: "B" });
+  const second = app.persistSources();
+  assert.equal(calls.length, 1);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(calls.map((call) => call.version), ['"4"', '"5"']);
+  assert.deepEqual(calls[1].body.sources.map((source) => source.source_id), ["A", "B"]);
+  assert.equal(app._state.composeSourcesVersion, 6);
+});
+
+test("a stale source write reloads current sources without overwriting another client", async () => {
+  const dom = makeDomStub();
+  dom.nodes.toast = { textContent: "", classList: classSet() };
+  const calls = [];
+  const app = loadAppFunctionsWith({
+    dom,
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      calls.push(options.method || "GET");
+      if (options.method === "PUT") {
+        assert.equal(options.headers["If-Match"], '"2"');
+        return { ok: false, json: async () => ({ error: { message: "sources changed" } }) };
+      }
+      return { ok: true, json: async () => ({ data: { version: 3, sources: [{ source_type: "thought", source_id: "B" }] } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 2;
+  app._state.composeSources = new Map([["thought::A", { source_type: "thought", source_id: "A" }]]);
+  await app.persistSources();
+  assert.deepEqual(calls, ["PUT", "GET"]);
+  assert.equal(app._state.composeSourcesVersion, 3);
+  assert.equal(app._state.composeSources.has("thought::B"), true);
+  assert.equal(app._state.composeSources.has("thought::A"), false);
+});

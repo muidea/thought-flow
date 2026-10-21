@@ -91,6 +91,20 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		return models.CaptureResult{}, err
 	}
 
+	// A compose save persists this reservation before calling capture. On
+	// replay, read the existing Markdown instead of overwriting user/AI edits.
+	if cmd.ThoughtID != "" {
+		if cmd.Source != models.ThoughtSourceCompose || strings.ContainsAny(cmd.ThoughtID, `/\`) {
+			return models.CaptureResult{}, errors.New("invalid reserved capture ID")
+		}
+		existing, _, err := markdown.ReadThought(s.workspace.RootPath, cmd.ThoughtID)
+		if err == nil {
+			return models.CaptureResult{Thought: existing, Jobs: []models.Job{}}, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return models.CaptureResult{}, err
+		}
+	}
 	now := s.now()
 	source := cmd.Source
 	if source == "" {
@@ -112,7 +126,10 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 			false,
 		))
 	}
-	thoughtID := models.NewThoughtID(now, original)
+	thoughtID := cmd.ThoughtID
+	if thoughtID == "" {
+		thoughtID = models.NewThoughtID(now, original)
+	}
 	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	thought := models.Thought{
 		ID:                thoughtID,

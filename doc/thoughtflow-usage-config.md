@@ -300,6 +300,10 @@ GET  /api/topics/{id}/weave-proposals
 GET  /api/topics/{id}/weave-proposals/{proposal_id}
 POST /api/topics/{id}/weave-accept
 
+GET  /api/compose/sources
+PUT  /api/compose/sources
+DELETE /api/compose/sources
+
 POST /api/compose/drafts
 GET  /api/compose/drafts
 GET  /api/compose/drafts/{draft_id}
@@ -320,6 +324,14 @@ GET  /metrics
 GET  /health/live
 GET  /health/ready
 ```
+
+### 合稿素材与保存重试
+
+`GET /api/compose/sources` 返回 `version`。替换素材的 `PUT` 和清空素材的 `DELETE` 必须携带该版本，例如 `If-Match: "3"`；缺少版本返回 428，版本过期返回 409，客户端应重新读取素材后再操作。旧版 `basket.yaml` 没有版本字段时从 0 开始，首次更新自动写入版本。生成完成只原子移除本次使用的素材；保存生成文稿为笔记不会再清空整个素材篮。
+
+同一草稿的保存和删除按草稿 ID 串行执行。第一次保存会先在草稿 YAML 的 `save_command` 中持久化目标 Thought ID 和保存命令，再创建 Markdown；若笔记已创建但草稿状态写入失败，重启后重试会复用该 ID 和首次保存内容，不重复建笔记，也不覆盖笔记后续的编辑。已标为 `saved` 的草稿继续拒绝重复保存。旧草稿不需要手动迁移。锁在单个服务进程中协调同一工作区的请求；不要让多个 ThoughtFlow 进程同时写同一工作区。
+
+URL 的 refiner 和 expander 共用 Reader 配置。`enabled=false` 时禁止 Reader fallback；开启时使用配置的 `base_url`、`api_key` 与 `timeout`，API key 仅发送给 Reader。Git 自动提交包含本次请求路径的新增、修改和删除，并保留用户预先暂存的无关内容。
 
 ## 11. 验证与 CI
 
