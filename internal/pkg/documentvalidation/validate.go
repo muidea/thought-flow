@@ -20,7 +20,7 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
-const Version = "final-body-ast-v2.2"
+const Version = "final-body-ast-v2.3"
 const ReviewPolicyVersion = "review-v1"
 
 var citations = regexp.MustCompile(`\[(S[0-9]+)\]`)
@@ -148,10 +148,10 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 			}
 			m := referenceDefinition.FindStringSubmatch(value)
 			// A citation at the start of prose is still a use, not a definition.
-			// Definitions use an explicit bibliography list item or a references section.
+			// List markers, colons and URLs also occur in ordinary prose, so
+			// definitions require an explicit references section.
 			inReferences := path[profile.Validation.HeadingLevel] == "References" || path[profile.Validation.HeadingLevel] == "参考资料" || path[profile.Validation.HeadingLevel] == "参考来源"
-			isEntry := n.Parent() != nil && n.Parent().Kind() == ast.KindListItem && len(m) > 0 && (strings.Contains(m[2], ":") || len(referenceLocators(n, m[2], body)) > 0)
-			if len(m) > 0 && (inReferences || isEntry) {
+			if len(m) > 0 && inReferences {
 				if _, ok := refs[m[1]]; ok {
 					add("reference_duplicate", "evidence", m[1], value, "Duplicate source ID", nodeLine(n, body), true)
 				}

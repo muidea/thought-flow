@@ -35,7 +35,32 @@ func referenceLocators(n ast.Node, value string, body []byte) []string {
 		return ast.WalkContinue, nil
 	})
 	for _, raw := range locatorText.FindAllString(value, -1) {
-		add(strings.TrimRight(raw, ").,;:!?，。；："))
+		add(trimLocatorPunctuation(raw))
 	}
 	return out
+}
+
+func trimLocatorPunctuation(raw string) string {
+	pairs := [][2]string{{"(", ")"}, {"[", "]"}, {"{", "}"}, {"（", "）"}}
+	var excess [4]int
+	for i, pair := range pairs {
+		excess[i] = strings.Count(raw, pair[1]) - strings.Count(raw, pair[0])
+	}
+	for {
+		raw = strings.TrimRight(raw, ".,;:!?，。；：")
+		trimmed := false
+		for i, pair := range pairs {
+			// Naked URLs may be wrapped in prose parentheses. Keep paired
+			// delimiters that belong to the URL, including nested pairs.
+			if strings.HasSuffix(raw, pair[1]) && excess[i] > 0 {
+				raw = strings.TrimSuffix(raw, pair[1])
+				excess[i]--
+				trimmed = true
+				break
+			}
+		}
+		if !trimmed {
+			return raw
+		}
+	}
 }

@@ -86,4 +86,6 @@ generation:
 
 {{section:limitations|required}}
 
+## 参考资料
+
 {{references}}

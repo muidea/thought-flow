@@ -98,4 +98,6 @@ generation:
 
 {{section:open_questions|required}}
 
+## 参考资料
+
 {{references}}

@@ -1042,7 +1042,7 @@ test("API e2e", async (t) => {
       assert.equal(profile.ref.version,2);
       const parameters=Object.fromEntries(profile.inputs.map(input=>[input.key,"confirmed input"]));parameters.subtype="opinion";
       const sections=profile.sections.map(section=>`## ${profile.validation.section_headings[section.key]}\n\nG1 D1 T1 Q1 F1 C1: failure and recovery. A limitation and counterexample supported by [S1].`).join("\n\n");
-      const body=`# Typed ${family}\n\n${sections}\n\n- [S1] Source: https://example.org/evidence\n`;
+      const body=`# Typed ${family}\n\n${sections}\n\n## 参考资料\n\n- [S1] Source: https://example.org/evidence\n`;
       const created=await request(server.baseURL,"/api/thoughts","POST",{body:{type:"text",title:`Typed ${family}`,content:body,document_profile:profile.ref,document_parameters:parameters}});
       assert.equal(created.status,202,created.text);const id=envelope(created).data.thought.id;const base=`/api/documents/${id}`;
       let response=await request(server.baseURL,base,"GET");assert.equal(response.status,200,response.text);const snapshot=envelope(response).data;

@@ -65,4 +65,6 @@ generation:
 
 {{section:conclusion|required}}
 
+## 参考资料
+
 {{references}}

@@ -12,6 +12,11 @@ import (
 
 func fixture(t *testing.T, raw string) documentstore.RevisionData {
 	t.Helper()
+	return fixtureWithReference(t, raw, models.DocumentReference{ID: "S1", SourceLink: "https://example.org/evidence"})
+}
+
+func fixtureWithReference(t *testing.T, raw string, ref models.DocumentReference) documentstore.RevisionData {
+	t.Helper()
 	p, e := documentprofile.Parse([]byte(raw), documentprofile.Limits{})
 	if e != nil {
 		t.Fatal(e)
@@ -25,8 +30,8 @@ func fixture(t *testing.T, raw string) documentstore.RevisionData {
 	for _, s := range p.Sections {
 		sections[s.Key] = models.DocumentSection{Content: "G1 D1 T1 Q1 F1 C1: failure and recovery, a limitation and a counterexample. Supported by [S1]."}
 	}
-	rendered := documentprofile.Render(p, models.DocumentDraft{Title: "Delivery fixture", Sections: sections, References: []models.DocumentReference{{ID: "S1", SourceLink: "https://example.org/evidence"}}}, params)
-	d := documentstore.RevisionData{Body: rendered.Content, Profile: p.Snapshot, Contract: models.DocumentContract{SchemaVersion: 1, Title: "Delivery fixture", Purpose: "explicit purpose", Audience: "engineers", Language: "en-US", ProfileRef: p.Ref, Parameters: params, ReviewPolicy: models.DocumentReviewPolicy{Version: ReviewPolicyVersion, AllowManual: true, SemanticRequired: true}}, Sources: models.SourceManifest{SchemaVersion: 1, Sources: []models.DocumentSource{{ID: "S1", Type: "external", Locator: "https://example.org/evidence", Hash: "sha256:source", Version: "2026-10-21", VerificationStatus: "verified"}}}}
+	rendered := documentprofile.Render(p, models.DocumentDraft{Title: "Delivery fixture", Sections: sections, References: []models.DocumentReference{ref}}, params)
+	d := documentstore.RevisionData{Body: rendered.Content, Profile: p.Snapshot, Contract: models.DocumentContract{SchemaVersion: 1, Title: "Delivery fixture", Purpose: "explicit purpose", Audience: "engineers", Language: "en-US", ProfileRef: p.Ref, Parameters: params, ReviewPolicy: models.DocumentReviewPolicy{Version: ReviewPolicyVersion, AllowManual: true, SemanticRequired: true}}, Sources: models.SourceManifest{SchemaVersion: 1, Sources: []models.DocumentSource{{ID: ref.ID, Type: "external", Locator: ref.SourceLink, Hash: "sha256:source", Version: "2026-10-21", VerificationStatus: "verified"}}}}
 	d.Revision = models.DocumentRevision{DocumentID: "doc", RevisionID: "r-1", BodyHash: documentstore.Hash([]byte(d.Body)), ContractHash: documentstore.HashJSON(d.Contract), ProfileHash: p.Ref.ContentHash, SourceManifestHash: documentstore.HashJSON(d.Sources)}
 	return d
 }

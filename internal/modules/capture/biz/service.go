@@ -564,6 +564,11 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 	listed := []listedThought{}
 	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// A missing root is an empty workspace; a vanished child must not
+			// discard notes already found elsewhere in the tree.
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
 		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
@@ -572,6 +577,11 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
 		thought, _, err := markdown.ReadThought(rootPath, thoughtID)
 		if err != nil {
+			// Tombstones hide interrupted deletions before Markdown cleanup.
+			// Concurrently removed projections have the same per-entry result.
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		var modTime time.Time
@@ -581,9 +591,6 @@ func listThoughts(rootPath string) ([]models.Thought, error) {
 		listed = append(listed, listedThought{thought: thought, modTime: modTime})
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return []models.Thought{}, nil
-	}
 	sort.Slice(listed, func(i, j int) bool {
 		left := listed[i].thought
 		right := listed[j].thought

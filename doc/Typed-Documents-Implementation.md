@@ -132,3 +132,23 @@ Git 使用明确文件清单：已引用修订的 body/contract/source-manifest/
 - 新增 HTTP 文档范围 `go test -race -run 'TestDocument|TestHardErrors|TestEvidence' ./internal/modules/application/thoughtflow/service` 通过。
 - 更新前端定稿门槛断言后补跑 `make node-check node-test`，119 项全部通过。
 - `git diff --check` 通过。全量 HTTP race 的既有 DuckDB checkptr 中止限制沿用前节记录，不计为通过。
+
+## 43395dd 复核问题修复
+
+新增回归测试在修复前实际复现了本轮三个 P2：删除中断后列表为空、带冒号的正文列表引用触发重复定义、生成的 Wikipedia 括号 URL 被截断。
+
+| 问题 | 实现与专项回归 |
+| --- | --- |
+| 删除中断清空整个列表 | WalkDir 的单条读取遇到删除标记或文件消失时跳过该条目；遍历中消失的子目录也不丢弃已收集结果，其他错误继续返回。故障注入保留删除标记与未清理 Markdown，重建服务后仍列出另外两个正常笔记。 |
+| 列表正文引用误当来源定义 | 去掉列表项中冒号和 URL 的启发式；来源定义只在明确的 References / 参考资料 / 参考来源章节内识别。三个内置 v2 模板补上参考资料章节，API e2e 正文同步采用该结构。回归覆盖列表项与冒号组合、带 URL 的正文列表引用，原有重复定义硬错误测试继续保留。 |
+| URL 末尾成对括号被截断 | 提取裸 URL 时保留成对及嵌套括号，只去除多余的外围闭括号和句末标点。回归直接运行 Profile 渲染 → AST 地址提取 → 冻结清单验证，覆盖有/无来源标题、多个及嵌套括号；另测外围中英文括号、方括号、Markdown 链接和自动链接。 |
+
+验证器版本为 `final-body-ast-v2.3`，旧报告需重新检查后才能用于新规则下的定稿。新建文档使用带参考章节的新模板快照；冻结快照不改写。自定义模板和已有草稿也需用明确参考章节组织来源定义，本阶段不添加旧列表格式兼容路径。
+
+本轮实际使用缓存中的 Go 1.26.7 工具链验证：
+
+- `make ci-check`：全部目标通过，包含全量 Go 测试、构建、JS 语法、Node / i18n、浏览器目标及 API/SSE e2e。浏览器执行范围仍由测试脚本按可用引擎检测，缺失引擎不计为已执行。
+- `go test -race ./internal/pkg/document... ./internal/pkg/markdown ./internal/modules/capture/biz ./internal/modules/compose/biz`：全部通过。
+- `git diff --check`：通过。
+
+本轮未重跑全量 HTTP race；前述 DuckDB checkptr 限制仍保留，不计为通过。

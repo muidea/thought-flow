@@ -11,7 +11,9 @@ import (
 
 	"github.com/muidea/magicCommon/event"
 
+	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/thoughtlock"
 )
@@ -237,6 +239,57 @@ func TestListThoughtsReturnsWorkspaceThoughts(t *testing.T) {
 	}
 	if thoughts[0].ID != second.Thought.ID || thoughts[1].ID != first.Thought.ID {
 		t.Fatalf("expected recent-first order, got %#v (first=%s second=%s)", thoughts, first.Thought.ID, second.Thought.ID)
+	}
+}
+
+func TestListThoughtsSkipsInterruptedDeletionAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	ws := &models.Workspace{ID: "local", RootPath: root, ThoughtsPath: filepath.Join(root, "thoughts")}
+	service := NewService(ws, nil, nil)
+	want := map[string]bool{}
+	var deleted models.Thought
+	for _, title := range []string{"First normal note", "Interrupted deletion", "Second normal note"} {
+		result, err := service.Capture(context.Background(), models.CaptureCommand{
+			Type: models.ThoughtTypeText, Content: title, Title: title,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if title == "Interrupted deletion" {
+			deleted = result.Thought
+		} else {
+			want[result.Thought.ID] = true
+		}
+	}
+	flow := documentflow.For(root)
+	flow.Store.Fault = func(point string) error {
+		if point == "deletion_published" {
+			return errors.New("interrupted before Markdown cleanup")
+		}
+		return nil
+	}
+	if err := service.DeleteThought(context.Background(), deleted.ID, "delete-session"); err == nil {
+		t.Fatal("deletion fault not reached")
+	}
+	if _, err := os.Stat(filepath.Join(root, deleted.Path)); err != nil {
+		t.Fatal("interrupted deletion must leave the projection", err)
+	}
+	flow.Close()
+	restarted := documentflow.Configure(root, flow.Profiles, flow.Options)
+	t.Cleanup(restarted.Close)
+	service = NewService(ws, nil, nil)
+	if _, _, err := markdown.ReadThought(root, deleted.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted projection should be hidden after restart: %v", err)
+	}
+	thoughts, err := service.ListThoughts(context.Background())
+	if err != nil || len(thoughts) != len(want) {
+		t.Fatalf("ListThoughts() = %+v, %v; want two normal notes", thoughts, err)
+	}
+	for _, thought := range thoughts {
+		if !want[thought.ID] {
+			t.Fatalf("unexpected listed thought: %s", thought.ID)
+		}
+		delete(want, thought.ID)
 	}
 }
 
