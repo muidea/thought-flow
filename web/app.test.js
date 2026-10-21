@@ -3294,3 +3294,119 @@ test("a stale source write reloads current sources without overwriting another c
   assert.equal(app._state.composeSources.has("thought::B"), true);
   assert.equal(app._state.composeSources.has("thought::A"), false);
 });
+
+test("source refresh during a save preserves additions in the next write", async () => {
+  let acknowledgeSave;
+  let saveStarted;
+  const saving = new Promise((resolve) => { saveStarted = resolve; });
+  const saveReply = new Promise((resolve) => { acknowledgeSave = resolve; });
+  const writes = [];
+  const source = (id) => ({ source_type: "thought", source_id: id });
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      if ((options.method || "GET") === "GET") {
+        return { ok: true, json: async () => ({ data: { version: 4, sources: [source("A")] } }) };
+      }
+      writes.push(JSON.parse(options.body));
+      if (writes.length === 1) {
+        saveStarted();
+        await saveReply;
+      }
+      return { ok: true, json: async () => ({ data: { version: 4 + writes.length } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 4;
+  app._state.composeSources = new Map(["A", "B"].map((id) => [`thought::${id}`, source(id)]));
+  const saved = app.persistSources();
+  await saving;
+  const refreshed = app.restoreSources();
+  // Let a concurrent GET finish if it is allowed to run before the PUT.
+  await new Promise((resolve) => setImmediate(resolve));
+  acknowledgeSave();
+  await Promise.all([saved, refreshed]);
+  app._state.composeSources.set("thought::C", source("C"));
+  await app.persistSources();
+  assert.deepEqual(writes.map((write) => write.sources.map((item) => item.source_id)), [["A", "B"], ["A", "B", "C"]]);
+});
+
+test("a refresh started before a local edit cannot replace the pending addition", async () => {
+  let returnSnapshot;
+  let refreshStarted;
+  const refreshing = new Promise((resolve) => { refreshStarted = resolve; });
+  const snapshot = new Promise((resolve) => { returnSnapshot = resolve; });
+  const source = (id) => ({ source_type: "thought", source_id: id });
+  const writes = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      if ((options.method || "GET") === "GET") {
+        refreshStarted();
+        await snapshot;
+        return { ok: true, json: async () => ({ data: { version: 4, sources: [source("A")] } }) };
+      }
+      writes.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ data: { version: 4 + writes.length } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 4;
+  app._state.composeSources = new Map([["thought::A", source("A")]]);
+  const refreshed = app.restoreSources();
+  await refreshing;
+  app._state.composeSources.set("thought::B", source("B"));
+  const saved = app.persistSources();
+  returnSnapshot();
+  await Promise.all([refreshed, saved]);
+  assert.equal(app._state.composeSources.has("thought::B"), true);
+  assert.deepEqual(writes[0].sources.map((item) => item.source_id), ["A", "B"]);
+});
+
+test("a refresh cannot resurrect sources cleared while the GET is in flight", async () => {
+  let returnSnapshot;
+  let refreshStarted;
+  const refreshing = new Promise((resolve) => { refreshStarted = resolve; });
+  const snapshot = new Promise((resolve) => { returnSnapshot = resolve; });
+  const writes = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      if ((options.method || "GET") === "GET") {
+        refreshStarted();
+        await snapshot;
+        return { ok: true, json: async () => ({ data: { version: 4, sources: [{ source_type: "thought", source_id: "A" }] } }) };
+      }
+      writes.push(options.method);
+      return { ok: true, json: async () => ({ data: { version: 5 } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 4;
+  app._state.composeSources = new Map([["thought::A", { source_type: "thought", source_id: "A" }]]);
+  const refreshed = app.restoreSources();
+  await refreshing;
+  app._state.composeSources.clear();
+  const cleared = app.persistSources();
+  returnSnapshot();
+  await Promise.all([refreshed, cleared]);
+  assert.equal(app._state.composeSources.size, 0);
+  assert.deepEqual(writes, ["DELETE"]);
+});
+
+test("a failed source refresh does not block the next save", async () => {
+  const writes = [];
+  const app = loadAppFunctionsWith({
+    exposeState: true,
+    fetch: async (url, options = {}) => {
+      if ((options.method || "GET") === "GET") throw new Error("refresh unavailable");
+      writes.push({ version: options.headers["If-Match"], sources: JSON.parse(options.body).sources });
+      return { ok: true, json: async () => ({ data: { version: 5 } }) };
+    },
+  });
+  app._state.composeSourcesVersion = 4;
+  await assert.rejects(app.restoreSources(), /refresh unavailable/);
+  app._state.composeSources.set("thought::B", { source_type: "thought", source_id: "B" });
+  await app.persistSources();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].version, '"4"');
+  assert.equal(writes[0].sources[0].source_id, "B");
+  assert.equal(app._state.composeSourcesVersion, 5);
+});

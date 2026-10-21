@@ -20,7 +20,8 @@ const state = {
   selectedThoughts: new Set(),
   composeSources: new Map(),
   composeSourcesVersion: 0,
-  composeSourcesWrite: Promise.resolve(),
+  composeSourcesRevision: 0,
+  composeSourcesSync: Promise.resolve(),
   lastResults: [],
   composeDraft: null,
   composeDrafts: [],
@@ -435,10 +436,11 @@ const HELP_VISIBLE_STORAGE_KEY = "tflow.help.visible";
 
 function persistSources() {
   removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
-  // Serialize writes from this tab. Other tabs and generation cleanup are
-  // protected by the snapshot version; conflicts reload the current basket.
-  state.composeSourcesWrite = state.composeSourcesWrite.then(async () => {
-    const sources = Array.from(state.composeSources.values());
+  const revision = ++state.composeSourcesRevision;
+  const sources = Array.from(state.composeSources.values());
+  // Reads and writes share one queue. Snapshot each edit when it is queued,
+  // so a refresh cannot change what an already requested save will submit.
+  const saved = state.composeSourcesSync.then(async () => {
     const payload = await api("/api/compose/sources", {
       method: sources.length === 0 ? "DELETE" : "PUT",
       headers: { "If-Match": `"${state.composeSourcesVersion}"` },
@@ -448,15 +450,29 @@ function persistSources() {
     broadcastSourcesChange();
   }).catch(async (error) => {
     toast(error.message);
-    await restoreSources().catch(() => {});
+    // Already inside the queue: calling restoreSources would wait on this
+    // same save. Fetch directly, with the same protection for later edits.
+    await refreshSourcesSnapshot(revision).catch(() => {});
   });
-  return state.composeSourcesWrite;
+  state.composeSourcesSync = saved;
+  return saved;
 }
 
-async function restoreSources() {
+function restoreSources() {
   removeFromStorage(COMPOSE_SOURCES_STORAGE_KEY);
+  const revision = state.composeSourcesRevision;
+  const refreshed = state.composeSourcesSync.then(() => refreshSourcesSnapshot(revision));
+  // A failed GET is returned to its caller without blocking later saves.
+  state.composeSourcesSync = refreshed.catch(() => {});
+  return refreshed;
+}
+
+async function refreshSourcesSnapshot(revision) {
+  if (revision !== state.composeSourcesRevision) return;
   const payload = await api("/api/compose/sources");
-  if ((payload?.version ?? 0) < state.composeSourcesVersion) return;
+  // An edit may be queued while this GET is in flight, even if the server
+  // version has not advanced yet. Keep that local edit until its save runs.
+  if (revision !== state.composeSourcesRevision || (payload?.version ?? 0) < state.composeSourcesVersion) return;
   state.composeSourcesVersion = payload?.version ?? 0;
   const next = new Map();
   for (const source of payload?.sources || []) {
