@@ -150,16 +150,28 @@ func (s *Service) SyncProjection(t *models.Thought, c *models.ThoughtContent, ob
 
 // SyncProjectionLocked is called only within the Markdown projection transaction.
 func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtContent, observe bool) (bool, error) {
+	if e := s.Store.CheckActive(t.ID); e != nil {
+		return false, e
+	}
 	if !typed(*t) {
-		if _, e := s.Store.Head(t.ID); os.IsNotExist(e) {
+		if _, e := s.Store.ActiveHead(t.ID); os.IsNotExist(e) {
 			return false, nil
 		} else if e != nil {
 			return false, e
 		}
 		return false, ErrRules
 	}
+	// Match the sections-v2 codec before freezing auxiliary content/links.
+	// This also prevents its EOF newline from looking like an external edit.
+	for _, section := range []*string{&c.Original, &c.ExtractedContent, &c.AINotes, &c.Links} {
+		if strings.TrimSpace(*section) == "" {
+			*section = ""
+		} else {
+			*section = documentstore.Normalize(*section)
+		}
+	}
 	id := t.ID
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil && !os.IsNotExist(e) {
 		return false, e
 	}
@@ -251,6 +263,11 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 	if e := safeInputs(d); e != nil {
 		return false, e
 	}
+	projectionThought := *t
+	projectionThought.Document = nil
+	projectionContent := *c
+	projectionContent.AINotes = "" // The canonical body is stored independently.
+	d.Projection = &models.ThoughtSnapshot{Thought: projectionThought, Content: projectionContent}
 	d.Body = ExtractBody(*c)
 	d.Revision.Origin = "thought_write"
 	if observe {
@@ -279,7 +296,7 @@ func clone(in map[string]string) map[string]string {
 	return out
 }
 func (s *Service) Get(id string) (models.DocumentSnapshot, error) {
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return models.DocumentSnapshot{}, e
 	}
@@ -362,7 +379,7 @@ func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64,
 		return models.ValidationReport{}, ErrUnavailable
 	}
 	unlock := s.Store.Lock(id)
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e == nil && (h.Generation != expected || h.WorkingRevisionID != rev) {
 		e = documentstore.ErrConflict
 	}
@@ -446,6 +463,9 @@ func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64,
 	if report.Status != "failed" && s.Options.Reviewer != nil && !manual {
 		issues, model, err := s.Options.Reviewer.ReviewDocument(runCtx, d)
 		status := "passed"
+		if err == nil && len(issues) > 0 {
+			status = "needs_review"
+		}
 		if err != nil {
 			status = "error"
 			report.Status = "error"
@@ -477,11 +497,17 @@ func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64,
 	if runCtx.Err() != nil && !(errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil && s.ctx.Err() == nil) {
 		return models.ValidationReport{}, runCtx.Err()
 	}
-	if e = s.Store.PutRecord(id, "reports", report.ReportID, report); e != nil {
+	// Publication must serialize with deletion even though model work runs outside the lock.
+	unlock = s.Store.Lock(id)
+	if _, e = s.Store.ActiveHead(id); e == nil {
+		e = s.Store.PutRecord(id, "reports", report.ReportID, report)
+	}
+	unlock()
+	if e != nil {
 		return report, e
 	}
 	// A late report remains historical; it never updates HEAD or the new draft.
-	h, e = s.Store.Head(id)
+	h, e = s.Store.ActiveHead(id)
 	if e == nil && h.WorkingRevisionID == rev {
 		s.emit("document.validation_completed", id, h, report.ReportID)
 	}
@@ -516,7 +542,7 @@ func (s *Service) Finalize(id string, expected uint64, req FinalizeRequest) (mod
 	}
 	unlock := s.Store.Lock(id)
 	defer unlock()
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return models.FinalizationRecord{}, e
 	}
@@ -631,6 +657,11 @@ func (s *Service) Finalize(id string, expected uint64, req FinalizeRequest) (mod
 	return f, nil
 }
 func (s *Service) Export(id, rev, mode string) (string, error) {
+	unlock := s.Store.Lock(id)
+	defer unlock()
+	if _, e := s.Store.ActiveHead(id); e != nil {
+		return "", e
+	}
 	if mode != "draft" && mode != "final" {
 		return "", documentstore.ErrInvalid
 	}
@@ -639,7 +670,7 @@ func (s *Service) Export(id, rev, mode string) (string, error) {
 		return "", e
 	}
 	if mode == "final" {
-		h, e := s.Store.Head(id)
+		h, e := s.Store.ActiveHead(id)
 		if e != nil {
 			return "", e
 		}
@@ -677,7 +708,7 @@ func (s *Service) Repair(ctx context.Context, id, rev, reportID string, expected
 	if !s.Options.Enabled || s.ctx.Err() != nil {
 		return models.DocumentSnapshot{}, ErrUnavailable
 	}
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return models.DocumentSnapshot{}, e
 	}
@@ -783,7 +814,7 @@ func safeInputs(d documentstore.RevisionData) error {
 }
 
 func (s *Service) finalizationPublished(id, target string) bool {
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return false
 	}
@@ -803,7 +834,7 @@ func (s *Service) finalizationPublished(id, target string) bool {
 }
 
 func (s *Service) ProjectionCommittedLocked(id, rev string) error {
-	h, e := s.Store.Head(id)
+	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return e
 	}
@@ -828,4 +859,13 @@ func (s *Service) ProjectionCommittedLocked(id, rev string) error {
 		s.Options.Commit(paths)
 	}
 	return nil
+}
+
+// DeleteLocked revokes access before Markdown cleanup; caller holds the document lock.
+func (s *Service) DeleteLocked(id string) error {
+	h, e := s.Store.DeleteLocked(id)
+	if h.DeletedAt != nil {
+		s.emit("document.deleted", id, h, "")
+	}
+	return e
 }

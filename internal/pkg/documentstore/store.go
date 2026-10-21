@@ -32,12 +32,13 @@ type Store struct {
 	Fault func(string) error
 }
 type RevisionData struct {
-	Evidence map[string]string `json:"-"`
-	Revision models.DocumentRevision
-	Contract models.DocumentContract
-	Sources  models.SourceManifest
-	Profile  string
-	Body     string
+	Projection *models.ThoughtSnapshot
+	Evidence   map[string]string `json:"-"`
+	Revision   models.DocumentRevision
+	Contract   models.DocumentContract
+	Sources    models.SourceManifest
+	Profile    string
+	Body       string
 }
 
 func New(root string) *Store { return &Store{Root: filepath.Join(root, "documents")} }
@@ -105,6 +106,51 @@ func (s *Store) Head(id string) (models.DocumentHead, error) {
 	e = readJSON(p, &h)
 	return h, e
 }
+
+// ActiveHead is the public lifecycle gate. A missing projection is recoverable;
+// a deleted document is deliberately unavailable even when its journal remains.
+func (s *Store) ActiveHead(id string) (models.DocumentHead, error) {
+	h, e := s.Head(id)
+	if e == nil && h.DeletedAt != nil {
+		e = os.ErrNotExist
+	}
+	return h, e
+}
+
+// CheckActive also permits a new, unpublished document.
+func (s *Store) CheckActive(id string) error {
+	h, e := s.Head(id)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e == nil && h.DeletedAt != nil {
+		return os.ErrNotExist
+	}
+	return e
+}
+
+// DeleteLocked publishes revocation before the projection is removed. The
+// caller holds Lock(id) through both steps; a retry can finish file cleanup.
+func (s *Store) DeleteLocked(id string) (models.DocumentHead, error) {
+	h, e := s.Head(id)
+	if e != nil && !os.IsNotExist(e) {
+		return h, e
+	}
+	if h.DeletedAt != nil {
+		return h, nil
+	}
+	now := time.Now().UTC()
+	h.DeletedAt = &now
+	h.PendingProjection = false
+	h.Generation++
+	if e = s.SaveHead(id, h); e != nil {
+		return h, e
+	}
+	if s.Fault != nil {
+		e = s.Fault("deletion_published")
+	}
+	return h, e
+}
 func (s *Store) Revision(id, rev string) (RevisionData, error) {
 	var d RevisionData
 	if !ValidID(rev) {
@@ -134,6 +180,14 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 	}
 	d.Profile = string(b)
 	r := d.Revision
+	if r.ProjectionHash != "" {
+		if e = readJSON(filepath.Join(p, "projection.json"), &d.Projection); e != nil {
+			return d, e
+		}
+		if d.Projection == nil || HashJSON(d.Projection) != r.ProjectionHash {
+			return d, fmt.Errorf("%w: projection hash mismatch", ErrInvalid)
+		}
+	}
 	if r.DocumentID != id || r.RevisionID != rev || Hash([]byte(d.Body)) != r.BodyHash || HashJSON(d.Contract) != r.ContractHash || HashJSON(d.Sources) != r.SourceManifestHash || (d.Profile != "" && Hash([]byte(Normalize(strings.TrimSpace(d.Profile)))) != r.ProfileHash) {
 		return d, fmt.Errorf("%w: revision hash mismatch", ErrInvalid)
 	}
@@ -146,6 +200,9 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	h, err := s.Head(id)
 	if err != nil && !os.IsNotExist(err) {
 		return h, err
+	}
+	if h.DeletedAt != nil {
+		return h, os.ErrNotExist
 	}
 	if h.Generation != expected {
 		return h, ErrConflict
@@ -161,6 +218,10 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	r.BodyHash = Hash([]byte(d.Body))
 	r.ContractHash = HashJSON(d.Contract)
 	r.SourceManifestHash = HashJSON(d.Sources)
+	r.ProjectionHash = ""
+	if d.Projection != nil {
+		r.ProjectionHash = HashJSON(d.Projection)
+	}
 	r.ProfileHash = d.Contract.ProfileRef.ContentHash
 	r.CreatedAt = time.Now().UTC()
 	r.NormalizationVersion = NormalizationVersion
@@ -176,6 +237,15 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 		return h, e
 	}
 	defer os.RemoveAll(tmp)
+	if d.Projection != nil {
+		b, e := json.MarshalIndent(d.Projection, "", "  ")
+		if e != nil {
+			return h, e
+		}
+		if e = writeSync(filepath.Join(tmp, "projection.json"), b); e != nil {
+			return h, e
+		}
+	}
 	for name, v := range map[string]any{"manifest.json": r, "contract.json": d.Contract, "source-manifest.json": d.Sources} {
 		b, e := json.MarshalIndent(v, "", "  ")
 		if e != nil {
@@ -210,6 +280,11 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	if e = s.SaveHead(id, h); e != nil {
 		return h, e
 	}
+	if s.Fault != nil {
+		if e = s.Fault("head_published"); e != nil {
+			return h, e
+		}
+	}
 	return h, nil
 }
 func (s *Store) SaveHead(id string, h models.DocumentHead) error {
@@ -229,7 +304,7 @@ func (s *Store) ProjectionDone(id, rev string) error {
 	return s.ProjectionDoneLocked(id, rev)
 }
 func (s *Store) ProjectionDoneLocked(id, rev string) error {
-	h, e := s.Head(id)
+	h, e := s.ActiveHead(id)
 	if e != nil {
 		return e
 	}

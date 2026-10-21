@@ -46,6 +46,9 @@ func (s *Service) Candidate(ctx context.Context, id, body, title string, profile
 // CheckDraft records deterministic results without requiring/paying for semantic
 // review. An incomplete draft still saves; formal delivery remains a separate gate.
 func (s *Service) CheckDraft(id, rev string) (models.ValidationReport, error) {
+	if _, e := s.Store.ActiveHead(id); e != nil {
+		return models.ValidationReport{}, e
+	}
 	d, e := s.Store.Revision(id, rev)
 	if e != nil {
 		return models.ValidationReport{}, e

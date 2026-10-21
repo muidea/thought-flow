@@ -214,3 +214,58 @@ func TestEvidenceStaysPrivateAndMissingEvidenceIsUnavailable(t *testing.T) {
 	}
 
 }
+
+func TestDocumentDeletionRevokesPublicLinksExportsAndWrites(t *testing.T) {
+	s, id := documentHTTPFixture(t, "design")
+	snap, e := s.documents.Get(id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	report, e := s.documents.Validate(context.Background(), id, snap.Head.WorkingRevisionID, snap.Head.Generation)
+	if e != nil {
+		t.Fatal(e)
+	}
+	req := documentflow.FinalizeRequest{RevisionID: report.RevisionID, ReportID: report.ReportID, OperationID: "deleted-public-final", DeliveryLevel: "proposal"}
+	for _, issue := range report.Issues {
+		if issue.HumanConfirmation {
+			req.Confirmations = append(req.Confirmations, models.DocumentConfirmation{IssueID: issue.ID, Reason: "Inspected exact revision"})
+		}
+	}
+	if _, e = s.documents.Finalize(id, snap.Head.Generation, req); e != nil {
+		t.Fatal(e)
+	}
+	s.config.Server.PublicThoughtsEnabled = true
+	public := httptest.NewRequest("GET", "/p/documents/"+id+"/revisions/"+report.RevisionID, nil)
+	before := httptest.NewRecorder()
+	s.handlePublicDocument(public.Context(), before, public)
+	if before.Code != 200 {
+		t.Fatal("public fixture did not return final", before.Code)
+	}
+	if e = s.captureService.DeleteThought(context.Background(), id, "delete-document"); e != nil {
+		t.Fatal(e)
+	}
+	after := httptest.NewRecorder()
+	s.handlePublicDocument(public.Context(), after, public)
+	if after.Code != 404 || strings.Contains(after.Body.String(), snap.Body) {
+		t.Fatal("deleted final remained public", after.Code)
+	}
+	base := "/api/documents/" + id
+	for _, path := range []string{base, base + "/validation-reports/" + report.ReportID, base + "/revisions/" + report.RevisionID + "/export?mode=final", base + "/revisions/" + report.RevisionID + "/export?mode=draft"} {
+		status, raw := documentCall(t, s, "GET", path, nil, nil)
+		if status != 404 {
+			t.Fatalf("deleted read %s: %d %s", path, status, raw)
+		}
+	}
+	for _, operation := range []string{"revisions", "validate", "repair", "finalize"} {
+		status, raw := documentCall(t, s, "POST", base+"/"+operation, req, &snap.Head.Generation)
+		if status != 404 {
+			t.Fatalf("deleted write %s: %d %s", operation, status, raw)
+		}
+	}
+	if e = s.captureService.DeleteThought(context.Background(), id, "delete-retry"); e != nil {
+		t.Fatal("deletion retry failed", e)
+	}
+	if _, e = s.documents.Store.Revision(id, report.RevisionID); e != nil {
+		t.Fatal("internal history was destroyed", e)
+	}
+}

@@ -50,6 +50,7 @@ type DocumentSource struct {
 	EvidenceHash string `json:"evidence_hash,omitempty"`
 }
 type DocumentRevision struct {
+	ProjectionHash       string    `json:"projection_hash,omitempty"`
 	DocumentID           string    `json:"document_id"`
 	RevisionID           string    `json:"revision_id"`
 	ParentRevisionID     string    `json:"parent_revision_id,omitempty"`
@@ -63,11 +64,12 @@ type DocumentRevision struct {
 	RepairCount          int       `json:"repair_count"`
 }
 type DocumentHead struct {
-	Generation          uint64 `json:"generation"`
-	WorkingRevisionID   string `json:"working_revision_id"`
-	FinalizedRevisionID string `json:"finalized_revision_id,omitempty"`
-	FinalizationID      string `json:"finalization_id,omitempty"`
-	PendingProjection   bool   `json:"pending_projection"`
+	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
+	Generation          uint64     `json:"generation"`
+	WorkingRevisionID   string     `json:"working_revision_id"`
+	FinalizedRevisionID string     `json:"finalized_revision_id,omitempty"`
+	FinalizationID      string     `json:"finalization_id,omitempty"`
+	PendingProjection   bool       `json:"pending_projection"`
 }
 type DocumentIssue struct {
 	ID                string `json:"id"`

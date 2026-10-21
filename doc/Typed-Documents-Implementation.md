@@ -1,7 +1,7 @@
 # 类型化文档实现与验收记录
 
 日期：2026-10-21。对应 `ThoughtFlow-Typed-Documents-Closure-Plan-v1.md`。
-范围调整：按本轮用户要求，当前阶段不实现旧格式、旧二进制和旧文档的迁移兼容。既有 v1 模板文件保留，但不为其伪造 v2 定稿证据。
+范围调整：用户已明确确认“当前阶段不用考虑兼容性”。因此当前阶段不实现旧格式、旧二进制和旧文档的迁移兼容；A20 的旧资料迁移部分属于验收豁免，不计为测试通过。既有 v1 模板文件保留，但不为其伪造 v2 定稿证据。
 
 ## 使用与恢复
 
@@ -13,7 +13,9 @@
 
 API 客户端先 GET `/api/documents/{id}` 获取 `head.generation`，写请求使用 `If-Match: <generation>`。保存、检查和定稿分别调用 `/revisions`、`/validate`、`/finalize`；检查和定稿传稳定的 `operation_id` 以识别重试。428 表示缺少版本前提，409 表示版本冲突，422 表示未满足交付规则。遇到冲突先读取最新快照并合并，不能盲目替换版本号重发旧正文。
 
-工作区 `documents/{id}` 中的 HEAD 为发布点，Thought Markdown 是当前正文投影。投影失败时重新读取会尝试从不可变修订恢复；已定稿版本仍可通过明确的 final 导出读取。不要手工修改修订、报告、定稿记录或 HEAD。运行目录丢失时恢复对应备份；未知完成状态的生成/审查任务需显式重试，不会自动再次请求模型。普通 Markdown 编辑会在下次读取时导入新草稿，需要重新检查与定稿。
+工作区 `documents/{id}` 中的 HEAD 为发布点，Thought Markdown 是当前正文投影。每次正文发布还冻结带独立哈希的 projection.json，保存创建时间、类型、来源、标签及 Original / Extracted Content / Links 等恢复元数据；规范正文仍只读取 body.md。投影失败时重新读取会尝试从不可变修订恢复；已定稿版本仍可通过明确的 final 导出读取。不要手工修改修订、报告、定稿记录或 HEAD。运行目录丢失时恢复对应备份；未知完成状态的生成/审查任务需显式重试，不会自动再次请求模型。普通 Markdown 编辑会在下次读取时导入新草稿，需要重新检查与定稿。
+
+删除笔记先在 HEAD 持久化 deleted_at 并递增 generation，再删除 Markdown，两个步骤与写入使用同一文档锁。公开链接、草稿/定稿导出、报告读取及后续写入均拒绝已删除对象；保留的不可变历史只供内部存储审计。删除中断后重试只补清理，不能被投影恢复或旧请求复活。缺少文件且 HEAD 标为 pending 时，使用冻结投影元数据恢复；删除标记始终优先。
 
 ## M0：契约及写入边界
 
@@ -63,7 +65,7 @@ API 客户端先 GET `/api/documents/{id}` 获取 `head.generation`，写请求�
 
 语义审查和修复沿用已有 LLM 供应商、Key、模型及传输策略；不会访问引用 URL，不启用 Reader，不执行文档中的命令。无 Key 不发送模型请求。诊断中的凭据 URL、敏感查询参数和认证片段脱敏。来源清单拒绝带凭据的定位信息。
 
-Git 使用明确文件清单：已引用修订的 body/contract/source-manifest/profile/manifest、head、报告和定稿记录。运行目录中的 document-evidence、compose-inputs、任务及模型中间数据不在清单中。导出只返回正文，不包含 Thought 包装、内部报告和私有摘录。
+Git 使用明确文件清单：已引用修订的 body/contract/source-manifest/profile/manifest/projection、head（含删除标记）、报告和定稿记录。运行目录中的 document-evidence、compose-inputs、任务及模型中间数据不在清单中。导出只返回正文，不包含 Thought 包装、内部报告和私有摘录。
 
 私有证据为运行目录内 0600 文件。需要日后复核时，必须同时备份内容目录和运行目录的 document-evidence / compose-inputs；证据丢失显示 unavailable，不继续声称可复核。来源更新只显示 changed，不改写历史快照。
 
@@ -108,3 +110,25 @@ Git 使用明确文件清单：已引用修订的 body/contract/source-manifest/
 曾尝试全量 application HTTP service 的 race 测试，现有 vendored DuckDB 驱动在 `vector_getters.go:187` 触发 `checkptr: misaligned pointer conversion` 后中止。因此不能声称全量 HTTP race 通过；未关闭 checkptr 来掩盖该错误。普通全量 Go 测试和上述独立文档 HTTP race 均通过。
 
 未执行 Firefox/Safari、真实断电、真实外部 LLM 质量/准确率评估或多进程协同测试；这些结果不由单测或本地模型 fixture 代替。当前仅支持单工作区单写进程，旧资料迁移兼容按用户要求排除。
+
+
+## 10bde94 评审问题修复
+
+| 问题 | 实现与专项回归 |
+| --- | --- |
+| 删除后公开定稿仍可读 | HEAD 删除标记先于文件清理发布；公开链接及 API 读写/导出返回 404。HTTP 回归覆盖公开前后行为，协调层回归覆盖删除中断、重启、旧定稿请求重试、后台迟到报告和清理重试。 |
+| 标题引号/反斜杠累积 | 顶层 front matter 标量统一使用 parseScalar 反转义；测试 user_title / extracted_title 连续读取 5 次后标题、正文、修订、generation 不变，并用原 generation 完成检查和定稿。辅助分节换行也在冻结前对齐编码，避免 Links 的 EOF 换行制造伪修订。 |
+| 正文引用地址绕过检查 | 引用同时提取裸 URL、Markdown 链接与自动链接的真实目标，逐一检查安全性及与冻结 Locator 的对应关系；不再用清单地址替代正文地址。回归含错误地址、凭据、敏感查询参数、空地址及诊断脱敏。 |
+| 段首引用误当定义 | 普通段落中的 [S1] 记为引用使用；定义限于参考章节或明确的参考列表条目。测试中文/英文段首引用、普通引用列表项，同时保留真实重复定义的硬错误检查。 |
+| 首次投影缺失不能恢复 | 新修订在 HEAD 发布前持久化并校验 projection.json；故障注入在 head_published 处打断首次创建，重启直接 ReadThought 即恢复原元数据及正文，不产生额外修订。 |
+| 可确认语义错误被 failed 拒绝 | failed 只表示不可人工覆盖的硬错误；可确认语义 error 的总体及语义运行状态为 needs_review，结构运行仍为 passed。无理由拒绝，逐项确认后以 structure_and_manual 定稿；结构硬错误继续阻塞。 |
+
+确定性验证器版本提升为 final-body-ast-v2.2，旧报告不能直接用于新规则下的定稿；历史定稿仍保留原记录与正文。新增专项测试位于 documentflow/review_regression_test.go、documentvalidation/references_test.go 和 HTTP documents_test.go，真实 API e2e 补充三类型删除后的导出/写入撤销。
+
+本轮执行结果：
+
+- `make ci-check` 通过：全量 Go、构建、JS 语法、119 项 Node、6 项 i18n、可用 Chrome 浏览器，以及含三类型删除撤销断言的 30 项 API/SSE 测试。
+- `go test -race ./internal/pkg/document... ./internal/pkg/markdown ./internal/modules/capture/biz ./internal/modules/compose/biz` 通过；强化首次恢复元数据断言后另跑 `go test -race ./internal/pkg/documentflow`，通过。
+- 新增 HTTP 文档范围 `go test -race -run 'TestDocument|TestHardErrors|TestEvidence' ./internal/modules/application/thoughtflow/service` 通过。
+- 更新前端定稿门槛断言后补跑 `make node-check node-test`，119 项全部通过。
+- `git diff --check` 通过。全量 HTTP race 的既有 DuckDB checkptr 中止限制沿用前节记录，不计为通过。

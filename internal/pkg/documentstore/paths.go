@@ -21,6 +21,9 @@ func (s *Store) ContentPaths(id string) ([]string, error) {
 			for _, name := range []string{"body.md", "contract.json", "source-manifest.json", "profile.snapshot.md", "manifest.json"} {
 				paths = append(paths, filepath.ToSlash(filepath.Join("documents", id, "revisions", rev, name)))
 			}
+			if d.Revision.ProjectionHash != "" {
+				paths = append(paths, filepath.ToSlash(filepath.Join("documents", id, "revisions", rev, "projection.json")))
+			}
 			rev = d.Revision.ParentRevisionID
 		}
 	}

@@ -1057,6 +1057,18 @@ test("API e2e", async (t) => {
       response=await request(server.baseURL,base+"/finalize","POST",{headers:{"If-Match":String(next.head.generation)},body:{...finalize,operation_id:`stale-${family}`,revision_id:next.head.working_revision_id}});assert.equal(response.status,409,response.text);
       response=await request(server.baseURL,`${base}/revisions/${next.head.working_revision_id}/export?mode=final`,"GET");assert.equal(response.status,422);
       response=await request(server.baseURL,`${base}/revisions/${report.revision_id}/export?mode=final`,"GET");assert.equal(response.text,snapshot.body);
+      let deleted;
+      const deadline=Date.now()+5000;
+      do {
+        deleted=await request(server.baseURL,`/api/thoughts/${id}`,"DELETE",{headers:{"X-Session-Id":"typed-delete"}});
+        if(deleted.status!==409)break;
+        await sleep(100);
+      } while(Date.now()<deadline);
+      assert.equal(deleted.status,200,deleted.text);
+      for(const path of [base,`${base}/revisions/${report.revision_id}/export?mode=final`,`${base}/revisions/${next.head.working_revision_id}/export?mode=draft`]) {
+        response=await request(server.baseURL,path,"GET");assert.equal(response.status,404,response.text);
+      }
+      response=await request(server.baseURL,base+"/finalize","POST",{headers:{"If-Match":String(snapshot.head.generation)},body:finalize});assert.equal(response.status,404,response.text);
     }
   });
 

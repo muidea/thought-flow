@@ -141,6 +141,10 @@ func (s *Service) handleDocument(ctx context.Context, w http.ResponseWriter, r *
 		documentError(w, r, documentstore.ErrInvalid)
 		return
 	}
+	if e := s.documents.Store.CheckActive(id); e != nil {
+		documentError(w, r, e)
+		return
+	}
 	// Immutable exports and reports remain readable if the compatibility projection failed.
 	if len(parts) == 4 && parts[1] == "revisions" && parts[3] == "export" {
 		s.writeDocumentExport(w, r, id, parts[2], r.URL.Query().Get("mode"))

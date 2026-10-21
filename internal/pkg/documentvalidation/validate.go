@@ -20,7 +20,7 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
-const Version = "final-body-ast-v2.1"
+const Version = "final-body-ast-v2.2"
 const ReviewPolicyVersion = "review-v1"
 
 var citations = regexp.MustCompile(`\[(S[0-9]+)\]`)
@@ -31,6 +31,12 @@ var referenceDefinition = regexp.MustCompile(`^\s*\[(S[0-9]+)\]\s*(.*)$`)
 type block struct {
 	title, body string
 	line        int
+}
+
+type reference struct {
+	text     string
+	locators []string
+	line     int
 }
 
 func Key(d documentstore.RevisionData) string {
@@ -81,7 +87,7 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 	anchors := map[string]bool{}
 	links := []string{}
 	visible := strings.Builder{}
-	refs := map[string]string{}
+	refs := map[string]reference{}
 	used := map[string]bool{}
 	ast.Walk(tree, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
 		if !enter {
@@ -140,11 +146,16 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 			if current >= 0 {
 				blocks[current].body += value + "\n"
 			}
-			if m := referenceDefinition.FindStringSubmatch(value); len(m) > 0 {
+			m := referenceDefinition.FindStringSubmatch(value)
+			// A citation at the start of prose is still a use, not a definition.
+			// Definitions use an explicit bibliography list item or a references section.
+			inReferences := path[profile.Validation.HeadingLevel] == "References" || path[profile.Validation.HeadingLevel] == "参考资料" || path[profile.Validation.HeadingLevel] == "参考来源"
+			isEntry := n.Parent() != nil && n.Parent().Kind() == ast.KindListItem && len(m) > 0 && (strings.Contains(m[2], ":") || len(referenceLocators(n, m[2], body)) > 0)
+			if len(m) > 0 && (inReferences || isEntry) {
 				if _, ok := refs[m[1]]; ok {
 					add("reference_duplicate", "evidence", m[1], value, "Duplicate source ID", nodeLine(n, body), true)
 				}
-				refs[m[1]] = m[2]
+				refs[m[1]] = reference{text: m[2], locators: referenceLocators(n, m[2], body), line: nodeLine(n, body)}
 			} else {
 				for _, m := range citations.FindAllStringSubmatch(value, -1) {
 					used[m[1]] = true
@@ -181,7 +192,7 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 	}
 	if !profile.Validation.AllowUnknownSections {
 		for _, b := range blocks {
-			if !mapped[b.title] && b.title != "假设 / Assumptions" && b.title != "参考资料" && b.title != "References" {
+			if !mapped[b.title] && b.title != "假设 / Assumptions" && b.title != "参考资料" && b.title != "参考来源" && b.title != "References" {
 				add("section_unknown", "structure", b.title, b.title, "Section is not declared by the frozen profile", b.line, true)
 			}
 		}
@@ -200,12 +211,16 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 	}
 	for id, definition := range refs {
 		source, exists := manifest[id]
-		locator := source.Locator
-		if locator == "" {
-			locator = extractLocator(definition)
+		if len(definition.locators) == 0 || (exists && !validLocator(source.Locator)) {
+			add("reference_locator", "evidence", id, definition.text, "Both the delivered reference and frozen source require safe locators", definition.line, true)
 		}
-		if !validLocator(locator) {
-			add("reference_locator", "evidence", id, definition, "Source requires a safe locator or explicit unavailable status", 0, true)
+		for _, locator := range definition.locators {
+			if !validLocator(locator) {
+				add("reference_locator", "evidence", id, locator, "The delivered reference contains an unsafe locator", definition.line, true)
+			}
+			if exists && source.Locator != locator {
+				add("reference_mismatch", "evidence", id, locator, "The delivered reference differs from the frozen source locator", definition.line, true)
+			}
 		}
 		if !exists || source.Hash == "" || source.Version == "" || source.VerificationStatus != "verified" {
 			add("source_unverified", "evidence", id, "", "Citation presence does not verify source content/support. Inspect the original and its version.", 0, false)
@@ -335,14 +350,19 @@ func finish(r models.ValidationReport) models.ValidationReport {
 		r.Issues[i].Evidence = Redact(r.Issues[i].Evidence)
 		r.Issues[i].Basis = Redact(r.Issues[i].Basis)
 		r.Issues[i].Suggestion = Redact(r.Issues[i].Suggestion)
-		if r.Issues[i].Severity == "error" {
+		if r.Issues[i].Severity == "error" && !r.Issues[i].HumanConfirmation {
 			r.Status = "failed"
 		} else if r.Status == "passed" {
 			r.Status = "needs_review"
 		}
 	}
-	if r.Status == "failed" {
-		r.ReviewRuns[0].Status = "failed"
+	for i := range r.ReviewRuns {
+		if r.ReviewRuns[i].Kind == "structure" {
+			r.ReviewRuns[i].Status = "passed"
+			if r.Status == "failed" {
+				r.ReviewRuns[i].Status = "failed"
+			}
+		}
 	}
 	return r
 }
@@ -390,14 +410,6 @@ func slug(s string) string {
 		}
 	}
 	return b.String()
-}
-func extractLocator(s string) string {
-	for _, field := range strings.Fields(s) {
-		if strings.Contains(field, "://") {
-			return strings.Trim(field, "()<>")
-		}
-	}
-	return ""
 }
 func validLocator(s string) bool {
 	if strings.HasPrefix(s, "thought://") || strings.HasPrefix(s, "topic://") {

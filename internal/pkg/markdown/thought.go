@@ -123,20 +123,40 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 	unlock := flow.Store.Lock(thoughtID)
 	defer unlock()
 	raw, err := ReadThoughtRaw(rootPath, thoughtID)
-	if err != nil {
-		return models.Thought{}, models.ThoughtContent{}, err
-	}
 	relPath := ThoughtRelativePath(thoughtID)
-	if err := validateThoughtEncoding(raw); err != nil {
-		return models.Thought{}, models.ThoughtContent{}, err
+	var thought models.Thought
+	var content models.ThoughtContent
+	if os.IsNotExist(err) {
+		h, headErr := flow.Store.ActiveHead(thoughtID)
+		if headErr != nil {
+			return thought, content, headErr
+		}
+		if !h.PendingProjection {
+			return thought, content, err
+		}
+		d, e := flow.Store.Revision(thoughtID, h.WorkingRevisionID)
+		if e != nil {
+			return thought, content, e
+		}
+		if d.Projection == nil {
+			return thought, content, documentflow.ErrUnavailable
+		}
+		thought, content = d.Projection.Thought, d.Projection.Content
+	} else if err != nil {
+		return thought, content, err
+	} else {
+		if err = validateThoughtEncoding(raw); err != nil {
+			return thought, content, err
+		}
+		thought, content = ParseThought(raw)
 	}
-	thought, content := ParseThought(raw)
 	thought.ID = firstNonEmpty(thought.ID, thoughtID)
 	thought.Path = filepath.ToSlash(relPath)
 	recover, err := flow.SyncProjectionLocked(&thought, &content, true)
 	if err != nil {
 		return models.Thought{}, models.ThoughtContent{}, err
 	}
+	thought.DisplayTitle = displayTitle(thought, content)
 	if recover {
 		if err = writeThoughtProjection(rootPath, thought, content); err != nil {
 			return models.Thought{}, models.ThoughtContent{}, err
@@ -149,6 +169,9 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 // It performs the same workspace-boundary validation as ReadThought so
 // callers that need a lossless representation do not reconstruct paths.
 func ReadThoughtRaw(rootPath string, thoughtID string) ([]byte, error) {
+	if err := documentflow.For(rootPath).Store.CheckActive(thoughtID); err != nil {
+		return nil, err
+	}
 	relPath := ThoughtRelativePath(thoughtID)
 	targetPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
 	if err := workspace.EnsureNoSymlinks(rootPath, targetPath); err != nil {
@@ -480,7 +503,7 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
-		value := strings.Trim(strings.TrimSpace(parts[1]), `"`)
+		value := parseScalar(parts[1])
 		switch key {
 		case "document_id":
 			if thought.Document == nil {

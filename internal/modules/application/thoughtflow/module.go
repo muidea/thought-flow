@@ -133,7 +133,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"job.updated",
 		"document.revision_created",
 		"document.validation_completed",
-		"document.finalized",
+		"document.finalized", "document.deleted",
 	} {
 		eventHub.Subscribe(eventID, m.stream)
 	}

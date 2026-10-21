@@ -3424,6 +3424,7 @@ test("document finalization rejects dirty, stale and hard-error reports", () => 
  for(const flag of ["dirty","busy","serverChanged"]){assert.equal(app.documentCanFinalize({...editor,[flag]:true}),false);}
  editor.snapshot.freshness="stale";assert.equal(app.documentCanFinalize(editor),false);
  editor.snapshot.freshness="current";editor.snapshot.report.issues=[{severity:"error",human_confirmation:false}];assert.equal(app.documentCanFinalize(editor),false);
+ editor.snapshot.report.issues=[{severity:"error",human_confirmation:true}];assert.equal(app.documentCanFinalize(editor),true);
 });
 
 test("saving a typed document preserves newer local edits while advancing CAS generation", async () => {

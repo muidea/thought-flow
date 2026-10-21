@@ -13,6 +13,11 @@ import (
 // Evidence excerpts stay in runtime storage with 0600 permissions. Back up this
 // directory together with documents if independent support review is required.
 func (s *Service) SaveEvidence(id string, manifest *models.SourceManifest, excerpts map[string]string) error {
+	unlock := s.Store.Lock(id)
+	defer unlock()
+	if e := s.Store.CheckActive(id); e != nil {
+		return e
+	}
 	if len(excerpts) == 0 {
 		return nil
 	}

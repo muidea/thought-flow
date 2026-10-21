@@ -224,10 +224,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
-	thought, _, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
-	if err != nil {
-		return err
-	}
+	thoughtPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
 	if s.locker != nil {
 		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
 			if errors.Is(err, ErrLocked) {
@@ -239,8 +236,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 		}
 		defer s.locker.Release(thoughtID, sessionID)
 	}
-	targetPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(thought.Path))
-	if err := os.Remove(targetPath); err != nil {
+	if err := markdown.DeleteThought(s.workspace.RootPath, thoughtID); err != nil {
 		return err
 	}
 	now := s.now()
@@ -252,7 +248,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 		ResourceType:   models.ResourceTypeThought,
 		ResourceID:     thoughtID,
 		PayloadVersion: 1,
-		Payload:        map[string]any{"thought_id": thoughtID, "path": thought.Path, "deleted_by": sessionID},
+		Payload:        map[string]any{"thought_id": thoughtID, "path": thoughtPath, "deleted_by": sessionID},
 	})
 	eventutil.Post(s.eventHub, models.DomainEvent{
 		EventType:      models.EventGitCommitRequested,
@@ -262,7 +258,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 		ResourceType:   models.ResourceTypeThought,
 		ResourceID:     thoughtID,
 		PayloadVersion: 1,
-		Payload:        models.GitCommitRequestedPayload{Paths: []string{thought.Path}, Reason: "delete", ResourceIDs: []string{thoughtID}},
+		Payload:        models.GitCommitRequestedPayload{Paths: []string{thoughtPath, filepath.ToSlash(filepath.Join("documents", thoughtID, "head.json"))}, Reason: "delete", ResourceIDs: []string{thoughtID}},
 	})
 	return nil
 }

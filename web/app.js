@@ -4793,7 +4793,7 @@ async function refreshTopic() {
 }
 
 const DOMAIN_EVENT_TYPES = [
- "document.revision_created", "document.validation_completed", "document.finalized",
+ "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted",
   "thought.captured",
   "thought.refine_started",
   "thought.refined",
