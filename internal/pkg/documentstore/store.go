@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/workspace"
 )
 
 const NormalizationVersion = "utf8-lf-eof-v1"
@@ -77,22 +78,11 @@ func (s *Store) path(id string, parts ...string) (string, error) {
 		return "", ErrInvalid
 	}
 	p := filepath.Join(append([]string{s.Root, id}, parts...)...)
-	// Reject symlinks even when a path's final components have not been created yet.
-	absolute, err := filepath.Abs(p)
-	if err != nil {
+	// Match the Markdown boundary: reject links at or inside the workspace,
+	// including missing descendants, while allowing OS aliases above it
+	// (for example macOS /var -> /private/var).
+	if err := workspace.EnsureNoSymlinks(filepath.Dir(s.Root), p); err != nil {
 		return "", err
-	}
-	for cursor := absolute; ; cursor = filepath.Dir(cursor) {
-		info, e := os.Lstat(cursor)
-		if e == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", os.ErrPermission
-		}
-		if e != nil && !os.IsNotExist(e) {
-			return "", e
-		}
-		if filepath.Dir(cursor) == cursor {
-			break
-		}
 	}
 	return p, nil
 }

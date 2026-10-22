@@ -121,3 +121,56 @@ func TestHashesAndSymlinksAreChecked(t *testing.T) {
 		t.Fatalf("symlink accepted: %v", e)
 	}
 }
+
+func TestStoreAllowsSymlinkAboveWorkspace(t *testing.T) {
+	base := t.TempDir()
+	realParent := filepath.Join(base, "real-parent")
+	if err := os.Mkdir(realParent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "parent-alias")
+	if err := os.Symlink(realParent, alias); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(alias, "workspace")
+	s := New(root)
+	head := publish(t, s, "doc", 0, data("through parent alias"))
+	restarted := New(root)
+	if actual, err := restarted.Head("doc"); err != nil || actual != head {
+		t.Fatalf("HEAD through workspace parent alias: %+v, %v", actual, err)
+	}
+	if actual, err := restarted.Revision("doc", head.WorkingRevisionID); err != nil || actual.Body != "through parent alias\n" {
+		t.Fatalf("revision through workspace parent alias: %+v, %v", actual, err)
+	}
+}
+
+func TestStoreRejectsSymlinksAtAndInsideWorkspace(t *testing.T) {
+	for _, relative := range []string{".", "documents", "documents/doc", "documents/doc/head.json"} {
+		t.Run(relative, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "workspace")
+			link := filepath.Join(root, filepath.FromSlash(relative))
+			if err := os.MkdirAll(filepath.Dir(link), 0700); err != nil {
+				t.Fatal(err)
+			}
+			outside := t.TempDir()
+			if relative == "documents/doc/head.json" {
+				outside = filepath.Join(outside, "head.json")
+				if err := os.WriteFile(outside, []byte(`{}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatal(err)
+			}
+			s := New(root)
+			if _, err := s.Head("doc"); !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("linked path %s accepted: %v", relative, err)
+			}
+			unlock := s.Lock("doc")
+			defer unlock()
+			if _, err := s.Publish("doc", 0, data("must not escape")); !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("write through linked path %s accepted: %v", relative, err)
+			}
+		})
+	}
+}

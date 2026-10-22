@@ -152,3 +152,19 @@ Git 使用明确文件清单：已引用修订的 body/contract/source-manifest/
 - `git diff --check`：通过。
 
 本轮未重跑全量 HTTP race；前述 DuckDB checkptr 限制仍保留，不计为通过。
+
+## macOS CI 路径别名修复
+
+文档存储和私有证据的符号链接检查原本一直遍历到文件系统根目录，因此会拒绝 macOS `/var -> /private/var` 等位于存储边界之外的系统路径别名。即使普通 Markdown 笔记也会先检查文档 HEAD，导致 Capture、HTTP、搜索索引和 Topic 测试集中报 `permission denied`。
+
+在 Linux 非 root 用户下，将 `TMPDIR` 指向符号链接目录后，实际复现了 Capture 与 documentstore 的相同失败；新加的工作区父目录别名、运行目录父目录别名测试在修复前也失败。
+
+文档路径现在复用 `workspace.EnsureNoSymlinks`，在工作区根停止检查；私有证据在独立的运行目录根停止检查。边界根本身、内部目录及最终文件的符号链接继续拒绝。新增回归覆盖通过父目录别名发布/重读修订、私有证据写入/读取及 0600 权限，并逐层验证边界内的链接仍拒绝读写。
+
+2026-10-22 实际验证（Linux 非 root 用户、Go 1.24.13、`TMPDIR` 指向符号链接目录）：
+
+- `make ci-check GO_PACKAGES='-count=1 ./...'`：全部目标通过，Go 测试强制重跑；包含构建、JS / Node / i18n、可用浏览器目标及 API/SSE e2e。
+- `go test -race -count=1 ./internal/pkg/documentstore ./internal/pkg/documentflow ./internal/pkg/markdown ./internal/modules/capture/biz`：通过。
+- `git diff --check`：通过。
+
+以上为本地模拟系统路径别名的验证；本轮未实际运行 macOS runner。全量 HTTP race 的既有限制沿用前文记录。
