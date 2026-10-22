@@ -219,6 +219,28 @@ async function waitForSearchHit(baseURL, path, title, timeoutMs = 8000) {
   assert.fail(`search should surface ${title}; got titles=${lastTitles.join(",")}`);
 }
 
+// Follow the archive contract: a missing or stale preview requires a new
+// preview; lock conflicts only require waiting. Other conflicts must surface.
+async function confirmArchive(baseURL, sessionID, body) {
+  const deadline = Date.now() + 5000;
+  const archivePath = `/api/capture/sessions/${encodeURIComponent(sessionID)}/archive`;
+  let refreshedPreview;
+  for (;;) {
+    const response = await request(baseURL, archivePath, "POST", { body });
+    if (response.status !== 409 || Date.now() >= deadline) return { ...response, refreshedPreview };
+    const code = envelope(response).error?.code;
+    if (code === "thoughtflow.archive.preview_required" || code === "thoughtflow.archive.preview_stale") {
+      const preview = await request(baseURL, `${archivePath}/preview`, "GET");
+      assert.equal(preview.status, 200, `refresh preview status=${preview.status} body=${preview.text}`);
+      refreshedPreview = envelope(preview).data.preview;
+      assert.equal(refreshedPreview.validation?.status, "valid", preview.text);
+    } else if (code !== "thoughtflow.capture.refining" && code !== "thoughtflow.capture.locked") {
+      return { ...response, refreshedPreview };
+    }
+    await sleep(100);
+  }
+}
+
 test("API e2e", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
@@ -755,8 +777,8 @@ test("API e2e", async (t) => {
     // Commit with explicit strategy=new. The LLM is disabled in
     // the e2e harness so the refiner falls back to the local
     // provider which still produces a non-empty thought.
-    const commit = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive`, "POST", {
-      body: { strategy: "new", confirmed: true },
+    const commit = await confirmArchive(server.baseURL, sessionID, {
+      strategy: "new", confirmed: true,
     });
     assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);
     const commitData = envelope(commit).data;
@@ -808,23 +830,9 @@ test("API e2e", async (t) => {
     assert.match(previewData.body, /Original body for update protection\./, "preview must retain the archived body");
     assert.match(previewData.body, /Updated body from protected update flow\./, "preview must include the supplement");
 
-    const commitDeadline = Date.now() + 5000;
-    let commit;
-    for (;;) {
-      commit = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive`, "POST", {
-        body: { strategy: "update_thought", thought_id: sourceID, confirmed: true },
-      });
-      if (commit.status !== 409) break;
-      if (Date.now() > commitDeadline) break;
-      // Background enrichment can invalidate the preview between GET and
-      // confirmation. Refresh it before confirming the current state again.
-      if (envelope(commit).error?.code === "thoughtflow.archive.preview_stale") {
-        const refreshed = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
-        assert.equal(refreshed.status, 200, `refresh preview status=${refreshed.status} body=${refreshed.text}`);
-        assert.equal(envelope(refreshed).data.preview.validation?.status, "valid");
-      }
-      await sleep(100);
-    }
+    const commit = await confirmArchive(server.baseURL, sessionID, {
+      strategy: "update_thought", thought_id: sourceID, confirmed: true,
+    });
     assert.equal(commit.status, 200, `update commit status=${commit.status} body=${commit.text}`);
     assert.equal(envelope(commit).data.thought.id, sourceID, "update strategy must return the original thought id");
   });
@@ -864,27 +872,47 @@ test("API e2e", async (t) => {
     assert.equal(previewData.thought_id, sourceID);
     assert.ok(previewData.diff, "reopen update preview must include a diff");
 
-    const commitDeadline = Date.now() + 5000;
-    let commit;
-    for (;;) {
-      commit = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive`, "POST", {
-        body: { strategy: "update_thought", thought_id: sourceID, confirmed: true },
-      });
-      if (commit.status !== 409) break;
-      if (Date.now() > commitDeadline) break;
-      // Background enrichment can invalidate the preview between GET and
-      // confirmation. Refresh it before confirming the current state again.
-      if (envelope(commit).error?.code === "thoughtflow.archive.preview_stale") {
-        const refreshed = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive/preview`, "GET");
-        assert.equal(refreshed.status, 200, `refresh preview status=${refreshed.status} body=${refreshed.text}`);
-        assert.equal(envelope(refreshed).data.preview.validation?.status, "valid");
-      }
-      await sleep(100);
-    }
+    const commit = await confirmArchive(server.baseURL, newSession, {
+      strategy: "update_thought", thought_id: sourceID, confirmed: true,
+    });
     assert.equal(commit.status, 200, `commit status=${commit.status} body=${commit.text}`);
     const commitData = envelope(commit).data;
     assert.ok(commitData.thought && commitData.thought.id, "update commit must return thought.id");
     assert.equal(commitData.thought.id, sourceID, "update strategy must save back to the source thought");
+  });
+
+  await t.test("archive re-previews after a follow-up invalidates the previous preview", async () => {
+    const sessionID = `e2e-preview-required-${Date.now()}`;
+    const start = await request(server.baseURL, "/api/capture/sessions", "POST", {
+      body: { content: "Initial archive content." },
+      headers: { "X-Session-Id": sessionID },
+    });
+    assert.equal(start.status, 200, start.text);
+    const preview = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
+    assert.equal(preview.status, 200, preview.text);
+    assert.equal(envelope(preview).data.preview.validation?.status, "valid", preview.text);
+
+    // A user turn clears the persisted preview deterministically, covering the
+    // same API response observed during the macOS background-enrichment race.
+    const fact = "The confirmed budget is 314159 dollars.";
+    const followup = await request(server.baseURL, `/api/capture/sessions/${sessionID}/messages`, "POST", {
+      body: { role: "user", text: fact },
+    });
+    assert.equal(followup.status, 200, followup.text);
+    const body = { strategy: "new", confirmed: true };
+    const rejected = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive`, "POST", { body });
+    assert.equal(rejected.status, 409, rejected.text);
+    assert.equal(envelope(rejected).error?.code, "thoughtflow.archive.preview_required", rejected.text);
+
+    const commit = await confirmArchive(server.baseURL, sessionID, body);
+    assert.equal(commit.status, 200, commit.text);
+    const thoughtID = envelope(commit).data.thought.id;
+    const saved = await request(server.baseURL, `/api/thoughts/${thoughtID}`, "GET");
+    assert.equal(saved.status, 200, saved.text);
+    assert.ok(commit.refreshedPreview, "confirmation must regenerate the missing preview");
+    assert.notEqual(commit.refreshedPreview.context_hash, envelope(preview).data.preview.context_hash);
+    assert.equal(envelope(saved).data.content.ai_notes, commit.refreshedPreview.body.replace(/\n*$/, "\n"),
+      "archive must persist the regenerated, confirmed body exactly");
   });
 
   await t.test("topic candidates list returns matching unarchived sessions", async () => {

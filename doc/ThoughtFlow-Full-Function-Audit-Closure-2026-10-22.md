@@ -87,3 +87,13 @@ Workspace 幂等维护私有运行态的 `.gitignore`，保留用户已有规则
 - 语义/hybrid 仍是内部能力；公开 HTTP 搜索入口固定 keyword。专题提案有 API，尚无完整 Web 审核入口。Git 是本地提交，未增加远端 push/pull/冲突合并。
 - Origin/Host/CSRF、多用户鉴权、默认 Reader 外部协议兼容专项未列为本轮已通过验收；公开访问开关、备份及部署边界见使用文档。
 - 本次未推送远端，不能把基线 SHA 的旧 CI 记录作为本轮修复的验收结果。
+
+## 7. 22ab882 CI 后续：归档预览失效重试
+
+[CI 39745083446](https://github.com/muidea/thought-flow/actions/runs/39745083446) 的 Ubuntu job 通过，macOS job 在 API e2e 的 `reopen-session defaults to updating the source thought` 失败：归档返回 `thoughtflow.archive.preview_required`。原测试仅在 `preview_stale` 时刷新预览，对缺失预览则重复发送相同确认请求，直到 5 秒截止。此前开发侧 Linux 通过不能替代该 macOS 失败结果。
+
+`web/api.e2e.test.js` 的新建和更新归档场景现共用确认流程：缺失或过期的预览重新获取并要求验证通过；仅明确的后台处理/编辑锁冲突等待重试，其他冲突直接失败。服务端的预览校验保持不变。
+
+新增真实 API 回归先生成预览，再追加用户回合使预览失效，断言未重新预览的确认返回 409/preview_required；随后重新预览并归档，验证上下文 hash 改变、落盘正文与新预览逐字一致。测试不依赖复现 macOS 上的偶发调度。
+
+本次修复后本地完整 `make ci-check` 通过，API/SSE e2e 32 项通过。反向验证中临时移除 `preview_required` 恢复分支，新回归稳定失败，验证测试确实覆盖此次遗漏。macOS 验证仍需新提交后的远端 CI，不将本地结果称为 macOS 复测。
