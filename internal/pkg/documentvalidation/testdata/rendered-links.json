@@ -1,0 +1,86 @@
+[
+  {
+    "name": "decimal_entity",
+    "locator": "https://example.org/?to&#107;en=SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "hex_entity",
+    "locator": "https://example.org/?to&#x6b;en=SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "named_entity",
+    "locator": "https://example.org/?access&lowbar;token=SECRET",
+    "rendered": "https://example.org/?access_token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "escaped_punctuation",
+    "locator": "https://example.org/?access\\_token=SECRET",
+    "rendered": "https://example.org/?access_token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "encoded_delimiters",
+    "locator": "https://example.org/&quest;token&equals;SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "ampersand_entity",
+    "locator": "https://example.org/?x=1&amp;token=SECRET",
+    "rendered": "https://example.org/?x=1&token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "percent_key",
+    "locator": "https://example.org/?%74oken=SECRET",
+    "rendered": "https://example.org/?%74oken=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "safe_query",
+    "locator": "https://example.org/?x=1&amp;y=2",
+    "rendered": "https://example.org/?x=1&y=2",
+    "unsafe": false
+  },
+  {
+    "name": "safe_token_value",
+    "locator": "https://example.org/?note=token",
+    "rendered": "https://example.org/?note=token",
+    "unsafe": false
+  },
+  {
+    "name": "zero_padded_decimal",
+    "locator": "https://example.org/?to&#0107;en=SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "long_zero_padded_decimal",
+    "locator": "https://example.org/?to&#0000000107;en=SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "long_zero_padded_hex",
+    "locator": "https://example.org/?to&#x0000006b;en=SECRET",
+    "rendered": "https://example.org/?token=SECRET",
+    "unsafe": true
+  },
+  {
+    "name": "escaped_entity_is_literal",
+    "locator": "https://example.org/?to\\&#107;en=value",
+    "rendered": "https://example.org/?to&#107;en=value",
+    "unsafe": false
+  },
+  {
+    "name": "nested_entity_is_literal",
+    "locator": "https://example.org/?to&amp;#107;en=value",
+    "rendered": "https://example.org/?to&#107;en=value",
+    "unsafe": false
+  }
+]

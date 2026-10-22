@@ -81,6 +81,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	eventHub.Subscribe("thought.patched", m.service)
 	eventHub.Subscribe("thought.expanded", m.service)
 	eventHub.Subscribe("thought.deleted", m.service)
+	eventHub.Subscribe("topic.created", m.service)
 	eventHub.Subscribe("topic.updated", m.service)
 	return nil
 }

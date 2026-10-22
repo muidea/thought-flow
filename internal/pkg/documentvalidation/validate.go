@@ -20,7 +20,7 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
-const Version = "final-body-ast-v2.4"
+const Version = "final-body-ast-v2.5"
 const ReviewPolicyVersion = "review-v1"
 
 var citations = regexp.MustCompile(`\[(S[0-9]+)\]`)
@@ -97,9 +97,9 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 		}
 		switch link := n.(type) {
 		case *ast.Link:
-			links = append(links, string(link.Destination))
+			links = append(links, MarkdownLocator(string(link.Destination)))
 		case *ast.Image:
-			links = append(links, string(link.Destination))
+			links = append(links, MarkdownLocator(string(link.Destination)))
 		case *ast.AutoLink:
 			links = append(links, string(link.URL(body)))
 		}

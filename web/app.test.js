@@ -3447,6 +3447,38 @@ function deferredAPI() {
   const pending = [];
   return { pending, fetch: (url, options) => new Promise((resolve) => pending.push({ url: String(url), options, respond: (data) => resolve({ ok: true, json: async () => ({ data }) }) })) };
 }
+test("SSE context replies cannot restore old messages or preview after A-B-A", async () => {
+  const requests = deferredAPI();
+  const app = loadAppFunctionsWith({ fetch: requests.fetch });
+  app.appState.capture.sessionId = "A";
+  app.appState.capture.sessions = [{ sessionId: "A", messages: [] }, { sessionId: "B", messages: [] }];
+  const old = app.handleCaptureEvent("scratchpad.context_updated", JSON.stringify({ resource_id: "A" }));
+  app.switchCaptureSession("B");
+  app.switchCaptureSession("A");
+  const current = { session_id: "A", title: "current", messages: [{ role: "user", text: "current" }], archive_preview: { title: "current", body: "current preview" } };
+  requests.pending[2].respond(current);
+  requests.pending[1].respond({ session_id: "B", messages: [] });
+  await new Promise((resolve) => setImmediate(resolve));
+  const before = JSON.stringify(app.appState.capture);
+  requests.pending[0].respond({ session_id: "A", title: "stale", messages: [{ role: "user", text: "stale" }], archive_preview: { title: "stale", body: "stale preview" } });
+  await old;
+  assert.equal(JSON.stringify(app.appState.capture), before);
+  assert.equal(app.appState.capture.activeScratchpad.title, "current");
+  assert.equal(app.appState.capture.archivePreview.body, "current preview");
+});
+
+test("Markdown destination fixtures match the actual embedded renderer", () => {
+  const cases = JSON.parse(fs.readFileSync(path.join(__dirname, "../internal/pkg/documentvalidation/testdata/rendered-links.json"), "utf8"));
+  const app = loadAppFunctions();
+  for (const tc of cases) {
+    for (const node of ["![diagram](URL)", "[link](URL)", "# [Title](URL)", "[link][ref]\n\n[ref]: URL"]) {
+      const html = app.renderMarkdown(node.replaceAll("URL", tc.locator));
+      const expected = tc.rendered.replaceAll("&", "&amp;");
+      assert.ok(html.includes(`="${expected}"`), `${tc.name}: ${html}`);
+    }
+  }
+});
+
 test("capture selection rejects stale history and message responses including A-B-A", async () => {
   const requests = deferredAPI();
   const app = loadAppFunctionsWith({ fetch: requests.fetch });

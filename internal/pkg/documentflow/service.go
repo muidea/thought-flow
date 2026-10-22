@@ -806,7 +806,7 @@ func safeInputs(d documentstore.RevisionData) error {
 		return documentstore.ErrInvalid
 	}
 	for _, source := range d.Sources.Sources {
-		if documentvalidation.SensitiveLocator(source.Locator) || strings.ContainsAny(source.Locator, "\r\n") {
+		if documentvalidation.SensitiveLocator(source.Locator) || documentvalidation.SensitiveLocator(documentvalidation.MarkdownLocator(source.Locator)) || strings.ContainsAny(source.Locator, "\r\n") {
 			return fmt.Errorf("%w: credential-bearing source", documentstore.ErrInvalid)
 		}
 	}

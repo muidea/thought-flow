@@ -89,6 +89,8 @@ async function startServer(fixture = null) {
     "[search]",
     'duckdb_path = "thoughtflow.duckdb"',
     'default_mode = "hybrid"',
+    "[document_profiles]",
+    `custom_dir = ${JSON.stringify(path.join(configDir, "document-formats"))}`,
     "",
   ].join("\n");
   await fsp.writeFile(path.join(configDir, "application.toml"), config, "utf8");
@@ -474,6 +476,57 @@ test("API e2e", async (t) => {
     const proposals = await request(server.baseURL, `/api/topics/${topicId}/weave-proposals`, "GET");
     assert.equal(proposals.status, 200);
     assert.ok(Array.isArray(envelope(proposals).data));
+  });
+
+  await t.test("topic creation and refresh synchronize exact search membership", async () => {
+    const seeds = [
+      { title: "topic-created-member", content: "topicindexalpha unique existing member" },
+      { title: "topic-refreshed-member", content: "topicindexbeta unique refreshed member" },
+    ];
+    const ids = [];
+    const paths = [];
+    for (const seed of seeds) {
+      const created = await request(server.baseURL, "/api/thoughts", "POST", { body: { type: "text", ...seed } });
+      assert.equal(created.status, 202, created.text);
+      ids.push(envelope(created).data.thought.id);
+      paths.push(path.join(server.contentDir, envelope(created).data.thought.path));
+      await waitForSearchHit(server.baseURL, `/api/search?q=${seed.content.split(" ")[0]}`, seed.title);
+    }
+    const created = await request(server.baseURL, "/api/topics", "POST", {
+      body: { name: "Exact topic index", rules: { keywords: { any: ["topicindexalpha"] } }, auto_weave: true },
+    });
+    assert.equal(created.status, 201, created.text);
+    const topic = envelope(created).data;
+    assert.ok(topic.members.includes(ids[0]), created.text);
+    await waitForSearchHit(server.baseURL, `/api/search?q=topicindexalpha&topic_id=${topic.id}`, seeds[0].title);
+
+    // External Markdown edits emit no thought events. Only the background
+    // topic refresh below can repair membership metadata in the search index.
+    await fsp.appendFile(paths[1], "\n\ntopicindexalpha\n");
+    await fsp.rm(paths[0]);
+    const refreshed = await request(server.baseURL, `/api/topics/${topic.id}/refresh`, "POST", {});
+    assert.equal(refreshed.status, 202, refreshed.text);
+    await waitForSearchHit(server.baseURL, `/api/search?q=topicindexbeta&topic_id=${topic.id}`, seeds[1].title);
+    const old = await request(server.baseURL, `/api/search?q=topicindexalpha&topic_id=${topic.id}`, "GET");
+    assert.equal(old.status, 200, old.text);
+    assert.equal(envelope(old).data.results.length, 0, "refresh must remove obsolete search membership");
+  });
+
+  await t.test("document profile republishing returns a conflict without overwriting", async () => {
+    const content = fs.readFileSync(path.join(REPO_ROOT, "assets/documentformats/note-v1.md"), "utf8").replace("builtin.note", "custom.e2e-profile");
+    const first = await request(server.baseURL, "/api/document-profiles/publish", "POST", { body: { content } });
+    assert.equal(first.status, 201, first.text);
+    const duplicate = await request(server.baseURL, "/api/document-profiles/publish", "POST", {
+      body: { content: content.replace("通用笔记", "Changed profile title") },
+    });
+    assert.equal(duplicate.status, 409, duplicate.text);
+    assert.equal(envelope(duplicate).error.code, "thoughtflow.profile.conflict");
+    const saved = await request(server.baseURL, "/api/document-profiles/custom.e2e-profile?version=1", "GET");
+    assert.equal(saved.status, 200, saved.text);
+    assert.deepEqual(envelope(saved).data.ref, envelope(first).data.ref);
+    assert.equal(envelope(saved).data.name, envelope(first).data.name);
+    const invalid = await request(server.baseURL, "/api/document-profiles/publish", "POST", { body: { content: "invalid" } });
+    assert.equal(invalid.status, 422, invalid.text);
   });
 
   await t.test("topics weave preview + accept round-trip", async () => {
@@ -1064,6 +1117,47 @@ test("API e2e", async (t) => {
     assert.equal(get.status, 404, `deleted thought get status=${get.status} body=${get.text}`);
   });
 
+
+  await t.test("encoded rendered links block validation and cannot be confirmed into final documents", async () => {
+    const profiles = await request(server.baseURL, "/api/document-profiles", "GET");
+    const profile = envelope(profiles).data.profiles.find((p) => p.ref.family === "design");
+    const parameters = Object.fromEntries(profile.inputs.map((input) => [input.key, "confirmed input"]));
+    const sections = profile.sections.map((section) => `## ${profile.validation.section_headings[section.key]}\n\nG1 D1 T1: failure recovery. Evidence [S1].`).join("\n\n");
+    const body = `# Link validation\n\n${sections}\n\n## 参考资料\n\n- [S1] Source: https://example.org/evidence\n`;
+    const created = await request(server.baseURL, "/api/thoughts", "POST", {
+      body: { type: "text", title: "Link validation", content: body, document_profile: profile.ref, document_parameters: parameters },
+    });
+    assert.equal(created.status, 202, created.text);
+    const base = `/api/documents/${envelope(created).data.thought.id}`;
+    const fixtures = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "internal/pkg/documentvalidation/testdata/rendered-links.json"), "utf8"));
+    for (const tc of fixtures) {
+      const current = await request(server.baseURL, base, "GET");
+      assert.equal(current.status, 200, current.text);
+      const edited = await request(server.baseURL, base + "/revisions", "POST", {
+        headers: { "If-Match": String(envelope(current).data.head.generation) },
+        body: { body: body + `\n![diagram](${tc.locator})\n` },
+      });
+      assert.equal(edited.status, 201, edited.text);
+      const snapshot = envelope(edited).data;
+      const headers = { "If-Match": String(snapshot.head.generation) };
+      const validated = await request(server.baseURL, base + "/validate", "POST", {
+        headers, body: { revision_id: snapshot.head.working_revision_id, review_mode: "manual" },
+      });
+      assert.equal(validated.status, 200, validated.text);
+      const report = envelope(validated).data;
+      assert.equal(report.issues.some((issue) => issue.code === "unsafe_link"), tc.unsafe, `${tc.name}: ${validated.text}`);
+      assert.ok(!validated.text.includes("SECRET"), "validation diagnostics must redact credentials");
+      if (!tc.unsafe) continue;
+      const finalized = await request(server.baseURL, base + "/finalize", "POST", {
+        headers,
+        body: { revision_id: report.revision_id, report_id: report.report_id, operation_id: tc.name, delivery_level: "proposal",
+          confirmations: report.issues.map((issue) => ({ issue_id: issue.id, reason: "Attempt to confirm all issues." })) },
+      });
+      assert.equal(finalized.status, 422, finalized.text);
+      const exported = await request(server.baseURL, `${base}/revisions/${report.revision_id}/export?mode=final`, "GET");
+      assert.equal(exported.status, 422, exported.text);
+    }
+  });
 
   await t.test("typed documents freeze edits, manual reviews, final versions and exact exports", async () => {
     const profilesRes=await request(server.baseURL,"/api/document-profiles","GET");

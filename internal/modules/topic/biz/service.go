@@ -1181,7 +1181,7 @@ func (s *Service) refreshTopicJob(job models.Job) {
 	job, _ = s.jobs.MarkSucceeded(job, "topic refreshed")
 	observability.AddTopicWeave(uint64(count))
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, map[string]any{"topic": topic, "matched_count": count}))
+	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, topic))
 	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedThoughtPaths...))
 }
 

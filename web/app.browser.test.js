@@ -1198,6 +1198,86 @@ test("scratchpad.context_updated event drives context card re-render via SSE", a
   }
 });
 
+test("SSE context response arriving after A-B-A preserves the latest conversation and preview", async (t) => {
+  const server = await startFixtureServer();
+  t.after(() => server.close());
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  const target = browserTargets.find((item) => item.name === "chrome");
+  if (!target || !chromePath) {
+    t.skip("Chrome executable not found");
+    return;
+  }
+  const browser = await target.launch(viewports()[0]);
+  try {
+    const page = await connectPage(browser);
+    await page.send("Page.enable");
+    await page.navigate(`${baseURL}/?lang=en-US#/capture`);
+    await page.waitForExpression(() => window.__thoughtflowReady === true);
+    await waitForFixtureEventClient(baseURL);
+    await page.evaluate(async () => {
+      window.fixtureAPI = async (path, options = {}) => {
+        const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options.headers } });
+        if (!response.ok) throw new Error(`fixture status=${response.status}`);
+        if (response.status === 204) return null;
+        return (await response.json()).data;
+      };
+      for (const id of ["A", "B"]) {
+        await window.fixtureAPI("/api/capture/sessions", { method: "POST", headers: { "X-Session-Id": id }, body: JSON.stringify({ content: `Original ${id}` }) });
+      }
+      await window.fixtureAPI("/api/capture/sessions/A/archive/preview");
+      document.querySelector("#capture-sessions-toggle").click();
+    });
+    await page.waitForExpression(() => !!document.querySelector('.tf-sessions-open[data-session-id="A"]'));
+    await page.evaluate(() => document.querySelector('.tf-sessions-open[data-session-id="A"]').click());
+    await page.waitForExpression(() => document.querySelector("#capture-conversation").textContent.includes("Original A"));
+    await page.evaluate(async () => {
+      // Hold the real GET snapshot fetched by the next SSE event. Later GETs
+      // remain free to return a new snapshot when the user selects A again.
+      const originalFetch = window.fetch;
+      let held = false;
+      window.fetch = async (input, options) => {
+        const response = await originalFetch(input, options);
+        if (input !== "/api/capture/sessions/A" || held) return response;
+        held = true;
+        const payload = await response.json();
+        const gate = new Promise((resolve) => { window.releaseDelayedContext = resolve; });
+        window.delayedContextReady = true;
+        return { ok: response.ok, json: async () => { await gate; return payload; } };
+      };
+      await window.fixtureAPI("/api/test/emit", { method: "POST",
+        body: JSON.stringify({ type: "scratchpad.context_updated", payload: { resource_id: "A", payload: { session_id: "A" } } }) });
+    });
+    await page.waitForExpression(() => window.delayedContextReady === true);
+    await page.evaluate(() => {
+      document.querySelector("#capture-sessions-toggle").click();
+      document.querySelector('.tf-sessions-open[data-session-id="B"]').click();
+    });
+    await page.waitForExpression(() => document.querySelector("#capture-conversation").textContent.includes("Original B"));
+    await page.evaluate(async () => {
+      await window.fixtureAPI("/api/capture/sessions/A/messages", { method: "POST", body: JSON.stringify({ role: "user", text: "Latest A follow-up" }) });
+      await window.fixtureAPI("/api/capture/sessions/A/archive/preview");
+      document.querySelector("#capture-sessions-toggle").click();
+      document.querySelector('.tf-sessions-open[data-session-id="A"]').click();
+    });
+    await page.waitForExpression(() => document.querySelector("#capture-archive-preview").textContent.includes("Latest A follow-up"));
+    const before = await page.evaluate(() => ({
+      preview: document.querySelector("#capture-archive-preview").textContent,
+      conversation: document.querySelector("#capture-conversation").textContent,
+    }));
+    assert.match(before.conversation, /Latest A follow-up/);
+    const after = await page.evaluate(async () => {
+      window.releaseDelayedContext();
+      // API decoding and the synchronous SSE state update finish in microtasks
+      // before the next paint. Compare the actual visible UI after two paints.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return { preview: document.querySelector("#capture-archive-preview").textContent, conversation: document.querySelector("#capture-conversation").textContent };
+    });
+    assert.deepEqual(after, before);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("scratchpad.committed mode=supplement switches activeThoughtId and anchors a new bubble", async (t) => {
   // Multi-thought flow: the same scratchpad session is committed a
   // second time with strategy=supplement, producing a fresh

@@ -26,7 +26,7 @@ func referenceLocators(n ast.Node, value string, body []byte) []string {
 		}
 		switch link := child.(type) {
 		case *ast.Link:
-			add(string(link.Destination))
+			add(MarkdownLocator(string(link.Destination)))
 		case *ast.AutoLink:
 			add(string(link.URL(body)))
 		case *ast.CodeSpan:
@@ -35,7 +35,7 @@ func referenceLocators(n ast.Node, value string, body []byte) []string {
 		return ast.WalkContinue, nil
 	})
 	for _, raw := range locatorText.FindAllString(value, -1) {
-		add(trimLocatorPunctuation(raw))
+		add(MarkdownLocator(trimLocatorPunctuation(raw)))
 	}
 	return out
 }

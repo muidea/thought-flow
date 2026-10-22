@@ -97,3 +97,20 @@ Workspace 幂等维护私有运行态的 `.gitignore`，保留用户已有规则
 新增真实 API 回归先生成预览，再追加用户回合使预览失效，断言未重新预览的确认返回 409/preview_required；随后重新预览并归档，验证上下文 hash 改变、落盘正文与新预览逐字一致。测试不依赖复现 macOS 上的偶发调度。
 
 本次修复后本地完整 `make ci-check` 通过，API/SSE e2e 32 项通过。反向验证中临时移除 `preview_required` 恢复分支，新回归稳定失败，验证测试确实覆盖此次遗漏。macOS 验证仍需新提交后的远端 CI，不将本地结果称为 macOS 复测。
+
+## 8. 5782cf9 复核后的四项修复
+
+本批仅处理该次复核指出的四项问题，保留第 6 节的范围边界，不据此宣称全部产品能力已经验收。
+
+| 复核项 | 本次修复 | 回归证据 |
+|---|---|---|
+| P1：链接校验与实际渲染解码不同 | Link/Image 目的地址先按 Web Markdown 渲染的一次性反转义规则还原，再检查协议、凭据、敏感查询参数及冻结来源对应关系；AutoLink 保持其字面 URL 语义。来源输入同样检查渲染后的地址；诊断先解码再脱敏，无法完整解析的查询拒绝。校验器版本升至 `final-body-ast-v2.5`，旧验证结果不能直接复用于新定稿 | `testdata/rendered-links.json` 的 14 组样本共用于 Go 校验、真实 markdown-it 渲染及 API e2e；含十进制/十六进制实体、前导零、命名实体、反斜杠、百分号、正常 URL 和保留为字面的嵌套实体。HTTP 验证返回硬错误，逐项确认仍不能定稿或导出 final；报告不包含测试凭据 |
+| P2：专题创建/刷新后搜索成员不同步 | Search 订阅 `topic.created`；后台刷新与其他专题更新统一发送 `models.Topic`，现有搜索消费者直接更新成员元数据 | API e2e 先建立可搜索笔记，再创建专题并验证 `topic_id` 结果；随后直接修改/删除工作区 Markdown，不发布 Thought 事件，手动刷新后验证新增成员可搜、旧成员被排除 |
+| P2：SSE 迟到响应覆盖 A→B→A 的最新状态 | `scratchpad.context_updated` 在请求前固定 session 与选择 epoch，响应后同时验证两者；失效响应不能替换消息、预览或触发自动归档 | Node VM 精确控制倒序响应；Chrome 通过真实会话抽屉切换 A→B→A，经 EventSource 收到事件后延迟旧 GET 返回，确认最新对话和预览保持不变 |
+| P2：模板发布冲突返回 422 | HTTP 使用 `errors.Is(ErrProfileConflict)`，返回 409 / `thoughtflow.profile.conflict`；格式非法仍返回 422 | Go HTTP handler 与真实 API e2e 均覆盖首次发布、同版本不同内容重复发布、重新读取原版本与非法模板；冲突后原名称和内容 hash 不变 |
+
+本批开发侧验证环境为 Linux、Go 1.24.13。最终完整 `make ci-check` 通过，包括全量 Go、build、Node 129 项、i18n 6 项、浏览器及 API/SSE e2e 35 项。浏览器 20 项通过、2 项跳过（Firefox/Safari 环境边界同第 5 节），新增 SSE 场景已实际运行 Chrome。另行运行 `documentvalidation`、`documentflow`、`documentprofile` 的 race 测试并通过，`git diff --check` 通过。
+
+专题 e2e 另做独立反向验证：通过 Go overlay 分别构建缺少 `topic.created` 订阅、恢复包装刷新载荷的临时二进制；新测试分别在创建成员、刷新成员的搜索断言处失败。两项反向验证均未修改实际工作树中的生产代码，临时测试文件已清理。
+
+以上是本批工作树的本地验证，未推送，未在本批新提交上运行远端 Ubuntu/macOS CI；不将 `5782cf9` 已通过的远端结果计为本批验证。

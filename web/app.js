@@ -5064,11 +5064,12 @@ async function handleCaptureEvent(type, rawData) {
   // the context block. Re-fetch the scratchpad and re-render.
   if (type === "scratchpad.context_updated") {
     if (!state.capture.sessionId || state.capture.sessionId !== sessionID) return;
+    const scope = captureRequestScope();
     let detail = null;
     try {
-      detail = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}`);
+      detail = await captureAPI(scope, `/api/capture/sessions/${encodeURIComponent(scope.sessionId)}`);
     } catch (_) { return; }
-    if (!detail || detail.session_id !== state.capture.sessionId) return;
+    if (!scope.isCurrent() || !detail || detail.session_id !== scope.sessionId) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
     replaceCaptureMessagesFromScratchpad(detail);

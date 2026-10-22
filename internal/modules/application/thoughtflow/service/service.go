@@ -1132,10 +1132,12 @@ func (s *Service) handlePublishDocumentProfile(ctx context.Context, res http.Res
 	profile, err := s.documentProfiles.Publish([]byte(body.Content))
 	if err != nil {
 		status := http.StatusUnprocessableEntity
-		if strings.Contains(err.Error(), "already exists") {
+		code := "thoughtflow.profile.invalid"
+		if errors.Is(err, documentprofile.ErrProfileConflict) {
 			status = http.StatusConflict
+			code = "thoughtflow.profile.conflict"
 		}
-		writeError(res, req, status, "thoughtflow.profile.invalid", err.Error())
+		writeError(res, req, status, code, err.Error())
 		return
 	}
 	writeJSON(res, req, http.StatusCreated, profile)

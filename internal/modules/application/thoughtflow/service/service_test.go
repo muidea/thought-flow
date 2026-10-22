@@ -67,6 +67,16 @@ func TestDocumentProfileHandlersListValidatePublishReloadAndGet(t *testing.T) {
 	if publishRes.Code != http.StatusCreated {
 		t.Fatalf("publish status=%d body=%s", publishRes.Code, publishRes.Body.String())
 	}
+	conflictRes := httptest.NewRecorder()
+	service.handlePublishDocumentProfile(ctx, conflictRes, httptest.NewRequest(http.MethodPost, "/api/document-profiles/publish", strings.NewReader(string(publishBody))))
+	if conflictRes.Code != http.StatusConflict || !strings.Contains(conflictRes.Body.String(), `"code":"thoughtflow.profile.conflict"`) {
+		t.Fatalf("republish status=%d body=%s", conflictRes.Code, conflictRes.Body.String())
+	}
+	invalidPublishRes := httptest.NewRecorder()
+	service.handlePublishDocumentProfile(ctx, invalidPublishRes, httptest.NewRequest(http.MethodPost, "/api/document-profiles/publish", strings.NewReader(`{"content":"invalid"}`)))
+	if invalidPublishRes.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid publish status=%d body=%s", invalidPublishRes.Code, invalidPublishRes.Body.String())
+	}
 
 	getRes := httptest.NewRecorder()
 	service.handleGetDocumentProfile(ctx, getRes, httptest.NewRequest(http.MethodGet, "/api/document-profiles/custom.api-note?version=1", nil))
