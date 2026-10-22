@@ -41,6 +41,7 @@ type TopicSuggester interface {
 // links. The pipeline is best-effort — any sub-stage failure is
 // recorded as an ErrorRef but does not block the others.
 type Service struct {
+	runner     *jobstore.Runner
 	workspace  *models.Workspace
 	jobs       *jobstore.Store
 	eventHub   event.Hub
@@ -85,6 +86,7 @@ const defaultExpandTimeout = 30 * time.Second
 // the first job runs.
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.ExpandProvider, fetcher *webfetch.Fetcher, locker *thoughtlock.Locker) *Service {
 	return &Service{
+		runner:     jobstore.NewRunner(jobs),
 		workspace:  workspace,
 		jobs:       jobs,
 		eventHub:   eventHub,
@@ -128,7 +130,7 @@ func (s *Service) resolveSearcher() Searcher {
 		return s.searcher
 	}
 	if s.searcherFn != nil {
-		s.searcher = s.searcherFn()
+		return s.searcherFn()
 	}
 	return s.searcher
 }
@@ -138,7 +140,7 @@ func (s *Service) resolveTopicSuggester() TopicSuggester {
 		return s.topicSuggester
 	}
 	if s.topicFn != nil {
-		s.topicSuggester = s.topicFn()
+		return s.topicFn()
 	}
 	return s.topicSuggester
 }
@@ -174,31 +176,20 @@ func (s *Service) ExpandAsync(thoughtID string) (models.Job, error) {
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
-	job, err := s.jobs.Create(models.JobTypeExpand, models.ResourceTypeThought, thoughtID, "expand queued")
-	if err != nil {
-		return models.Job{}, err
-	}
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	run := func() {
-		s.expandJob(job)
-	}
-	if s.background != nil {
-		if err := s.background.AsyncFunction(run); err == nil {
-			return job, nil
-		}
-	}
-	go run()
-	return job, nil
+	return s.runner.Start(models.JobTypeExpand, thoughtID, 1, func(ctx context.Context, job models.Job) {
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+		s.expandJobContext(ctx, job)
+	})
 }
 
-func (s *Service) expandJob(job models.Job) {
+func (s *Service) expandJob(job models.Job) { s.expandJobContext(context.Background(), job) }
+func (s *Service) expandJobContext(ctx context.Context, job models.Job) {
 	if s.locker != nil {
-		if err := s.locker.AcquireBackground(job.ResourceID, expanderSessionID, time.Second); err != nil {
-			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked by an active session")
-			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
+		release, err := s.locker.Lease(ctx, job.ResourceID, expanderSessionID+":"+job.ID)
+		if err != nil {
 			return
 		}
-		defer s.locker.Release(job.ResourceID, expanderSessionID)
+		defer release()
 	}
 
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, job.ResourceID)
@@ -212,7 +203,10 @@ func (s *Service) expandJob(job models.Job) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 
-	related, plan, nearTopics, followups, groupErr := s.runPipeline(context.Background(), thought, content)
+	related, plan, nearTopics, followups, groupErr := s.runPipeline(ctx, thought, content)
+	if ctx.Err() != nil {
+		return
+	}
 	if groupErr != nil {
 		// Soft failure: log to the thought's error list and continue
 		// persisting whatever partial result we have.
@@ -225,7 +219,18 @@ func (s *Service) expandJob(job models.Job) {
 	thought.URLFollowups = followups
 	thought.UpdatedAt = time.Now().UTC()
 
-	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
+	if err := markdown.UpdateThought(s.workspace.RootPath, thought.ID, func(current *models.Thought, _ *models.ThoughtContent) error {
+		current.RelatedThoughtIDs = thought.RelatedThoughtIDs
+		current.ExpansionPlan = thought.ExpansionPlan
+		current.SuggestedTopicIDs = thought.SuggestedTopicIDs
+		current.URLFollowups = thought.URLFollowups
+		if groupErr != nil {
+			current.Errors = replaceErrorRef(current.Errors, models.NewErrorRef("thoughtflow.expand.partial_failed", groupErr.Error(), false))
+		}
+		current.UpdatedAt = thought.UpdatedAt
+		thought = *current
+		return nil
+	}); err != nil {
 		errRef := models.NewErrorRef("thoughtflow.expand.write_failed", err.Error(), true)
 		failed, _ := s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, failed))
@@ -276,43 +281,47 @@ func (s *Service) runPipeline(ctx context.Context, thought models.Thought, conte
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	g, gctx := errgroup.WithContext(ctx)
+	var g errgroup.Group
+	gctx := ctx
 
-	var related []string
-	var plan string
-	var nearTopics []models.TopicMatchSuggestion
-	var followups []models.URLFollowup
+	related := append([]string(nil), thought.RelatedThoughtIDs...)
+	plan := thought.ExpansionPlan
+	nearTopics := make([]models.TopicMatchSuggestion, 0, len(thought.SuggestedTopicIDs))
+	for _, id := range thought.SuggestedTopicIDs {
+		nearTopics = append(nearTopics, models.TopicMatchSuggestion{TopicID: id})
+	}
+	followups := append([]models.URLFollowup(nil), thought.URLFollowups...)
 
 	g.Go(func() error {
 		r, err := s.expandRelated(gctx, thought, content)
-		related = r
 		if err != nil {
 			return fmt.Errorf("related: %w", err)
 		}
+		related = r
 		return nil
 	})
 	g.Go(func() error {
 		p, err := s.expandLLM(gctx, thought, content)
-		plan = p
 		if err != nil {
 			return fmt.Errorf("llm: %w", err)
 		}
+		plan = p
 		return nil
 	})
 	g.Go(func() error {
 		n, err := s.expandNearTopics(gctx, thought.ID)
-		nearTopics = n
 		if err != nil {
 			return fmt.Errorf("near_topics: %w", err)
 		}
+		nearTopics = n
 		return nil
 	})
 	g.Go(func() error {
 		f, err := s.expandURLFollowups(gctx, thought)
-		followups = f
 		if err != nil {
 			return fmt.Errorf("url_followups: %w", err)
 		}
+		followups = f
 		return nil
 	})
 
@@ -473,3 +482,10 @@ func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
 		Payload:        job,
 	}
 }
+
+func (s *Service) Recover() error {
+	return s.runner.Recover(models.JobTypeExpand, func(ctx context.Context, job models.Job) { s.expandJobContext(ctx, job) })
+}
+func (s *Service) Close() { s.runner.Close() }
+
+func (s *Service) Bind(ctx context.Context) { s.runner.Bind(ctx) }

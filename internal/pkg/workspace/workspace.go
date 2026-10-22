@@ -61,6 +61,9 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 			return nil, err
 		}
 	}
+	if err := ensurePrivateIgnores(ws); err != nil {
+		return nil, err
+	}
 	// Sweep any *.tmp leftovers from a previous crash of WriteThought.
 	// The in-memory thoughtlock resets on restart, so the lock map is
 	// consistent — the only thing that could be stale is a temp file

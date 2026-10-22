@@ -682,6 +682,28 @@ function toast(message) {
   toast.timer = window.setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+// Selection epochs also distinguish A → B → A from an earlier request for A.
+let captureSelectionEpoch = 0;
+let searchRequestEpoch = 0;
+let topicRequestEpoch = 0;
+let thoughtRequestEpoch = 0;
+let composeRequestEpoch = 0;
+function captureRequestScope() {
+  const epoch = captureSelectionEpoch;
+  const sessionId = state.capture.sessionId || "";
+  return { sessionId, isCurrent: () => epoch === captureSelectionEpoch && sessionId === (state.capture.sessionId || "") };
+}
+async function captureAPI(scope,path,options) {
+  try { return await api(path,options); }
+  catch (error) { if (scope.isCurrent()) throw error; return null; }
+}
+function beginCaptureSelection() {
+  captureSelectionEpoch++;
+  if (state.capture.activeThoughtId && window.tflowSessionLock) {
+    window.tflowSessionLock.release(state.capture.activeThoughtId, state.capture.sessionId);
+  }
+}
+
 async function api(path, options = {}) {
   const locale = window.tflow_i18n?.getLocale?.() || window.navigator?.language || "zh-CN";
   const { headers: requestHeaders, ...requestOptions } = options;
@@ -693,7 +715,11 @@ async function api(path, options = {}) {
   if (!response.ok || payload.error) {
     const message = payload.error?.message || response.statusText || t("toast.request_failed");
     const requestID = payload.request_id ? `${payload.request_id}: ` : "";
-    throw new Error(`${requestID}${message}`);
+    const error = new Error(`${requestID}${message}`);
+    error.code = payload.error?.code || "";
+    error.status = response.status;
+    error.requestID = payload.request_id || "";
+    throw error;
   }
   return payload.data;
 }
@@ -1309,6 +1335,15 @@ function renderComposeDrafts() {
   });
 }
 
+async function loadPrivacyReport() {
+  const node = $("#privacy-report");
+  if (!node) return;
+  try {
+    const report = await api("/api/system/privacy");
+    node.innerHTML = `<p>${escapeHTML(t("privacy.origin"))}</p>` + [report.llm, report.embedding, report.reader].filter(Boolean).map((surface) => `<p><strong>${escapeHTML(surface.kind)}</strong>: ${escapeHTML(t(surface.enabled ? "privacy.enabled" : "privacy.disabled"))}${surface.enabled ? ` · ${escapeHTML(surface.base_url || "")}` : ""}</p>`).join("");
+  } catch (_) { node.textContent = t("privacy.failed"); }
+}
+
 async function loadStatus() {
   try {
     const status = await api("/api/system/status");
@@ -1549,6 +1584,7 @@ function renderThoughtsList() {
 }
 
 function renderEmptyThoughtPanels() {
+  thoughtRequestEpoch++;
   const preview = $("#thought-preview");
   if (preview) preview.innerHTML = escapeHTML(t("empty.no_thought"));
   const detail = $("#thought-detail");
@@ -1875,8 +1911,10 @@ function navigateTopic(topicId) {
 }
 
 async function openTopic(topicId) {
+  const epoch = ++topicRequestEpoch;
   if (!topicId) return;
   const detail = await api(`/api/topics/${encodeURIComponent(topicId)}`);
+  if (epoch !== topicRequestEpoch) return;
   state.activeTopicId = topicId;
   state.activeTopicDetail = detail;
   // Topic detail / rules are tabs inside the topics
@@ -1901,12 +1939,14 @@ async function loadTopicCandidates(topicId = state.activeTopicId) {
   if (!topicId) return [];
   try {
     const candidates = await api(`/api/topics/${encodeURIComponent(topicId)}/candidates`);
+    if (topicId !== state.activeTopicId) return [];
     renderTopicCandidatesInto(candidates || []);
     return candidates || [];
   } catch (error) {
     // The candidate list is best-effort observability — a transient
     // failure should not break the topic detail view. Surface the
     // error in the candidate panel so the user can retry.
+    if (topicId !== state.activeTopicId) return [];
     const node = $("#topic-candidates");
     if (node) node.innerHTML = `<div class="tf-empty">${escapeHTML(t("toast.request_failed"))}: ${escapeHTML(error.message)}</div>`;
     return [];
@@ -2687,17 +2727,21 @@ function renderCaptureContextPanel() {
 }
 
 async function changeCaptureProfile(profileID, version = 0) {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   const sessionID = state.capture.sessionId;
   if (!sessionID || !profileID) return;
   const hadPreview = Boolean(state.capture.archivePreview);
-  const scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(sessionID)}/profile`, {
+  const scratchpad = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(sessionID)}/profile`, {
     method: "POST",
     body: JSON.stringify({ profile_id: profileID, version }),
   });
+    if (!scope.isCurrent()) return;
   state.capture.activeScratchpad = scratchpad;
   state.capture.archivePreview = null;
   renderCaptureConversation();
   if (hadPreview) await previewArchive({ intent: "menu" });
+    if (!scope.isCurrent()) return;
 }
 
 function renderArchivePreviewBody(preview) {
@@ -2919,12 +2963,14 @@ async function refreshCaptureSessionsFromServer() {
 // example, the in-flight capture from a hot reload shouldn't be
 // overridden by a stale "last active" from disk.
 async function rehydrateActiveScratchpad() {
+  const scope = captureRequestScope();
   if (state.capture.activeScratchpad && state.capture.activeScratchpad.session_id) {
     return;
   }
   let lastActiveID = "";
   try {
     lastActiveID = await refreshCaptureSessionsFromServer();
+    if (!scope.isCurrent()) return;
   } catch (_) {
     return;
   }
@@ -2932,6 +2978,7 @@ async function rehydrateActiveScratchpad() {
   let detail;
   try {
     detail = await api(`/api/capture/sessions/${encodeURIComponent(lastActiveID)}`);
+    if (!scope.isCurrent()) return;
   } catch (_) {
     return;
   }
@@ -2995,11 +3042,17 @@ function closeCaptureSessionsDrawer() {
 function switchCaptureSession(sessionId) {
   const session = (state.capture.sessions || []).find((item) => item.sessionId === sessionId);
   if (!session) return;
+  beginCaptureSelection();
+  state.capture.activeScratchpad = null;
+  state.capture.activeSnapshot = null;
+  state.capture.archivePreview = null;
   state.capture.sessionId = session.sessionId;
   state.capture.activeThoughtId = session.thoughtId || "";
   state.capture.messages = Array.isArray(session.messages) ? session.messages.slice() : [];
+  const scope = captureRequestScope();
   api(`/api/capture/sessions/${encodeURIComponent(session.sessionId)}`)
     .then((detail) => {
+      if (!scope.isCurrent()) return;
       state.capture.activeScratchpad = detail;
       state.capture.archivePreview = detail.archive_preview || null;
       state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : state.capture.messages;
@@ -3027,6 +3080,7 @@ async function deleteCaptureSession(sessionId) {
   renderDashboardCaptureSessions();
   saveCaptureSessions();
   if (state.capture.sessionId === id) {
+    captureSelectionEpoch++;
     if (state.capture.activeThoughtId && window.tflowSessionLock) {
       window.tflowSessionLock.release(state.capture.activeThoughtId, id);
     }
@@ -3080,15 +3134,17 @@ function captureConversationTracksThought(thoughtId) {
 
 async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650, sessionId = state.capture.sessionId, messageKey = "", expectedMessageCount = 0 } = {}) {
   if (!sessionId) return;
+  const scope = captureRequestScope();
   for (let attempt = 0; attempt < attempts; attempt++) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    if (!scope.isCurrent()) return;
     let detail;
     try {
       detail = await api(`/api/capture/sessions/${encodeURIComponent(sessionId)}`);
     } catch (_) {
       return;
     }
-    if (!detail || detail.session_id !== sessionId || state.capture.sessionId !== sessionId) return;
+    if (!scope.isCurrent() || !detail || detail.session_id !== sessionId || state.capture.sessionId !== sessionId) return;
     const messageCount = Array.isArray(detail.messages) ? detail.messages.length : 0;
     if (expectedMessageCount > 0 && messageCount > 0 && messageCount < expectedMessageCount) return;
     state.capture.activeScratchpad = detail;
@@ -3162,19 +3218,23 @@ async function stageScratchpadTurn(text) {
 }
 
 async function appendSessionMessage(text) {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   const turnMessageKey = latestCaptureUserTurnKey();
   let scratchpad;
   const sessionId = state.capture.sessionId || state.capture.activeScratchpad?.session_id || "";
   if (sessionId) {
-    scratchpad = await api(`/api/capture/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    scratchpad = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(sessionId)}/messages`, {
       method: "POST",
       body: JSON.stringify({ role: "user", text }),
     });
+    if (!scope.isCurrent()) return;
   } else {
-    scratchpad = await api("/api/capture/sessions", {
+    scratchpad = await captureAPI(scope,"/api/capture/sessions", {
       method: "POST",
       body: JSON.stringify({ content: text }),
     });
+    if (!scope.isCurrent()) return;
   }
   if (!scratchpad || !scratchpad.session_id) throw new Error(t("toast.request_failed"));
   const previousThoughtId = state.capture.activeThoughtId || "";
@@ -3564,16 +3624,19 @@ async function dispatchThoughtCommand(parsed) {
 // CandidateBody directly, so there is no separate scratchpad PATCH
 // endpoint in the current PRD flow.
 async function patchScratchpad(draft) {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   const sp = state.capture.activeScratchpad;
   if (!sp) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
   }
   const ctx = mergeSessionContextDraft(sp.session_context || {}, draft, sp);
-  const next = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/context`, {
+  const next = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/context`, {
     method: "POST",
     body: JSON.stringify(ctx),
   });
+    if (!scope.isCurrent()) return;
   state.capture.activeScratchpad = next;
   state.capture.archivePreview = next.archive_preview || null;
   appendCaptureMessage({
@@ -3642,15 +3705,18 @@ async function resolveScratchpadTopic(topicRef) {
 }
 
 async function previewArchive({ intent = "menu", strategy = "", commitAfterPreview = false } = {}) {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
   }
   try {
-    await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/intent`, {
+    await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/intent`, {
       method: "POST",
       body: JSON.stringify({ intent }),
     });
+    if (!scope.isCurrent()) return;
     if (strategy === "update_thought" || strategy === "supplement") {
       const targetThoughtId = state.capture.activeScratchpad?.source_thought_id ||
         state.capture.archivePreview?.thought_id ||
@@ -3658,19 +3724,21 @@ async function previewArchive({ intent = "menu", strategy = "", commitAfterPrevi
         state.capture.activeScratchpad?.committed_thought_id ||
         "";
       if (targetThoughtId) {
-        const staged = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/strategy`, {
+        const staged = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/strategy`, {
           method: "POST",
           body: JSON.stringify({ strategy, thought_id: targetThoughtId }),
         });
+    if (!scope.isCurrent()) return;
         if (staged && staged.session_id) {
           state.capture.activeScratchpad = staged;
         }
       }
     }
     const suffix = strategy ? `?strategy=${encodeURIComponent(strategy)}` : "";
-    const result = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/archive/preview${suffix}`, {
+    const result = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/archive/preview${suffix}`, {
       method: "GET",
     });
+    if (!scope.isCurrent()) return;
     state.capture.archivePreview = result.preview || null;
     if (state.capture.activeScratchpad) {
       state.capture.activeScratchpad.archive_preview = state.capture.archivePreview;
@@ -3680,13 +3748,17 @@ async function previewArchive({ intent = "menu", strategy = "", commitAfterPrevi
     renderCaptureConversation();
     if (commitAfterPreview && state.capture.archivePreview?.validation?.status !== "invalid") {
       await commitScratchpad();
+    if (!scope.isCurrent()) return;
     }
   } catch (error) {
+    if (!scope.isCurrent()) return;
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
   }
 }
 
 async function commitScratchpad() {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
     return;
@@ -3694,11 +3766,13 @@ async function commitScratchpad() {
   let result;
   try {
     const preview = state.capture.archivePreview || {};
-    result = await api(`/api/capture/sessions/${encodeURIComponent(state.capture.sessionId)}/archive`, {
+    result = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/archive`, {
       method: "POST",
       body: JSON.stringify({ strategy: preview.strategy || "new", thought_id: preview.thought_id || "", confirmed: true }),
     });
+    if (!scope.isCurrent()) return;
   } catch (error) {
+    if (!scope.isCurrent()) return;
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
     return;
   }
@@ -3730,16 +3804,21 @@ async function commitScratchpad() {
 // deletes the previous draft. The local state is reset to match the
 // new session so the chat composer is in sync.
 async function openNewCaptureSession() {
+  beginCaptureSelection();
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   let next;
   try {
-    next = await api("/api/capture/sessions", {
+    next = await captureAPI(scope,"/api/capture/sessions", {
       method: "POST",
       body: JSON.stringify({ prev_session_id: state.capture.sessionId }),
     });
   } catch (error) {
+    if (!scope.isCurrent()) return;
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
     return;
   }
+  if (!scope.isCurrent()) return;
   state.capture.sessionId = (next && (next.session_id || next.SessionID)) || newCaptureSessionId();
   state.capture.activeThoughtId = "";
   state.capture.activeSnapshot = null;
@@ -3747,14 +3826,13 @@ async function openNewCaptureSession() {
   state.capture.archivePreview = null;
   state.capture.suggestion = null;
   state.capture.messages = [];
-  if (window.tflowSessionLock && state.capture.activeThoughtId) {
-    window.tflowSessionLock.release(state.capture.activeThoughtId, state.capture.sessionId);
-  }
   appendCaptureMessage({ role: "system", text: t("capture.command.new_session_started") });
   refreshActiveCaptureThought();
 }
 
 async function patchActiveThought(patch) {
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   const thoughtId = state.capture.activeThoughtId;
   if (!thoughtId) return;
   const sessionId = state.capture.sessionId;
@@ -3769,17 +3847,20 @@ async function patchActiveThought(patch) {
   let lastError;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`, {
+      snapshot = await captureAPI(scope,`/api/thoughts/${encodeURIComponent(thoughtId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", "X-Session-Id": sessionId },
         body: JSON.stringify(patch),
       });
+    if (!scope.isCurrent()) return;
       lastError = null;
       break;
     } catch (error) {
+    if (!scope.isCurrent()) return;
       lastError = error;
       if (error && error.code === "thoughtflow.capture.refining" && attempt === 0) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (!scope.isCurrent()) return;
         continue;
       }
       break;
@@ -3853,6 +3934,7 @@ async function retryRefineForActive() {
 }
 
 function newCaptureSession() {
+  beginCaptureSelection();
   if (state.capture.activeThoughtId && window.tflowSessionLock) {
     window.tflowSessionLock.release(state.capture.activeThoughtId, state.capture.sessionId);
   }
@@ -3915,6 +3997,7 @@ function bindCaptureSessionLock() {
 }
 
 async function runSearch(event) {
+  const epoch = ++searchRequestEpoch;
   if (event) event.preventDefault();
   const queryText = $("#search-query").value.trim();
   const tags = csv($("#search-tags").value);
@@ -3930,6 +4013,7 @@ async function runSearch(event) {
   query.set("page_size", "20");
   if (tags.length > 0) query.set("tags", tags.join(","));
   const response = await api(`/api/search?${query.toString()}`);
+  if (epoch !== searchRequestEpoch) return;
   state.lastResults = response.results || [];
   renderResults(response);
   // URL reflects the submitted query, not the typing-in-progress value.
@@ -3979,6 +4063,7 @@ function renderResults(response) {
       addToComposeSources([{
         source_type: "search_result",
         source_id: button.dataset.composeSourceId,
+        snippet: (state.lastResults || []).find((item) => (item.source_id || item.thought_id) === button.dataset.composeSourceId)?.snippet || "",
         title: button.dataset.composeSourceTitle || "",
       }], "search_result");
       openComposeSources();
@@ -4206,11 +4291,13 @@ function renderComposeSourcesItem(source) {
 }
 
 async function previewThought(thoughtId, options = {}) {
+  const epoch = ++thoughtRequestEpoch;
   if (!thoughtId) {
     renderEmptyThoughtPanels();
     return;
   }
   const snapshot = await api(`/api/thoughts/${encodeURIComponent(thoughtId)}`);
+  if (epoch !== thoughtRequestEpoch) return;
   state.activeThoughtId = thoughtId;
   state.activeThoughtSnapshot = snapshot;
   upsertThoughtRecord(snapshot.thought, { render: false });
@@ -4281,6 +4368,7 @@ async function deleteThought(thoughtId, title = "") {
 
 function applyScratchpadToCaptureState(sp, options = {}) {
   if (!sp || !sp.session_id) return;
+  beginCaptureSelection();
   state.capture.activeScratchpad = sp;
   state.capture.archivePreview = sp.archive_preview || null;
   state.capture.sessionId = sp.session_id;
@@ -4304,12 +4392,16 @@ function applyScratchpadToCaptureState(sp, options = {}) {
 }
 
 async function reopenThoughtInCapture(thoughtId) {
+  beginCaptureSelection();
+  captureSelectionEpoch++;
+  const scope = captureRequestScope();
   const id = String(thoughtId || "").trim();
   if (!id) return;
-  const result = await api(`/api/thoughts/${encodeURIComponent(id)}/reopen-session`, {
+  const result = await captureAPI(scope,`/api/thoughts/${encodeURIComponent(id)}/reopen-session`, {
     method: "POST",
     body: JSON.stringify({}),
   });
+  if (!scope.isCurrent()) return;
   const sp = result.scratchpad || result.Scratchpad || null;
   if (!sp || !sp.session_id) throw new Error(t("toast.request_failed"));
   applyScratchpadToCaptureState(sp, { thoughtId: id });
@@ -4518,6 +4610,7 @@ async function confirmDiscardComposeEdits(actionLabel = "") {
 }
 
 function clearComposeReader() {
+  composeRequestEpoch++;
   state.composeDraft = null;
   state.composeReader = {
     activeDraftID: "",
@@ -4684,20 +4777,24 @@ async function loadComposeDrafts() {
 }
 
 async function loadComposeDraft(draftId, options = {}) {
+  const epoch = ++composeRequestEpoch;
   if (!draftId) return;
   const force = Boolean(options.force);
   const reader = composeReaderState();
   if (!force && reader.activeDraftID && reader.activeDraftID !== draftId) {
     syncComposeLocalContentFromEditor();
     const discard = await confirmDiscardComposeEdits(t("compose.switch_draft_action"));
-    if (!discard) return;
+    if (!discard || epoch !== composeRequestEpoch) return;
   } else if (!force && reader.activeDraftID === draftId && isComposeReaderDirty()) {
     // Re-clicking the same draft with dirty edits: keep local content.
     renderComposeDrafts();
     renderComposeReader();
     return;
   }
+  const localAtRequest = composeReaderState().localContent;
   const draft = await api(`/api/compose/drafts/${encodeURIComponent(draftId)}`);
+  syncComposeLocalContentFromEditor();
+  if (epoch !== composeRequestEpoch || composeReaderState().localContent !== localAtRequest) return;
   state.composeDraft = draft;
   const content = renderComposeDraft(draft);
   const status = draft.status || "draft";
@@ -4795,6 +4892,7 @@ async function refreshTopic() {
 const DOMAIN_EVENT_TYPES = [
  "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted",
   "thought.captured",
+  "thought.deleted",
   "thought.refine_started",
   "thought.refined",
   "thought.refine_failed",
@@ -4844,6 +4942,16 @@ function connectEvents() {
  if(type.startsWith("document.")) handleDocumentEvent(event.data);
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
+      if (type === "thought.deleted") {
+        let deleted; try { deleted = JSON.parse(event.data).resource_id; } catch (_) {}
+        if (deleted) {
+          thoughtRequestEpoch++;
+          state.capture.thoughtSnapshots.delete(deleted);
+          state.selectedThoughts.delete(deleted);
+          if (state.activeThoughtId === deleted) { state.activeThoughtId = ""; state.activeThoughtSnapshot = null; renderEmptyThoughtPanels(); }
+          if (state.capture.activeThoughtId === deleted) { beginCaptureSelection(); state.capture.activeThoughtId = ""; state.capture.activeSnapshot = null; }
+        }
+      }
       if (type.startsWith("thought.")) loadThoughts().catch(() => {});
       if (type === "compose.draft_created" || type === "compose.draft_saved" || type === "compose.draft_deleted" || type === "job.updated") {
         handleComposeEvent(type, event.data);
@@ -5362,6 +5470,7 @@ async function boot() {
   state.route = parseRoute(window.location.hash);
   renderRoute();
   await loadStatus();
+  await loadPrivacyReport();
   await loadTopics();
   await loadComposeDrafts();
   await loadThoughts();

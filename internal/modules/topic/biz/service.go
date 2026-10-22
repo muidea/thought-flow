@@ -104,8 +104,10 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 		if domainEvent.ResourceType == models.ResourceTypeThought && domainEvent.ResourceID != "" {
 			_, _ = s.MatchThoughtAsync(domainEvent.ResourceID)
 		}
-	case "compose.draft_created", "compose.draft_saved":
-		_, _ = s.RefreshAllTopics(context.Background())
+	case models.EventThoughtDeleted:
+		_ = s.RemoveDeletedThought(context.Background(), domainEvent.ResourceID)
+	case "compose.draft_created", "compose.draft_saved", "compose.draft_deleted":
+		_ = s.RefreshCandidates(context.Background())
 	}
 	if result != nil {
 		result.Set(nil, nil)
@@ -117,8 +119,22 @@ func (s *Service) CreateTopic(ctx context.Context, req models.TopicCreateRequest
 	if err != nil {
 		return models.Topic{}, err
 	}
+	if err := s.refreshCandidateTopic(ctx, topic); err != nil {
+		return models.Topic{}, err
+	}
+	changedPaths := []string{}
+	if topic.AutoWeave {
+		updated, _, paths, err := s.store.RefreshWithMatcher(ctx, topic.ID, func(ctx context.Context, t models.Topic, thought models.Thought, c models.ThoughtContent) (models.TopicMembership, bool) {
+			return s.matchTopic(ctx, t, thought, c, 0)
+		})
+		if err != nil {
+			return models.Topic{}, err
+		}
+		topic = updated
+		changedPaths = paths
+	}
 	eventutil.Post(s.eventHub, topicEvent(models.EventTopicCreated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, topic))
-	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update"))
+	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedPaths...))
 	return topic, nil
 }
 
@@ -127,8 +143,22 @@ func (s *Service) UpdateTopic(ctx context.Context, id string, req models.TopicUp
 	if err != nil {
 		return models.Topic{}, err
 	}
+	if err := s.refreshCandidateTopic(ctx, topic); err != nil {
+		return models.Topic{}, err
+	}
+	changedPaths := []string{}
+	if topic.AutoWeave {
+		updated, _, paths, err := s.store.RefreshWithMatcher(ctx, topic.ID, func(ctx context.Context, t models.Topic, thought models.Thought, c models.ThoughtContent) (models.TopicMembership, bool) {
+			return s.matchTopic(ctx, t, thought, c, 0)
+		})
+		if err != nil {
+			return models.Topic{}, err
+		}
+		topic = updated
+		changedPaths = paths
+	}
 	eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, topic))
-	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update"))
+	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_update", changedPaths...))
 	return topic, nil
 }
 
@@ -275,7 +305,7 @@ func (s *Service) PreviewWeave(ctx context.Context, topicID string, thoughtID st
 	if err != nil {
 		return models.TopicWeaveProposal{}, err
 	}
-	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_weave_proposal"))
+	eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, topic, "topic_weave_proposal", "topics/"+topic.Slug+"/approvals/"+proposal.ID+".yaml"))
 	return proposal, nil
 }
 
@@ -314,9 +344,7 @@ func (s *Service) ListSessionCandidates(ctx context.Context, topicID string) ([]
 //     currently match the topic (the same data as
 //     ListSessionCandidates, exposed under the new DTO shape).
 //   - thought_reopen_session: scratchpad sessions flagged as
-//     "reopen"; today there is no separate reopen state, so the
-//     same candidate list is rendered with the reopen source label
-//     and the candidate's status field is left to the caller.
+//     reopened from a Thought, selected by SourceThoughtID lineage.
 //   - compose_draft: unsaved compose drafts that mention or source
 //     the topic, sourced through the injected compose draft provider.
 //
@@ -334,19 +362,14 @@ func (s *Service) ListCandidates(ctx context.Context, topicID string) ([]models.
 	candidates := make([]models.TopicCandidateImpact, 0)
 	if sessions, err := s.store.ListSessionCandidates(ctx, topicID); err == nil {
 		for _, session := range sessions {
+			source := models.TopicCandidateSourceCaptureSession
+			if s.scratchpad != nil {
+				if sp, err := s.scratchpad.Get(session.SessionID); err == nil && sp.SourceThoughtID != "" {
+					source = models.TopicCandidateSourceThoughtReopen
+				}
+			}
 			candidates = append(candidates, models.TopicCandidateImpact{
-				Source:      models.TopicCandidateSourceCaptureSession,
-				CandidateID: session.SessionID,
-				SessionID:   session.SessionID,
-				Title:       session.Title,
-				MatchType:   session.MatchType,
-				Score:       session.Score,
-				Status:      session.Status,
-				Reasons:     append([]string{}, session.Reasons...),
-				UpdatedAt:   session.UpdatedAt,
-			})
-			candidates = append(candidates, models.TopicCandidateImpact{
-				Source:      models.TopicCandidateSourceThoughtReopen,
+				Source:      source,
 				CandidateID: session.SessionID,
 				SessionID:   session.SessionID,
 				Title:       session.Title,
@@ -490,7 +513,7 @@ func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.To
 			return models.TopicDetail{}, err
 		}
 	} else {
-		updatedTopic, changed, err = s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document)
+		updatedTopic, changed, err = s.store.ApplyMembershipDocument(ctx, topic, thought, content, membership, req.Document, proposalBase(req.ProposalID, proposal)...)
 		if err != nil {
 			return models.TopicDetail{}, err
 		}
@@ -504,7 +527,7 @@ func (s *Service) AcceptWeave(ctx context.Context, topicID string, req models.To
 	if changed {
 		observability.IncrementTopicWeave()
 		eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, updatedTopic.ID, updatedTopic))
-		eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", thought.Path))
+		eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updatedTopic, "topic_update", append([]string{thought.Path}, proposalGitPath(updatedTopic, req.ProposalID)...)...))
 	}
 	return s.store.Detail(ctx, updatedTopic.ID)
 }
@@ -866,42 +889,82 @@ func (s *Service) sessionSemanticScore(ctx context.Context, topic models.Topic, 
 }
 
 func (s *Service) upsertSessionCandidate(ctx context.Context, topic models.Topic, candidate models.TopicSessionCandidate) error {
-	existing, err := s.store.ListSessionCandidates(ctx, topic.ID)
-	if err != nil {
-		return err
-	}
-	replaced := false
-	for idx := range existing {
-		if existing[idx].SessionID == candidate.SessionID {
-			existing[idx] = candidate
-			replaced = true
-			break
+	return s.store.UpdateSessionCandidates(ctx, topic.ID, func(existing []models.TopicSessionCandidate) ([]models.TopicSessionCandidate, error) {
+		for i := range existing {
+			if existing[i].SessionID == candidate.SessionID {
+				existing[i] = candidate
+				return existing, nil
+			}
 		}
-	}
-	if !replaced {
-		existing = append(existing, candidate)
-	}
-	return s.store.SaveSessionCandidates(ctx, topic.ID, existing)
+		return append(existing, candidate), nil
+	})
+}
+func (s *Service) removeSessionFromCandidateList(ctx context.Context, topic models.Topic, sessionID string) error {
+	return s.store.UpdateSessionCandidates(ctx, topic.ID, func(existing []models.TopicSessionCandidate) ([]models.TopicSessionCandidate, error) {
+		filtered := []models.TopicSessionCandidate{}
+		for _, candidate := range existing {
+			if candidate.SessionID != sessionID {
+				filtered = append(filtered, candidate)
+			}
+		}
+		return filtered, nil
+	})
 }
 
-func (s *Service) removeSessionFromCandidateList(ctx context.Context, topic models.Topic, sessionID string) error {
-	existing, err := s.store.ListSessionCandidates(ctx, topic.ID)
+// RefreshCandidates refreshes private projections only, never formal documents.
+func (s *Service) RefreshCandidates(ctx context.Context) error {
+	topics, err := s.store.List(ctx)
 	if err != nil {
 		return err
 	}
-	filtered := existing[:0]
-	changed := false
-	for _, c := range existing {
-		if c.SessionID == sessionID {
-			changed = true
-			continue
+	for _, topic := range topics {
+		if err = s.refreshCandidateTopic(ctx, topic); err != nil {
+			return err
 		}
-		filtered = append(filtered, c)
 	}
-	if !changed {
+	return nil
+}
+func (s *Service) refreshCandidateTopic(ctx context.Context, topic models.Topic) error {
+	if s.scratchpad == nil {
 		return nil
 	}
-	return s.store.SaveSessionCandidates(ctx, topic.ID, filtered)
+	return s.store.UpdateSessionCandidates(ctx, topic.ID, func(_ []models.TopicSessionCandidate) ([]models.TopicSessionCandidate, error) {
+		latest, err := s.store.Get(ctx, topic.ID)
+		if err != nil {
+			return nil, err
+		}
+		candidates := []models.TopicSessionCandidate{}
+		for _, summary := range s.scratchpad.List() {
+			sp, e := s.scratchpad.Get(summary.SessionID)
+			if e != nil {
+				return nil, e
+			}
+			if sp.CommittedThoughtID != "" {
+				continue
+			}
+			if candidate, ok := s.buildSessionCandidate(ctx, sp, latest); ok {
+				candidates = append(candidates, candidate)
+			}
+		}
+		return candidates, nil
+	})
+}
+func (s *Service) RemoveDeletedThought(ctx context.Context, thoughtID string) error {
+	topics, err := s.store.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, topic := range topics {
+		updated, changed, e := s.store.RemoveThought(ctx, topic.ID, thoughtID)
+		if e != nil {
+			return e
+		}
+		if changed {
+			eventutil.Post(s.eventHub, topicEvent(models.EventTopicUpdated, s.workspace.ID, models.ResourceTypeTopic, topic.ID, updated))
+			eventutil.Post(s.eventHub, gitTopicEvent(s.workspace.ID, updated, "source_deleted", "topics/"+topic.Slug+"/memberships/"+thoughtID+".yaml"))
+		}
+	}
+	return nil
 }
 
 func (s *Service) removeSessionFromAllCandidateLists(ctx context.Context, sessionID string) error {
@@ -1076,8 +1139,11 @@ func (s *Service) NearMissTopics(ctx context.Context, thoughtID string, topK int
 	}
 	suggestions := []models.TopicMatchSuggestion{}
 	for _, topic := range topics {
-		membership, _ := s.matchTopic(ctx, topic, thought, content, minScore)
-		if membership.Score <= 0 || membership.Score < minScore {
+		if contains(topic.Members, thought.ID) {
+			continue
+		}
+		membership, matched := s.matchTopic(ctx, topic, thought, content, minScore)
+		if matched || membership.Score <= 0 || membership.Score < minScore {
 			continue
 		}
 		suggestions = append(suggestions, models.TopicMatchSuggestion{
@@ -1104,6 +1170,11 @@ func (s *Service) refreshTopicJob(job models.Job) {
 		job, _ = s.jobs.MarkFailed(job, errRef)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 		eventutil.Post(s.eventHub, topicEvent(models.EventTopicRefreshFailed, s.workspace.ID, models.ResourceTypeTopic, job.ResourceID, errRef))
+		return
+	}
+	if err := s.refreshCandidateTopic(context.Background(), topic); err != nil {
+		job, _ = s.jobs.MarkFailed(job, models.NewErrorRef("thoughtflow.topic.candidates_failed", err.Error(), true))
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 		return
 	}
 	job.Message = "topic refreshed"
@@ -1138,10 +1209,16 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 		threshold = 0.75
 	}
 	score := 0.0
-	if cached, ok := s.cachedSemanticScore(ctx, thought.ID, topicEmbedding); ok {
-		score = cached
+	cachedRecord, cacheOK := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
+	cacheOK = cacheOK && cachedRecord.ContentHash == models.ContentHash(thoughtText) && cachedRecord.Dimension == len(cachedRecord.Vector) && len(cachedRecord.Vector) == len(topicEmbedding.Vector)
+	scoreCached, scoreOK := 0.0, false
+	if cacheOK {
+		scoreCached, scoreOK = s.cachedSemanticScore(ctx, thought.ID, topicEmbedding)
+	}
+	if scoreOK {
+		score = scoreCached
 	} else {
-		thoughtEmbedding, ok := s.cachedThoughtEmbedding(ctx, thought.ID, topicEmbedding.Model)
+		thoughtEmbedding, ok := cachedRecord, cacheOK
 		if ok && len(thoughtEmbedding.Vector) != len(topicEmbedding.Vector) {
 			ok = false
 		}
@@ -1240,18 +1317,8 @@ func semanticTopicText(topic models.Topic) string {
 	return strings.Join(parts, "\n")
 }
 
-func semanticThoughtText(thought models.Thought, content models.ThoughtContent) string {
-	return strings.Join([]string{
-		thought.UserTitle,
-		thought.ExtractedTitle,
-		thought.DisplayTitle,
-		thought.Summary,
-		strings.Join(thought.UserTags, " "),
-		strings.Join(thought.AITags, " "),
-		content.Original,
-		content.ExtractedContent,
-		content.AINotes,
-	}, "\n")
+func semanticThoughtText(t models.Thought, c models.ThoughtContent) string {
+	return models.EmbeddingText(t, c)
 }
 
 func cosine(left []float64, right []float64) float64 {
@@ -1306,8 +1373,9 @@ func gitTopicEvent(workspaceID string, topic models.Topic, reason string, extraP
 	paths := []string{
 		"topics/" + topic.Slug + "/topic.yaml",
 		"topics/" + topic.Slug + "/index.md",
-		"topics/" + topic.Slug + "/memberships",
-		"topics/" + topic.Slug + "/approvals",
+	}
+	for _, id := range topic.Members {
+		paths = append(paths, "topics/"+topic.Slug+"/memberships/"+id+".yaml")
 	}
 	paths = append(paths, extraPaths...)
 	return models.DomainEvent{
@@ -1433,4 +1501,18 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func proposalGitPath(topic models.Topic, id string) []string {
+	if id == "" {
+		return nil
+	}
+	return []string{"topics/" + topic.Slug + "/approvals/" + id + ".yaml"}
+}
+
+func proposalBase(id string, proposal models.TopicWeaveProposal) []string {
+	if id == "" {
+		return nil
+	}
+	return []string{proposal.BaseDocument}
 }

@@ -212,7 +212,7 @@ func TestExpandJobPartialFailureStillWrites(t *testing.T) {
 	}
 }
 
-func TestExpandJobSkipsWhenLocked(t *testing.T) {
+func TestExpandJobWaitsAndRunsAfterUnlock(t *testing.T) {
 	svc, _, _, _, locker, root := newTestService(t)
 	provider := svc.provider
 	_ = provider
@@ -226,12 +226,21 @@ func TestExpandJobSkipsWhenLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExpandAsync() error = %v", err)
 	}
+	duplicate, err := svc.ExpandAsync(job.ResourceID)
+	if err != nil || duplicate.ID != job.ID {
+		t.Fatalf("did not coalesce busy job: %+v %v", duplicate, err)
+	}
+	queued, _ := svc.jobs.Get(job.ID)
+	if queued.Status != models.JobStatusQueued {
+		t.Fatalf("busy job = %s", queued.Status)
+	}
+	locker.Release(job.ResourceID, "other-session")
 	final := waitForJob(t, filepath.Join(root, ".thoughtflow", "jobs"), job, 5*time.Second)
 	if final.Status != models.JobStatusSucceeded {
 		t.Fatalf("expected succeeded (skipped), got %q", final.Status)
 	}
-	if !contains(final.Message, "skipped") {
-		t.Fatalf("expected skipped message, got %q", final.Message)
+	if contains(final.Message, "skipped") {
+		t.Fatalf("job was skipped: %q", final.Message)
 	}
 }
 

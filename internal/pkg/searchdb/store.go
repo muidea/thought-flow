@@ -23,6 +23,7 @@ import (
 
 type Store struct {
 	db           *sql.DB
+	writeMu      sync.Mutex
 	ftsMu        sync.Mutex
 	ftsChecked   bool
 	ftsAvailable bool
@@ -309,24 +310,55 @@ func (s *Store) markFTSDirty() {
 	s.ftsMu.Unlock()
 }
 
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (s *Store) IndexThought(ctx context.Context, thought models.Thought, content models.ThoughtContent) error {
-	if thought.ID == "" {
-		return errors.New("thought id is required")
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.dropMutableHNSWIndexes(ctx); err != nil {
+		return err
+	}
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+	defer tx.Rollback()
+	if err := indexThought(ctx, tx, thought, content); err != nil {
+		return err
+	}
+	// Remove vectors for changed normalized content in the same transaction.
+	hash := models.ContentHash(models.EmbeddingText(thought, content))
+	if _, err = tx.ExecContext(ctx, `DELETE FROM thought_embeddings WHERE thought_id=? AND content_hash<>?`, thought.ID, hash); err != nil {
+		return err
+	}
+
+	for _, table := range tables {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table.name+` WHERE thought_id=? AND content_hash<>?`, thought.ID, hash); err != nil {
+			return err
 		}
-	}()
-	_, err = tx.ExecContext(ctx, `DELETE FROM thoughts WHERE id = ?`, thought.ID)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.markFTSDirty()
+	return nil
+}
+
+func indexThought(ctx context.Context, exec sqlExecutor, thought models.Thought, content models.ThoughtContent) error {
+	if thought.ID == "" {
+		return errors.New("thought id is required")
+	}
+	_, err := exec.ExecContext(ctx, `DELETE FROM thoughts WHERE id = ?`, thought.ID)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM thought_contents WHERE thought_id = ?`, thought.ID)
+	_, err = exec.ExecContext(ctx, `DELETE FROM thought_contents WHERE thought_id = ?`, thought.ID)
 	if err != nil {
 		return err
 	}
@@ -334,7 +366,7 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	if title == "" {
 		title = firstNonEmpty(thought.UserTitle, thought.ExtractedTitle, thought.ID)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO thoughts (
+	_, err = exec.ExecContext(ctx, `INSERT INTO thoughts (
 		id, path, title, type, url, created_at, updated_at, content_hash,
 		capture_status, refine_status, index_status, topic_status, topic_ids
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -347,20 +379,22 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	}
 	searchText := buildSearchText(thought, content)
 	tags := strings.Join(append(append([]string{}, thought.UserTags...), thought.AITags...), ",")
-	_, err = tx.ExecContext(ctx, `INSERT INTO thought_contents (
+	_, err = exec.ExecContext(ctx, `INSERT INTO thought_contents (
 		thought_id, search_text, summary, tags, updated_at
 	) VALUES (?, ?, ?, ?, ?)`, thought.ID, searchText, thought.Summary, tags, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	s.markFTSDirty()
+
 	return nil
 }
 
 func (s *Store) DeleteThought(ctx context.Context, thoughtID string) (err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.dropMutableHNSWIndexes(ctx); err != nil {
+		return err
+	}
 	thoughtID = strings.TrimSpace(thoughtID)
 	if thoughtID == "" {
 		return errors.New("thought id is required")
@@ -400,6 +434,23 @@ func (s *Store) DeleteThought(ctx context.Context, thoughtID string) (err error)
 }
 
 func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecord) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.dropMutableHNSWIndexes(ctx); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := indexEmbedding(ctx, tx, record); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func indexEmbedding(ctx context.Context, exec sqlExecutor, record models.EmbeddingRecord) error {
 	if record.ThoughtID == "" {
 		return errors.New("thought id is required")
 	}
@@ -419,66 +470,159 @@ func (s *Store) IndexEmbedding(ctx context.Context, record models.EmbeddingRecor
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_embeddings WHERE thought_id = ? AND model = ?`, record.ThoughtID, record.Model); err != nil {
+	if _, err := exec.ExecContext(ctx, `DELETE FROM thought_embeddings WHERE thought_id = ? AND model = ?`, record.ThoughtID, record.Model); err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO thought_embeddings (
+	_, err = exec.ExecContext(ctx, `INSERT INTO thought_embeddings (
 		thought_id, model, dimension, vector, content_hash, created_at
 	) VALUES (?, ?, ?, ?, ?, ?)`, record.ThoughtID, record.Model, record.Dimension, string(raw), record.ContentHash, record.CreatedAt)
 	if err != nil {
 		return err
 	}
-	_ = s.indexEmbeddingVector(ctx, record)
+	if err := indexEmbeddingVector(ctx, exec, record); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, error) {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_contents`); err != nil {
-		return 0, err
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM thoughts`); err != nil {
-		return 0, err
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM thought_embeddings`); err != nil {
-		return 0, err
-	}
-	tables, err := s.embeddingVectorTables(ctx)
-	if err != nil {
-		return 0, err
-	}
-	for _, table := range tables {
-		if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s`, table.name)); err != nil {
-			return 0, err
-		}
-	}
-	s.markFTSDirty()
-	count := 0
+// ReadWorkspace completes all fallible file reads before replacing the index.
+func ReadWorkspace(rootPath string) ([]models.ThoughtSnapshot, error) {
+	snapshots := []models.ThoughtSnapshot{}
 	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	err = filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if path == thoughtsPath && errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
 		if entry.IsDir() || filepath.Ext(path) != ".md" {
 			return nil
 		}
-		thoughtID := strings.TrimSuffix(filepath.Base(path), ".md")
-		thought, content, err := markdown.ReadThought(rootPath, thoughtID)
+		t, c, err := markdown.ReadThought(rootPath, strings.TrimSuffix(filepath.Base(path), ".md"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		if err := s.IndexThought(ctx, thought, content); err != nil {
-			return err
-		}
-		count++
+		snapshots = append(snapshots, models.ThoughtSnapshot{Thought: t, Content: c})
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
+	return snapshots, err
+}
+
+func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, error) {
+	snapshots, err := ReadWorkspace(rootPath)
+	if err != nil {
+		return 0, err
 	}
-	return count, err
+	embeddings := []models.EmbeddingRecord{}
+	for _, snapshot := range snapshots {
+		if cached, ok := s.GetEmbedding(ctx, snapshot.Thought.ID, ""); ok && cached.ContentHash == models.ContentHash(models.EmbeddingText(snapshot.Thought, snapshot.Content)) {
+			embeddings = append(embeddings, cached)
+		}
+	}
+	return len(snapshots), s.ReplaceWorkspace(ctx, snapshots, embeddings)
+}
+
+// ReplaceWorkspace publishes text and vectors together. A failed build leaves
+// the previous complete index usable by readers.
+func (s *Store) ReplaceWorkspace(ctx context.Context, snapshots []models.ThoughtSnapshot, embeddings []models.EmbeddingRecord) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.dropMutableHNSWIndexes(ctx); err != nil {
+		return err
+	}
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range append([]embeddingVectorTable{{name: "thought_contents"}, {name: "thoughts"}, {name: "thought_embeddings"}}, tables...) {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table.name); err != nil {
+			return err
+		}
+	}
+	for _, snapshot := range snapshots {
+		if err = indexThought(ctx, tx, snapshot.Thought, snapshot.Content); err != nil {
+			return err
+		}
+	}
+	for _, record := range embeddings {
+		if err = indexEmbedding(ctx, tx, record); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.markFTSDirty()
+	return nil
+}
+
+func (s *Store) UpdateTopicMembers(ctx context.Context, topic models.Topic) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id, topic_ids FROM thoughts`)
+	if err != nil {
+		return err
+	}
+	updates := map[string]string{}
+	members := map[string]bool{}
+	for _, id := range topic.Members {
+		members[id] = true
+	}
+	for rows.Next() {
+		var id, raw string
+		if err = rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		ids := []string{}
+		found := false
+		for _, value := range splitCSV(raw) {
+			if value == topic.ID {
+				found = true
+				if !members[id] {
+					continue
+				}
+			}
+			ids = append(ids, value)
+		}
+		if members[id] && !found {
+			ids = append(ids, topic.ID)
+		}
+		joined := strings.Join(ids, ",")
+		if joined != raw {
+			updates[id] = joined
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for id, raw := range updates {
+		if _, err = tx.ExecContext(ctx, `UPDATE thoughts SET topic_ids=? WHERE id=?`, raw, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ensureFTSIndex(ctx context.Context) bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.ftsMu.Lock()
 	defer s.ftsMu.Unlock()
 
@@ -523,7 +667,29 @@ func (s *Store) loadFTS(ctx context.Context) error {
 	})
 }
 
+// The bundled VSS extension can crash when a transaction deletes and reinserts
+// vectors covered by a persistent HNSW index. Treat HNSW as a disposable read
+// accelerator: drop it before mutations and lazily recreate it after commit.
+// Callers hold writeMu, which also serializes index creation.
+func (s *Store) dropMutableHNSWIndexes(ctx context.Context) error {
+	s.vssMu.Lock()
+	defer s.vssMu.Unlock()
+	tables, err := s.embeddingVectorTables(ctx)
+	if err != nil {
+		return err
+	}
+	for _, table := range tables {
+		if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS `+embeddingHNSWIndexName(table.dimension)); err != nil {
+			return err
+		}
+	}
+	s.hnswIndexes = map[int]bool{}
+	return nil
+}
+
 func (s *Store) ensureHNSWIndex(ctx context.Context, dimension int) bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tableName, err := embeddingVectorTableName(dimension)
 	if err != nil {
 		return false
@@ -628,12 +794,12 @@ func withNormalizedProxyEnv(run func() error) error {
 	return run()
 }
 
-func (s *Store) indexEmbeddingVector(ctx context.Context, record models.EmbeddingRecord) error {
+func indexEmbeddingVector(ctx context.Context, exec sqlExecutor, record models.EmbeddingRecord) error {
 	tableName, err := embeddingVectorTableName(record.Dimension)
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	if _, err := exec.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		thought_id VARCHAR,
 		model VARCHAR,
 		vector FLOAT[%d],
@@ -642,7 +808,7 @@ func (s *Store) indexEmbeddingVector(ctx context.Context, record models.Embeddin
 	)`, tableName, record.Dimension)); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE thought_id = ? AND model = ?`, tableName), record.ThoughtID, record.Model); err != nil {
+	if _, err := exec.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE thought_id = ? AND model = ?`, tableName), record.ThoughtID, record.Model); err != nil {
 		return err
 	}
 	args := []any{record.ThoughtID, record.Model}
@@ -650,7 +816,7 @@ func (s *Store) indexEmbeddingVector(ctx context.Context, record models.Embeddin
 		args = append(args, value)
 	}
 	args = append(args, record.ContentHash, record.CreatedAt)
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (
+	_, err = exec.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (
 		thought_id, model, vector, content_hash, created_at
 	) VALUES (?, ?, %s, ?, ?)`, tableName, arrayValueExpression(record.Dimension)), args...)
 	return err
@@ -848,8 +1014,8 @@ func searchFilterWhere(query models.SearchQuery) (string, []any) {
 	where := "1=1"
 	args := []any{}
 	if strings.TrimSpace(query.TopicID) != "" {
-		where = where + " AND lower(coalesce(t.topic_ids, '')) LIKE ?"
-		args = append(args, "%"+strings.ToLower(strings.TrimSpace(query.TopicID))+"%")
+		where = where + " AND list_contains(string_split(lower(coalesce(t.topic_ids, '')), ','), ?)"
+		args = append(args, strings.ToLower(strings.TrimSpace(query.TopicID)))
 	}
 	if len(query.Tags) > 0 {
 		tagClauses := []string{}
@@ -858,8 +1024,8 @@ func searchFilterWhere(query models.SearchQuery) (string, []any) {
 			if tag == "" {
 				continue
 			}
-			tagClauses = append(tagClauses, "lower(c.tags) LIKE ?")
-			args = append(args, "%"+strings.ToLower(tag)+"%")
+			tagClauses = append(tagClauses, "list_contains(string_split(lower(coalesce(c.tags, '')), ','), ?)")
+			args = append(args, strings.ToLower(tag))
 		}
 		if len(tagClauses) > 0 {
 			where = where + " AND (" + strings.Join(tagClauses, " OR ") + ")"

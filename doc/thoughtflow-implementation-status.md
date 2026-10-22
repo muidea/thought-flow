@@ -1,5 +1,8 @@
 # ThoughtFlow 实现状态
 
+当前事实与本轮证据以 [2026-10-22 全功能审计修复记录](ThoughtFlow-Full-Function-Audit-Closure-2026-10-22.md) 和 README 能力边界为准。下文包含历史阶段验收，不能把当时的 API、fallback store、锁跳过、重建行为或历史测试记录当作当前实现/本轮复测。当前使用 DuckDB 必选构建、独立 embedding provider、保留正文的专题更新和可恢复后台队列。
+
+
 > 本文记录当前代码相对 [功能设计](./thoughtflow-functional-design.md) 和 [业务模型定义](./thoughtflow-domain-models.md) 的收口状态。
 
 > **历史实现状态保留范围**（按 `doc/thoughtflow-code-convergence-todo.md` 第 8 节口径保留为"历史实现状态"，不再代表当前目标）：本文件中 `## 2026-06-09 M1 基线`、`## 2026-06-09 M2 基线`、`## 2026-06-09 M3 基线`、`## 2026-06-09 UI 基线`、`## 当前限制与环境说明` 整章，以及文件末尾 `## 附录 A：历史实现状态保留（旧版接口与 hash 路径名单）` 整章，均为"过去某时间点实现的样子"或"待对照/追溯的历史接口名单"，按 todo 第 8 节口径保留为"历史实现状态"，不再代表当前目标接口或当前可识别入口。`## 2026-06-13 目标设计刷新` 与 `## 2026-06-13 代码收口记录` 章节描述的是当前目标与本轮收口动作，措辞已使用通用路径/不出现具体旧接口与旧 hash 字面量。
@@ -98,18 +101,18 @@ go build ./cmd/thoughtflow
 9. `thought.refined` payload 携带 `EmbeddingRecord`，供 search 写入索引层。
    - SSE 事件流会保留 embedding 元数据但移除 vector，避免向前端推送大向量 payload。
 10. refiner 后台 Job 使用 `max_attempts=3`，retryable 的 URL 抓取失败或 AI transient provider 错误会进入 `retrying` 状态并再次 `running`；最终失败才发布 `thought.refine_failed`。
-    - 自动 refine 遇到已 refined 且 `content_hash` 与当前归档正文一致的 Thought 时，会跳过重复 AI/provider 调用并将 Job 标记为成功。
+    - 自动 refine 遇到已 refined 且 `last_refined_input_hash` 与当前实际提炼输入一致的 Thought 时，会跳过重复 AI/provider 调用并将 Job 标记为成功。
     - `POST /api/thoughts/{id}/retry-refine` 走强制 refine 路径，即使输入 hash 未变化也会重新执行。
 11. `search` 运行单元。
 12. `thought.captured` / `thought.refined` 触发后台 index Job。
-   - `topic.updated` 触发 workspace reindex，刷新专题过滤视图。
+   - `topic.updated` 只更新受影响的专题成员字段，不触发全库重建或 embedding。
 13. `GET /api/search`。
 14. `POST /api/system/reindex`。
 15. `POST /api/thoughts/{id}/retry-refine`。
 16. `search.index_updated`、`search.index_failed`、`search.reindex_started`、`search.reindex_finished` 事件。
-17. 索引成功后回写 `index_status: indexed` 并通知 git-sync。
-18. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，使用 `duckdb` build tag 启用。
-19. 默认构建使用 `internal/pkg/searchdb/store_fallback.go`，用于缺少 DuckDB CGO 链接环境时保持开发和测试可运行。
+17. 数据库成功后合并回写 `index_status`，不改变笔记更新时间。
+18. DuckDB 搜索实现位于 `internal/pkg/searchdb/store.go`，为所有构建的必选实现。
+19. 当前无 fallback store；构建与测试均需要 DuckDB CGO 链接环境。
 20. 搜索索引返回 `topics` 字段，并支持 `topic_id`、`tags`、`from` 和 `to` 过滤。
 21. `thought_embeddings` 支持写入 embedding vector、模型、维度和 content hash。
 22. `mode=semantic` / `mode=hybrid` 在 query vector 与 thought embedding 存在时计算 `semantic_score`，缺失时 hybrid 降级为关键词分。

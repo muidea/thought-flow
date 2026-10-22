@@ -86,13 +86,19 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 }
 
 func (m *Module) Run(ctx context.Context) *cd.Error {
-	_ = ctx
+	m.service.Bind(ctx)
+	if err := m.service.Recover(); err != nil {
+		return cd.WrapError(cd.Unexpected, err, "recover search index")
+	}
 	return nil
 }
 
 func (m *Module) Teardown(ctx context.Context) {
 	_ = ctx
 	setCurrent(nil)
+	if m.service != nil {
+		m.service.Close()
+	}
 	if m.store != nil {
 		_ = m.store.Close()
 	}

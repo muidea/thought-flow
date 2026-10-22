@@ -10,9 +10,9 @@
 2. Node.js `22.x`，用于嵌入式前端语法检查、组件测试和浏览器 smoke 测试。
 3. Git，用于自动提交 Markdown 变更。
 4. Google Chrome 或 Chromium，用于 `make browser-test`。
-5. C++ 链接环境，用于 `duckdb` build tag 测试。
+5. C/C++ 工具链及 CGO，用于 DuckDB 构建与测试。
 
-默认构建使用 fallback search store，可以不依赖 DuckDB CGO 链接环境。需要验证 DuckDB 实现时运行 `make test-duckdb` 或 `make check`。
+所有构建均使用 DuckDB，没有 fallback store 或 `duckdb` build tag。使用 `make test` / `make check` 验证后端。
 
 ## 2. 启动服务
 
@@ -42,6 +42,8 @@ go run ./cmd/thoughtflow
 ```
 
 ## 3. 工作区结构
+
+`--config-dir` 只定位配置；以下相对路径均相对于启动时工作目录，不相对于配置目录。
 
 默认工作区是：
 
@@ -273,7 +275,7 @@ GET  /api/thoughts/{id}
 POST /api/thoughts/{id}/retry-refine
 POST /api/thoughts/{id}/reopen-session
 
-# 对外内容 URL（仅在 server.public_thoughts_enabled=true 时注册；供外部搜索 / 爬取 / RAG 直接 GET 全文；默认 text/markdown，无 API envelope）
+# 对外内容 URL（始终注册，handler 根据 server.public_thoughts_enabled 动态允许或拒绝；供外部搜索 / 爬取 / RAG 直接 GET 全文；默认 text/markdown，无 API envelope）
 # ?format=html|json 或 Accept 协商；UI「分享链接」复制 {public_base_url}/p/thoughts/{id}
 GET  /p/thoughts/{id}
 

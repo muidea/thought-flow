@@ -363,7 +363,7 @@ func TestHandleSearchUsesKeywordModeForWebSearch(t *testing.T) {
 		workspace:     ws,
 		searchService: searchbiz.NewService(ws, jobstore.New(ws.JobsPath), store, nil, nil, staticEmbeddingProvider{vector: []float64{1, 0, 0}, model: "test-embedding"}, filepath.Join(ws.RuntimePath, "thoughtflow.duckdb")),
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rg&topic_id=other&page=1&page_size=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rg&page=1&page_size=20", nil)
 	res := httptest.NewRecorder()
 	service.handleSearch(ctx, res, req)
 	if res.Code != http.StatusOK {
@@ -380,6 +380,17 @@ func TestHandleSearchUsesKeywordModeForWebSearch(t *testing.T) {
 	}
 	if payload.Data.Results[0].ThoughtID != rgThought.ID {
 		t.Fatalf("thought id = %q, want %q", payload.Data.Results[0].ThoughtID, rgThought.ID)
+	}
+	filtered := httptest.NewRecorder()
+	service.handleSearch(ctx, filtered, httptest.NewRequest(http.MethodGet, "/api/search?q=rg&topic_id=missing", nil))
+	var narrowed struct {
+		Data models.SearchResultView `json:"data"`
+	}
+	if err := json.Unmarshal(filtered.Body.Bytes(), &narrowed); err != nil {
+		t.Fatal(err)
+	}
+	if narrowed.Data.Total != 0 {
+		t.Fatalf("topic filter ignored: %s", filtered.Body.String())
 	}
 }
 
@@ -1036,7 +1047,7 @@ func TestHandlePrivacyReportReflectsConfig(t *testing.T) {
 	if !strings.Contains(report.LLM.Hint, "https://api.openai.com") {
 		t.Fatalf("LLM hint missing base URL: %q", report.LLM.Hint)
 	}
-	if !strings.Contains(report.Embedding.Hint, "未配置 API key") {
+	if !strings.Contains(report.Embedding.Hint, "未配置") {
 		t.Fatalf("Embedding hint should mention unconfigured state: %q", report.Embedding.Hint)
 	}
 	// Action list should expose capture_message with the LLM surface.
@@ -1068,6 +1079,12 @@ func TestHandlePrivacyReportAllDisabled(t *testing.T) {
 	// Actions should not surface any external surface in the
 	// all-disabled case — UI badges fall back to "no external request".
 	for _, action := range report.Actions {
+		if action.Action == "url_capture" {
+			if len(action.Surfaces) != 1 || action.Surfaces[0] != "origin" {
+				t.Fatalf("URL origin disclosure missing: %+v", action)
+			}
+			continue
+		}
 		if len(action.Surfaces) != 0 {
 			t.Fatalf("action %q surfaces = %v, want empty", action.Action, action.Surfaces)
 		}
@@ -1386,7 +1403,7 @@ func TestHandleDeleteComposeDraft(t *testing.T) {
 
 	// Seed a ready draft via sync CreateDraft path used by the service.
 	draft, err := composeService.CreateDraft(ctx, models.ComposeRequest{
-		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "s-1", Title: "S"}},
+		Sources: []models.ComposeSource{{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "s-1", Title: "S", Snippet: "actual source excerpt"}},
 		Goal:    "delete me",
 		Format:  models.ComposeFormatSummary,
 	})

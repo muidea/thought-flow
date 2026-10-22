@@ -151,14 +151,7 @@ func (l *Locker) AcquireBackground(thoughtID, sessionID string, timeout time.Dur
 	return l.AcquireWithin(thoughtID, sessionID, timeout)
 }
 
-func isWorkflowSession(sessionID string) bool {
-	switch sessionID {
-	case RefinerSessionID, ExpanderSessionID, IndexerSessionID:
-		return true
-	default:
-		return false
-	}
-}
+func isWorkflowSession(id string) bool { return IsWorkflowSession(id) }
 
 // Heartbeat extends the lease for the existing holder. It is a no-op
 // (returns nil) when the lock is not held by sessionID, so callers may

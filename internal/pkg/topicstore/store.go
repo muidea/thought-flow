@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,6 +22,16 @@ import (
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/workspace"
 )
+
+var topicLocks sync.Map
+
+func (s *Store) lock(id string) func() {
+	root, _ := filepath.Abs(s.rootPath)
+	value, _ := topicLocks.LoadOrStore(root+"/"+Slugify(id), &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
+}
 
 type Store struct {
 	rootPath string
@@ -56,6 +67,8 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 		return models.Topic{}, errors.New("topic name is required")
 	}
 	slug := topicSlugFromName(name)
+	unlock := s.lock(slug)
+	defer unlock()
 	if slug == "" {
 		return models.Topic{}, errors.New("topic slug is empty")
 	}
@@ -93,6 +106,8 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 }
 
 func (s *Store) Update(ctx context.Context, id string, req models.TopicUpdateRequest) (models.Topic, error) {
+	unlock := s.lock(id)
+	defer unlock()
 	_ = ctx
 	topic, err := s.Get(ctx, id)
 	if err != nil {
@@ -461,6 +476,18 @@ func containsTopicKeyword(searchText, keyword string) bool {
 }
 
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
+	latest, err := s.Get(ctx, topic.ID)
+	if err != nil {
+		return models.Topic{}, false, err
+	}
+	thought, content, err = markdown.ReadThought(s.rootPath, thought.ID)
+	if err != nil {
+		return models.Topic{}, false, err
+	}
+
+	topic = latest
 	if contains(topic.Members, thought.ID) {
 		_, membershipChanged, err := s.upsertMembership(topic, thought.ID, membership, time.Now().UTC())
 		if err != nil {
@@ -511,6 +538,13 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 }
 
 func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (string, string, string, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
+	latest, err := s.Get(ctx, topic.ID)
+	if err != nil {
+		return "", "", "", err
+	}
+	topic = latest
 	if strings.TrimSpace(thought.ID) == "" {
 		return "", "", "", errors.New("thought id is required")
 	}
@@ -536,6 +570,8 @@ func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thoug
 }
 
 func (s *Store) SaveWeaveProposal(ctx context.Context, topic models.Topic, proposal models.TopicWeaveProposal) (models.TopicWeaveProposal, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
 	_ = ctx
 	now := time.Now().UTC()
 	proposal = normalizeWeaveProposal(topic, proposal, now)
@@ -597,6 +633,8 @@ func (s *Store) GetWeaveProposal(ctx context.Context, topicID string, proposalID
 }
 
 func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topic, proposalID string, document string) (models.TopicWeaveProposal, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
 	_ = ctx
 	proposal, err := s.readWeaveProposal(topic, proposalID)
 	if err != nil {
@@ -614,6 +652,13 @@ func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topi
 }
 
 func (s *Store) ApplyMembershipPatch(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, patch models.TopicDocumentPatch) (models.Topic, bool, string, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
+	latest, getErr := s.Get(ctx, topic.ID)
+	if getErr != nil {
+		return models.Topic{}, false, "", getErr
+	}
+	topic = latest
 	currentDocument, err := s.ReadDocument(ctx, topic.ID)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return models.Topic{}, false, "", err
@@ -625,11 +670,34 @@ func (s *Store) ApplyMembershipPatch(ctx context.Context, topic models.Topic, th
 	if err != nil {
 		return models.Topic{}, false, "", err
 	}
-	updatedTopic, changed, err := s.ApplyMembershipDocument(ctx, topic, thought, content, membership, document)
+	updatedTopic, changed, err := s.applyMembershipDocumentLocked(ctx, topic, thought, content, membership, document)
 	return updatedTopic, changed, document, err
 }
 
-func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string) (models.Topic, bool, error) {
+func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string, expectedDocument ...string) (models.Topic, bool, error) {
+	unlock := s.lock(topic.ID)
+	defer unlock()
+	latest, err := s.Get(ctx, topic.ID)
+	if err != nil {
+		return models.Topic{}, false, err
+	}
+	if !latest.UpdatedAt.Equal(topic.UpdatedAt) {
+		return models.Topic{}, false, errors.New("topic changed; refresh the proposal")
+	}
+	if len(expectedDocument) > 0 {
+		current, err := s.ReadDocument(ctx, topic.ID)
+		if err != nil {
+			return models.Topic{}, false, err
+		}
+		if current != expectedDocument[0] {
+			return models.Topic{}, false, errors.New("topic changed; refresh the proposal")
+		}
+	}
+
+	return s.applyMembershipDocumentLocked(ctx, latest, thought, content, membership, document)
+}
+
+func (s *Store) applyMembershipDocumentLocked(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string) (models.Topic, bool, error) {
 	if strings.TrimSpace(thought.ID) == "" {
 		return models.Topic{}, false, errors.New("thought id is required")
 	}
@@ -687,107 +755,124 @@ func (s *Store) Refresh(ctx context.Context, id string) (models.Topic, int, []st
 }
 
 func (s *Store) RefreshWithMatcher(ctx context.Context, id string, matcher MatchFunc) (models.Topic, int, []string, error) {
+	unlock := s.lock(id)
+	defer unlock()
 	topic, err := s.Get(ctx, id)
 	if err != nil {
 		return models.Topic{}, 0, nil, err
 	}
 	if matcher == nil {
-		matcher = func(_ context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent) (models.TopicMembership, bool) {
-			return s.MatchThought(topic, thought, content)
+		matcher = func(_ context.Context, t models.Topic, thought models.Thought, c models.ThoughtContent) (models.TopicMembership, bool) {
+			return s.MatchThought(t, thought, c)
 		}
 	}
-	previousMembers := append([]string{}, topic.Members...)
-	topic.Members = []string{}
-	topic.MemberCount = 0
-	topic.WordCount = 0
-	topic.LastActiveAt = nil
-	document := initialDocument(topic)
-	matchedThoughts := map[string]models.Thought{}
-	matchedContents := map[string]models.ThoughtContent{}
-	matchedMemberships := map[string]models.TopicMembership{}
-	thoughtsRoot := filepath.Join(s.rootPath, "thoughts")
+	previous := append([]string{}, topic.Members...)
+	document, err := s.ReadDocument(ctx, id)
+	if os.IsNotExist(err) {
+		document = initialDocument(topic)
+	} else if err != nil {
+		return models.Topic{}, 0, nil, err
+	}
+	found := map[string]bool{}
+	changedPaths := []string{}
 	count := 0
-	err = filepath.WalkDir(thoughtsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(filepath.Join(s.rootPath, "thoughts"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if os.IsNotExist(walkErr) {
+			return nil
+		}
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || filepath.Ext(path) != ".md" {
 			return nil
 		}
-		thoughtID := strings.TrimSuffix(filepath.Base(path), ".md")
-		thought, content, err := markdown.ReadThought(s.rootPath, thoughtID)
-		if err != nil {
-			return err
-		}
-		membership, ok := matcher(ctx, topic, thought, content)
-		if !ok {
+		thought, content, e := markdown.ReadThought(s.rootPath, strings.TrimSuffix(entry.Name(), ".md"))
+		if os.IsNotExist(e) {
 			return nil
 		}
-		topic.Members = append(topic.Members, thought.ID)
-		matchedThoughts[thought.ID] = thought
-		matchedContents[thought.ID] = content
-		matchedMemberships[thought.ID] = normalizeMembership(topic, thought.ID, membership, time.Now().UTC())
-		document = s.weaveDocument(ctx, topic, document, thought, content, membership)
-		count++
-		return nil
+		if e != nil {
+			return e
+		}
+		existing := contains(previous, thought.ID)
+		membership, matches := matcher(ctx, topic, thought, content)
+		if !existing && (!matches || !topic.AutoWeave) {
+			return nil
+		}
+		found[thought.ID] = true
+		if !existing {
+			topic.Members = appendMissing(topic.Members, thought.ID)
+			document = s.weaveDocument(ctx, topic, document, thought, content, membership)
+			if _, _, e = s.upsertMembership(topic, thought.ID, membership, time.Now().UTC()); e != nil {
+				return e
+			}
+			count++
+		}
+		changed, e := s.updateThoughtTopicLink(topic, thought, content, true)
+		if changed {
+			changedPaths = append(changedPaths, thought.Path)
+		}
+		return e
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		err = nil
-	}
 	if err != nil {
 		return models.Topic{}, 0, nil, err
 	}
+	for _, old := range previous {
+		if found[old] {
+			continue
+		}
+		topic.Members = removeValue(topic.Members, old)
+		changedPaths = append(changedPaths, filepath.ToSlash(filepath.Join("topics", topic.Slug, "memberships", old+".yaml")))
+		document += "\n> Source deleted; review retained content: " + old + "\n"
+	}
 	sort.Strings(topic.Members)
-	now := time.Now().UTC()
-	document = updateTopicDocumentMembers(document, topic.Members)
+	if !sameStringSet(previous, topic.Members) {
+		document = updateTopicDocumentMembers(document, topic.Members)
+	}
 	topic.MemberCount = len(topic.Members)
 	topic.WordCount = countWords(document)
-	topic.LastActiveAt = &now
-	topic.UpdatedAt = now
-	if err := s.writeDocument(topic, document); err != nil {
+	topic.UpdatedAt = time.Now().UTC()
+	if err = s.writeDocument(topic, document); err != nil {
 		return models.Topic{}, 0, nil, err
 	}
-	for _, thoughtID := range topic.Members {
-		if _, _, err := s.upsertMembership(topic, thoughtID, matchedMemberships[thoughtID], now); err != nil {
-			return models.Topic{}, 0, nil, err
-		}
-	}
-	if err := s.removeStaleMemberships(topic, topic.Members); err != nil {
+	if err = s.removeStaleMemberships(topic, topic.Members); err != nil {
 		return models.Topic{}, 0, nil, err
 	}
-	if err := s.writeTopic(topic); err != nil {
+	if err = s.writeTopic(topic); err != nil {
 		return models.Topic{}, 0, nil, err
 	}
-	changedThoughtPaths := []string{}
-	for _, thoughtID := range topic.Members {
-		changed, err := s.updateThoughtTopicLink(topic, matchedThoughts[thoughtID], matchedContents[thoughtID], true)
-		if err != nil {
-			return models.Topic{}, 0, nil, err
-		}
-		if changed {
-			changedThoughtPaths = append(changedThoughtPaths, matchedThoughts[thoughtID].Path)
-		}
+	return topic, count, changedPaths, nil
+}
+
+// RemoveThought preserves authored content and marks its provenance unavailable.
+func (s *Store) RemoveThought(ctx context.Context, id, thoughtID string) (models.Topic, bool, error) {
+	unlock := s.lock(id)
+	defer unlock()
+	topic, err := s.Get(ctx, id)
+	if err != nil {
+		return topic, false, err
 	}
-	for _, thoughtID := range previousMembers {
-		if contains(topic.Members, thoughtID) {
-			continue
-		}
-		thought, content, err := markdown.ReadThought(s.rootPath, thoughtID)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return models.Topic{}, 0, nil, err
-		}
-		changed, err := s.updateThoughtTopicLink(topic, thought, content, false)
-		if err != nil {
-			return models.Topic{}, 0, nil, err
-		}
-		if changed {
-			changedThoughtPaths = append(changedThoughtPaths, thought.Path)
-		}
+	if !contains(topic.Members, thoughtID) {
+		return topic, false, nil
 	}
-	return topic, count, changedThoughtPaths, nil
+	document, err := s.ReadDocument(ctx, id)
+	if err != nil {
+		return topic, false, err
+	}
+	topic.Members = removeValue(topic.Members, thoughtID)
+	topic.MemberCount = len(topic.Members)
+	topic.UpdatedAt = time.Now().UTC()
+	document = updateTopicDocumentMembers(document, topic.Members) + "\n> Source deleted; review retained content: " + thoughtID + "\n"
+	if err = s.writeDocument(topic, document); err != nil {
+		return topic, false, err
+	}
+	path, err := s.membershipPath(topic, thoughtID)
+	if err != nil {
+		return topic, false, err
+	}
+	if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return topic, false, err
+	}
+	return topic, true, s.writeTopic(topic)
 }
 
 func (s *Store) writeTopic(topic models.Topic) error {
@@ -1077,6 +1162,27 @@ func (s *Store) ListSessionCandidates(ctx context.Context, id string) ([]models.
 // empty (but valid) YAML so subsequent reads do not see a "missing
 // file" sentinel.
 func (s *Store) SaveSessionCandidates(ctx context.Context, id string, candidates []models.TopicSessionCandidate) error {
+	unlock := s.lock(id)
+	defer unlock()
+	return s.saveSessionCandidatesLocked(ctx, id, candidates)
+}
+
+// UpdateSessionCandidates applies an entire candidate projection transaction.
+func (s *Store) UpdateSessionCandidates(ctx context.Context, id string, update func([]models.TopicSessionCandidate) ([]models.TopicSessionCandidate, error)) error {
+	unlock := s.lock(id)
+	defer unlock()
+	current, err := s.ListSessionCandidates(ctx, id)
+	if err != nil {
+		return err
+	}
+	next, err := update(current)
+	if err != nil {
+		return err
+	}
+	return s.saveSessionCandidatesLocked(ctx, id, next)
+}
+
+func (s *Store) saveSessionCandidatesLocked(ctx context.Context, id string, candidates []models.TopicSessionCandidate) error {
 	_ = ctx
 	topic, err := s.Get(ctx, id)
 	if err != nil {
@@ -1434,32 +1540,27 @@ func sourceRelativePath(rootPath string, topic models.Topic, thought models.Thou
 }
 
 func (s *Store) updateThoughtTopicLink(topic models.Topic, thought models.Thought, content models.ThoughtContent, include bool) (bool, error) {
-	if thought.ID == "" {
-		return false, errors.New("thought id is required")
-	}
-	nextTopicIDs := append([]string{}, thought.TopicIDs...)
-	if include {
-		nextTopicIDs = appendMissing(nextTopicIDs, topic.ID)
-	} else {
-		nextTopicIDs = removeValue(nextTopicIDs, topic.ID)
-	}
-	sort.Strings(nextTopicIDs)
-	nextLinks := setTopicLink(s.rootPath, topic, thought, content.Links, include)
-	nextStatus := models.TopicStatusUnmatched
-	if len(nextTopicIDs) > 0 {
-		nextStatus = models.TopicStatusMatched
-	}
-	if sameStringSet(thought.TopicIDs, nextTopicIDs) && strings.TrimSpace(content.Links) == strings.TrimSpace(nextLinks) && thought.TopicStatus == nextStatus {
-		return false, nil
-	}
-	thought.TopicIDs = nextTopicIDs
-	thought.TopicStatus = nextStatus
-	thought.UpdatedAt = time.Now().UTC()
-	content.Links = nextLinks
-	if err := markdown.WriteThought(s.rootPath, thought, content); err != nil {
-		return false, err
-	}
-	return true, nil
+	changed := false
+	err := markdown.UpdateThought(s.rootPath, thought.ID, func(current *models.Thought, body *models.ThoughtContent) error {
+		next := append([]string{}, current.TopicIDs...)
+		if include {
+			next = appendMissing(next, topic.ID)
+		} else {
+			next = removeValue(next, topic.ID)
+		}
+		sort.Strings(next)
+		links := setTopicLink(s.rootPath, topic, *current, body.Links, include)
+		status := models.TopicStatusUnmatched
+		if len(next) > 0 {
+			status = models.TopicStatusMatched
+		}
+		changed = !sameStringSet(current.TopicIDs, next) || strings.TrimSpace(body.Links) != strings.TrimSpace(links) || current.TopicStatus != status
+		current.TopicIDs = next
+		current.TopicStatus = status
+		body.Links = links
+		return nil
+	})
+	return changed, err
 }
 
 func setTopicLink(rootPath string, topic models.Topic, thought models.Thought, links string, include bool) string {

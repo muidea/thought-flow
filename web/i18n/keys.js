@@ -4,6 +4,14 @@
 // and still-missing keys are surfaced as [[key]] with a console.warn.
 
 export const Key = Object.freeze({
+  PrivacyTitle: "privacy.title",
+  PrivacyNotice: "privacy.notice",
+  PrivacyOrigin: "privacy.origin",
+  PrivacyEnabled: "privacy.enabled",
+  PrivacyDisabled: "privacy.disabled",
+  PrivacyLoading: "privacy.loading",
+  PrivacyFailed: "privacy.failed",
+
   DocumentSourceState: "document.source_state",
   DocumentSourceSnapshot: "document.source.snapshot",
   DocumentSourceUnverified: "document.source.unverified",

@@ -1854,12 +1854,14 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 		links = trimNonEmpty(sp.ArchivePreview.SourceLinks)
 	}
 	cmdType := models.ThoughtTypeText
+	capturedURL := ""
 	typedPreview := sp.ArchivePreview != nil &&
 		strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" &&
 		sp.ArchivePreview.DocumentProfile.Family != models.DocumentFamilyNote
 	if !typedPreview {
 		if url := extractURL(firstNonEmptyString(sp.Content, content)); url != "" {
 			cmdType = models.ThoughtTypeURL
+			capturedURL = url
 		}
 	}
 	var profileRef *models.DocumentProfileRef
@@ -1870,7 +1872,7 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 	return models.CaptureCommand{
 		Type:                    cmdType,
 		Content:                 content,
-		URL:                     "",
+		URL:                     capturedURL,
 		Title:                   title,
 		Tags:                    tags,
 		TopicHints:              topicHints,

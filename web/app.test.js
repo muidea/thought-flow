@@ -503,6 +503,11 @@ function loadAppFunctionsWith(opts = {}) {
       closeCaptureSessionsDrawer,
       renderCaptureSessionItem,
       switchCaptureSession,
+      openNewCaptureSession,
+      previewArchive,
+      patchActiveThought,
+      newCaptureSession,
+      previewThought,
       submitCaptureComposer,
       appendSessionMessage,
       deleteCaptureSession,
@@ -3436,4 +3441,94 @@ test("saving a typed document preserves newer local edits while advancing CAS ge
  editor.epoch++;body.value="newer local edit";finish();await saving;
  assert.equal(sent.options.headers["If-Match"],"7");assert.equal(JSON.parse(sent.options.body).body,"saved old body");
  assert.equal(editor.snapshot.head.generation,8);assert.equal(editor.dirty,true);assert.equal(body.value,"newer local edit");assert.equal(app.documentCanFinalize(editor),false);
+});
+
+function deferredAPI() {
+  const pending = [];
+  return { pending, fetch: (url, options) => new Promise((resolve) => pending.push({ url: String(url), options, respond: (data) => resolve({ ok: true, json: async () => ({ data }) }) })) };
+}
+test("capture selection rejects stale history and message responses including A-B-A", async () => {
+  const requests = deferredAPI();
+  const app = loadAppFunctionsWith({ fetch: requests.fetch });
+  app.appState.capture.sessions = [{ sessionId: "A", messages: [] }, { sessionId: "B", messages: [] }];
+  app.switchCaptureSession("A");
+  const oldMessage = app.appendSessionMessage("old");
+  app.switchCaptureSession("B");
+  app.switchCaptureSession("A");
+  requests.pending[3].respond({ session_id: "A", title: "current", messages: [{ role: "user", text: "current" }] });
+  requests.pending[2].respond({ session_id: "B", messages: [{ role: "user", text: "B" }] });
+  requests.pending[0].respond({ session_id: "A", title: "stale", messages: [] });
+  requests.pending[1].respond({ session_id: "A", title: "stale message", messages: [] });
+  await oldMessage;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(app.appState.capture.sessionId, "A");
+  assert.equal(app.appState.capture.activeScratchpad.title, "current");
+});
+test("archive preview keeps its original target and stops after selection changes", async () => {
+  const requests = deferredAPI(); const app = loadAppFunctionsWith({ fetch: requests.fetch });
+  app.appState.capture.sessionId = "A";
+  app.appState.capture.sessions = [{ sessionId: "B", messages: [] }];
+  const preview = app.previewArchive();
+  app.switchCaptureSession("B");
+  requests.pending[0].respond({});
+  await preview;
+  assert.equal(requests.pending.length, 2);
+  assert.equal(requests.pending[0].url, "/api/capture/sessions/A/intent");
+  assert.equal(app.appState.capture.archivePreview, null);
+});
+test("search stale replies cannot restore results after a newer query or clearing", async () => {
+  const dom = makeDomStub(); const requests = deferredAPI(); const app = loadAppFunctionsWith({ dom, fetch: requests.fetch });
+  dom.find("#search-query").value = "old"; const old = app.runSearch();
+  dom.find("#search-query").value = "new"; const next = app.runSearch();
+  requests.pending[1].respond({ results: [{ thought_id: "new" }] }); await next;
+  requests.pending[0].respond({ results: [{ thought_id: "old" }] }); await old;
+  assert.equal(app.appState.lastResults[0].thought_id, "new");
+  dom.find("#search-query").value = "pending"; const pending = app.runSearch();
+  dom.find("#search-query").value = ""; await app.runSearch();
+  requests.pending[2].respond({ results: [{ thought_id: "pending" }] }); await pending;
+  assert.equal(app.appState.lastResults.length, 0);
+});
+test("new capture releases the previous thought lease before resetting IDs", async () => {
+  const app = loadAppFunctionsWith({ exposeWindow: true, fetch: async () => ({ ok: true, json: async () => ({ data: { session_id: "new" } }) }) });
+  const calls = []; app._window.tflowSessionLock = { release: (...args) => calls.push(args) };
+  app.appState.capture.sessionId = "old"; app.appState.capture.activeThoughtId = "thought";
+  await app.openNewCaptureSession();
+  assert.deepEqual(calls, [["thought", "old"]]);
+});
+test("api retains status, code and request ID for conflict handling", async () => {
+  const app = loadAppFunctionsWith({ fetch: async () => ({ ok: false, status: 409, json: async () => ({ request_id: "req-1", error: { code: "thoughtflow.capture.refining", message: "busy" } }) }) });
+  await assert.rejects(app.api("/test"), (error) => error.code === "thoughtflow.capture.refining" && error.status === 409 && error.requestID === "req-1");
+});
+
+test("thought detail replies remain bound to the latest selection", async () => {
+  const requests = deferredAPI();
+  const app = loadAppFunctionsWith({ fetch: requests.fetch });
+  const old = app.previewThought("A");
+  const latest = app.previewThought("B");
+  requests.pending[1].respond({ thought: { id: "B", type: "text", user_title: "B" }, content: { original: "B body" } });
+  await latest;
+  requests.pending[0].respond({ thought: { id: "A", type: "text", user_title: "A" }, content: { original: "A body" } });
+  await old;
+  assert.equal(app.appState.activeThoughtId, "B");
+  assert.equal(app.appState.activeThoughtSnapshot.thought.id, "B");
+});
+
+test("compose late loads cannot overwrite another draft or in-flight local edits", async () => {
+  const dom = installComposeReaderDom(makeDomStub());
+  const requests = deferredAPI();
+  const app = loadAppFunctionsWith({ dom, fetch: requests.fetch });
+  const old = app.loadComposeDraft("A");
+  const latest = app.loadComposeDraft("B");
+  requests.pending[1].respond({ id: "B", status: "draft", content: "B body" });
+  await latest;
+  requests.pending[0].respond({ id: "A", status: "draft", content: "A body" });
+  await old;
+  assert.equal(app.composeReaderState().activeDraftID, "B");
+  assert.equal(app.composeReaderState().localContent, "B body");
+  const refresh = app.loadComposeDraft("B", { force: true });
+  app.setComposeReaderMode("edit");
+  dom.nodes["compose-output"].value = "new local edit";
+  requests.pending[2].respond({ id: "B", status: "draft", content: "server body" });
+  await refresh;
+  assert.equal(app.composeReaderState().localContent, "new local edit");
 });

@@ -921,7 +921,22 @@ func (s *Service) hydrateSnapshots(_ context.Context, sources []models.ComposeSo
 				continue
 			}
 			snapshots = append(snapshots, models.ThoughtSnapshot{Thought: thought, Content: content})
-		case models.ComposeSourceTypeSearchResult, models.ComposeSourceTypeTopicSection, models.ComposeSourceTypeCaptureSession:
+		case models.ComposeSourceTypeSearchResult:
+			thought, content, err := markdown.ReadThought(s.workspace.RootPath, src.SourceID)
+			if err == nil {
+				snapshots = append(snapshots, models.ThoughtSnapshot{Thought: thought, Content: content})
+				continue
+			}
+			if strings.TrimSpace(src.Snippet) == "" {
+				errs = append(errs, fmt.Errorf("search source %q: content unavailable: %w", src.SourceID, err))
+				continue
+			}
+			snapshots = append(snapshots, composeSourceSnapshot(src))
+		case models.ComposeSourceTypeTopicSection, models.ComposeSourceTypeCaptureSession:
+			if strings.TrimSpace(src.Snippet) == "" {
+				errs = append(errs, fmt.Errorf("source %q: actual content is unavailable; provide a source excerpt", src.SourceID))
+				continue
+			}
 			snapshots = append(snapshots, composeSourceSnapshot(src))
 		default:
 			continue
@@ -955,7 +970,7 @@ func composeSourceSnapshot(src models.ComposeSource) models.ThoughtSnapshot {
 			Path:         strings.TrimSpace(src.SourceLink),
 		},
 		Content: models.ThoughtContent{
-			Original: original,
+			Original: original + "\n\nSource excerpt (partial content):\n" + strings.TrimSpace(src.Snippet),
 			Links:    strings.TrimSpace(src.SourceLink),
 		},
 	}

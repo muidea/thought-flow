@@ -111,7 +111,7 @@ func TestGetSearchPreviewReturnsIndexedSnippet(t *testing.T) {
 	}
 }
 
-func TestIndexJobSkipsThoughtLockedForDeletion(t *testing.T) {
+func TestIndexJobRunsAfterThoughtUnlock(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:       "local",
@@ -151,15 +151,15 @@ func TestIndexJobSkipsThoughtLockedForDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if storedJob.Status != models.JobStatusSucceeded || storedJob.Message != "skipped: thought is locked or deleted" {
+	if storedJob.Status != models.JobStatusSucceeded || storedJob.Message != "index succeeded" {
 		t.Fatalf("job = %#v", storedJob)
 	}
 	indexedThought, _, err := markdown.ReadThought(root, thought.ID)
 	if err != nil {
 		t.Fatalf("ReadThought() error = %v", err)
 	}
-	if indexedThought.IndexStatus == models.IndexStatusIndexed {
-		t.Fatalf("locked thought was indexed: %#v", indexedThought)
+	if indexedThought.IndexStatus != models.IndexStatusIndexed {
+		t.Fatalf("unlocked thought was not indexed: %#v", indexedThought)
 	}
 }
 

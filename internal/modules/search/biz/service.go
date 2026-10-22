@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/muidea/magicCommon/event"
@@ -21,14 +22,19 @@ import (
 )
 
 type Service struct {
-	workspace  *models.Workspace
-	jobs       *jobstore.Store
-	store      *searchdb.Store
-	indexPath  string
-	eventHub   event.Hub
-	background task.BackgroundRoutine
-	embedder   ai.EmbeddingProvider
-	locker     *thoughtlock.Locker
+	runner       *jobstore.Runner
+	mutationMu   sync.Mutex
+	stateMu      sync.Mutex
+	rebuilding   bool
+	rebuildError string
+	workspace    *models.Workspace
+	jobs         *jobstore.Store
+	store        *searchdb.Store
+	indexPath    string
+	eventHub     event.Hub
+	background   task.BackgroundRoutine
+	embedder     ai.EmbeddingProvider
+	locker       *thoughtlock.Locker
 }
 
 const indexerSessionID = thoughtlock.IndexerSessionID
@@ -46,6 +52,7 @@ func WithLocker(locker *thoughtlock.Locker) Option {
 
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, indexPath string, options ...Option) *Service {
 	service := &Service{
+		runner:     jobstore.NewRunner(jobs),
 		workspace:  workspace,
 		jobs:       jobs,
 		store:      store,
@@ -76,7 +83,11 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 				_, _ = s.IndexAsyncWithEmbedding(domainEvent.ResourceID, eventEmbedding(domainEvent.Payload))
 			}
 		case models.ResourceTypeTopic:
-			_, _ = s.ReindexWorkspace(context.Background())
+			if topic, ok := domainEvent.Payload.(models.Topic); ok {
+				s.mutationMu.Lock()
+				_ = s.store.UpdateTopicMembers(context.Background(), topic)
+				s.mutationMu.Unlock()
+			}
 		}
 	}
 	if result != nil {
@@ -88,6 +99,8 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID string) error {
 	if s == nil || s.store == nil {
 		return errors.New("search service is not ready")
 	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	return s.store.DeleteThought(ctx, thoughtID)
 }
 
@@ -99,77 +112,45 @@ func (s *Service) IndexAsyncWithEmbedding(thoughtID string, embedding *models.Em
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
-	job, err := s.jobs.Create(models.JobTypeIndex, models.ResourceTypeThought, thoughtID, "index queued")
-	if err != nil {
-		return models.Job{}, err
-	}
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	run := func() {
-		s.indexJob(job, embedding)
-	}
-	if s.background != nil {
-		if err := s.background.AsyncFunction(run); err == nil {
-			return job, nil
-		}
-	}
-	go run()
-	return job, nil
+	return s.runner.StartLatest(models.JobTypeIndex, thoughtID, func(ctx context.Context, job models.Job) { s.indexJobContext(ctx, job, nil) })
 }
 
 func (s *Service) IndexThought(ctx context.Context, thoughtID string, embedding *models.EmbeddingRecord) error {
-	locked := false
 	if s.locker != nil {
-		if err := s.locker.AcquireBackground(thoughtID, indexerSessionID, indexLockWait); err != nil {
+		release, err := s.locker.Lease(ctx, thoughtID, indexerSessionID+":"+models.NewJobID("lease", time.Now()))
+		if err != nil {
 			return err
 		}
-		locked = true
-		defer func() {
-			if locked {
-				s.locker.Release(thoughtID, indexerSessionID)
-			}
-		}()
+		defer release()
 	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {
 		return err
 	}
-	thought.IndexStatus = models.IndexStatusIndexed
-	thought.UpdatedAt = time.Now().UTC()
-	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
-		return err
-	}
+	// Provider input and cache identity are independent of refinement payloads.
 	if err := s.store.IndexThought(ctx, thought, content); err != nil {
 		return err
 	}
-	if embedding != nil && len(embedding.Vector) > 0 {
-		embedding.ThoughtID = thought.ID
-		if embedding.ContentHash == "" {
-			embedding.ContentHash = models.ContentHash(buildEmbeddingText(thought, content))
-		}
-		if embedding.CreatedAt.IsZero() {
-			embedding.CreatedAt = time.Now().UTC()
-		}
-		return s.store.IndexEmbedding(ctx, *embedding)
+	record, err := s.embedding(ctx, thought, content)
+	if err != nil {
+		return err
 	}
-	return nil
+	if len(record.Vector) > 0 {
+		if err := s.store.IndexEmbedding(ctx, record); err != nil {
+			return err
+		}
+	}
+	return markdown.UpdateThought(s.workspace.RootPath, thought.ID, func(current *models.Thought, _ *models.ThoughtContent) error {
+		current.IndexStatus = models.IndexStatusIndexed
+		return nil
+	})
 }
 
 func (s *Service) ReindexWorkspace(ctx context.Context) (models.Job, error) {
-	job, err := s.jobs.Create(models.JobTypeReindex, models.ResourceTypeWorkspace, s.workspace.ID, "reindex queued")
-	if err != nil {
-		return models.Job{}, err
-	}
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	run := func() {
-		s.reindexJob(job)
-	}
-	if s.background != nil {
-		if err := s.background.AsyncFunction(run); err == nil {
-			return job, nil
-		}
-	}
-	go run()
-	return job, nil
+	return s.runner.StartResource(models.JobTypeReindex, models.ResourceTypeWorkspace, s.workspace.ID, 1, func(ctx context.Context, job models.Job) { s.reindexJobContext(ctx, job) })
 }
 
 func (s *Service) Search(ctx context.Context, query models.SearchQuery) (models.SearchResponse, error) {
@@ -218,6 +199,15 @@ func (s *Service) RuntimeStatus(ctx context.Context) models.DuckDBRuntimeStatus 
 		status.Error = "search index store is not ready"
 		return status
 	}
+	s.stateMu.Lock()
+	if s.rebuilding {
+		status.Status = "rebuilding"
+	}
+	if s.rebuildError != "" {
+		status.Status = "degraded"
+		status.Error = s.rebuildError
+	}
+	s.stateMu.Unlock()
 	status.Vector = s.store.VectorRuntimeStatus(ctx)
 	if status.Vector.Status == "degraded" {
 		status.Status = "degraded"
@@ -261,11 +251,17 @@ func (s *Service) CachedSemanticScores(ctx context.Context, queryVector []float6
 }
 
 func (s *Service) indexJob(job models.Job, embedding *models.EmbeddingRecord) {
+	s.indexJobContext(context.Background(), job, embedding)
+}
+func (s *Service) indexJobContext(ctx context.Context, job models.Job, embedding *models.EmbeddingRecord) {
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	err := s.IndexThought(context.Background(), job.ResourceID, embedding)
+	err := s.IndexThought(ctx, job.ResourceID, embedding)
 	if err != nil {
-		if errors.Is(err, thoughtlock.ErrLocked) || errors.Is(err, os.ErrNotExist) {
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, os.ErrNotExist) {
 			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked or deleted")
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
 			return
@@ -309,90 +305,99 @@ func eventEmbedding(payload any) *models.EmbeddingRecord {
 	}
 }
 
-func buildEmbeddingText(thought models.Thought, content models.ThoughtContent) string {
-	return strings.Join([]string{
-		thought.UserTitle,
-		thought.ExtractedTitle,
-		thought.Summary,
-		content.Original,
-		content.ExtractedContent,
-		content.AINotes,
-	}, "\n")
+func buildEmbeddingText(t models.Thought, c models.ThoughtContent) string {
+	return models.EmbeddingText(t, c)
 }
 
-func (s *Service) reindexJob(job models.Job) {
+func (s *Service) embedding(ctx context.Context, t models.Thought, c models.ThoughtContent) (models.EmbeddingRecord, error) {
+	if s.embedder == nil {
+		return models.EmbeddingRecord{}, nil
+	}
+	text := buildEmbeddingText(t, c)
+	if text == "" {
+		return models.EmbeddingRecord{}, nil
+	}
+	hash := models.ContentHash(text)
+	if spec, ok := s.embedder.(interface{ EmbeddingSpec() (string, int) }); ok {
+		model, dimension := spec.EmbeddingSpec()
+		if record, ok := s.store.GetEmbedding(ctx, t.ID, model); ok && model != "" && record.ContentHash == hash && record.Dimension == len(record.Vector) && len(record.Vector) > 0 && (dimension == 0 || dimension == record.Dimension) {
+			return record, nil
+		}
+	}
+	record, err := s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: t.ID, Text: text})
+	if err != nil {
+		return record, err
+	}
+	record.ThoughtID = t.ID
+	record.ContentHash = hash
+	record.Dimension = len(record.Vector)
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	return record, nil
+}
+
+func (s *Service) reindexJob(job models.Job) { s.reindexJobContext(context.Background(), job) }
+func (s *Service) reindexJobContext(ctx context.Context, job models.Job) {
+	s.stateMu.Lock()
+	s.rebuilding = true
+	s.rebuildError = ""
+	s.stateMu.Unlock()
+	defer func() { s.stateMu.Lock(); s.rebuilding = false; s.stateMu.Unlock() }()
 	job, _ = s.jobs.MarkRunning(job)
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	eventutil.Post(s.eventHub, searchEvent(models.EventSearchReindexStarted, s.workspace.ID, s.workspace.ID, job))
-	count, err := s.store.ReindexWorkspace(context.Background(), s.workspace.RootPath)
+	count, embeddingCount, err := s.rebuild(ctx)
 	if err != nil {
-		errRef := models.NewErrorRef("thoughtflow.search.reindex_failed", err.Error(), true)
-		job, _ = s.jobs.MarkFailed(job, errRef)
+		if ctx.Err() != nil {
+			return
+		}
+		s.stateMu.Lock()
+		s.rebuildError = err.Error()
+		s.stateMu.Unlock()
+		ref := models.NewErrorRef("thoughtflow.search.reindex_failed", err.Error(), true)
+		job, _ = s.jobs.MarkFailed(job, ref)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, searchEvent(models.EventSearchIndexFailed, s.workspace.ID, s.workspace.ID, errRef))
 		return
 	}
-	embeddingCount, err := s.backfillWorkspaceEmbeddings(context.Background())
-	if err != nil {
-		errRef := models.NewErrorRef("thoughtflow.search.embedding_reindex_failed", err.Error(), true)
-		job, _ = s.jobs.MarkFailed(job, errRef)
-		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-		eventutil.Post(s.eventHub, searchEvent(models.EventSearchIndexFailed, s.workspace.ID, s.workspace.ID, errRef))
-		return
-	}
+
 	job.Message = "reindexed workspace"
 	job, _ = s.jobs.MarkSucceeded(job, "reindexed workspace")
 	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	eventutil.Post(s.eventHub, searchEvent(models.EventSearchReindexFinished, s.workspace.ID, s.workspace.ID, map[string]any{"count": count, "embedding_count": embeddingCount, "job": job}))
 }
 
-func (s *Service) backfillWorkspaceEmbeddings(ctx context.Context) (int, error) {
-	if s == nil || s.embedder == nil || s.workspace == nil || s.store == nil {
-		return 0, nil
+func (s *Service) rebuild(ctx context.Context) (int, int, error) {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	snapshots, err := searchdb.ReadWorkspace(s.workspace.RootPath)
+	if err != nil {
+		return 0, 0, err
 	}
-	thoughtsPath := filepath.Join(s.workspace.RootPath, "thoughts")
-	count := 0
-	err := filepath.WalkDir(thoughtsPath, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".md" {
-			return nil
-		}
-		thoughtID := strings.TrimSuffix(filepath.Base(path), ".md")
-		thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
+	records := []models.EmbeddingRecord{}
+	for _, snapshot := range snapshots {
+		record, err := s.embedding(ctx, snapshot.Thought, snapshot.Content)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
-		text := buildEmbeddingText(thought, content)
-		if strings.TrimSpace(text) == "" {
-			return nil
+		if len(record.Vector) > 0 {
+			records = append(records, record)
 		}
-		embedding, err := s.embedder.Embed(ctx, ai.EmbedRequest{ThoughtID: thought.ID, Text: text})
-		if err != nil {
-			return err
-		}
-		if len(embedding.Vector) == 0 {
-			return nil
-		}
-		embedding.ThoughtID = thought.ID
-		if embedding.ContentHash == "" {
-			embedding.ContentHash = models.ContentHash(text)
-		}
-		if embedding.CreatedAt.IsZero() {
-			embedding.CreatedAt = time.Now().UTC()
-		}
-		if err := s.store.IndexEmbedding(ctx, embedding); err != nil {
-			return err
-		}
-		count++
-		return nil
-	})
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
 	}
-	return count, err
+	return len(snapshots), len(records), s.store.ReplaceWorkspace(ctx, snapshots, records)
 }
+
+func (s *Service) Recover() error {
+	if err := s.runner.Recover(models.JobTypeIndex, func(ctx context.Context, job models.Job) { s.indexJobContext(ctx, job, nil) }); err != nil {
+		return err
+	}
+	if err := s.runner.Recover(models.JobTypeReindex, func(ctx context.Context, job models.Job) { s.reindexJobContext(ctx, job) }); err != nil {
+		return err
+	}
+	_, err := s.ReindexWorkspace(context.Background())
+	return err
+}
+func (s *Service) Close() { s.runner.Close() }
 
 func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
 	return models.DomainEvent{
@@ -423,3 +428,5 @@ func searchEvent(eventType string, workspaceID string, resourceID string, payloa
 		Payload:        payload,
 	}
 }
+
+func (s *Service) Bind(ctx context.Context) { s.runner.Bind(ctx) }

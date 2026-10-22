@@ -192,6 +192,7 @@
                   <div id="capture-archive-preview" class="tf-capture-preview" data-i18n="capture.archive.preview_empty">Preview appears before saving.</div>
                 </section>
               </div>
+              <p class="tf-text-secondary" data-i18n="privacy.notice">Text AI actions send content to enabled model services. URL processing contacts the origin or GitHub and may send the full URL to Reader. Details are in Settings.</p>
               <form id="capture-composer" class="tf-capture-composer" autocomplete="off">
                 <label class="tf-sr-only" for="capture-composer-input" data-i18n="capture.composer.aria_label">Capture input</label>
                 <div class="tf-capture-input-wrap">
@@ -401,6 +402,7 @@
           </section>
 
           <section class="tf-page" id="page-compose" data-page="compose">
+ <p class="tf-text-secondary" data-i18n="privacy.notice">AI actions send content to enabled services. See Settings for external requests.</p>
             <div class="tf-page-header">
               <div>
                 <h2 data-i18n="compose.title">Write from Sources</h2>
@@ -517,7 +519,7 @@
               </article>
               <article class="tf-card">
                 <h3 data-i18n="about.cap.search_title">Search</h3>
-                <p data-i18n="about.cap.search_body">Find relevant thoughts by keyword, tags, topics, and semantic index when embedding is available.</p>
+                <p data-i18n="about.cap.search_body">Find relevant thoughts by keyword and tags.</p>
               </article>
               <article class="tf-card">
                 <h3 data-i18n="about.cap.topics_title">Topics</h3>
@@ -529,7 +531,7 @@
               </article>
               <article class="tf-card">
                 <h3 data-i18n="about.cap.runtime_title">Runtime</h3>
-                <p data-i18n="about.cap.runtime_body">Monitor workspace health, Git sync, model status, indexing, background jobs, and live events.</p>
+                <p data-i18n="about.cap.runtime_body">Monitor workspace health, local Git commits, model status, indexing, background jobs, and live events.</p>
               </article>
             </section>
             <section class="tf-card">
@@ -539,7 +541,7 @@
               <ul class="tf-about-list">
                 <li data-i18n="about.data.local">Local-first by default: workspace data lives under the configured local workspace.</li>
                 <li data-i18n="about.data.files">Thoughts and topics are represented as readable files so they can be inspected outside the UI.</li>
-                <li data-i18n="about.data.sync">Git sync, model providers, and enrichment depend on the current configuration and runtime status.</li>
+                <li data-i18n="about.data.sync">Git records local commits. Model providers and enrichment depend on the current configuration and runtime status.</li>
               </ul>
             </section>
             <section class="tf-about-advanced" id="about-document-profiles" aria-labelledby="about-document-profiles-title">
@@ -740,6 +742,8 @@ generation:
           </div>
         </div>
         <div id="tab-settings-drawer-models" class="tab-panel">
+ <h3 data-i18n="privacy.title">External requests</h3>
+ <div id="privacy-report" class="tf-description-list" data-i18n="privacy.loading">Loading external request settings…</div>
           <div class="tf-stat-grid">
             <article class="tf-stat-tile">
               <span class="tf-text-secondary" data-i18n="settings.card.llm">LLM</span>

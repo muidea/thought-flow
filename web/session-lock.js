@@ -82,7 +82,8 @@
       return;
     }
     if (event === BUS_EVENT_ACQUIRE || event === BUS_EVENT_HEARTBEAT) {
-      setHolder(thoughtId, sessionId, typeof payload.ts === "number" ? payload.ts : now());
+      // A remote performance.now() has a different time origin. Use local receipt time.
+      setHolder(thoughtId, sessionId);
       broadcast(event, payload, { localOnly: true });
     }
   }

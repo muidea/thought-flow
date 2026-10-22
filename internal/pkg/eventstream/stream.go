@@ -59,13 +59,9 @@ func (s *Stream) Publish(domainEvent models.DomainEvent) {
 	if len(s.history) > s.limit {
 		s.history = s.history[len(s.history)-s.limit:]
 	}
-	subscribers := make(map[chan models.DomainEvent]SubscribeOptions, len(s.subscribers))
-	for ch, options := range s.subscribers {
-		subscribers[ch] = options
-	}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
-	for ch, options := range subscribers {
+	for ch, options := range s.subscribers {
 		if !matchesTypes(domainEvent, options.Types) {
 			continue
 		}

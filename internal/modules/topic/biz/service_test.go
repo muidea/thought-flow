@@ -198,6 +198,8 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
 
+	cache.record.ContentHash = models.ContentHash(models.EmbeddingText(thought, content))
+
 	memberships, err := service.MatchThought(ctx, thought.ID)
 	if err != nil {
 		t.Fatalf("MatchThought() error = %v", err)
@@ -213,7 +215,7 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 	}
 }
 
-func TestServiceSemanticMatchUsesCachedSemanticScores(t *testing.T) {
+func TestServiceSemanticMatchRejectsUnversionedCachedScores(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:           "local",
@@ -265,13 +267,13 @@ func TestServiceSemanticMatchUsesCachedSemanticScores(t *testing.T) {
 	if len(memberships) != 1 || memberships[0].TopicID != topic.ID {
 		t.Fatalf("memberships = %#v", memberships)
 	}
-	if cache.semanticCalls != 1 {
+	if cache.semanticCalls != 0 {
 		t.Fatalf("semantic score cache calls = %d, want 1", cache.semanticCalls)
 	}
-	if cache.embeddingCalls != 0 {
+	if cache.embeddingCalls != 1 {
 		t.Fatalf("embedding cache calls = %d, want 0", cache.embeddingCalls)
 	}
-	if embedder.calls != 1 {
+	if embedder.calls != 2 {
 		t.Fatalf("embedder calls = %d, want only topic embedding call", embedder.calls)
 	}
 }
@@ -567,11 +569,7 @@ func TestServiceNearMissTopicsReturnsBelowThreshold(t *testing.T) {
 		}
 	}
 
-	embedder := &fixedEmbeddingProvider{record: models.EmbeddingRecord{
-		Model:     "test-embedding",
-		Dimension: 4,
-		Vector:    []float64{1, 0, 0, 0},
-	}}
+	embedder := nearMissEmbeddingProvider{}
 	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil, nil)
 	ctx := context.Background()
 
@@ -650,11 +648,7 @@ func TestServiceNearMissTopicsSortsByScoreDesc(t *testing.T) {
 		}
 	}
 
-	embedder := &fixedEmbeddingProvider{record: models.EmbeddingRecord{
-		Model:     "test-embedding",
-		Dimension: 3,
-		Vector:    []float64{1, 0, 0},
-	}}
+	embedder := nearMissEmbeddingProvider{}
 	service := NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(root), nil, nil, embedder, nil, nil)
 	ctx := context.Background()
 
@@ -1184,12 +1178,11 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 		UserTitle: "Vector scratchpad follow-up",
 		Path:      "thoughts/2026/01/20260101-100000-bbbb.md",
 	}
-	// AddMembership is on the store, not the service: it expects the
-	// caller to feed the freshly-returned topic back in, otherwise
-	// the second call overwrites the first because it started from
-	// the still-empty Members list we got from CreateTopic.
 	current := topic
 	for _, thought := range []models.Thought{thoughtA, thoughtB} {
+		if err := markdown.WriteThought(root, thought, models.ThoughtContent{}); err != nil {
+			t.Fatal(err)
+		}
 		updated, _, err := service.store.AddMembership(ctx, current, thought, models.ThoughtContent{}, models.TopicMembership{Score: 0.9, MatchType: "keyword"})
 		if err != nil {
 			t.Fatalf("AddMembership() error = %v", err)
@@ -1223,8 +1216,8 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 	if sourceCount[models.TopicCandidateSourceCaptureSession] != 1 {
 		t.Fatalf("capture_session count = %d, want 1", sourceCount[models.TopicCandidateSourceCaptureSession])
 	}
-	if sourceCount[models.TopicCandidateSourceThoughtReopen] != 1 {
-		t.Fatalf("thought_reopen_session count = %d, want 1", sourceCount[models.TopicCandidateSourceThoughtReopen])
+	if sourceCount[models.TopicCandidateSourceThoughtReopen] != 0 {
+		t.Fatalf("thought_reopen_session count = %d, want 0", sourceCount[models.TopicCandidateSourceThoughtReopen])
 	}
 	if sourceCount[models.TopicCandidateSourceThought] != 0 {
 		t.Fatalf("thought count = %d, want 0", sourceCount[models.TopicCandidateSourceThought])
@@ -1235,19 +1228,17 @@ func TestServiceListCandidatesFusesSourcesAndSortsByScore(t *testing.T) {
 
 	// capture_session and thought_reopen_session come from the same
 	// session data; their IDs must match.
-	var capture, reopen, draft models.TopicCandidateImpact
+	var capture, draft models.TopicCandidateImpact
 	for _, impact := range impacts {
 		switch impact.Source {
 		case models.TopicCandidateSourceCaptureSession:
 			capture = impact
-		case models.TopicCandidateSourceThoughtReopen:
-			reopen = impact
 		case models.TopicCandidateSourceComposeDraft:
 			draft = impact
 		}
 	}
-	if capture.SessionID != "sp-cand" || reopen.SessionID != "sp-cand" {
-		t.Fatalf("session IDs = (%q, %q), want (sp-cand, sp-cand)", capture.SessionID, reopen.SessionID)
+	if capture.SessionID != "sp-cand" {
+		t.Fatalf("capture session = %q", capture.SessionID)
 	}
 	if draft.DraftID != "draft-vector" || draft.Status != models.ComposeStatusDraft {
 		t.Fatalf("compose draft impact = %+v", draft)
@@ -1271,6 +1262,11 @@ func TestServiceNotifyComposeDraftChangeRefreshesTopics(t *testing.T) {
 		t.Fatalf("CreateTopic() error = %v", err)
 	}
 
+	before, err := service.store.ReadDocument(ctx, topic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	ev := event.NewEvent("compose.draft_created", "compose", "#", event.NewHeader(), models.DomainEvent{
 		EventType:    "compose.draft_created",
 		ResourceType: models.ResourceTypeWorkspace,
@@ -1278,22 +1274,17 @@ func TestServiceNotifyComposeDraftChangeRefreshesTopics(t *testing.T) {
 	})
 	result := event.NewResult("compose.draft_created", "compose", "#")
 	service.Notify(ev, result)
-	if background.last == nil {
-		t.Fatalf("Notify did not queue topic refresh")
+	if background.last != nil {
+		t.Fatal("unrelated Compose event queued formal topic rebuild")
 	}
-	background.last()
-
-	jobs, err := service.jobs.RecentByResource(topic.ID, 1)
+	after, err := service.store.ReadDocument(ctx, topic.ID)
 	if err != nil {
-		t.Fatalf("RecentByResource() error = %v", err)
+		t.Fatal(err)
 	}
-	if len(jobs) != 1 {
-		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	if after != before {
+		t.Fatal("Compose event modified formal document")
 	}
-	job := jobs[0]
-	if job.Type != models.JobTypeTopicWeave {
-		t.Fatalf("job type = %q, want %q", job.Type, models.JobTypeTopicWeave)
-	}
+
 }
 
 func TestServiceListCandidatesRequiresTopicID(t *testing.T) {
@@ -1318,4 +1309,16 @@ func TestServiceListCandidatesPropagatesStoreError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for missing topic")
 	}
+}
+
+type nearMissEmbeddingProvider struct{}
+
+func (nearMissEmbeddingProvider) Embed(_ context.Context, req ai.EmbedRequest) (models.EmbeddingRecord, error) {
+	vector := []float64{1, 0, 0}
+	if req.ThoughtID != "" {
+		vector = []float64{0.6, 0.8, 0}
+	} else if strings.HasPrefix(req.Text, "B\n") {
+		vector = []float64{0, 1, 0}
+	}
+	return models.EmbeddingRecord{Model: "test-embedding", Dimension: 3, Vector: vector}, nil
 }

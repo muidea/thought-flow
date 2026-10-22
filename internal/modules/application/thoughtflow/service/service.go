@@ -784,6 +784,7 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	searchQuery := models.SearchQuery{
 		Query:             query.Get("q"),
 		Mode:              "keyword",
+		TopicID:           strings.TrimSpace(query.Get("topic_id")),
 		Tags:              splitCSV(query.Get("tags")),
 		Page:              intQuery(query.Get("page"), 1),
 		PageSize:          limit,
@@ -1484,7 +1485,11 @@ func (s *Service) handleEvents(ctx context.Context, res http.ResponseWriter, req
 		LastEventID: req.Header.Get("Last-Event-ID"),
 		Types:       splitCSV(req.URL.Query().Get("types")),
 	})
-	ticker := time.NewTicker(20 * time.Second)
+	heartbeat := s.config.Events.SSEHeartbeat
+	if heartbeat <= 0 {
+		heartbeat = 20 * time.Second
+	}
+	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 
 	for {
@@ -1784,12 +1789,24 @@ func readerRuntimeStatus(cfg appconfig.Config) models.ReaderRuntimeStatus {
 func buildPrivacyReport(cfg appconfig.Config, now time.Time) models.PrivacyReport {
 	llm := buildSurface("llm", cfg.LLM.APIKey, cfg.LLM.BaseURL, "AI 整理/扩展/分类会向此地址发送会话内容")
 	embedding := buildSurface("embedding", cfg.Embedding.APIKey, cfg.Embedding.BaseURL, "Embedding 与近邻匹配会向此地址发送内容")
-	reader := buildSurface("reader", cfg.Reader.APIKey, cfg.Reader.BaseURL, "网页正文抓取会向此地址发送目标 URL")
+	reader := buildSurface("reader", cfg.Reader.APIKey, cfg.Reader.BaseURL, "网页正文抓取失败时会向此地址发送目标 URL（包括查询参数）")
+	reader.Enabled = cfg.Reader.Enabled
+	if !reader.Enabled {
+		reader.Hint = "Reader 已关闭，不会向 Reader 发送 URL；目标原站和 GitHub 请求仍可能联网"
+	}
+	llm.Enabled = llm.Configured
+	embedding.Enabled = embedding.Configured
+	if !llm.Enabled {
+		llm.Hint = "LLM 未配置，使用本地规则处理"
+	}
+	if !embedding.Enabled {
+		embedding.Hint = "Embedding 未配置，使用本地向量"
+	}
 
 	actions := []models.ExternalAction{
 		{Action: "capture_message", Method: "POST", Path: "/api/capture/sessions/{id}/messages", Surfaces: llmSurfaces(llm, embedding), Hint: messageActionHint(llm, embedding)},
 		{Action: "capture_commit", Method: "POST", Path: "/api/capture/sessions/{id}/archive", Surfaces: commitSurfaces(llm, embedding, reader), Hint: commitActionHint(llm, embedding, reader)},
-		{Action: "url_capture", Method: "POST", Path: "/api/thoughts", Surfaces: readerSurfaces(reader), Hint: urlActionHint(reader)},
+		{Action: "url_capture", Method: "POST", Path: "/api/thoughts", Surfaces: append([]string{"origin"}, commitSurfaces(llm, embedding, reader)...), Hint: urlActionHint(reader)},
 		{Action: "topic_refresh", Method: "POST", Path: "/api/topics/{id}/refresh", Surfaces: embeddingSurfaces(embedding), Hint: embedding.Hint},
 	}
 	return models.PrivacyReport{
@@ -1850,7 +1867,7 @@ func embeddingSurfaces(embedding models.ExternalSurface) []string {
 }
 
 func readerSurfaces(reader models.ExternalSurface) []string {
-	if !reader.Configured {
+	if !reader.Enabled {
 		return nil
 	}
 	return []string{"reader"}
@@ -1864,7 +1881,7 @@ func commitSurfaces(llm, embedding, reader models.ExternalSurface) []string {
 	if embedding.Configured {
 		out = append(out, "embedding")
 	}
-	if reader.Configured {
+	if reader.Enabled {
 		out = append(out, "reader")
 	}
 	return out
@@ -1888,20 +1905,20 @@ func commitActionHint(llm, embedding, reader models.ExternalSurface) string {
 	if embedding.Configured {
 		parts = append(parts, "Embedding")
 	}
-	if reader.Configured {
+	if reader.Enabled {
 		parts = append(parts, "Reader")
 	}
 	if len(parts) == 0 {
-		return "归档流程在本地完成,不触发外部请求"
+		return "文本归档使用本地规则；URL 归档仍会请求目标原站和 GitHub"
 	}
 	return "归档将触发 " + strings.Join(parts, " + ")
 }
 
 func urlActionHint(reader models.ExternalSurface) string {
-	if !reader.Configured {
-		return "Reader 未配置,URL 抓取走本地解析(可能失败)"
+	if !reader.Enabled {
+		return "URL 会请求目标原站和 GitHub；Reader fallback 已关闭"
 	}
-	return "将通过 Reader 抓取目标网页正文"
+	return "URL 会先请求目标原站或 GitHub；正文不足时向 Reader 发送完整目标 URL，后续 AI 处理取决于 LLM/Embedding 配置"
 }
 
 func backgroundRuntimeStatus(status models.BackgroundRuntimeStatus, background backgroundTaskAcceptor) models.BackgroundRuntimeStatus {

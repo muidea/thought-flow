@@ -259,18 +259,21 @@ func TestServiceCreateDraftSupportsNonThoughtSources(t *testing.T) {
 		Sources: []models.ComposeSource{
 			{
 				SourceType: models.ComposeSourceTypeSearchResult,
+				Snippet:    "UNIQUE-SOURCE-FACT",
 				SourceID:   "search-result-1",
 				Title:      "Search result",
 				SourceLink: "thoughts/2026/06/search-result-1.md",
 			},
 			{
 				SourceType: models.ComposeSourceTypeTopicSection,
+				Snippet:    "UNIQUE-SOURCE-FACT",
 				SourceID:   "topic-a#context",
 				Title:      "Topic context",
 				SourceLink: "topics/topic-a/index.md#context",
 			},
 			{
 				SourceType: models.ComposeSourceTypeCaptureSession,
+				Snippet:    "UNIQUE-SOURCE-FACT",
 				SourceID:   "session-1",
 				Title:      "Capture session",
 				SourceLink: "capture/session-1",
@@ -298,6 +301,11 @@ func TestServiceCreateDraftSupportsNonThoughtSources(t *testing.T) {
 	}
 	if !strings.Contains(synth.lastReq.Snapshots[2].Content.Original, "capture_session") {
 		t.Fatalf("capture context missing discriminator: %q", synth.lastReq.Snapshots[2].Content.Original)
+	}
+	for _, snapshot := range synth.lastReq.Snapshots {
+		if !strings.Contains(snapshot.Content.Original, "UNIQUE-SOURCE-FACT") {
+			t.Fatal("lost actual source content")
+		}
 	}
 }
 
@@ -332,7 +340,7 @@ func TestServiceCreateDraftUsesNonThoughtSourcesWhenThoughtMissing(t *testing.T)
 	draft, err := svc.CreateDraft(context.Background(), models.ComposeRequest{
 		Sources: []models.ComposeSource{
 			{SourceType: models.ComposeSourceTypeThought, SourceID: "missing-2026-xxxx"},
-			{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "search-result-1", Title: "Search result"},
+			{SourceType: models.ComposeSourceTypeSearchResult, SourceID: "search-result-1", Title: "Search result", Snippet: "Explicit search excerpt"},
 		},
 	})
 	if err != nil {

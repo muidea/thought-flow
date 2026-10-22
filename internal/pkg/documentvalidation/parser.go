@@ -7,6 +7,11 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
+// ParseBody and VisibleText share the delivery validator's Markdown semantics
+// with repair scope checks.
+func ParseBody(source []byte) ast.Node             { return bodyParser().Parse(text.NewReader(source)) }
+func VisibleText(n ast.Node, source []byte) string { return plain(n, source) }
+
 // Track closure in the actual parser rather than counting fence-like lines.
 // This also handles empty fences, long delimiters and nested blockquotes/lists.
 type fenceParser struct{ parser.BlockParser }

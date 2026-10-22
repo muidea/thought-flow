@@ -216,7 +216,7 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 			return false, documentstore.ErrConflict
 		}
 	}
-	if !s.Options.Enabled {
+	if !s.Options.Enabled || (t.DocumentProfile != nil && !s.enabledFamily(t.DocumentProfile.Family)) || s.ctx.Err() != nil {
 		return false, ErrUnavailable
 	}
 	if t.DocumentProfile == nil {
@@ -772,7 +772,7 @@ func (s *Service) Repair(ctx context.Context, id, rev, reportID string, expected
 	if runCtx.Err() != nil {
 		return models.DocumentSnapshot{}, runCtx.Err()
 	}
-	if e = CheckRepairScope(d.Body, candidate, sections); e != nil {
+	if e = CheckRepairScope(d.Body, candidate, sections, profile.Validation.HeadingLevel); e != nil {
 		return models.DocumentSnapshot{}, e
 	}
 	d.Body = candidate

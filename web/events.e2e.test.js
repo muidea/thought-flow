@@ -265,6 +265,67 @@ test("SSE e2e", async (t) => {
     );
   });
 
+  await t.test("patched and compose lifecycle events reach the real stream", async () => {
+    const create = await postJSON(server.baseURL, "/api/thoughts", {
+      type: "text", title: "event contract source", content: "Unique factual source for lifecycle events.",
+    });
+    assert.equal(create.status, 202, create.text);
+    const thoughtID = create.json.data.thought.id;
+    const types = ["thought.patched", "compose.draft_created", "compose.draft_saved", "compose.draft_deleted"];
+    const received = new Set();
+    const subscription = subscribeEvents(server.baseURL, {
+      types,
+      deadlineMs: 15000,
+      predicate: (frame) => {
+        received.add(frame.event);
+        return types.every((type) => received.has(type));
+      },
+    });
+    const deadline = Date.now() + 10000;
+    let patch;
+    do {
+      patch = await fetch(`${server.baseURL}/api/thoughts/${thoughtID}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Session-Id": "sse-contract" },
+        body: JSON.stringify({ title: "Patched event contract source" }),
+      });
+      if (patch.status !== 409) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    assert.equal(patch.status, 200, await patch.text());
+
+    const draftResponse = await postJSON(server.baseURL, "/api/compose/drafts", {
+      sources: [{ source_type: "thought", source_id: thoughtID }],
+      goal: "SSE lifecycle contract", format: "summary",
+    });
+    assert.equal(draftResponse.status, 202, draftResponse.text);
+    const draftID = draftResponse.json.data.resource_id;
+    let draft;
+    for (let i = 0; i < 100; i++) {
+      const response = await fetch(`${server.baseURL}/api/compose/drafts/${draftID}`);
+      assert.equal(response.status, 200);
+      draft = (await response.json()).data;
+      if (draft.status === "draft" || draft.status === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(draft.status, "draft", JSON.stringify(draft));
+    const save = await postJSON(server.baseURL, `/api/compose/drafts/${draftID}/save`, {
+      title: "SSE saved draft", content: draft.content,
+    });
+    assert.equal(save.status, 202, save.text);
+    const deleted = await fetch(`${server.baseURL}/api/compose/drafts/${draftID}`, { method: "DELETE" });
+    assert.equal(deleted.status, 200, await deleted.text());
+    const frames = await subscription;
+    for (const type of types) {
+      const frame = frames.find((candidate) => candidate.event === type &&
+        (type === "compose.draft_saved"
+          ? candidate.payload?.payload?.id === draftID && candidate.payload?.resource_id === save.json.data.thought.id
+          : candidate.payload?.resource_id === (type === "thought.patched" ? thoughtID : draftID)));
+      assert.ok(frame, `missing ${type} for target resource: ${JSON.stringify(frames)}`);
+      assert.ok(frame.id, "every event carries a replay id");
+    }
+  });
+
   await t.test("type filter suppresses non-matching events", async () => {
     // Filter for a type the system never emits; subscription should
     // hit the deadline (well under the 20s server keepalive) without

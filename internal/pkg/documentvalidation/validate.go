@@ -20,7 +20,7 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
-const Version = "final-body-ast-v2.3"
+const Version = "final-body-ast-v2.4"
 const ReviewPolicyVersion = "review-v1"
 
 var citations = regexp.MustCompile(`\[(S[0-9]+)\]`)
@@ -86,6 +86,25 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 	headingSeen := map[string]bool{}
 	anchors := map[string]bool{}
 	links := []string{}
+	// Inspect destinations independently of section traversal, including links
+	// nested in headings. Code samples are not rendered as active links.
+	ast.Walk(tree, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
+		if !enter {
+			return ast.WalkContinue, nil
+		}
+		if n.Kind() == ast.KindCodeSpan || n.Kind() == ast.KindCodeBlock || n.Kind() == ast.KindFencedCodeBlock {
+			return ast.WalkSkipChildren, nil
+		}
+		switch link := n.(type) {
+		case *ast.Link:
+			links = append(links, string(link.Destination))
+		case *ast.Image:
+			links = append(links, string(link.Destination))
+		case *ast.AutoLink:
+			links = append(links, string(link.URL(body)))
+		}
+		return ast.WalkContinue, nil
+	})
 	visible := strings.Builder{}
 	refs := map[string]reference{}
 	used := map[string]bool{}
@@ -136,9 +155,6 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 				current = len(blocks) - 1
 			}
 			return ast.WalkSkipChildren, nil
-		}
-		if link, ok := n.(*ast.Link); ok {
-			links = append(links, string(link.Destination))
 		}
 		if n.Kind() == ast.KindParagraph || n.Kind() == ast.KindTextBlock {
 			value := plain(n, body)

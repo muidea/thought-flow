@@ -114,6 +114,8 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"scratchpad.context_updated",
 		"scratchpad.committed",
 		"thought.captured",
+		"thought.patched",
+		"compose.draft_created", "compose.draft_saved", "compose.draft_deleted",
 		"thought.refine_started",
 		"thought.refined",
 		"thought.refine_failed",

@@ -19,6 +19,7 @@ import (
 )
 
 type Service struct {
+	runner     *jobstore.Runner
 	workspace  *models.Workspace
 	jobs       *jobstore.Store
 	eventHub   event.Hub
@@ -65,6 +66,7 @@ func WithLocker(locker *thoughtlock.Locker) Option {
 
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, provider ai.RefineProvider, fetcher *webfetch.Fetcher, options ...Option) *Service {
 	service := &Service{
+		runner:     jobstore.NewRunner(jobs),
 		workspace:  workspace,
 		jobs:       jobs,
 		eventHub:   eventHub,
@@ -107,24 +109,20 @@ func (s *Service) refineAsync(thoughtID string, force bool) (models.Job, error) 
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
-	job, err := s.jobs.CreateWithMaxAttempts(models.JobTypeRefine, models.ResourceTypeThought, thoughtID, "refine queued", refineMaxAttempts)
-	if err != nil {
-		return models.Job{}, err
-	}
-	eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
-	run := func() {
-		s.refineJob(job, force)
-	}
-	if s.background != nil {
-		if err := s.background.AsyncFunction(run); err == nil {
-			return job, nil
-		}
-	}
-	go run()
-	return job, nil
+	return s.runner.Start(models.JobTypeRefine, thoughtID, refineMaxAttempts, func(ctx context.Context, job models.Job) {
+		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
+		s.refineJob(ctx, job, force)
+	})
 }
 
 func (s *Service) RefineNow(ctx context.Context, thoughtID string) (models.ThoughtRefinement, error) {
+	if s.locker != nil {
+		release, err := s.locker.Lease(ctx, thoughtID, refinerSessionID+":"+models.NewJobID("direct", time.Now()))
+		if err != nil {
+			return models.ThoughtRefinement{}, err
+		}
+		defer release()
+	}
 	return s.refineNow(ctx, thoughtID, false)
 }
 
@@ -173,19 +171,15 @@ func (s *Service) refineNow(ctx context.Context, thoughtID string, force bool) (
 	return s.refine(ctx, thought, content, force)
 }
 
-func (s *Service) refineJob(job models.Job, force bool) {
-	ctx := context.Background()
-	// Skip the job cleanly if a Capture session is currently editing the
-	// thought. We don't queue or retry — the next background sweep will
-	// pick it up once the session releases the lock or the TTL elapses.
+func (s *Service) refineJob(ctx context.Context, job models.Job, force bool) {
 	if s.locker != nil {
-		if err := s.locker.AcquireBackground(job.ResourceID, refinerSessionID, backgroundLockWait); err != nil {
-			skipped, _ := s.jobs.MarkSucceeded(job, "skipped: thought is locked by an active session")
-			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, skipped))
+		release, err := s.locker.Lease(ctx, job.ResourceID, refinerSessionID+":"+job.ID)
+		if err != nil {
 			return
 		}
-		defer s.locker.Release(job.ResourceID, refinerSessionID)
+		defer release()
 	}
+
 	for {
 		job, _ = s.jobs.MarkRunning(job)
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
@@ -238,6 +232,9 @@ func (s *Service) refineJob(job models.Job, force bool) {
 			return
 		}
 
+		if ctx.Err() != nil {
+			return
+		}
 		errRef := models.NewErrorRef("thoughtflow.refiner.failed", err.Error(), isRetryableRefineError(err))
 		if errRef.Retryable && job.Attempt < job.MaxAttempts {
 			job, _ = s.jobs.MarkRetrying(job, errRef, "refine retrying")
@@ -274,7 +271,7 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 			thought.RefineStatus = models.RefineStatusFailed
 			thought.Errors = replaceErrorRef(thought.Errors, errRef)
 			thought.UpdatedAt = time.Now().UTC()
-			_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
+			_ = s.saveRefinementState(thought, content)
 			return models.ThoughtRefinement{
 				ThoughtID:   thought.ID,
 				Status:      models.RefineStatusFailed,
@@ -289,16 +286,19 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 			content.ExtractedContent = fetched.Content
 		}
 		thought.UpdatedAt = time.Now().UTC()
-		_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
+		_ = s.saveRefinementState(thought, content)
 	}
 
 	refinement, err := s.provider.Refine(ctx, ai.RefineRequest{Thought: thought, Content: content})
+	if ctx.Err() != nil {
+		return models.ThoughtRefinement{}, ctx.Err()
+	}
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.refiner.provider_failed", err.Error(), isRetryableRefineError(err))
 		thought.RefineStatus = models.RefineStatusFailed
 		thought.Errors = replaceErrorRef(thought.Errors, errRef)
 		thought.UpdatedAt = time.Now().UTC()
-		_ = markdown.WriteThought(s.workspace.RootPath, thought, content)
+		_ = s.saveRefinementState(thought, content)
 		return models.ThoughtRefinement{}, err
 	}
 	if strings.TrimSpace(refinement.ExtractedTitle) != "" {
@@ -307,10 +307,11 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	thought.Summary = refinement.Summary
 	thought.KeyPoints = refinement.KeyPoints
 	thought.AITags = refinement.AITags
+	thought.LastRefinedInputHash = models.ContentHash(ai.RefinementText(thought, content))
 	thought.RefineStatus = models.RefineStatusRefined
 	thought.Errors = nil
 	thought.UpdatedAt = time.Now().UTC()
-	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
+	if err := s.saveRefinementState(thought, content); err != nil {
 		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
@@ -320,8 +321,8 @@ func unchangedRefinement(thought models.Thought, content models.ThoughtContent) 
 	if thought.RefineStatus != models.RefineStatusRefined {
 		return models.ThoughtRefinement{}, false
 	}
-	inputHash := models.ContentHash(primaryThoughtText(content))
-	if thought.ContentHash == "" || thought.ContentHash != inputHash {
+	inputHash := models.ContentHash(ai.RefinementText(thought, content))
+	if thought.LastRefinedInputHash == "" || thought.LastRefinedInputHash != inputHash {
 		return models.ThoughtRefinement{}, false
 	}
 	return models.ThoughtRefinement{
@@ -382,3 +383,25 @@ func jobEvent(workspaceID string, job models.Job) models.DomainEvent {
 		Payload:        job,
 	}
 }
+
+func (s *Service) Recover() error {
+	return s.runner.Recover(models.JobTypeRefine, func(ctx context.Context, job models.Job) { s.refineJob(ctx, job, true) })
+}
+func (s *Service) Close() { s.runner.Close() }
+
+func (s *Service) saveRefinementState(result models.Thought, fetched models.ThoughtContent) error {
+	return markdown.UpdateThought(s.workspace.RootPath, result.ID, func(current *models.Thought, content *models.ThoughtContent) error {
+		current.ExtractedTitle = result.ExtractedTitle
+		current.RefineStatus = result.RefineStatus
+		current.Summary = result.Summary
+		current.KeyPoints = result.KeyPoints
+		current.AITags = result.AITags
+		current.LastRefinedInputHash = result.LastRefinedInputHash
+		current.Errors = result.Errors
+		current.UpdatedAt = result.UpdatedAt
+		content.ExtractedContent = fetched.ExtractedContent
+		return nil
+	})
+}
+
+func (s *Service) Bind(ctx context.Context) { s.runner.Bind(ctx) }

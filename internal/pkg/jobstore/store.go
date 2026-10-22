@@ -15,11 +15,15 @@ import (
 
 type Store struct {
 	rootPath string
-	mu       sync.RWMutex
+	mu       *sync.RWMutex
 }
 
+var storeLocks sync.Map
+
 func New(rootPath string) *Store {
-	return &Store{rootPath: rootPath}
+	absolute, _ := filepath.Abs(rootPath)
+	lock, _ := storeLocks.LoadOrStore(absolute, &sync.RWMutex{})
+	return &Store{rootPath: rootPath, mu: lock.(*sync.RWMutex)}
 }
 
 func (s *Store) RuntimeStatus() models.BackgroundRuntimeStatus {
@@ -78,7 +82,23 @@ func (s *Store) Save(job models.Job) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.WriteFile(filepath.Join(s.rootPath, job.ID+".json"), raw, 0o644)
+	tmp, err := os.CreateTemp(s.rootPath, ".job-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(s.rootPath, job.ID+".json"))
 }
 
 func (s *Store) Get(jobID string) (models.Job, error) {

@@ -6,7 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-function loadLockModule({ now = () => 1000 } = {}) {
+function loadLockModule({ now = () => 1000, BroadcastChannel } = {}) {
   const timers = new Map();
   let nextId = 1;
   const code = fs.readFileSync(
@@ -23,11 +23,12 @@ function loadLockModule({ now = () => 1000 } = {}) {
     clearInterval: (id) => { timers.delete(id); },
     addEventListener: () => {},
     removeEventListener: () => {},
-    BroadcastChannel: undefined,
+    BroadcastChannel,
     Math,
     JSON,
     console,
   };
+  context.window = context;
   vm.createContext(context);
   vm.runInContext(code, context, { filename: "session-lock.js" });
   return {
@@ -109,4 +110,23 @@ test("sweepStaleLocks drops expired entries and keeps live ones", () => {
 test("sweepStaleLocks is a no-op on an empty store", () => {
   const env = loadLockModule();
   assert.equal(env.lock.sweepStaleLocks(), 0);
+});
+
+test("remote leases use the receiving tab clock and heartbeat refreshes local TTL", () => {
+  const channels = [];
+  class Channel {
+    constructor() { channels.push(this); }
+    addEventListener(_, fn) { this.receive = fn; }
+    postMessage(data) { for (const other of channels) if (other !== this) other.receive({ data }); }
+  }
+  let oldTime = 200000; let newTime = 1000;
+  const oldTab = loadLockModule({ now: () => oldTime, BroadcastChannel: Channel });
+  const newTab = loadLockModule({ now: () => newTime, BroadcastChannel: Channel });
+  assert.equal(newTab.lock.acquire("thought", "new"), true);
+  assert.equal(oldTab.lock.acquire("thought", "old"), false);
+  oldTime += 80000; newTime += 80000; newTab.fireHeartbeats();
+  oldTime += 80000;
+  assert.equal(oldTab.lock.acquire("thought", "old"), false);
+  oldTime += 90001;
+  assert.equal(oldTab.lock.acquire("thought", "old"), true);
 });

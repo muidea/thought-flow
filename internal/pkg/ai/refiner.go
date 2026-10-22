@@ -292,8 +292,7 @@ func (p observedCaptureContextProvider) BuildCaptureContext(ctx context.Context,
 
 func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
 	_ = ctx
-	text := primaryThoughtText(req.Content)
-	embedding, _ := p.Embed(ctx, EmbedRequest{ThoughtID: req.Thought.ID, Text: text})
+	text := RefinementText(req.Thought, req.Content)
 	return models.ThoughtRefinement{
 		ThoughtID:   req.Thought.ID,
 		Status:      models.RefineStatusRefined,
@@ -303,7 +302,6 @@ func (p *LocalRefineProvider) Refine(ctx context.Context, req RefineRequest) (mo
 		Model:       "local-rule",
 		InputHash:   models.ContentHash(text),
 		GeneratedAt: time.Now().UTC(),
-		Embedding:   &embedding,
 	}, nil
 }
 
@@ -921,7 +919,7 @@ func ctxError(err error) error {
 }
 
 func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest) (models.ThoughtRefinement, error) {
-	text := primaryThoughtText(req.Content)
+	text := RefinementText(req.Thought, req.Content)
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
@@ -939,10 +937,6 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return models.ThoughtRefinement{}, fmt.Errorf("parse refinement json: %w", err)
 	}
-	embedding, err := p.Embed(ctx, EmbedRequest{ThoughtID: req.Thought.ID, Text: text})
-	if err != nil {
-		embedding = models.EmbeddingRecord{}
-	}
 	refinement := models.ThoughtRefinement{
 		ThoughtID:      req.Thought.ID,
 		Status:         models.RefineStatusRefined,
@@ -953,9 +947,6 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		Model:          p.chatModel,
 		InputHash:      models.ContentHash(text),
 		GeneratedAt:    time.Now().UTC(),
-	}
-	if len(embedding.Vector) > 0 {
-		refinement.Embedding = &embedding
 	}
 	return refinement, nil
 }
@@ -1801,4 +1792,31 @@ func primaryThoughtText(content models.ThoughtContent) string {
 		strings.TrimSpace(content.ExtractedContent),
 		strings.TrimSpace(content.Original),
 	)
+}
+
+// RefinementText keeps edited text authoritative and uses fetched page content
+// for URLs while retaining the user's annotation alongside it.
+func RefinementText(thought models.Thought, content models.ThoughtContent) string {
+	if thought.Type != models.ThoughtTypeURL {
+		return primaryThoughtText(content)
+	}
+	page := strings.TrimSpace(content.ExtractedContent)
+	notes := strings.TrimSpace(content.AINotes)
+	if page == "" {
+		return primaryThoughtText(content)
+	}
+	if notes == "" || notes == strings.TrimSpace(thought.URL) {
+		return page
+	}
+	return page + "\n\nUser notes:\n" + notes
+}
+
+// EmbeddingSpec identifies vectors reusable under the selected provider.
+func (p *LocalRefineProvider) EmbeddingSpec() (string, int)               { return localEmbeddingModel, 64 }
+func (p *OpenAICompatibleEmbeddingProvider) EmbeddingSpec() (string, int) { return p.model, 0 }
+func (p observedEmbeddingProvider) EmbeddingSpec() (string, int) {
+	if spec, ok := p.next.(interface{ EmbeddingSpec() (string, int) }); ok {
+		return spec.EmbeddingSpec()
+	}
+	return "", 0
 }

@@ -12,11 +12,20 @@ import (
 // Candidate freezes a generated preview without publishing it as a Thought or final.
 // It executes deterministic validation only, so preview never incurs an extra model call.
 func (s *Service) Candidate(ctx context.Context, id, body, title string, profile documentprofile.DocumentProfile, parameters map[string]string, sources models.SourceManifest, contextHash string) (models.DocumentSnapshot, error) {
+	if !s.Options.Enabled || !s.enabledFamily(profile.Ref.Family) || s.ctx.Err() != nil {
+		return models.DocumentSnapshot{}, ErrUnavailable
+	}
+	if e := ctx.Err(); e != nil {
+		return models.DocumentSnapshot{}, e
+	}
 	contract := models.DocumentContract{SchemaVersion: 1, ProfileRef: profile.Ref, Title: title, Parameters: clone(parameters), Language: "zh-CN", Purpose: parameters["purpose"], Audience: parameters["audience"], ContextHash: contextHash, ReviewPolicy: models.DocumentReviewPolicy{Version: documentvalidation.ReviewPolicyVersion, SemanticRequired: true, AllowManual: s.Options.AllowManual}}
 	if contract.Purpose == "" {
 		contract.Purpose = parameters["problem"]
 	}
 	d := documentstore.RevisionData{Body: body, Profile: profile.Snapshot, Contract: contract, Sources: sources, Revision: models.DocumentRevision{Origin: "candidate"}}
+	if e := safeInputs(d); e != nil {
+		return models.DocumentSnapshot{}, e
+	}
 	unlock := s.Store.Lock(id)
 	h, e := s.Store.Head(id)
 	if e != nil && !os.IsNotExist(e) {

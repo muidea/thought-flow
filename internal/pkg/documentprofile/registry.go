@@ -59,7 +59,7 @@ func (r *Registry) Publish(raw []byte) (DocumentProfile, error) {
 		return DocumentProfile{}, err
 	}
 	if _, err := os.Stat(path); err == nil {
-		return DocumentProfile{}, fmt.Errorf("profile %s@%d already exists", profile.Ref.ProfileID, profile.Ref.Version)
+		return DocumentProfile{}, fmt.Errorf("%w: %s@%d", ErrProfileConflict, profile.Ref.ProfileID, profile.Ref.Version)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return DocumentProfile{}, err
 	}
@@ -76,11 +76,32 @@ func (r *Registry) Publish(raw []byte) (DocumentProfile, error) {
 		_ = tmp.Close()
 		return DocumentProfile{}, err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return DocumentProfile{}, err
+	}
 	if err := tmp.Close(); err != nil {
 		return DocumentProfile{}, err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	// Link publishes the complete staged inode without replacing another
+	// publisher's version, including across Registry instances.
+	if err := os.Link(tmpPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return DocumentProfile{}, fmt.Errorf("%w: %s@%d", ErrProfileConflict, profile.Ref.ProfileID, profile.Ref.Version)
+		}
 		return DocumentProfile{}, err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return DocumentProfile{}, err
+	}
+	err = directory.Sync()
+	closeErr := directory.Close()
+	if err != nil {
+		return DocumentProfile{}, err
+	}
+	if closeErr != nil {
+		return DocumentProfile{}, closeErr
 	}
 	r.Reload()
 	return profile, nil

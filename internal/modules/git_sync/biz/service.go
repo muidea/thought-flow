@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,15 +30,20 @@ type Service struct {
 	enabled    bool
 	debounce   time.Duration
 
-	commitMu    sync.Mutex
-	mu          sync.Mutex
-	pending     map[string]struct{}
-	resourceIDs map[string]struct{}
-	reasons     map[string]struct{}
-	changeSetID string
-	createdAt   time.Time
-	debounceTo  time.Time
-	timer       *time.Timer
+	flushMu      sync.Mutex
+	inflight     *models.GitChangeSet
+	retryDelay   time.Duration
+	closed       bool
+	pendingError string
+	commitMu     sync.Mutex
+	mu           sync.Mutex
+	pending      map[string]struct{}
+	resourceIDs  map[string]struct{}
+	reasons      map[string]struct{}
+	changeSetID  string
+	createdAt    time.Time
+	debounceTo   time.Time
+	timer        *time.Timer
 }
 
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, eventHub event.Hub, background task.BackgroundRoutine, enabled bool, debounce time.Duration) *Service {
@@ -114,10 +120,11 @@ func (s *Service) EnqueueChangeSet(paths []string, reason string, resourceIDs []
 		delay = 0
 	}
 	s.debounceTo = now.Add(delay)
-	s.timer = time.AfterFunc(delay, func() {
-		s.flushAsync()
-	})
+	if !s.closed {
+		s.timer = time.AfterFunc(delay, func() { s.flushAsync() })
+	}
 	changeSet := s.pendingChangeSetLocked()
+	s.persistPendingLocked()
 	s.mu.Unlock()
 	return changeSet
 }
@@ -145,6 +152,14 @@ func (s *Service) flushAsync() {
 }
 
 func (s *Service) flush() {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return
+	}
 	paths, resourceIDs := s.takePending()
 	if len(paths) == 0 {
 		return
@@ -156,7 +171,9 @@ func (s *Service) flush() {
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 	}
 
-	record, commitErr := s.Commit(context.Background(), paths, resourceIDs)
+	commitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	record, commitErr := s.Commit(commitCtx, paths, resourceIDs)
 	if commitErr != nil {
 		errRef := models.NewErrorRef("thoughtflow.git.commit_failed", commitErr.Error(), true)
 		record.Error = &errRef
@@ -166,8 +183,10 @@ func (s *Service) flush() {
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 		}
 		eventutil.Post(s.eventHub, gitEvent(models.EventGitCommitFailed, s.workspace.ID, record))
+		s.finishPending(false)
 		return
 	}
+	s.finishPending(true)
 	if err == nil {
 		job, _ = s.jobs.MarkSucceeded(job, "git commit succeeded")
 		record.JobID = job.ID
@@ -190,6 +209,10 @@ func (s *Service) takePending() ([]string, []string) {
 	resourceIDs := make([]string, 0, len(s.resourceIDs))
 	for id := range s.resourceIDs {
 		resourceIDs = append(resourceIDs, id)
+	}
+	snapshot := s.pendingChangeSetLocked()
+	if len(paths) > 0 {
+		s.inflight = &snapshot
 	}
 	s.pending = map[string]struct{}{}
 	s.resourceIDs = map[string]struct{}{}
@@ -238,6 +261,9 @@ func normalizedCommitPath(value string) (string, bool) {
 		return "", false
 	}
 	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, ".scratchpad/") || (strings.HasPrefix(lower, "topics/") && strings.HasSuffix(lower, "/candidates.yaml")) || strings.HasPrefix(lower, "documents/capture-") || strings.HasPrefix(lower, "documents/compose-") {
+		return "", false
+	}
 	if lower == ".thoughtflow" || strings.HasPrefix(lower, ".thoughtflow/") {
 		return "", false
 	}
@@ -276,6 +302,13 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 	defer s.commitMu.Unlock()
 	if err := s.ensureRepository(ctx); err != nil {
 		return models.GitCommitRecord{}, err
+	}
+	conflicts, err := outputGit(ctx, "-C", s.workspace.RootPath, "ls-files", "-u")
+	if err != nil {
+		return models.GitCommitRecord{}, err
+	}
+	if len(conflicts) > 0 {
+		return models.GitCommitRecord{}, errors.New("git has unresolved conflicts; resolve them before retrying")
 	}
 	selected := []string{}
 	pathspecs := []string{}
@@ -432,7 +465,18 @@ func (s *Service) RuntimeStatus(ctx context.Context) models.GitRuntimeStatus {
 		status.Status = "pending_init"
 		return status
 	}
+	s.mu.Lock()
+	pendingError := s.pendingError
+	pending := len(s.pending) > 0 || s.inflight != nil
+	s.mu.Unlock()
 	status.Status = "ready"
+	if pending {
+		status.Status = "pending"
+	}
+	if pendingError != "" {
+		status.Status = "degraded"
+		status.Error = "persist pending changes: " + pendingError
+	}
 	return status
 }
 
@@ -527,4 +571,127 @@ func gitEvent(eventType string, workspaceID string, record models.GitCommitRecor
 		PayloadVersion: 1,
 		Payload:        record,
 	}
+}
+
+// pending lives in runtime, outside content commits, and includes an in-flight
+// snapshot until Git confirms success. New events during commit stay pending.
+func (s *Service) pendingPath() string {
+	if s.workspace == nil || s.workspace.RuntimePath == "" {
+		return ""
+	}
+	return filepath.Join(s.workspace.RuntimePath, "git-pending.json")
+}
+func (s *Service) persistPendingLocked() {
+	path := s.pendingPath()
+	if path == "" {
+		return
+	}
+	pending := s.pendingChangeSetLocked()
+	if s.inflight != nil {
+		pending.Paths = append(pending.Paths, s.inflight.Paths...)
+		pending.ResourceIDs = append(pending.ResourceIDs, s.inflight.ResourceIDs...)
+		pending.Reason += "," + s.inflight.Reason
+	}
+	if len(pending.Paths) == 0 {
+		err := os.Remove(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.pendingError = err.Error()
+		}
+		return
+	}
+	raw, err := json.Marshal(pending)
+	if err == nil {
+		err = os.MkdirAll(filepath.Dir(path), 0700)
+	}
+	if err == nil {
+		var tmp *os.File
+		tmp, err = os.CreateTemp(filepath.Dir(path), ".git-pending-*.tmp")
+		if err == nil {
+			defer os.Remove(tmp.Name())
+			_, err = tmp.Write(raw)
+			if err == nil {
+				err = tmp.Sync()
+			}
+			closeErr := tmp.Close()
+			if err == nil {
+				err = closeErr
+			}
+			if err == nil {
+				err = os.Rename(tmp.Name(), path)
+			}
+		}
+	}
+	if err != nil {
+		s.pendingError = err.Error()
+	} else {
+		s.pendingError = ""
+	}
+}
+func (s *Service) finishPending(success bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !success && s.inflight != nil {
+		for _, path := range s.inflight.Paths {
+			s.pending[path] = struct{}{}
+		}
+		for _, id := range s.inflight.ResourceIDs {
+			s.resourceIDs[id] = struct{}{}
+		}
+		if s.changeSetID == "" {
+			s.changeSetID = s.inflight.ID
+			s.createdAt = s.inflight.CreatedAt
+		}
+		s.reasons[s.inflight.Reason] = struct{}{}
+	}
+	s.inflight = nil
+	if success {
+		s.retryDelay = 0
+	} else if !s.closed {
+		if s.retryDelay == 0 {
+			s.retryDelay = time.Second
+		} else {
+			s.retryDelay *= 2
+		}
+		if s.retryDelay > time.Minute {
+			s.retryDelay = time.Minute
+		}
+		if s.timer != nil {
+			s.timer.Stop()
+		}
+		s.debounceTo = time.Now().Add(s.retryDelay)
+		s.timer = time.AfterFunc(s.retryDelay, s.flushAsync)
+	}
+	s.persistPendingLocked()
+}
+func (s *Service) Recover() error {
+	path := s.pendingPath()
+	if !s.enabled || path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var pending models.GitChangeSet
+	if err = json.Unmarshal(raw, &pending); err != nil {
+		return err
+	}
+	s.EnqueueChangeSet(pending.Paths, pending.Reason, pending.ResourceIDs)
+	return nil
+}
+func (s *Service) Close() {
+	s.mu.Lock()
+	s.closed = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.mu.Unlock()
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistPendingLocked()
 }

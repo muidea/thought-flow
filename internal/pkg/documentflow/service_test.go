@@ -340,13 +340,13 @@ func TestCanceledReviewAndRestartDoNotReplayModel(t *testing.T) {
 func TestRepairScopeIncludesOnlySelectedASTSection(t *testing.T) {
 	before := "# Title\n\n## A\nold\n\n## B\nevidence\n"
 	after := strings.Replace(before, "old", "corrected", 1)
-	if e := documentflow.CheckRepairScope(before, after, []string{"A"}); e != nil {
+	if e := documentflow.CheckRepairScope(before, after, []string{"A"}, 2); e != nil {
 		t.Fatal(e)
 	}
-	if e := documentflow.CheckRepairScope(before, strings.Replace(after, "evidence", "invented", 1), []string{"A"}); !errors.Is(e, documentflow.ErrRules) {
+	if e := documentflow.CheckRepairScope(before, strings.Replace(after, "evidence", "invented", 1), []string{"A"}, 2); !errors.Is(e, documentflow.ErrRules) {
 		t.Fatal("repair escaped scope")
 	}
-	if e := documentflow.CheckRepairScope(before, after, []string{"nonexistent"}); !errors.Is(e, documentflow.ErrRules) {
+	if e := documentflow.CheckRepairScope(before, after, []string{"nonexistent"}, 2); !errors.Is(e, documentflow.ErrRules) {
 		t.Fatal("unknown section accepted")
 	}
 }

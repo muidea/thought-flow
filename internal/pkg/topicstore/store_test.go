@@ -244,6 +244,10 @@ func TestStoreRefreshRemovesStaleMembershipFacts(t *testing.T) {
 		t.Fatalf("expected membership fact before refresh, stat error = %v", err)
 	}
 
+	if err := markdown.DeleteThought(root, thought.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	rebuilt, count, _, err := store.RefreshWithMatcher(ctx, updated.ID, func(context.Context, models.Topic, models.Thought, models.ThoughtContent) (models.TopicMembership, bool) {
 		return models.TopicMembership{}, false
 	})

@@ -1572,6 +1572,14 @@ function startFixtureServer(options = {}) {
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    if (url.pathname === "/api/system/privacy") {
+      return json(res, api({
+        llm: { kind: "llm", enabled: false },
+        embedding: { kind: "embedding", enabled: false },
+        reader: { kind: "reader", enabled: false },
+        actions: [],
+      }));
+    }
     if (options.documentSnapshot && url.pathname.startsWith("/api/documents/thought-1")) {
       const snapshot=options.documentSnapshot;
       if(req.method==="GET")return json(res,api(snapshot));

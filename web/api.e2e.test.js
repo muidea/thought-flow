@@ -374,7 +374,7 @@ test("API e2e", async (t) => {
     assert.equal(typeof snapshot.thought.expansion_plan, "string", "expansion_plan must be a string");
   });
 
-  await t.test("search responds in keyword, semantic and hybrid modes", async () => {
+  await t.test("HTTP search remains available when unsupported mode parameters are supplied", async () => {
     await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "search-target", content: "alpha beta gamma DuckDB keyword search test" },
     });
@@ -390,7 +390,7 @@ test("API e2e", async (t) => {
 
   await t.test("search filters by tag and returns SearchResultView shape", async () => {
     // The Web-facing search surface (per convergence todo 6.1) only emits
-    // q / tags; assertions here pin the API contract to that surface and
+    // q / tags / topic_id; assertions here pin the API contract to that surface and
     // verify SearchResultView projects results without an explain block.
     await request(server.baseURL, "/api/thoughts", "POST", {
       body: {
@@ -411,6 +411,9 @@ test("API e2e", async (t) => {
     // /api/search?explain=true still works server-side but the projection is
     // a flat results array.
     assert.equal(typeof tagData.explain, "undefined", "explain field is not part of the projection");
+    const filtered = await request(server.baseURL, "/api/search?q=vector&topic_id=missing-topic&limit=5", "GET");
+    assert.equal(filtered.status, 200, filtered.text);
+    assert.equal(envelope(filtered).data.results.length, 0, "HTTP topic_id must reach exact membership filtering");
   });
 
   await t.test("topics CRUD: create, get, update, refresh, weave-proposals", async () => {

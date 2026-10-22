@@ -2802,3 +2802,23 @@ func TestScratchpadServiceReopenFromThoughtSurfacesGetThoughtError(t *testing.T)
 		t.Fatalf("err = %v, want source thought not found", err)
 	}
 }
+
+func TestURLCaptureCommandPassesRealCaptureValidation(t *testing.T) {
+	store := newMemoryScratchpad()
+	service := NewScratchpadService(store)
+	if _, err := service.AppendMessage("url-session", "user", "https://example.org/unique"); err != nil {
+		t.Fatal(err)
+	}
+	sp, _ := store.Get("url-session")
+	sp.SessionContext.CandidateBody = "A useful annotation for the webpage."
+	cmd, err := service.BuildCaptureCommand(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	capture := NewService(&models.Workspace{RootPath: root}, nil, nil)
+	result, err := capture.Capture(context.Background(), cmd)
+	if err != nil || result.Thought.URL != "https://example.org/unique" {
+		t.Fatalf("URL archive failed: %+v %v", result, err)
+	}
+}

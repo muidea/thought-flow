@@ -138,6 +138,7 @@ type Thought struct {
 	Path                       string              `json:"path"`
 	CreatedAt                  time.Time           `json:"created_at"`
 	UpdatedAt                  time.Time           `json:"updated_at"`
+	LastRefinedInputHash       string              `json:"last_refined_input_hash,omitempty"`
 	ContentHash                string              `json:"content_hash"`
 	UserTags                   []string            `json:"user_tags,omitempty"`
 	AITags                     []string            `json:"ai_tags,omitempty"`

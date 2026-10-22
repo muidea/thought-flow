@@ -57,8 +57,8 @@ func TestRefineNowWritesSummaryTagsAndStatus(t *testing.T) {
 	if refinement.Status != models.RefineStatusRefined {
 		t.Fatalf("refinement status = %q", refinement.Status)
 	}
-	if refinement.Embedding == nil || len(refinement.Embedding.Vector) == 0 {
-		t.Fatalf("expected refinement embedding")
+	if refinement.Embedding != nil {
+		t.Fatal("search vectors must come from independent provider")
 	}
 
 	gotThought, gotContent, err := markdown.ReadThought(root, thought.ID)
@@ -144,20 +144,21 @@ func TestRefineNowSkipsUnchangedRefinedThought(t *testing.T) {
 	original := "Already refined input should not call provider again."
 	now := time.Date(2026, 6, 9, 15, 10, 0, 0, time.UTC)
 	thought := models.Thought{
-		ID:            "20260609-151000-skip",
-		Type:          models.ThoughtTypeText,
-		Source:        models.ThoughtSourceManual,
-		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-151000-skip")),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ContentHash:   models.ContentHash(original),
-		Summary:       "existing summary",
-		KeyPoints:     []string{"existing point"},
-		AITags:        []string{"existing"},
-		CaptureStatus: models.CaptureStatusCaptured,
-		RefineStatus:  models.RefineStatusRefined,
-		IndexStatus:   models.IndexStatusIndexed,
-		TopicStatus:   models.TopicStatusUnmatched,
+		ID:                   "20260609-151000-skip",
+		Type:                 models.ThoughtTypeText,
+		Source:               models.ThoughtSourceManual,
+		Path:                 filepath.ToSlash(markdown.ThoughtRelativePath("20260609-151000-skip")),
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		ContentHash:          models.ContentHash(original),
+		LastRefinedInputHash: models.ContentHash(original),
+		Summary:              "existing summary",
+		KeyPoints:            []string{"existing point"},
+		AITags:               []string{"existing"},
+		CaptureStatus:        models.CaptureStatusCaptured,
+		RefineStatus:         models.RefineStatusRefined,
+		IndexStatus:          models.IndexStatusIndexed,
+		TopicStatus:          models.TopicStatusUnmatched,
 	}
 	content := models.ThoughtContent{AINotes: original}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
@@ -200,18 +201,19 @@ func TestForceRefineIgnoresUnchangedSkip(t *testing.T) {
 	original := "Retry should force refinement even when input is unchanged."
 	now := time.Date(2026, 6, 9, 15, 20, 0, 0, time.UTC)
 	thought := models.Thought{
-		ID:            "20260609-152000-force",
-		Type:          models.ThoughtTypeText,
-		Source:        models.ThoughtSourceManual,
-		Path:          filepath.ToSlash(markdown.ThoughtRelativePath("20260609-152000-force")),
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ContentHash:   models.ContentHash(original),
-		Summary:       "existing summary",
-		CaptureStatus: models.CaptureStatusCaptured,
-		RefineStatus:  models.RefineStatusRefined,
-		IndexStatus:   models.IndexStatusIndexed,
-		TopicStatus:   models.TopicStatusUnmatched,
+		ID:                   "20260609-152000-force",
+		Type:                 models.ThoughtTypeText,
+		Source:               models.ThoughtSourceManual,
+		Path:                 filepath.ToSlash(markdown.ThoughtRelativePath("20260609-152000-force")),
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		ContentHash:          models.ContentHash(original),
+		LastRefinedInputHash: models.ContentHash(original),
+		Summary:              "existing summary",
+		CaptureStatus:        models.CaptureStatusCaptured,
+		RefineStatus:         models.RefineStatusRefined,
+		IndexStatus:          models.IndexStatusIndexed,
+		TopicStatus:          models.TopicStatusUnmatched,
 	}
 	content := models.ThoughtContent{Original: original, AINotes: "Summary: existing summary"}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
@@ -256,18 +258,19 @@ func TestRefineURLFetchFailurePreservesOriginalThought(t *testing.T) {
 	thoughtID := "20260609-152500-url-fail"
 	original := origin.URL
 	thought := models.Thought{
-		ID:            thoughtID,
-		Type:          models.ThoughtTypeURL,
-		Source:        models.ThoughtSourceManual,
-		URL:           origin.URL,
-		Path:          filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
-		CreatedAt:     time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
-		UpdatedAt:     time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
-		ContentHash:   models.ContentHash(original),
-		CaptureStatus: models.CaptureStatusCaptured,
-		RefineStatus:  models.RefineStatusPending,
-		IndexStatus:   models.IndexStatusPending,
-		TopicStatus:   models.TopicStatusUnmatched,
+		ID:                   thoughtID,
+		Type:                 models.ThoughtTypeURL,
+		Source:               models.ThoughtSourceManual,
+		URL:                  origin.URL,
+		Path:                 filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID)),
+		CreatedAt:            time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
+		UpdatedAt:            time.Date(2026, 6, 9, 15, 25, 0, 0, time.UTC),
+		ContentHash:          models.ContentHash(original),
+		LastRefinedInputHash: models.ContentHash(original),
+		CaptureStatus:        models.CaptureStatusCaptured,
+		RefineStatus:         models.RefineStatusPending,
+		IndexStatus:          models.IndexStatusPending,
+		TopicStatus:          models.TopicStatusUnmatched,
 	}
 	if err := markdown.WriteThought(root, thought, models.ThoughtContent{Original: original}); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
@@ -394,7 +397,7 @@ func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWithMaxAttempts() error = %v", err)
 	}
-	service.refineJob(job, false)
+	service.refineJob(context.Background(), job, false)
 
 	loaded, err := jobs.Get(job.ID)
 	if err != nil {
@@ -412,7 +415,7 @@ func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	}
 }
 
-func TestRefineJobSkippedWhenThoughtLocked(t *testing.T) {
+func TestRefineJobRunsAfterThoughtUnlock(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:           "local",
@@ -455,7 +458,7 @@ func TestRefineJobSkippedWhenThoughtLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWithMaxAttempts() error = %v", err)
 	}
-	service.refineJob(job, false)
+	service.refineJob(context.Background(), job, false)
 
 	loaded, err := jobs.Get(job.ID)
 	if err != nil {
@@ -464,11 +467,11 @@ func TestRefineJobSkippedWhenThoughtLocked(t *testing.T) {
 	if loaded.Status != models.JobStatusSucceeded {
 		t.Fatalf("locked job status = %q", loaded.Status)
 	}
-	if !strings.Contains(loaded.Message, "locked") {
+	if strings.Contains(loaded.Message, "skipped") {
 		t.Fatalf("locked job message = %q", loaded.Message)
 	}
-	if provider.calls != 0 {
-		t.Fatalf("provider should not have been called, calls = %d", provider.calls)
+	if provider.calls != 1 {
+		t.Fatalf("provider should run after lock expires, calls = %d", provider.calls)
 	}
 }
 

@@ -228,7 +228,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 	if s.locker != nil {
 		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
 			if errors.Is(err, ErrLocked) {
-				if holder, ok := s.locker.Holder(thoughtID); ok && holder == thoughtlock.RefinerSessionID {
+				if holder, ok := s.locker.Holder(thoughtID); ok && thoughtlock.IsWorkflowSession(holder) {
 					return ErrRefining
 				}
 			}
@@ -290,7 +290,7 @@ func (s *Service) PatchThought(ctx context.Context, thoughtID, sessionID string,
 	if s.locker != nil {
 		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
 			if errors.Is(err, ErrLocked) {
-				if holder, ok := s.locker.Holder(thoughtID); ok && holder == thoughtlock.RefinerSessionID {
+				if holder, ok := s.locker.Holder(thoughtID); ok && thoughtlock.IsWorkflowSession(holder) {
 					return models.ThoughtSnapshot{}, ErrRefining
 				}
 			}
@@ -301,42 +301,12 @@ func (s *Service) PatchThought(ctx context.Context, thoughtID, sessionID string,
 	return s.applyPatchLocked(thoughtID, sessionID, request, rawBody)
 }
 
-// ApplyDraftInternal writes a patch to a thought without acquiring
-// the thought lock. It exists for the scratchpad commit pipeline:
-// commitFresh runs capture.Capture → applyDraftToThought back-to-back
-// inside one HTTP request, and PatchThought's lock would race the
-// async refiner/expander that the Capture step just enqueued — they
-// try to acquire the same lock, see it held, and MarkSucceeded with
-// "skipped: thought is locked" without retrying. Net effect was that
-// scratchpad-committed thoughts permanently lost their summary /
-// ai_tags / key_points / expansion_plan.
-//
-// Concurrency is still safe: commitFresh holds the scratchpad itself
-// (not the thought) as its serialization point, and the refiner /
-// expander have their own background-loop retry on the next sweep
-// if the apply races. The user-driven PATCH path is unaffected —
-// it still goes through PatchThought, which keeps the lock so a
-// human edit cannot be clobbered by a background job.
+// ApplyDraftInternal applies repeated archive edits under the same Thought lock
+// as interactive edits and background processing.
 func (s *Service) ApplyDraftInternal(ctx context.Context, thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error) {
-	_ = ctx
-	if s == nil || s.workspace == nil {
-		return models.ThoughtSnapshot{}, errors.New("capture service is not ready")
-	}
-	if strings.TrimSpace(thoughtID) == "" {
-		return models.ThoughtSnapshot{}, errors.New("thought id is required")
-	}
-	if strings.TrimSpace(sessionID) == "" {
-		return models.ThoughtSnapshot{}, errors.New("session id is required")
-	}
-	if unknown, err := unknownPatchFields(rawBody); err != nil {
-		return models.ThoughtSnapshot{}, fmt.Errorf("%w: %s", ErrInvalidPatchField, strings.Join(unknown, ","))
-	}
-	return s.applyPatchLocked(thoughtID, sessionID, request, rawBody)
+	return s.PatchThought(ctx, thoughtID, sessionID, request, rawBody)
 }
 
-// applyPatchLocked holds the actual field merge + disk write +
-// event publish. The lock is the caller's responsibility (PatchThought
-// acquires one; ApplyDraftInternal does not).
 func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.ThoughtPatchRequest, rawBody []byte) (models.ThoughtSnapshot, error) {
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {

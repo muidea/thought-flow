@@ -1,23 +1,25 @@
 package documentflow
 
 import (
-	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/text"
 	"strings"
 	"thoughtflow/internal/pkg/documentstore"
+	"thoughtflow/internal/pkg/documentvalidation"
 )
 
 // CheckRepairScope compares complete byte slices outside selected AST sections.
 // Even a cooperative model cannot change an unselected title/reference section.
-func CheckRepairScope(before, after string, sections []string) error {
+func CheckRepairScope(before, after string, sections []string, headingLevel int) error {
+	if headingLevel < 2 || headingLevel > 6 {
+		return ErrRules
+	}
 	allowed := map[string]bool{}
 	for _, s := range sections {
 		allowed[s] = true
 	}
 	skeleton := func(body string) (string, map[string]bool) {
 		source := []byte(documentstore.Normalize(body))
-		tree := goldmark.DefaultParser().Parse(text.NewReader(source))
+		tree := documentvalidation.ParseBody(source)
 		type boundary struct {
 			start int
 			name  string
@@ -25,10 +27,14 @@ func CheckRepairScope(before, after string, sections []string) error {
 		bounds := []boundary{{0, "__preamble"}}
 		ast.Walk(tree, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
 			if enter {
-				if h, ok := n.(*ast.Heading); ok && h.Level == 2 && h.Lines().Len() > 0 {
+				if h, ok := n.(*ast.Heading); ok && h.Level <= headingLevel && h.Lines().Len() > 0 {
 					offset := h.Lines().At(0).Start
 					start := strings.LastIndex(string(source[:offset]), "\n") + 1
-					bounds = append(bounds, boundary{start, string(h.Text(source))})
+					name := documentvalidation.VisibleText(h, source)
+					if h.Level != headingLevel {
+						name = "__outside:" + name
+					}
+					bounds = append(bounds, boundary{start, name})
 				}
 			}
 			return ast.WalkContinue, nil
@@ -41,7 +47,7 @@ func CheckRepairScope(before, after string, sections []string) error {
 				end = bounds[i+1].start
 			}
 			if allowed[b.name] {
-				out.WriteString("## " + b.name + "\n<selected>\n")
+				out.WriteString(strings.Repeat("#", headingLevel) + " " + b.name + "\n<selected>\n")
 				seen[b.name] = true
 			} else {
 				out.Write(source[b.start:end])

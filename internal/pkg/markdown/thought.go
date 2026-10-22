@@ -122,6 +122,33 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 	flow := documentflow.For(rootPath)
 	unlock := flow.Store.Lock(thoughtID)
 	defer unlock()
+	return readThoughtLocked(rootPath, thoughtID)
+}
+
+// UpdateThought serializes a read-modify-write with projections, deletion and
+// document HEAD publication. Metadata writers must merge into this latest value.
+func UpdateThought(rootPath, thoughtID string, update func(*models.Thought, *models.ThoughtContent) error) error {
+	flow := documentflow.For(rootPath)
+	unlock := flow.Store.Lock(thoughtID)
+	defer unlock()
+	thought, content, err := readThoughtLocked(rootPath, thoughtID)
+	if err != nil {
+		return err
+	}
+	if err = update(&thought, &content); err != nil {
+		return err
+	}
+	if thought.ID != thoughtID {
+		return documentstore.ErrInvalid
+	}
+	if _, err = flow.SyncProjectionLocked(&thought, &content, false); err != nil {
+		return err
+	}
+	return writeThoughtProjection(rootPath, thought, content)
+}
+
+func readThoughtLocked(rootPath, thoughtID string) (models.Thought, models.ThoughtContent, error) {
+	flow := documentflow.For(rootPath)
 	raw, err := ReadThoughtRaw(rootPath, thoughtID)
 	relPath := ThoughtRelativePath(thoughtID)
 	var thought models.Thought
@@ -150,7 +177,10 @@ func ReadThought(rootPath string, thoughtID string) (models.Thought, models.Thou
 		}
 		thought, content = ParseThought(raw)
 	}
-	thought.ID = firstNonEmpty(thought.ID, thoughtID)
+	if thought.ID != "" && thought.ID != thoughtID {
+		return models.Thought{}, models.ThoughtContent{}, fmt.Errorf("%w: Markdown identity does not match its path", documentstore.ErrInvalid)
+	}
+	thought.ID = thoughtID
 	thought.Path = filepath.ToSlash(relPath)
 	recover, err := flow.SyncProjectionLocked(&thought, &content, true)
 	if err != nil {
@@ -207,6 +237,7 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeTime(&buf, "created_at", thought.CreatedAt)
 	writeTime(&buf, "updated_at", thought.UpdatedAt)
 	writeScalar(&buf, "content_hash", thought.ContentHash)
+	writeScalar(&buf, "last_refined_input_hash", thought.LastRefinedInputHash)
 	writeList(&buf, "user_tags", thought.UserTags)
 	writeList(&buf, "ai_tags", thought.AITags)
 	writeList(&buf, "topic_ids", thought.TopicIDs)
@@ -462,6 +493,7 @@ func knownThoughtFrontMatterKey(key string) bool {
 		"created_at",
 		"updated_at",
 		"content_hash",
+		"last_refined_input_hash",
 		"user_tags",
 		"ai_tags",
 		"topic_ids",
@@ -533,6 +565,8 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.CreatedAt = parseTime(value)
 		case "updated_at":
 			thought.UpdatedAt = parseTime(value)
+		case "last_refined_input_hash":
+			thought.LastRefinedInputHash = value
 		case "content_hash":
 			thought.ContentHash = value
 		case "user_tags":
