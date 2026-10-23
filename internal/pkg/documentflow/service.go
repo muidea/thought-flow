@@ -304,7 +304,7 @@ func (s *Service) Get(id string) (models.DocumentSnapshot, error) {
 	if e != nil {
 		return models.DocumentSnapshot{}, e
 	}
-	out := models.DocumentSnapshot{DocumentID: id, Head: h, Revision: d.Revision, Contract: d.Contract, Sources: d.Sources, Body: d.Body, Freshness: "unavailable", SourceFreshness: "snapshot"}
+	out := models.DocumentSnapshot{ResourceBindings: d.Resources.Bindings, DocumentID: id, Head: h, Revision: d.Revision, Contract: d.Contract, Sources: d.Sources, Body: d.Body, Freshness: "unavailable", SourceFreshness: "snapshot"}
 	keys, e := s.Store.Records(id, "reports")
 	if e != nil {
 		return out, e
@@ -370,7 +370,7 @@ func (s *Service) enabledFamily(f string) bool {
 }
 func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64, reviewMode ...string) (models.ValidationReport, error) {
 	key := s.Store.Root + "/" + id
-	if _, loaded := activeValidations.LoadOrStore(key, true); loaded {
+	if _, loaded := activeValidations.LoadOrStore(key, rev); loaded {
 		return models.ValidationReport{}, documentstore.ErrConflict
 	}
 	defer activeValidations.Delete(key)
@@ -670,6 +670,9 @@ func (s *Service) Export(id, rev, mode string) (string, error) {
 		return "", e
 	}
 	if mode == "final" {
+		if d.ResourceError != "" {
+			return "", ErrRules
+		}
 		h, e := s.Store.ActiveHead(id)
 		if e != nil {
 			return "", e
@@ -868,4 +871,9 @@ func (s *Service) DeleteLocked(id string) error {
 		s.emit("document.deleted", id, h, "")
 	}
 	return e
+}
+
+func (s *Service) ValidationRunning(id, revision string) bool {
+	value, ok := activeValidations.Load(s.Store.Root + "/" + id)
+	return ok && value == revision
 }

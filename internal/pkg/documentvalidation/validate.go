@@ -18,6 +18,7 @@ import (
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 )
 
 const Version = "final-body-ast-v2.5"
@@ -41,7 +42,7 @@ type reference struct {
 
 func Key(d documentstore.RevisionData) string {
 	r := d.Revision
-	return documentstore.HashJSON([]string{r.BodyHash, r.ContractHash, r.ProfileHash, r.SourceManifestHash, Version, d.Contract.ReviewPolicy.Version})
+	return documentstore.HashJSON([]string{r.BodyHash, r.ContractHash, r.ProfileHash, r.SourceManifestHash, r.ResourceBindingsHash, d.ResourceMappingHash, Version, d.Contract.ReviewPolicy.Version})
 }
 func Validate(d documentstore.RevisionData) models.ValidationReport {
 	r := models.ValidationReport{ReportID: documentstore.ID("v-"), DocumentID: d.Revision.DocumentID, RevisionID: d.Revision.RevisionID, ValidationKey: Key(d), ValidatorVersion: Version, Status: "passed", CreatedAt: time.Now().UTC(), Checks: []string{"frozen_identity", "contract_inputs", "markdown_ast", "section_mapping", "references", "type_rules"}, Issues: []models.DocumentIssue{}, ReviewRuns: []models.DocumentReviewRun{{Kind: "structure", Status: "passed"}}}
@@ -51,6 +52,18 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 			severity = "error"
 		}
 		r.Issues = append(r.Issues, models.DocumentIssue{ID: fmt.Sprintf("i%d", len(r.Issues)+1), Code: code, Severity: severity, Group: group, Section: section, Line: line, Evidence: evidence, Basis: basis, Suggestion: "Update the frozen inputs or the indicated body section, then validate the new revision.", HumanConfirmation: !hard})
+	}
+	allowedLocator := func(locator string) bool {
+		if validLocator(locator) {
+			return true
+		}
+		id, resource := objectlocation.ResourceID(locator)
+		for _, b := range d.Resources.Bindings {
+			if !b.Private && b.Hash != "" && ((resource && b.ResourceID == id) || (b.OriginalLocator != "" && b.OriginalLocator == locator)) {
+				return true
+			}
+		}
+		return false
 	}
 	profile, e := documentprofile.Parse([]byte(d.Profile), documentprofile.Limits{})
 	if e != nil || profile.Ref != d.Contract.ProfileRef {
@@ -227,11 +240,11 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 	}
 	for id, definition := range refs {
 		source, exists := manifest[id]
-		if len(definition.locators) == 0 || (exists && !validLocator(source.Locator)) {
+		if len(definition.locators) == 0 || (exists && !allowedLocator(source.Locator)) {
 			add("reference_locator", "evidence", id, definition.text, "Both the delivered reference and frozen source require safe locators", definition.line, true)
 		}
 		for _, locator := range definition.locators {
-			if !validLocator(locator) {
+			if !allowedLocator(locator) {
 				add("reference_locator", "evidence", id, locator, "The delivered reference contains an unsafe locator", definition.line, true)
 			}
 			if exists && source.Locator != locator {
@@ -242,13 +255,27 @@ func Validate(d documentstore.RevisionData) models.ValidationReport {
 			add("source_unverified", "evidence", id, "", "Citation presence does not verify source content/support. Inspect the original and its version.", 0, false)
 		}
 	}
+	if d.ResourceError != "" {
+		add("resource_incomplete", "structure", "", "", "Resource bytes or bindings are unavailable", 0, true)
+	}
 	for _, destination := range links {
-		if strings.HasPrefix(destination, "#") {
+		if strings.HasPrefix(destination, "resource://") {
+			id, valid := objectlocation.ResourceID(destination)
+			found := false
+			for _, binding := range d.Resources.Bindings {
+				if valid && binding.ResourceID == id && !binding.Private && binding.Hash != "" {
+					found = true
+				}
+			}
+			if !found {
+				add("resource_incomplete", "structure", "", destination, "A shareable resource binding in this document revision is required", 0, true)
+			}
+		} else if strings.HasPrefix(destination, "#") {
 			target, e := url.PathUnescape(strings.TrimPrefix(destination, "#"))
 			if e != nil || !anchors[target] {
 				add("link_target", "structure", "", destination, "Internal link has no heading target", 0, true)
 			}
-		} else if !validLocator(destination) {
+		} else if !allowedLocator(destination) {
 			add("unsafe_link", "structure", "", destination, "Only safe source locators are supported", 0, true)
 		}
 	}

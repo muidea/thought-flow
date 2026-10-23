@@ -77,12 +77,16 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), store, eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.Embedding), dbPath, biz.WithLocker(thoughtlock.Default()))
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.captured", m.service)
+	eventHub.Subscribe("thought.restored", m.service)
 	eventHub.Subscribe("thought.refined", m.service)
 	eventHub.Subscribe("thought.patched", m.service)
 	eventHub.Subscribe("thought.expanded", m.service)
 	eventHub.Subscribe("thought.deleted", m.service)
 	eventHub.Subscribe("topic.created", m.service)
 	eventHub.Subscribe("topic.updated", m.service)
+	eventHub.Subscribe("topic.catalog_updated", m.service)
+	eventHub.Subscribe("topic.mode_changed", m.service)
+	eventHub.Subscribe("thought.ownership_changed", m.service)
 	return nil
 }
 

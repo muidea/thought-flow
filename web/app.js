@@ -274,6 +274,7 @@ function normalizeTopicsTabName(tab) {
     list: "topics-list",
     detail: "topics-detail",
     rules: "topics-rules",
+ documents: "topics-detail",
   };
   return aliases[value] || "topics-detail";
 }
@@ -686,6 +687,9 @@ function toast(message) {
 let captureSelectionEpoch = 0;
 let searchRequestEpoch = 0;
 let topicRequestEpoch = 0;
+let collectionReadEpoch = 0;
+let collectionWorkspace = null;
+let markdownResourceContext = null;
 let thoughtRequestEpoch = 0;
 let composeRequestEpoch = 0;
 function captureRequestScope() {
@@ -956,6 +960,8 @@ function renderInlineMarkdown(value) {
 }
 
 function cleanMarkdownHref(value) {
+ if(String(value||"").startsWith("resource://"))return resourceContentHref(value);
+ const mapped=markdownResourceContext?.links?.[String(value||"")];if(mapped)return resourceContentHref(`resource://${mapped}`);
   const href = String(value || "").trim();
   if (/^(https?:|mailto:|#|\/|\.\/|\.\.\/)/i.test(href)) {
     return href;
@@ -1079,6 +1085,12 @@ function renderMarkdown(value) {
     return `${frontMatter}${parser.render(sanitizeMarkdownInput(body || ""))}`;
   }
   return renderMarkdownFallback(value);
+}
+
+function renderObjectMarkdown(value,id,bindings=[]) {
+ const previous=markdownResourceContext;
+ markdownResourceContext={object_id:id,links:Object.fromEntries(bindings.filter(b=>!b.private&&b.original_locator).map(b=>[b.original_locator,b.resource_id]))};
+ try{return renderMarkdown(value);}finally{markdownResourceContext=previous;}
 }
 
 function renderTopicDocumentMarkdown(value) {
@@ -1629,7 +1641,7 @@ function renderThoughtDetailPanel(snapshot) {
       ${thought.document_profile && thought.document_profile.family !== "note" ? `<button class="tf-btn" data-document-open="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("document.open"))}</button>` : ""}
       <button class="tf-btn tf-thought-delete" data-delete-thought="${escapeHTML(thought.id || "")}" data-delete-title="${escapeHTML(title)}" type="button">${escapeHTML(t("thoughts.action.delete"))}</button>
     </div>
-    <div class="preview-box markdown-rendered">${renderMarkdown(sections.join("\n\n"))}</div>
+    <div class="preview-box markdown-rendered">${renderObjectMarkdown(sections.join("\n\n"),thought.id,snapshot.resource_bindings)}</div>
   </div>`;
 }
 
@@ -1707,7 +1719,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
     (snapshot.jobs || []).length > 0 ? `## ${t("thoughts.preview_jobs")}\n${(snapshot.jobs || []).map((job) => `- ${job.id} (${job.status})`).join("\n")}` : "",
   ];
   sections.push(appendExpansionSections(thought));
-  const html = renderMarkdown(sections.filter(Boolean).join("\n"));
+  const html = renderObjectMarkdown(sections.filter(Boolean).join("\n"),thought.id,snapshot.resource_bindings);
   const preview = $("#thought-preview");
   if (preview) preview.innerHTML = html;
   const drawer = $("#thought-drawer-content");
@@ -1925,7 +1937,10 @@ async function openTopic(topicId) {
     const el = document.getElementById(id);
     if (el) el.disabled = false;
   });
-  $("#topic-document").innerHTML = renderTopicDocumentMarkdown(detail.document || t("topics.document_empty"));
+  const collection = detail.topic?.mode === "collection";
+ $("#topic-document").closest(".tf-topic-detail-layout")?.classList.toggle("is-collection",collection);
+ if (collection) { await openCollectionWorkspace(topicId,epoch); if(epoch!==topicRequestEpoch)return; }
+ else { $("#topic-document").innerHTML = renderTopicDocumentMarkdown(detail.document || t("topics.document_empty")); renderAggregateConversion(topicId); }
   $("#refresh-topic").disabled = false;
   $("#open-topic-rules").disabled = false;
   populateTopicEditor(detail.topic);
@@ -2083,6 +2098,9 @@ async function createTopic(event) {
     method: "POST",
     body: JSON.stringify({
       name,
+ mode: $("#topic-mode")?.value || "aggregate",
+ operation_id: workspaceOperationID(),
+ search_policy: {topic_global_visible: true, owned_thoughts_global_default: true},
       description: $("#topic-description").value.trim(),
       rules: {
         keywords: {
@@ -4881,6 +4899,7 @@ async function saveComposeDraft() {
 
 async function refreshTopic() {
   if (!state.activeTopicId) return;
+ if(state.activeTopicDetail?.topic?.mode==="collection"){await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/index/rebuild`,{method:"POST"});await openTopic(state.activeTopicId);return;}
   const confirmed = await confirmAction(t("topics.refresh"), t("topics.refresh") + ".");
   if (!confirmed) return;
   const job = await api(`/api/topics/${encodeURIComponent(state.activeTopicId)}/refresh`, { method: "POST", body: "{}" });
@@ -4890,6 +4909,7 @@ async function refreshTopic() {
 }
 
 const DOMAIN_EVENT_TYPES = [
+ "object.placement_changed","topic.migration_completed","topic.migration_failed","thought.restored","topic.catalog_updated","topic.search_policy_updated","thought.search_policy_updated","thought.ownership_changed","topic.resource_updated","topic.snapshot_created","topic.mode_changed","topic.deleted",
  "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted",
   "thought.captured",
   "thought.deleted",
@@ -4940,6 +4960,7 @@ function connectEvents() {
     source.addEventListener(type, (event) => {
       appendEvent(type, event.data);
  if(type.startsWith("document.")) handleDocumentEvent(event.data);
+ if((type.startsWith("topic.")||type.startsWith("document.")||type==="thought.ownership_changed")&&collectionWorkspace&&$("#collection-controls")){let notice=$("#collection-change-notice");if(!notice){notice=document.createElement("p");notice.id="collection-change-notice";notice.setAttribute("role","status");$("#collection-controls").appendChild(notice);}notice.textContent=t("workspace.changed");}
       if (type === "topic.updated") loadTopics().catch(() => {});
       if (type === "thought.captured") loadMetrics().catch(() => {});
       if (type === "thought.deleted") {
@@ -5235,6 +5256,7 @@ async function applyRoute(hash = window.location.hash, options = {}) {
   const serial = ++routeApplySerial;
   const route = parseRoute(hash);
   state.route = route;
+ ++topicRequestEpoch; ++collectionReadEpoch;
   // Restore DOM inputs / state from the URL query before rendering, so the
   // first render of the page reflects the URL — no flicker of defaults.
   restoreRoutePage(route.page, route.query);
@@ -5313,6 +5335,8 @@ function bind() {
   // button. /api/system/reindex stays available for ops use; the Web UI
   // surfaces index health through the settings drawer instead.
   $("#open-create-topic").addEventListener("click", () => openDrawer("topic-create-drawer"));
+  $("#workspace-import-file").addEventListener("change",importWorkspaceBackup);
+  $("#workspace-recovery").addEventListener("click",loadWorkspaceRecovery);
   $("#open-topic-rules").addEventListener("click", () => openDrawer("topic-rules-drawer"));
   $("#open-compose-create").addEventListener("click", () => openDrawer("compose-create-drawer"));
   $("#open-compose-create-sources")?.addEventListener("click", () => openDrawer("compose-create-drawer"));
@@ -5636,4 +5660,797 @@ function handleDocumentEvent(raw) {
  editor.serverChanged=true;renderDocumentStatus(editor);
 }
 
+async function importWorkspaceBackup(event) {
+ const file=event.target.files?.[0];if(!file)return;
+ if(file.size>512*1024*1024){toast(t("workspace.file_too_large"));return;}
+ const operation=workspaceOperationID();const output=$("#workspace-recovery-result");
+ output.textContent=`${t("workspace.loading")} · ${operation}`;
+ try{const response=await fetch(`/api/topic-imports?operation_id=${encodeURIComponent(operation)}`,{method:"POST",body:file,headers:{"Content-Type":"application/zip"}});if(!response.ok)throw new Error(`${response.status}: ${await response.text()}`);const value=(await response.json()).data;await loadTopics();navigateHash(buildRouteHash("topics",{topicId:value.topic_id},{tab:"documents"}),{force:true});output.textContent=operation;}catch(error){output.textContent=`${operation}: ${error.message}`;}finally{event.target.value="";}
+}
+async function loadWorkspaceRecovery() {
+ const output=$("#workspace-recovery-result");
+ try{const operations=await api("/api/workspace/operations");const pending=operations.filter(op=>op.state!=="completed");output.innerHTML=pending.map(op=>`<p>${escapeHTML(op.kind)} · ${escapeHTML(op.state)} · ${escapeHTML(op.id)} · ${escapeHTML(op.error||"")}${["migration","import"].includes(op.kind)?`<button class="tf-btn" data-workspace-retry="${escapeHTML(op.id)}">${escapeHTML(t("workspace.retry"))}</button>`:""}</p>`).join("")||escapeHTML(t("workspace.none"));output.querySelectorAll("[data-workspace-retry]").forEach(button=>button.onclick=async()=>{try{await api(`/api/operations/${encodeURIComponent(button.dataset.workspaceRetry)}/retry`,{method:"POST"});await loadTopics();await loadWorkspaceRecovery();}catch(error){toast(error.message);}});}catch(error){output.textContent=error.message;}
+}
+
+function renderAggregateConversion(topic) {
+ const root=$("#topic-document");
+ const panel=document.createElement("details");panel.className="collection-management";
+ panel.innerHTML=`<summary>${escapeHTML(t("workspace.preview_conversion"))}</summary><p>${escapeHTML(t("workspace.conversion_notice"))}</p><button class="tf-btn" data-preview-conversion>${escapeHTML(t("workspace.collection"))}</button><div data-conversion-plan></div>`;
+ root.appendChild(panel);
+ panel.querySelector("[data-preview-conversion]").onclick=async()=>{try{const plan=await api(`/api/topics/${encodeURIComponent(topic)}/mode-conversions/preview`,{method:"POST",body:JSON.stringify({mode:"collection"})});if(state.activeTopicId!==topic)return;panel.querySelector("[data-conversion-plan]").innerHTML=`<pre>${escapeHTML(JSON.stringify(plan,null,2))}</pre><button class="tf-btn" data-confirm-conversion>${escapeHTML(t("workspace.confirm_conversion"))}</button>`;panel.querySelector("[data-confirm-conversion]").onclick=async()=>{try{await api(`/api/topics/${encodeURIComponent(topic)}/mode-conversions`,{method:"POST",body:JSON.stringify({operation_id:workspaceOperationID(),preview_id:plan.preview_id,plan_hash:plan.plan_hash})});await reloadCurrentCollection(topic);}catch(error){toast(error.message);}};}catch(error){toast(error.message);}};
+}
+
+// Collection requests use a selection epoch in addition to the stable topic and
+// entry IDs, so A -> B -> A cannot accept a response from the first A.
+function workspaceOperationID() {
+  return `op-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+function resourceContentHref(value) {
+  const id = String(value).slice("resource://".length);
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(id) ||
+    !markdownResourceContext
+  )
+    return "";
+  const { links, ...context } = markdownResourceContext;
+  const query = new URLSearchParams(context);
+  return `/api/resources/${encodeURIComponent(id)}/content?${query}`;
+}
+function collectionLocalKey(topic) {
+  return `thoughtflow:collection:${collectionWorkspace?.workspace_key || window.location.origin}:${topic}:v1`;
+}
+function collectionPreferences(topic) {
+  try {
+    return JSON.parse(
+      window.localStorage.getItem(collectionLocalKey(topic)) || "{}",
+    );
+  } catch {
+    return {};
+  }
+}
+function saveCollectionPreference(topic, patch) {
+  const old = collectionPreferences(topic);
+  window.localStorage.setItem(
+    collectionLocalKey(topic),
+    JSON.stringify({ ...old, ...patch }),
+  );
+}
+function collectionRoute(entry, view = "final", revision = "", section = "") {
+  return buildRouteHash(
+    "topics",
+    { topicId: state.activeTopicId },
+    {
+      tab: "documents",
+      entry,
+      view,
+      ...(revision ? { revision } : {}),
+      ...(section ? { section } : {}),
+    },
+  );
+}
+async function openCollectionWorkspace(topic, topicEpoch) {
+  const data = await api(`/api/topics/${encodeURIComponent(topic)}/catalog`);
+  if (
+    topicEpoch !== topicRequestEpoch ||
+    state.route?.params?.topicId !== topic
+  )
+    return;
+  collectionWorkspace = data;
+  const entries = data.entries || [];
+  let selected = state.route?.query?.entry;
+  if (!selected) {
+    const prefs = collectionPreferences(topic);
+    selected = entries.some((v) => v.entry.id === prefs.entry)
+      ? prefs.entry
+      : entries[0]?.entry.id;
+  }
+  renderCollectionWorkspace(selected);
+  if (selected)
+    await readCollectionEntry(
+      topic,
+      selected,
+      state.route?.query?.view || "final",
+      state.route?.query?.revision || "",
+    );
+}
+function collectionStatus(v) {
+  return [
+    v.binding_status,
+    v.delivery_status,
+    ...(v.has_new_draft && v.work_status !== "new_draft" ? ["new_draft"] : []),
+    v.work_status,
+    v.version_status,
+    v.availability,
+  ]
+    .filter(Boolean)
+    .map((key) => t(`workspace.status.${key}`))
+    .join(" · ");
+}
+function collectionVisibleEntries() {
+  const filter = ($("#collection-filter")?.value || "").trim().toLowerCase();
+  const status = $("#collection-status")?.value || "";
+  const prefs = collectionPreferences(state.activeTopicId);
+  const list = $("#collection-list")?.value || "all";
+  return (collectionWorkspace?.entries || []).filter(
+    (v) =>
+      (!filter ||
+        `${v.entry.title} ${v.original_title || ""} ${v.entry.role} ${v.entry.binding.thought_id || ""}`
+          .toLowerCase()
+          .includes(filter)) &&
+      (!status ||
+        [
+          v.binding_status,
+          v.delivery_status,
+          v.work_status,
+          v.availability,
+          ...(v.has_new_draft ? ["new_draft"] : []),
+        ].includes(status)) &&
+      (list === "all" || (prefs[list] || []).includes(v.entry.id)),
+  );
+}
+function collectionCatalogHTML(selected) {
+  const data = collectionWorkspace;
+  const visible = collectionVisibleEntries();
+  const prefs = collectionPreferences(state.activeTopicId);
+  return data.catalog.groups
+    .map(
+      (group) =>
+        `<details class="collection-group" data-group="${escapeHTML(group.id)}" ${prefs.collapsed?.includes(group.id) ? "" : "open"}><summary>${escapeHTML(group.title)}</summary>${visible
+          .filter((v) => v.entry.group_id === group.id)
+          .map(
+            (v) =>
+              `<a class="collection-entry ${v.entry.id === selected ? "active" : ""}" aria-current="${v.entry.id === selected ? "page" : "false"}" href="${escapeHTML(collectionRoute(v.entry.id))}" data-entry="${escapeHTML(v.entry.id)}"><strong>${v.entry.required ? "* " : ""}${escapeHTML(v.entry.title)}</strong><small>${escapeHTML(collectionStatus(v))}</small></a>`,
+          )
+          .join("")}</details>`,
+    )
+    .join("");
+}
+function renderCollectionWorkspace(selected) {
+  const data = collectionWorkspace;
+  const root = $("#topic-document");
+  if (!data || !root) return;
+  root.innerHTML = `<div class="collection-toolbar"><strong>${escapeHTML(data.topic.name)}</strong><span>${escapeHTML(t("workspace.progress", { done: data.delivered_count, total: data.required_count }))}</span><button class="tf-btn" id="collection-toggle" aria-expanded="true">${escapeHTML(t("workspace.catalog"))}</button></div>
+ <div class="collection-reader"><nav class="collection-catalog" aria-label="${escapeHTML(t("workspace.catalog"))}"><label>${escapeHTML(t("workspace.filter"))}<input type="search" id="collection-filter" value="${escapeHTML(collectionPreferences(state.activeTopicId).filter || "")}"></label><label>${escapeHTML(t("workspace.status_filter"))}<select id="collection-status"><option value="">${escapeHTML(t("workspace.all"))}</option>${["planned", "missing", "ready_for_use", "new_draft", "unavailable"].map((k) => `<option value="${k}">${escapeHTML(t(`workspace.status.${k}`))}</option>`).join("")}</select></label><label>${escapeHTML(t("workspace.saved_navigation"))}<select id="collection-list">${["all", "favorites", "recent"].map((k) => `<option value="${k}">${escapeHTML(t(`workspace.${k}`))}</option>`).join("")}</select></label><button class="tf-btn collection-close" id="collection-close">${escapeHTML(t("common.close"))}</button><div id="collection-entries"></div></nav>
+ <section class="collection-content"><div id="collection-controls"></div><div id="collection-body" role="region" aria-live="polite" tabindex="-1">${escapeHTML(t("workspace.select_entry"))}</div><div class="collection-navigation"><button class="tf-btn" id="collection-prev">${escapeHTML(t("workspace.previous"))}</button><button class="tf-btn" id="collection-next">${escapeHTML(t("workspace.next"))}</button></div></section></div>
+ <details class="collection-search"><summary>${escapeHTML(t("workspace.search"))}</summary><form id="collection-search-form"><label>${escapeHTML(t("workspace.search_working"))}<input type="search" id="collection-search-query" required></label><button class="tf-btn">${escapeHTML(t("workspace.search"))}</button></form><div id="collection-search-results"></div></details>
+ <details class="collection-management"><summary>${escapeHTML(t("workspace.manage"))}</summary><p>${escapeHTML(t("workspace.manage_hint"))}</p><div id="collection-editor"></div></details>`;
+  $("#collection-status").value =
+    collectionPreferences(state.activeTopicId).status || "";
+  $("#collection-list").value =
+    collectionPreferences(state.activeTopicId).list || "all";
+  const renderNav = () => {
+    saveCollectionPreference(state.activeTopicId, {
+      filter: $("#collection-filter").value,
+      status: $("#collection-status").value,
+      list: $("#collection-list").value,
+    });
+    $("#collection-entries").innerHTML = collectionCatalogHTML(
+      state.route?.query?.entry || selected,
+    );
+    $("#collection-entries")
+      .querySelectorAll("details")
+      .forEach((el) =>
+        el.addEventListener("toggle", () => {
+          const collapsed = [
+            ...$("#collection-entries").querySelectorAll("details:not([open])"),
+          ].map((g) => g.dataset.group);
+          saveCollectionPreference(state.activeTopicId, { collapsed });
+        }),
+      );
+  };
+  renderNav();
+  $("#collection-filter").addEventListener("input", renderNav);
+  $("#collection-status").addEventListener("change", renderNav);
+  $("#collection-list").addEventListener("change", renderNav);
+  const nav = $(".collection-catalog");
+  const narrow = window.matchMedia?.("(max-width:760px)").matches;
+  const setNav = (open) => {
+    nav.hidden = !open;
+    $("#collection-toggle").setAttribute("aria-expanded", String(open));
+    if (narrow) {
+      nav.setAttribute("role", "dialog");
+      nav.setAttribute("aria-modal", String(open));
+    }
+    if (open) $("#collection-filter").focus();
+    else $("#collection-toggle").focus();
+  };
+  nav.hidden = Boolean(narrow);
+  $("#collection-toggle").setAttribute("aria-expanded", String(!nav.hidden));
+  $("#collection-toggle").onclick = () => setNav(nav.hidden);
+  $("#collection-close").onclick = () => setNav(false);
+  nav.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setNav(false);
+    }
+    if (narrow && e.key === "Tab") {
+      const focusable = [
+        ...nav.querySelectorAll("button,input,select,a[href],summary"),
+      ].filter((el) => el.getClientRects().length);
+      const first = focusable[0],
+        last = focusable.at(-1);
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last?.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first?.focus();
+      }
+    }
+  });
+  $("#collection-prev").onclick = () => navigateCollection(-1);
+  $("#collection-next").onclick = () => navigateCollection(1);
+  $("#collection-search-form").onsubmit = searchCollection;
+  renderCollectionEditor();
+}
+function navigateCollection(offset) {
+  const visible = collectionVisibleEntries();
+  const selected =
+    state.route?.query?.entry ||
+    collectionPreferences(state.activeTopicId).entry;
+  const index = visible.findIndex((v) => v.entry.id === selected);
+  const next = visible[index + offset];
+  if (next) navigateHash(collectionRoute(next.entry.id), { force: true });
+}
+async function readCollectionEntry(topic, entry, view, revision) {
+  const epoch = ++collectionReadEpoch;
+  const topicEpoch = topicRequestEpoch;
+  const item = collectionWorkspace?.entries.find((v) => v.entry.id === entry);
+  const body = $("#collection-body");
+  if (!body) return;
+  if (!item) {
+    body.textContent = t("workspace.entry_missing");
+    return;
+  }
+  const token = () =>
+    epoch === collectionReadEpoch &&
+    topicEpoch === topicRequestEpoch &&
+    state.route?.params?.topicId === topic;
+  const controls = $("#collection-controls");
+  controls.innerHTML = `<h2>${escapeHTML(item.entry.title)}</h2><p>${escapeHTML(collectionStatus(item))}</p><div class="collection-actions"><a class="tf-btn" href="${escapeHTML(collectionRoute(entry, "final"))}">${escapeHTML(t("workspace.final"))}</a><a class="tf-btn" href="${escapeHTML(collectionRoute(entry, "draft"))}">${escapeHTML(t("workspace.draft"))}</a><button class="tf-btn" id="collection-copy">${escapeHTML(t("workspace.copy_link"))}</button>${item.entry.binding.kind === "thought" ? `<button class="tf-btn" id="collection-edit-document">${escapeHTML(t("document.open"))}</button>` : ""}<button class="tf-btn" id="collection-favorite">${escapeHTML(t("workspace.favorite"))}</button></div>`;
+  if ($("#collection-edit-document"))
+    $("#collection-edit-document").onclick = () =>
+      openDocumentEditor(item.entry.binding.thought_id).catch((error) =>
+        toast(error.message),
+      );
+  $("#collection-copy").onclick = () =>
+    copyText(
+      `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, revision)}`,
+    );
+  $("#collection-favorite").onclick = () => {
+    const prefs = collectionPreferences(topic);
+    const favorites = new Set(prefs.favorites || []);
+    if (favorites.has(entry)) favorites.delete(entry);
+    else favorites.add(entry);
+    saveCollectionPreference(topic, { favorites: [...favorites] });
+    $("#collection-favorite").setAttribute(
+      "aria-pressed",
+      String(favorites.has(entry)),
+    );
+  };
+  body.textContent = t("workspace.loading");
+  try {
+    const snap = await api(
+      `/api/topics/${encodeURIComponent(topic)}/entries/${encodeURIComponent(entry)}/content?${new URLSearchParams({ view, ...(revision ? { revision } : {}) })}`,
+    );
+    if (!token()) return;
+    markdownResourceContext =
+      item.entry.binding.kind === "snapshot"
+        ? { topic_id: topic, snapshot_id: item.entry.binding.snapshot_id }
+        : { object_id: item.entry.binding.thought_id };
+    markdownResourceContext.links = Object.fromEntries(
+      (snap.resource_bindings || [])
+        .filter((b) => !b.private && b.original_locator)
+        .map((b) => [b.original_locator, b.resource_id]),
+    );
+    const html = renderMarkdown(snap.body || "");
+    markdownResourceContext = null;
+    body.innerHTML = `<p class="collection-version">${escapeHTML(t(view === "draft" ? "workspace.working_version" : "workspace.final_version"))} · ${escapeHTML(snap.revision?.revision_id || t("workspace.status.ordinary_note"))}</p><div class="markdown-rendered">${html}</div><details><summary>${escapeHTML(t("workspace.information"))}</summary><dl><dt>${escapeHTML(t("workspace.original_title"))}</dt><dd>${escapeHTML(item.original_title || "")}</dd><dt>${escapeHTML(t("workspace.profile"))}</dt><dd>${escapeHTML(item.profile?.profile_id || "")}</dd><dt>${escapeHTML(t("workspace.location"))}</dt><dd>${escapeHTML(item.location?.placement?.thought_path || "")}</dd><dt>${escapeHTML(t("workspace.revision"))}</dt><dd>${escapeHTML(snap.revision?.revision_id || "")}</dd><dt>${escapeHTML(t("workspace.validation"))}</dt><dd>${escapeHTML(item.validation_status)}</dd></dl><form id="collection-version-form"><label>${escapeHTML(t("workspace.revision"))}<input id="collection-version-id" value="${escapeHTML(revision)}"></label><button class="tf-btn">${escapeHTML(t("workspace.open_version"))}</button></form></details><p class="topic-meta">${escapeHTML(t("workspace.local_link_notice"))}</p>`;
+    $("#collection-version-form").onsubmit = (e) => {
+      e.preventDefault();
+      navigateHash(
+        collectionRoute(entry, view, $("#collection-version-id").value.trim()),
+        { force: true },
+      );
+    };
+    saveCollectionPreference(topic, {
+      entry,
+      view,
+      revision,
+      recent: [
+        entry,
+        ...(collectionPreferences(topic).recent || []).filter(
+          (v) => v !== entry,
+        ),
+      ].slice(0, 20),
+    });
+
+    const headingIDs = new Map();
+    body.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
+      const base =
+        heading.textContent
+          .trim()
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N} _-]/gu, "")
+          .replace(/[ _]+/g, "-") || "section";
+      const n = headingIDs.get(base) || 0;
+      headingIDs.set(base, n + 1);
+      heading.id = n ? `${base}-${n}` : base;
+    });
+    const headings = [...body.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+    if (headings.length) {
+      const toc = document.createElement("details");
+      toc.className = "collection-toc";
+      toc.innerHTML = `<summary>${escapeHTML(t("workspace.sections"))}</summary>${headings.map((h) => `<p><a href="${escapeHTML(collectionRoute(entry, view, revision, h.id))}">${escapeHTML(h.textContent)}</a> <button class="tf-btn" data-copy-section="${escapeHTML(h.id)}">${escapeHTML(t("workspace.copy_link"))}</button></p>`).join("")}`;
+      body.prepend(toc);
+      toc
+        .querySelectorAll("[data-copy-section]")
+        .forEach(
+          (button) =>
+            (button.onclick = () =>
+              copyText(
+                `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, revision, button.dataset.copySection)}`,
+              )),
+        );
+    }
+    const section = state.route?.query?.section;
+    if (section) {
+      const target = [...body.querySelectorAll("[id]")].find(
+        (el) => el.id === section,
+      );
+      target?.scrollIntoView();
+    }
+    body.querySelectorAll('a[href^="#"]').forEach((link) =>
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        navigateHash(
+          collectionRoute(
+            entry,
+            view,
+            revision,
+            link.getAttribute("href").slice(1),
+          ),
+          { force: true },
+        );
+      }),
+    );
+  } catch (error) {
+    if (token()) {
+      body.innerHTML = `<div class="tf-empty" role="alert">${escapeHTML(t(view === "final" ? "workspace.final_unavailable" : "workspace.load_failed"))}<p>${escapeHTML(error.message)}</p></div>`;
+    }
+  }
+}
+async function searchCollection(event) {
+  event.preventDefault();
+  const topic = state.activeTopicId;
+  const epoch = collectionReadEpoch;
+  const result = await api(
+    `/api/search?${new URLSearchParams({ scope: "topic", topic_id: topic, q: $("#collection-search-query").value, limit: "100" })}`,
+  );
+  if (topic !== state.activeTopicId || epoch !== collectionReadEpoch) return;
+  $("#collection-search-results").innerHTML =
+    (result.results || [])
+      .map((hit) => {
+        const entry = collectionWorkspace.entries.find(
+          (v) => v.entry.binding.thought_id === hit.thought_id,
+        );
+        return `<article><strong>${escapeHTML(hit.title)}</strong> · ${escapeHTML(t("workspace.working_version"))}<p>${escapeHTML(hit.snippet)}</p>${entry ? `<a href="${escapeHTML(collectionRoute(entry.entry.id, "draft", hit.indexed_revision_id || ""))}">${escapeHTML(t("workspace.open_document"))}</a>` : ""}</article>`;
+      })
+      .join("") || escapeHTML(t("workspace.no_results"));
+}
+function renderCollectionEditor() {
+  const data = collectionWorkspace;
+  const editor = $("#collection-editor");
+  if (!editor) return;
+  const groupOptions = data.catalog.groups
+    .map(
+      (g) =>
+        `<option value="${escapeHTML(g.id)}">${escapeHTML(g.title)}</option>`,
+    )
+    .join("");
+  editor.innerHTML = `<form id="collection-settings"><label>${escapeHTML(t("workspace.name"))}<input name="name" required value="${escapeHTML(data.topic.name)}"></label><label>${escapeHTML(t("workspace.description"))}<textarea name="description">${escapeHTML(data.topic.description || "")}</textarea></label><label><input name="topic_global_visible" type="checkbox" ${data.topic.search_policy?.topic_global_visible ? "checked" : ""}>${escapeHTML(t("workspace.topic_global"))}</label><label><input name="owned_default" type="checkbox" ${data.topic.search_policy?.owned_thoughts_global_default ? "checked" : ""}>${escapeHTML(t("workspace.owned_global"))}</label><p>${escapeHTML(t("workspace.policy_notice"))}</p><button class="tf-btn">${escapeHTML(t("workspace.save"))}</button></form>
+ <form id="collection-threshold"><label>${escapeHTML(t("workspace.delivery_threshold"))}<select name="level">${["proposal", "ready_for_use"].map((k) => `<option value="${k}" ${data.catalog.required_delivery_level === k ? "selected" : ""}>${escapeHTML(t(`workspace.status.${k}`))}</option>`).join("")}</select></label><button class="tf-btn">${escapeHTML(t("workspace.save"))}</button></form>
+ <div>${data.catalog.groups.map((g) => `<form data-edit-group="${escapeHTML(g.id)}"><label>${escapeHTML(t("workspace.group"))}<input name="title" required value="${escapeHTML(g.title)}"></label><button class="tf-btn">${escapeHTML(t("workspace.save"))}</button><button type="button" class="tf-btn" data-group-move="-1">↑</button><button type="button" class="tf-btn" data-group-move="1">↓</button><button type="button" class="tf-btn" data-group-remove>${escapeHTML(t("workspace.remove_group"))}</button></form>`).join("")}</div>
+ <form id="collection-group-add"><label>${escapeHTML(t("workspace.group"))}<input name="title" required></label><button class="tf-btn">${escapeHTML(t("workspace.add_group"))}</button></form>
+ <form id="collection-entry-add"><label>${escapeHTML(t("workspace.name"))}<input name="title" required></label><label>${escapeHTML(t("workspace.group"))}<select name="group">${groupOptions}</select></label><label>${escapeHTML(t("workspace.thought_id_optional"))}<input name="thought_id"></label><label><input type="checkbox" name="required">${escapeHTML(t("workspace.required"))}</label><button class="tf-btn">${escapeHTML(t("workspace.add_entry"))}</button></form>
+ <div class="collection-edit-entries">${data.catalog.entries.map((entry) => `<form class="collection-edit-entry" data-entry-id="${escapeHTML(entry.id)}"><input name="title" aria-label="${escapeHTML(t("workspace.name"))}" value="${escapeHTML(entry.title)}" required><input name="role" aria-label="${escapeHTML(t("workspace.role"))}" value="${escapeHTML(entry.role || "document")}"><select name="group" aria-label="${escapeHTML(t("workspace.group"))}">${data.catalog.groups.map((g) => `<option value="${escapeHTML(g.id)}" ${g.id === entry.group_id ? "selected" : ""}>${escapeHTML(g.title)}</option>`).join("")}</select><label><input name="required" type="checkbox" ${entry.required ? "checked" : ""}>${escapeHTML(t("workspace.required"))}</label><button class="tf-btn">${escapeHTML(t("workspace.save"))}</button><button class="tf-btn" type="button" data-move="-1">↑</button><button class="tf-btn" type="button" data-move="1">↓</button><button class="tf-btn" type="button" data-remove>${escapeHTML(t("workspace.unlink"))}</button>${entry.binding.kind === "thought" ? `<label>${escapeHTML(t("workspace.version_policy"))}<select name="version_policy"><option value="latest_finalized">${escapeHTML(t("workspace.latest_final"))}</option><option value="pinned_finalized" ${entry.binding.version_policy === "pinned_finalized" ? "selected" : ""}>${escapeHTML(t("workspace.pinned_final"))}</option></select></label><input name="revision_id" aria-label="${escapeHTML(t("workspace.revision"))}" value="${escapeHTML(entry.binding.revision_id || "")}"><input name="finalization_id" aria-label="${escapeHTML(t("workspace.finalization"))}" value="${escapeHTML(entry.binding.finalization_id || "")}">` : ""}</form>`).join("")}</div>
+ <form id="collection-draft"><label>${escapeHTML(t("workspace.planned_entry"))}<select name="entry">${data.catalog.entries
+   .filter((e) => e.binding.kind === "planned")
+   .map(
+     (e) =>
+       `<option value="${escapeHTML(e.id)}">${escapeHTML(e.title)}</option>`,
+   )
+   .join(
+     "",
+   )}</select></label><label>${escapeHTML(t("workspace.profile"))}<select name="profile"><option value="builtin.design-doc">Design</option><option value="builtin.research-report">Research</option><option value="builtin.blog-post">Article</option></select></label><label>${escapeHTML(t("workspace.initial_body"))}<textarea name="content" required></textarea></label><button class="tf-btn">${escapeHTML(t("workspace.create_draft"))}</button></form>
+ <h4>${escapeHTML(t("workspace.uncatalogued"))}</h4><div>${data.uncatalogued.map((l) => `<p>${escapeHTML(l.object_id)} · ${escapeHTML(l.placement.thought_path)}<button class="tf-btn" data-bind-owned="${escapeHTML(l.object_id)}">${escapeHTML(t("workspace.bind"))}</button></p>`).join("") || escapeHTML(t("workspace.none"))}</div>
+ <h4>${escapeHTML(t("workspace.deleted"))}</h4><p>${escapeHTML(t("workspace.restore_notice"))}</p>${(data.deleted||[]).map(l=>`<p>${escapeHTML(l.object_id)} <button class="tf-btn" data-restore-thought="${escapeHTML(l.object_id)}" data-generation="${l.generation}">${escapeHTML(t("workspace.restore"))}</button></p>`).join("")}
+ <form id="collection-placement"><label>${escapeHTML(t("workspace.thought_id"))}<input name="thought_id" required></label><label>${escapeHTML(t("workspace.search_policy"))}<select name="global_search">${["inherit", "include", "exclude"].map((k) => `<option value="${k}">${escapeHTML(t(`workspace.${k}`))}</option>`).join("")}</select></label><button class="tf-btn">${escapeHTML(t("workspace.save_policy"))}</button></form>
+ <form id="collection-migrate"><label>${escapeHTML(t("workspace.thought_id"))}<input name="thought_id" required></label><label>${escapeHTML(t("workspace.target_topic"))}<input name="target" value="${escapeHTML(state.activeTopicId)}"></label><button class="tf-btn">${escapeHTML(t("workspace.preview_migration"))}</button></form><div id="collection-migration-preview"></div>
+ <form id="collection-resource"><label>${escapeHTML(t("workspace.thought_id"))}<input name="thought_id" required></label><label>${escapeHTML(t("workspace.attachment"))}<input type="file" name="file" accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md" required></label><button class="tf-btn">${escapeHTML(t("workspace.upload"))}</button></form><div id="collection-upload-result"></div>
+ <form id="collection-snapshot"><label>${escapeHTML(t("workspace.thought_id"))}<input name="thought_id" required></label><label>${escapeHTML(t("workspace.revision"))}<input name="revision" required></label><label>${escapeHTML(t("workspace.finalization"))}<input name="finalization" required></label><label>${escapeHTML(t("workspace.name"))}<input name="title" required></label><button class="tf-btn">${escapeHTML(t("workspace.create_snapshot"))}</button></form>
+ <form id="collection-convert"><select name="mode"><option value="aggregate">${escapeHTML(t("workspace.aggregate"))}</option></select><button class="tf-btn">${escapeHTML(t("workspace.preview_conversion"))}</button></form><div id="collection-convert-preview"></div>
+ <button class="tf-btn" id="collection-activity">${escapeHTML(t("workspace.activity"))}</button><div id="collection-activity-list"></div><button class="tf-btn" id="collection-delete">${escapeHTML(t("workspace.delete_empty"))}</button>
+ <div class="collection-actions"><button class="tf-btn" data-export-kind="delivery">${escapeHTML(t("workspace.export_delivery"))}</button><button class="tf-btn" data-export-kind="backup">${escapeHTML(t("workspace.export_backup"))}</button><label><input id="collection-private" type="checkbox">${escapeHTML(t("workspace.include_private"))}</label><button class="tf-btn" id="collection-rebuild">${escapeHTML(t("workspace.rebuild"))}</button></div><div id="collection-export-result"></div><form id="collection-import"><label>${escapeHTML(t("workspace.import_backup"))}<input name="file" type="file" accept=".zip" required></label><button class="tf-btn">${escapeHTML(t("workspace.import_backup"))}</button></form><div id="collection-management-error" role="alert"></div>`;
+  const topic = state.activeTopicId;
+  const fail = (error) => {
+    $("#collection-management-error").textContent = error.message;
+  };
+  const action = (fn) => async (event) => {
+    event.preventDefault();
+    try {
+      await fn(event);
+    } catch (error) {
+      fail(error);
+    }
+  };
+  $("#collection-threshold").onsubmit = action(async (e) => {
+    const c = structuredClone(data.catalog);
+    c.required_delivery_level = e.target.elements.level.value;
+    await saveCollectionCatalog(c);
+  });
+  editor.querySelectorAll("[data-edit-group]").forEach((form) => {
+    form.onsubmit = action(async () => {
+      const c = structuredClone(data.catalog);
+      c.groups.find((g) => g.id === form.dataset.editGroup).title =
+        form.elements.title.value;
+      await saveCollectionCatalog(c);
+    });
+    form.querySelectorAll("[data-group-move]").forEach(
+      (button) =>
+        (button.onclick = action(async () => {
+          const c = structuredClone(data.catalog);
+          const i = c.groups.findIndex((g) => g.id === form.dataset.editGroup),
+            j = i + Number(button.dataset.groupMove);
+          if (j < 0 || j >= c.groups.length) return;
+          [c.groups[i], c.groups[j]] = [c.groups[j], c.groups[i]];
+          await saveCollectionCatalog(c);
+        })),
+    );
+    form.querySelector("[data-group-remove]").onclick = action(async () => {
+      const c = structuredClone(data.catalog);
+      if (c.entries.some((e) => e.group_id === form.dataset.editGroup))
+        throw new Error(t("workspace.group_not_empty"));
+      c.groups = c.groups.filter((g) => g.id !== form.dataset.editGroup);
+      await saveCollectionCatalog(c);
+    });
+  });
+  $("#collection-snapshot").onsubmit = action(async (e) => {
+    const f = e.target;
+    const snap = await api(
+      `/api/topics/${encodeURIComponent(topic)}/snapshots`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          operation_id: workspaceOperationID(),
+          thought_id: f.elements.thought_id.value.trim(),
+          revision_id: f.elements.revision.value.trim(),
+          finalization_id: f.elements.finalization.value.trim(),
+        }),
+      },
+    );
+    const c = structuredClone(data.catalog);
+    c.entries.push({
+      id: workspaceOperationID(),
+      group_id: c.groups[0].id,
+      title: f.elements.title.value,
+      role: "reference",
+      required: false,
+      binding: { kind: "snapshot", snapshot_id: snap.id },
+    });
+    await saveCollectionCatalog(c);
+  });
+  $("#collection-convert").onsubmit = action(async (e) => {
+    const plan = await api(
+      `/api/topics/${encodeURIComponent(topic)}/mode-conversions/preview`,
+      {
+        method: "POST",
+        body: JSON.stringify({ mode: e.target.elements.mode.value }),
+      },
+    );
+    $("#collection-convert-preview").innerHTML =
+      `<p>${escapeHTML(t("workspace.conversion_notice"))}</p><pre>${escapeHTML(JSON.stringify(plan, null, 2))}</pre><button class="tf-btn" id="collection-convert-confirm">${escapeHTML(t("workspace.confirm_conversion"))}</button>`;
+    $("#collection-convert-confirm").onclick = action(async () => {
+      await api(`/api/topics/${encodeURIComponent(topic)}/mode-conversions`, {
+        method: "POST",
+        body: JSON.stringify({
+          operation_id: workspaceOperationID(),
+          preview_id: plan.preview_id,
+          plan_hash: plan.plan_hash,
+        }),
+      });
+      await reloadCurrentCollection(topic);
+    });
+  });
+  $("#collection-activity").onclick = action(async () => {
+    const activities = await api(
+      `/api/topics/${encodeURIComponent(topic)}/activity`,
+    );
+    $("#collection-activity-list").innerHTML = activities
+      .map(
+        (op) =>
+          `<p>${escapeHTML(op.kind)} · ${escapeHTML(op.state)} · ${escapeHTML(op.id)} ${escapeHTML(op.error || "")}${op.state === "failed" ? `<button class="tf-btn" data-retry-operation="${escapeHTML(op.id)}">${escapeHTML(t("workspace.retry"))}</button>` : ""}</p>`,
+      )
+      .join("");
+    $("#collection-activity-list")
+      .querySelectorAll("[data-retry-operation]")
+      .forEach(
+        (button) =>
+          (button.onclick = action(async () => {
+            await api(
+              `/api/operations/${encodeURIComponent(button.dataset.retryOperation)}/retry`,
+              { method: "POST" },
+            );
+            await reloadCurrentCollection(topic);
+          })),
+      );
+  });
+  $("#collection-delete").onclick = action(async () => {
+    await api(`/api/topics/${encodeURIComponent(topic)}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        operation_id: workspaceOperationID(),
+        expected_generation: data.topic.generation,
+        expected_catalog_generation: data.catalog.generation,
+      }),
+    });
+    navigateHash("#/topics", { force: true });
+  });
+  $("#collection-settings").onsubmit = action(async (e) => {
+    const f = e.target;
+    await api(`/api/topics/${encodeURIComponent(topic)}/settings`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        operation_id: workspaceOperationID(),
+        expected_generation: data.topic.generation,
+        name: f.elements.name.value,
+        description: f.elements.description.value,
+        search_policy: {
+          topic_global_visible: f.elements.topic_global_visible.checked,
+          owned_thoughts_global_default: f.elements.owned_default.checked,
+        },
+      }),
+    });
+    await reloadCurrentCollection(topic);
+  });
+  $("#collection-group-add").onsubmit = action(async (e) => {
+    const c = structuredClone(data.catalog);
+    c.groups.push({
+      id: workspaceOperationID(),
+      title: e.target.elements.title.value,
+    });
+    await saveCollectionCatalog(c);
+  });
+  $("#collection-entry-add").onsubmit = action(async (e) => {
+    const f = e.target;
+    const c = structuredClone(data.catalog);
+    const id = f.elements.thought_id.value.trim();
+    c.entries.push({
+      id: workspaceOperationID(),
+      group_id: f.elements.group.value,
+      title: f.elements.title.value,
+      required: f.elements.required.checked,
+      role: "document",
+      binding: id
+        ? {
+            kind: "thought",
+            thought_id: id,
+            version_policy: "latest_finalized",
+          }
+        : { kind: "planned" },
+    });
+    await saveCollectionCatalog(c);
+  });
+  editor.querySelectorAll(".collection-edit-entry").forEach((form) => {
+    form.onsubmit = action(async () => {
+      const c = structuredClone(data.catalog);
+      const entry = c.entries.find((v) => v.id === form.dataset.entryId);
+      entry.title = form.elements.title.value;
+      entry.role = form.elements.role.value;
+      entry.group_id = form.elements.group.value;
+      entry.required = form.elements.required.checked;
+      if (entry.binding.kind === "thought") {
+        entry.binding.version_policy = form.elements.version_policy.value;
+        entry.binding.revision_id = form.elements.revision_id.value;
+        entry.binding.finalization_id = form.elements.finalization_id.value;
+        if (entry.binding.version_policy === "latest_finalized") {
+          delete entry.binding.revision_id;
+          delete entry.binding.finalization_id;
+        }
+      }
+      await saveCollectionCatalog(c);
+    });
+    form.querySelectorAll("[data-move]").forEach(
+      (button) =>
+        (button.onclick = action(async () => {
+          const c = structuredClone(data.catalog);
+          const i = c.entries.findIndex((v) => v.id === form.dataset.entryId);
+          const j = i + Number(button.dataset.move);
+          if (j < 0 || j >= c.entries.length) return;
+          [c.entries[i], c.entries[j]] = [c.entries[j], c.entries[i]];
+          await saveCollectionCatalog(c);
+        })),
+    );
+    form.querySelector("[data-remove]").onclick = action(async () => {
+      const c = structuredClone(data.catalog);
+      c.entries = c.entries.filter((v) => v.id !== form.dataset.entryId);
+      await saveCollectionCatalog(c);
+    });
+  });
+  editor.querySelectorAll("[data-bind-owned]").forEach(
+    (button) =>
+      (button.onclick = action(async () => {
+        const c = structuredClone(data.catalog);
+        c.entries.push({
+          id: workspaceOperationID(),
+          group_id: c.groups[0].id,
+          title: button.dataset.bindOwned,
+          role: "document",
+          required: false,
+          binding: {
+            kind: "thought",
+            thought_id: button.dataset.bindOwned,
+            version_policy: "latest_finalized",
+          },
+        });
+        await saveCollectionCatalog(c);
+      })),
+  );
+  editor.querySelectorAll("[data-restore-thought]").forEach(button=>button.onclick=action(async()=>{await api(`/api/thoughts/${encodeURIComponent(button.dataset.restoreThought)}/restore`,{method:"POST",body:JSON.stringify({operation_id:workspaceOperationID(),expected_generation:Number(button.dataset.generation)})});await reloadCurrentCollection(topic);}));
+  $("#collection-placement").onsubmit = action(async (e) => {
+    const f = e.target;
+    const id = f.elements.thought_id.value.trim();
+    const l = await api(`/api/thoughts/${encodeURIComponent(id)}/placement`);
+    await api(`/api/thoughts/${encodeURIComponent(id)}/search-policy`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        operation_id: workspaceOperationID(),
+        expected_generation: l.generation,
+        global_search: f.elements.global_search.value,
+      }),
+    });
+    await reloadCurrentCollection(topic);
+  });
+  $("#collection-migrate").onsubmit = action(async (e) => {
+    const f = e.target;
+    const p = await api(
+      `/api/topics/${encodeURIComponent(topic)}/migrations/preview`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          object_id: f.elements.thought_id.value.trim(),
+          target_topic_id: f.elements.target.value.trim(),
+        }),
+      },
+    );
+    const node = $("#collection-migration-preview");
+    node.innerHTML = `<p>${escapeHTML(p.source.placement.thought_path)} → ${escapeHTML(p.target.placement.thought_path)}</p><p>${escapeHTML(t("workspace.global_change", { before: String(p.before_global), after: String(p.after_global) }))}</p><p>${p.total_size} bytes · ${p.files.length} files</p><pre>${escapeHTML(p.files.map((file) => file.path).join("\n"))}</pre><button class="tf-btn" id="collection-confirm-migration">${escapeHTML(t("workspace.confirm_migration"))}</button>`;
+    $("#collection-confirm-migration").disabled = Boolean(
+      p.conflicts?.length || p.missing?.length,
+    );
+    $("#collection-confirm-migration").onclick = action(async () => {
+      await api(`/api/topics/${encodeURIComponent(topic)}/migrations`, {
+        method: "POST",
+        body: JSON.stringify({
+          operation_id: workspaceOperationID(),
+          preview_id: p.id,
+          plan_hash: p.plan_hash,
+          expected_object_generation: p.source.generation,
+        }),
+      });
+      await reloadCurrentCollection(topic);
+    });
+  });
+  $("#collection-resource").onsubmit = action(async (e) => {
+    const f = e.target;
+    const id = f.elements.thought_id.value.trim();
+    const file = f.elements.file.files[0];
+    if (file.size > 32 * 1024 * 1024)
+      throw new Error(t("workspace.file_too_large"));
+    const l = await api(`/api/thoughts/${encodeURIComponent(id)}/placement`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192)
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    const resource = await api(
+      `/api/topics/${encodeURIComponent(topic)}/resources`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          operation_id: workspaceOperationID(),
+          object_id: id,
+          expected_generation: l.generation,
+          name: file.name,
+          content: btoa(binary),
+        }),
+      },
+    );
+    $("#collection-upload-result").textContent = `resource://${resource.id}`;
+  });
+  editor.querySelectorAll("[data-export-kind]").forEach(
+    (button) =>
+      (button.onclick = action(async () => {
+        const result = await api(
+          `/api/topics/${encodeURIComponent(topic)}/exports`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              operation_id: workspaceOperationID(),
+              export_kind: button.dataset.exportKind,
+              include_private_evidence:
+                button.dataset.exportKind === "backup" &&
+                $("#collection-private").checked,
+            }),
+          },
+        );
+        $("#collection-export-result").innerHTML =
+          `<a href="${escapeHTML(result.download_url)}" download>${escapeHTML(t("workspace.download"))}</a> · ${escapeHTML(result.manifest.evidence_review)}`;
+      })),
+  );
+  $("#collection-rebuild").onclick = action(async () => {
+    await api(`/api/topics/${encodeURIComponent(topic)}/index/rebuild`, {
+      method: "POST",
+    });
+    await reloadCurrentCollection(topic);
+  });
+  $("#collection-import").onsubmit = action(async (e) => {
+    const file = e.target.elements.file.files[0];
+    const response = await fetch(
+      `/api/topic-imports?operation_id=${encodeURIComponent(workspaceOperationID())}`,
+      {
+        method: "POST",
+        body: file,
+        headers: { "Content-Type": "application/zip" },
+      },
+    );
+    if (!response.ok) throw new Error(await response.text());
+    await loadTopics();
+  });
+  $("#collection-draft").onsubmit = action(async (e) => {
+    const f = e.target;
+    const profiles = await api("/api/document-profiles");
+    const list = Array.isArray(profiles)
+      ? profiles
+      : profiles.items || profiles.profiles || [];
+    const profile = list.find(
+      (p) => (p.ref || p).profile_id === f.elements.profile.value,
+    );
+    if (!profile) throw new Error(t("workspace.profile_missing"));
+    await api(
+      `/api/topics/${encodeURIComponent(topic)}/entries/${encodeURIComponent(f.elements.entry.value)}/drafts`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          operation_id: workspaceOperationID(),
+          expected_generation: data.catalog.generation,
+          profile: profile.ref || profile,
+          parameters: {},
+          content: f.elements.content.value,
+        }),
+      },
+    );
+    await reloadCurrentCollection(topic);
+  });
+}
+async function reloadCurrentCollection(topic) {
+  if (state.route?.params?.topicId === topic) await openTopic(topic);
+}
+async function saveCollectionCatalog(catalog) {
+  const topic = state.activeTopicId;
+  try {
+    await api(`/api/topics/${encodeURIComponent(topic)}/catalog`, {
+      method: "PUT",
+      body: JSON.stringify({
+        operation_id: workspaceOperationID(),
+        expected_generation: catalog.generation,
+        required_delivery_level: catalog.required_delivery_level,
+        groups: catalog.groups,
+        entries: catalog.entries,
+      }),
+    });
+    await reloadCurrentCollection(topic);
+  } catch (error) {
+    throw new Error(`${t("workspace.conflict_preserve")} ${error.message}`);
+  }
+}
 boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));

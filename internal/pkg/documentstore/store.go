@@ -13,11 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -26,20 +26,22 @@ const NormalizationVersion = "utf8-lf-eof-v1"
 var ErrConflict = errors.New("document generation or operation conflict")
 var ErrInvalid = errors.New("invalid document record")
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,159}$`)
-var locks sync.Map
 
 type Store struct {
 	Root  string
 	Fault func(string) error
 }
 type RevisionData struct {
-	Projection *models.ThoughtSnapshot
-	Evidence   map[string]string `json:"-"`
-	Revision   models.DocumentRevision
-	Contract   models.DocumentContract
-	Sources    models.SourceManifest
-	Profile    string
-	Body       string
+	Resources           models.ResourceBindings
+	ResourceError       string `json:"-"`
+	ResourceMappingHash string `json:"-"`
+	Projection          *models.ThoughtSnapshot
+	Evidence            map[string]string `json:"-"`
+	Revision            models.DocumentRevision
+	Contract            models.DocumentContract
+	Sources             models.SourceManifest
+	Profile             string
+	Body                string
 }
 
 func New(root string) *Store { return &Store{Root: filepath.Join(root, "documents")} }
@@ -67,17 +69,22 @@ func HashJSON(v any) string {
 	return Hash(raw)
 }
 func (s *Store) Lock(id string) func() {
-	absolute, _ := filepath.Abs(s.Root)
-	v, _ := locks.LoadOrStore(absolute+"/"+id, &sync.Mutex{})
-	m := v.(*sync.Mutex)
-	m.Lock()
-	return m.Unlock
+	return objectlocation.For(filepath.Dir(s.Root)).ReadLease(id)
 }
 func (s *Store) path(id string, parts ...string) (string, error) {
 	if !idPattern.MatchString(id) {
 		return "", ErrInvalid
 	}
-	p := filepath.Join(append([]string{s.Root, id}, parts...)...)
+	l, e := objectlocation.For(filepath.Dir(s.Root)).Lookup(id)
+	if e != nil {
+		if os.IsNotExist(e) {
+			if check := workspace.EnsureNoSymlinks(filepath.Dir(s.Root), filepath.Join(append([]string{s.Root, id}, parts...)...)); check != nil {
+				return "", check
+			}
+		}
+		return "", e
+	}
+	p := filepath.Join(append([]string{filepath.Dir(s.Root), filepath.FromSlash(l.Placement.DocumentRoot)}, parts...)...)
 	// Match the Markdown boundary: reject links at or inside the workspace,
 	// including missing descendants, while allowing OS aliases above it
 	// (for example macOS /var -> /private/var).
@@ -101,6 +108,9 @@ func (s *Store) Head(id string) (models.DocumentHead, error) {
 // a deleted document is deliberately unavailable even when its journal remains.
 func (s *Store) ActiveHead(id string) (models.DocumentHead, error) {
 	h, e := s.Head(id)
+	if e == nil {
+		e = s.checkLocationActive(id)
+	}
 	if e == nil && h.DeletedAt != nil {
 		e = os.ErrNotExist
 	}
@@ -109,6 +119,13 @@ func (s *Store) ActiveHead(id string) (models.DocumentHead, error) {
 
 // CheckActive also permits a new, unpublished document.
 func (s *Store) CheckActive(id string) error {
+	if _, e := objectlocation.For(filepath.Dir(s.Root)).Lookup(id); e == nil {
+		if e = s.checkLocationActive(id); e != nil {
+			return e
+		}
+	} else if !os.IsNotExist(e) {
+		return e
+	}
 	h, e := s.Head(id)
 	if os.IsNotExist(e) {
 		return nil
@@ -116,7 +133,28 @@ func (s *Store) CheckActive(id string) error {
 	if e == nil && h.DeletedAt != nil {
 		return os.ErrNotExist
 	}
+	if e == nil {
+		return s.checkLocationActive(id)
+	}
 	return e
+}
+
+func (s *Store) checkLocationActive(id string) error {
+	r := objectlocation.For(filepath.Dir(s.Root))
+	l, e := r.Lookup(id)
+	if e != nil {
+		return e
+	}
+	if l.DeletedAt != nil || l.Lifecycle == "deleted" || l.Lifecycle == "import_pending" {
+		return os.ErrNotExist
+	}
+	if l.ImportOperationID != "" {
+		op, e := r.Operation(l.ImportOperationID)
+		if e != nil || op.State != "completed" {
+			return os.ErrNotExist
+		}
+	}
+	return nil
 }
 
 // DeleteLocked publishes revocation before the projection is removed. The
@@ -169,7 +207,54 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 		return d, e
 	}
 	d.Profile = string(b)
+	currentBindings, bindErr := objectlocation.For(filepath.Dir(s.Root)).Bindings(id)
+	if bindErr != nil {
+		return d, bindErr
+	}
 	r := d.Revision
+	if r.ResourceBindingsHash != "" {
+		if e = readJSON(filepath.Join(p, "resources.json"), &d.Resources); e != nil {
+			return d, e
+		}
+		if HashJSON(d.Resources) != r.ResourceBindingsHash || d.Resources.ObjectID != id {
+			return d, ErrInvalid
+		}
+		for _, b := range d.Resources.Bindings {
+			resource, e := objectlocation.For(filepath.Dir(s.Root)).BoundResourcePath(id, b)
+			if e != nil {
+				d.ResourceError = e.Error()
+				continue
+			}
+			hash, _, e := objectlocation.FileHash(resource)
+			if e != nil || hash != b.Hash || b.Private {
+				d.ResourceError = "resource_incomplete"
+			}
+		}
+	}
+	knownOriginal := map[string]bool{}
+	for _, b := range d.Resources.Bindings {
+		knownOriginal[b.OriginalLocator] = true
+	}
+	for _, b := range currentBindings.Bindings {
+		if b.OriginalLocator != "" && !knownOriginal[b.OriginalLocator] {
+			d.Resources.Bindings = append(d.Resources.Bindings, b)
+			path, err := objectlocation.For(filepath.Dir(s.Root)).BoundResourcePath(id, b)
+			if err != nil {
+				d.ResourceError = "resource_incomplete"
+			} else if hash, _, err := objectlocation.FileHash(path); err != nil || hash != b.Hash {
+				d.ResourceError = "resource_incomplete"
+			}
+		}
+	}
+	mapping := []string{}
+	for _, b := range d.Resources.Bindings {
+		if b.OriginalLocator != "" {
+			mapping = append(mapping, b.OriginalLocator, b.ResourceID, b.Hash)
+		}
+	}
+	if len(mapping) > 0 {
+		d.ResourceMappingHash = HashJSON(mapping)
+	}
 	if r.ProjectionHash != "" {
 		if e = readJSON(filepath.Join(p, "projection.json"), &d.Projection); e != nil {
 			return d, e
@@ -187,6 +272,9 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 // Publish must be called while holding Lock(id). Unreferenced revision directories
 // after a crash are harmless: readers only discover versions through HEAD.
 func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.DocumentHead, error) {
+	if _, e := objectlocation.For(filepath.Dir(s.Root)).Reserve(id, "", "document-create"); e != nil {
+		return models.DocumentHead{}, e
+	}
 	h, err := s.Head(id)
 	if err != nil && !os.IsNotExist(err) {
 		return h, err
@@ -208,6 +296,15 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	r.BodyHash = Hash([]byte(d.Body))
 	r.ContractHash = HashJSON(d.Contract)
 	r.SourceManifestHash = HashJSON(d.Sources)
+	bindings, e := objectlocation.For(filepath.Dir(s.Root)).Bindings(id)
+	if e != nil {
+		return h, e
+	}
+	d.Resources = bindings
+	r.ResourceBindingsHash = ""
+	if len(bindings.Bindings) > 0 {
+		r.ResourceBindingsHash = HashJSON(bindings)
+	}
 	r.ProjectionHash = ""
 	if d.Projection != nil {
 		r.ProjectionHash = HashJSON(d.Projection)
@@ -236,7 +333,11 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 			return h, e
 		}
 	}
-	for name, v := range map[string]any{"manifest.json": r, "contract.json": d.Contract, "source-manifest.json": d.Sources} {
+	records := map[string]any{"manifest.json": r, "contract.json": d.Contract, "source-manifest.json": d.Sources}
+	if r.ResourceBindingsHash != "" {
+		records["resources.json"] = d.Resources
+	}
+	for name, v := range records {
 		b, e := json.MarshalIndent(v, "", "  ")
 		if e != nil {
 			return h, e
@@ -278,6 +379,9 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	return h, nil
 }
 func (s *Store) SaveHead(id string, h models.DocumentHead) error {
+	if _, e := objectlocation.For(filepath.Dir(s.Root)).Reserve(id, "", "document-create"); e != nil {
+		return e
+	}
 	p, e := s.path(id, "head.json")
 	if e != nil {
 		return e
@@ -286,7 +390,10 @@ func (s *Store) SaveHead(id string, h models.DocumentHead) error {
 	if e != nil {
 		return e
 	}
-	return atomicWrite(p, b)
+	if e = atomicWrite(p, b); e == nil {
+		objectlocation.For(filepath.Dir(s.Root)).BumpEpoch()
+	}
+	return e
 }
 func (s *Store) ProjectionDone(id, rev string) error {
 	unlock := s.Lock(id)
@@ -308,6 +415,9 @@ func (s *Store) ProjectionDoneLocked(id, rev string) error {
 func (s *Store) PutRecord(id, kind, key string, v any) error {
 	if !ValidID(key) || (kind != "reports" && kind != "finalizations") {
 		return ErrInvalid
+	}
+	if _, e := objectlocation.For(filepath.Dir(s.Root)).Reserve(id, "", "document-create"); e != nil {
+		return e
 	}
 	p, e := s.path(id, kind, key+".json")
 	if e != nil {

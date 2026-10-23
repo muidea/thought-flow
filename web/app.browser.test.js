@@ -1794,6 +1794,15 @@ function startFixtureServer(options = {}) {
         }));
       }
     }
+    if (options.collection && url.pathname.startsWith("/api/topics/demo")) {
+      const catalog={schema_version:1,topic_id:"demo",generation:4,required_delivery_level:"ready_for_use",groups:[{id:"first",title:"Architecture"},{id:"second",title:"Implementation"}],entries:[{id:"A",group_id:"first",title:"Design A",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-A",version_policy:"latest_finalized"}},{id:"B",group_id:"second",title:"Design B",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-B",version_policy:"latest_finalized"}},{id:"planned",group_id:"second",title:"Missing plan",required:true,binding:{kind:"planned"}}]};
+      const topic={id:"demo",slug:"demo",name:"Demo Collection",mode:"collection",generation:2,search_policy:{topic_global_visible:true,owned_thoughts_global_default:false},rules:{},outline:[],auto_weave:false};
+      if(url.pathname==="/api/topics/demo")return json(res,api({topic,document:"Manual overview",members:[]}));
+      if(url.pathname==="/api/topics/demo/catalog")return json(res,api({workspace_key:"browser",topic,catalog,required_count:3,delivered_count:1,uncatalogued:[],entries:catalog.entries.map(entry=>({entry,binding_status:entry.id==="planned"?"planned":"bound",delivery_status:entry.id==="A"?"ready_for_use":"not_finalized",work_status:entry.id==="B"?"new_draft":"no_new_draft",has_new_draft:entry.id==="B",version_status:"latest_finalized",availability:"available",selected_revision_id:entry.id==="A"?"rev-A":""}))}));
+      const match=url.pathname.match(/^\/api\/topics\/demo\/entries\/([^/]+)\/content$/);
+      if(match){const id=match[1];if(id!=="A"&&url.searchParams.get("view")!=="draft")return json(res,JSON.stringify({data:null,error:{message:"No finalized version"}}),422);return json(res,api({document_id:`thought-${id}`,revision:{revision_id:`rev-${id}`},body:`# ${id} full document\n\n## Details\n\nComplete independent body ${id}.`,resource_bindings:[]}));}
+      if(url.pathname.endsWith("/candidates"))return json(res,api([]));
+    }
     switch (url.pathname) {
       case "/":
       case "/index.html":
@@ -2464,7 +2473,7 @@ class CDPPage {
       else resolve(message.result || {});
       return;
     }
-    if (message.method && this.listeners.has(message.method)) {
+    if (message.method && typeof this.listeners.get(message.method)==="function") {
       this.listeners.get(message.method)(message.params || {});
     }
   }
@@ -2684,4 +2693,46 @@ test("typed document editor separates draft, review, confirmation and pinned exp
   assert.equal(await page.evaluate(()=>document.querySelector("[data-document-finalize]").disabled),true);
   assert.equal(await page.evaluate(()=>document.querySelector("[data-document-final-export]").getAttribute("href")),finalHref);
  } finally {await browser.close();}
+});
+
+
+test("collection continuous reading keeps filters, deep links and mobile focus", async (t) => {
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ const server=await startFixtureServer({collection:true});t.after(()=>server.close());
+ const target=browserTargets.find(item=>item.name==="chrome");
+ for(const viewport of viewports()){
+ await t.test(viewport.name,async()=>{
+  const browser=await target.launch(viewport);
+  try{
+   const page=await connectPage(browser);const errors=[];
+   page.onEvent("Runtime.exceptionThrown",event=>errors.push(event.exceptionDetails?.exception?.description||event.exceptionDetails?.text));
+   await page.send("Runtime.enable");await page.send("Page.enable");
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/topics/demo?tab=documents&entry=A&view=final`);
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body A."));
+   assert.equal(await page.evaluate(()=>document.querySelectorAll(".collection-entry.active").length),1);
+   if(viewport.name==="mobile"){
+    await page.evaluate(()=>document.querySelector("#collection-toggle").click());
+    assert.equal(await page.evaluate(()=>document.activeElement.id),"collection-filter");
+    const escaped=await page.evaluate(()=>{document.querySelector(".collection-catalog").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return {hidden:document.querySelector(".collection-catalog").hidden,focus:document.activeElement.id};});
+    assert.deepEqual(escaped,{hidden:true,focus:"collection-toggle"});
+    await page.evaluate(()=>document.querySelector("#collection-toggle").click());
+   }
+   await page.evaluate(()=>{const filter=document.querySelector("#collection-filter");filter.value="Design";filter.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("#collection-next").click();});
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("No finalized version"));
+   assert.equal(await page.evaluate(()=>document.querySelector("#collection-filter").value),"Design");
+   assert.match(await page.evaluate(()=>window.location.hash),/entry=B/);
+   await page.evaluate(()=>document.querySelector('#collection-controls a[href*="view=draft"]').click());
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body B."));
+   assert.match(await page.evaluate(()=>document.querySelector(".collection-version").textContent),/Working version/);
+   await page.evaluate(()=>document.querySelector("#collection-prev").click());
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body A."));
+   await page.evaluate(()=>{window.location.hash="#/topics/demo?tab=documents&entry=A&view=final&revision=rev-A&section=details";});
+   await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");
+   await page.send("Page.reload");
+   await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");
+   assert.match(await page.evaluate(()=>window.location.hash),/entry=A.*revision=rev-A.*section=details/);
+   assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+ });
+ }
 });

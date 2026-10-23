@@ -19,6 +19,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/searchdb"
 )
 
@@ -74,7 +75,10 @@ func TestRebuildCacheFailureAtomicityAndStartupRecovery(t *testing.T) {
 	if provider.calls.Load() != 1 {
 		t.Fatal("unchanged input recomputed", provider.calls.Load())
 	}
-	topic := models.Topic{ID: "new-topic", Members: []string{thought.ID}}
+	topic := models.Topic{ID: "new-topic", Slug: "new-topic", Mode: "aggregate", Members: []string{thought.ID}}
+	if err = objectlocation.WriteJSON(root, "topics/new-topic/topic.yaml", topic, false); err != nil {
+		t.Fatal(err)
+	}
 	service.Notify(event.NewEvent(models.EventTopicUpdated, "topic", "#", event.NewHeader(), models.DomainEvent{ResourceType: models.ResourceTypeTopic, EventType: models.EventTopicUpdated, Payload: topic}), nil)
 	if provider.calls.Load() != 1 {
 		t.Fatal("topic update recomputed embeddings")

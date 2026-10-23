@@ -67,6 +67,9 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 	m.service = biz.NewService(ws, jobstore.New(ws.JobsPath), topicstore.New(ws.RootPath, topicstore.WithWeaveProvider(ai.NewWeaveProvider(cfg.LLM))), eventHub, backgroundRoutine, ai.NewEmbeddingProvider(cfg.Embedding), searchmodule.Current(), nil)
 	setCurrent(m.service)
 	eventHub.Subscribe("thought.refined", m.service)
+	for _, kind := range []string{"thought.restored", "thought.patched", "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted", "thought.ownership_changed"} {
+		eventHub.Subscribe(kind, m.service)
+	}
 	eventHub.Subscribe(models.EventThoughtDeleted, m.service)
 	eventHub.Subscribe("search.index_updated", m.service)
 	eventHub.Subscribe(models.EventScratchpadContextUpdated, m.service)

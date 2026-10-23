@@ -346,6 +346,9 @@
               </div>
               <div class="tf-page-actions">
                 <button class="tf-btn tf-btn-primary" id="open-create-topic" type="button" data-i18n="topics.create">Create topic</button>
+                <label class="tf-btn"><span data-i18n="workspace.import_backup">Import backup</span><input id="workspace-import-file" type="file" accept=".zip" hidden></label>
+                <button class="tf-btn" id="workspace-recovery" type="button" data-i18n="workspace.activity">Activity and recovery</button>
+                <div id="workspace-recovery-result" role="status"></div>
                 <button class="tf-btn" id="refresh-topics" data-i18n-attr="common.refresh" data-i18n-attr-target="title" title="Refresh" aria-label="Refresh" data-i18n="common.refresh">Refresh</button>
               </div>
             </div>
@@ -817,7 +820,8 @@ generation:
           <div class="tf-drawer-form-body tf-form stack-form">
             <label class="tf-form-item">
               <span class="tf-label" data-i18n="topics.create.name">Name</span>
-              <input id="topic-name" type="text" data-i18n-attr="topics.create.name_placeholder" data-i18n-attr-target="placeholder" placeholder="Name">
+              <label><span data-i18n="workspace.mode">Topic mode</span><select id="topic-mode"><option value="collection" data-i18n="workspace.collection">Document collection</option><option value="aggregate" data-i18n="workspace.aggregate">Aggregate topic</option></select></label>
+ <input id="topic-name" type="text" data-i18n-attr="topics.create.name_placeholder" data-i18n-attr-target="placeholder" placeholder="Name">
             </label>
             <label class="tf-form-item">
               <span class="tf-label" data-i18n="topics.create.description">Description</span>

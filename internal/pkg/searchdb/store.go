@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -19,9 +18,11 @@ import (
 
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 )
 
 type Store struct {
+	root         string
 	db           *sql.DB
 	writeMu      sync.Mutex
 	ftsMu        sync.Mutex
@@ -253,7 +254,8 @@ func (s *Store) Init(ctx context.Context) error {
 			refine_status VARCHAR,
 			index_status VARCHAR,
 			topic_status VARCHAR,
-			topic_ids VARCHAR
+			topic_ids VARCHAR,
+ indexed_revision_id VARCHAR
 		)`,
 		`CREATE TABLE IF NOT EXISTS thought_contents (
 			thought_id VARCHAR PRIMARY KEY,
@@ -279,7 +281,7 @@ func (s *Store) Init(ctx context.Context) error {
 	if err := execIgnoreColumnExists(ctx, s.db, `ALTER TABLE thoughts ADD COLUMN topic_ids VARCHAR`); err != nil {
 		return err
 	}
-	return nil
+	return execIgnoreColumnExists(ctx, s.db, `ALTER TABLE thoughts ADD COLUMN indexed_revision_id VARCHAR`)
 }
 
 func execIgnoreColumnExists(ctx context.Context, db *sql.DB, query string) error {
@@ -368,11 +370,11 @@ func indexThought(ctx context.Context, exec sqlExecutor, thought models.Thought,
 	}
 	_, err = exec.ExecContext(ctx, `INSERT INTO thoughts (
 		id, path, title, type, url, created_at, updated_at, content_hash,
-		capture_status, refine_status, index_status, topic_status, topic_ids
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		capture_status, refine_status, index_status, topic_status, topic_ids,indexed_revision_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		thought.ID, thought.Path, title, thought.Type, thought.URL, thought.CreatedAt, thought.UpdatedAt,
 		thought.ContentHash, thought.CaptureStatus, thought.RefineStatus, models.IndexStatusIndexed, thought.TopicStatus,
-		strings.Join(thought.TopicIDs, ","),
+		strings.Join(thought.TopicIDs, ","), thoughtRevision(thought),
 	)
 	if err != nil {
 		return err
@@ -487,29 +489,22 @@ func indexEmbedding(ctx context.Context, exec sqlExecutor, record models.Embeddi
 
 // ReadWorkspace completes all fallible file reads before replacing the index.
 func ReadWorkspace(rootPath string) ([]models.ThoughtSnapshot, error) {
-	snapshots := []models.ThoughtSnapshot{}
-	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	err := filepath.WalkDir(thoughtsPath, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if path == thoughtsPath && errors.Is(walkErr, os.ErrNotExist) {
-				return nil
-			}
-			return walkErr
+	ids, e := markdown.ListThoughtIDs(rootPath)
+	if e != nil {
+		return nil, e
+	}
+	out := []models.ThoughtSnapshot{}
+	for _, id := range ids {
+		t, c, e := markdown.ReadThought(rootPath, id)
+		if os.IsNotExist(e) {
+			continue
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".md" {
-			return nil
+		if e != nil {
+			return nil, e
 		}
-		t, c, err := markdown.ReadThought(rootPath, strings.TrimSuffix(filepath.Base(path), ".md"))
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		snapshots = append(snapshots, models.ThoughtSnapshot{Thought: t, Content: c})
-		return nil
-	})
-	return snapshots, err
+		out = append(out, models.ThoughtSnapshot{Thought: t, Content: c})
+	}
+	return out, nil
 }
 
 func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, error) {
@@ -1042,7 +1037,21 @@ func searchFilterWhere(query models.SearchQuery) (string, []any) {
 	return where, args
 }
 
+func (s *Store) SetWorkspaceRoot(root string) { s.root = root }
 func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.SearchResponse, error) {
+	var eligible map[string]models.ObjectLocation
+	if s.root != "" {
+		r := objectlocation.For(s.root)
+		var release func()
+		ctx, release = r.NamespaceRead(ctx)
+		defer release()
+		var e error
+		eligible, e = r.Eligible(ctx, query.Scope, query.TopicID)
+		if e != nil {
+			return models.SearchResponse{}, e
+		}
+	}
+
 	page := query.Page
 	if page <= 0 {
 		page = 1
@@ -1061,7 +1070,7 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	trimmedQuery := strings.TrimSpace(query.Query)
 	ftsScores, useFTS := s.keywordScoresFromFTS(ctx, trimmedQuery)
 	semanticScores, useDuckDBVector, duckDBSemanticSource := map[string]float64{}, false, ""
-	if useVector {
+	if useVector && eligible == nil {
 		semanticScores, useDuckDBVector, duckDBSemanticSource = s.semanticScoresFromDuckDB(ctx, query.QueryVector, query.EmbeddingModel, semanticCandidateLimit(page, pageSize))
 	}
 	keywordSource := "like"
@@ -1076,8 +1085,12 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		}
 	}
 
-	where, args := searchFilterWhere(query)
-	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at
+	filterQuery := query
+	if eligible != nil {
+		filterQuery.TopicID = ""
+	}
+	where, args := searchFilterWhere(filterQuery)
+	selectQuery := fmt.Sprintf(`SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at, coalesce(t.indexed_revision_id,'')
 		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
 		WHERE %s
 		ORDER BY t.updated_at DESC`, where)
@@ -1094,9 +1107,17 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 		var tags string
 		var topicIDs string
 		var updatedAt time.Time
-		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt, &item.IndexedRevisionID); err != nil {
 			return models.SearchResponse{}, err
 		}
+		if eligible != nil {
+			l, ok := eligible[item.ThoughtID]
+			if !ok {
+				continue
+			}
+			item.Path = l.Placement.ThoughtPath
+		}
+		item.VersionKind = "working"
 		item.Snippet = snippet(searchText, query.Query)
 		item.KeywordScore = keywordScore(searchText, query.Query)
 		if useFTS && trimmedQuery != "" {
@@ -1152,7 +1173,7 @@ func (s *Store) GetSearchPreview(ctx context.Context, thoughtID string) (models.
 	if thoughtID == "" {
 		return models.SearchResult{}, errors.New("thought id is required")
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT t.id, t.title, c.search_text, t.path, c.tags, coalesce(t.topic_ids, ''), t.updated_at, coalesce(t.indexed_revision_id,'')
 		FROM thoughts t JOIN thought_contents c ON t.id = c.thought_id
 		WHERE t.id = ?`, thoughtID)
 	var item models.SearchResult
@@ -1160,12 +1181,13 @@ func (s *Store) GetSearchPreview(ctx context.Context, thoughtID string) (models.
 	var tags string
 	var topicIDs string
 	var updatedAt time.Time
-	if err := row.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt); err != nil {
+	if err := row.Scan(&item.ThoughtID, &item.Title, &searchText, &item.Path, &tags, &topicIDs, &updatedAt, &item.IndexedRevisionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.SearchResult{}, os.ErrNotExist
 		}
 		return models.SearchResult{}, err
 	}
+	item.VersionKind = "working"
 	item.Snippet = snippet(searchText, "")
 	item.RecencyScore = recencyScore(updatedAt)
 	item.Tags = splitCSV(tags)
@@ -1200,6 +1222,20 @@ func (s *Store) GetEmbedding(ctx context.Context, thoughtID string, model string
 }
 
 func (s *Store) SemanticScores(ctx context.Context, queryVector []float64, model string, limit int) (map[string]float64, string, bool) {
+	if s.root != "" {
+		response, e := s.Search(ctx, models.SearchQuery{Scope: "global", Mode: "semantic", QueryVector: queryVector, EmbeddingModel: model, PageSize: 100})
+		if e != nil {
+			return nil, "", false
+		}
+		out := map[string]float64{}
+		for i, item := range response.Items {
+			if limit > 0 && i >= limit {
+				break
+			}
+			out[item.ThoughtID] = item.SemanticScore
+		}
+		return out, "eligible_cosine", true
+	}
 	scores, ok, source := s.semanticScoresFromDuckDB(ctx, queryVector, model, limit)
 	return scores, source, ok
 }
@@ -1334,6 +1370,13 @@ func firstNonEmpty(values ...string) string {
 		if value != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+func thoughtRevision(t models.Thought) string {
+	if t.Document != nil {
+		return t.Document.RevisionID
 	}
 	return ""
 }

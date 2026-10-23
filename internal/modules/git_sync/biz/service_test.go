@@ -364,3 +364,28 @@ func gitOutputForTest(t *testing.T, root string, args ...string) string {
 	}
 	return string(raw)
 }
+
+func TestTopicWorkspaceCommitAllowlistExcludesPrivateCanaries(t *testing.T) {
+	root := newCommitTestRepo(t)
+	runGitForTest(t, root, "commit", "--allow-empty", "-m", "initial")
+	allowed := []string{"topics/t/catalog.json", "topics/t/attachments/res-a/file.txt", ".content-registry/objects/note.json"}
+	denied := []string{"topics/t/.private/evidence/n/hash.txt", "topics/t/candidates.yaml", "topics/t/unlisted.txt", ".content-registry/private/outbox/op.json", ".content-registry/private/migrations/op/state.json", "topics/t/documents/n/revisions/r/unlisted.json"}
+	for _, path := range append(append([]string{}, allowed...), denied...) {
+		writeCommitTestFile(t, root, path, "CANARY "+path)
+	}
+	svc := NewService(&models.Workspace{ID: "local", RootPath: root}, nil, nil, nil, true, time.Hour)
+	if _, e := svc.Commit(context.Background(), append(allowed, denied...), nil); e != nil {
+		t.Fatal(e)
+	}
+	tree := gitOutputForTest(t, root, "ls-tree", "-r", "--name-only", "HEAD")
+	for _, path := range allowed {
+		if !strings.Contains(tree, path+"\n") {
+			t.Fatal("missing", path)
+		}
+	}
+	for _, path := range denied {
+		if strings.Contains(tree, path+"\n") {
+			t.Fatal("private/unlisted file committed", path)
+		}
+	}
+}

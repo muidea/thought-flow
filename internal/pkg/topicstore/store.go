@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +20,7 @@ import (
 
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -61,6 +62,12 @@ func New(rootPath string, options ...Option) *Store {
 }
 
 func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (models.Topic, error) {
+	r := objectlocation.For(s.rootPath)
+	if e := r.Initialize(); e != nil {
+		return models.Topic{}, e
+	}
+	r.Namespace.Lock()
+	defer r.Namespace.Unlock()
 	_ = ctx
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -72,19 +79,82 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 	if slug == "" {
 		return models.Topic{}, errors.New("topic slug is empty")
 	}
+	tombstonePath, e := objectlocation.SafePath(s.rootPath, deletionPath(slug))
+	if e != nil {
+		return models.Topic{}, e
+	}
+	if _, e = os.Stat(tombstonePath); e == nil {
+		return models.Topic{}, objectlocation.ErrConflict
+	} else if !os.IsNotExist(e) {
+		return models.Topic{}, e
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = models.TopicModeAggregate
+	}
+	if mode != models.TopicModeAggregate && mode != models.TopicModeCollection {
+		return models.Topic{}, objectlocation.ErrInvalid
+	}
+	if mode == models.TopicModeCollection && !objectlocation.ValidID(req.OperationID) {
+		return models.Topic{}, objectlocation.ErrInvalid
+	}
+	var op models.WorkspaceOperation
+	if req.OperationID != "" {
+		var e error
+		op, e = r.Begin(req.OperationID, "topic_create", "", slug, req)
+		if e != nil {
+			return models.Topic{}, e
+		}
+		if op.State == "completed" {
+			return s.Get(ctx, slug)
+		}
+	}
+	if req.OperationID != "" {
+		var persisted models.Topic
+		if e := objectlocation.ReadJSON(s.rootPath, "topics/"+slug+"/topic.yaml", &persisted); e == nil && persisted.LastOperationID == req.OperationID && persisted.Generation == 1 {
+			path, e := objectlocation.SafePath(s.rootPath, "topics/"+slug+"/index.md")
+			if e != nil {
+				return models.Topic{}, e
+			}
+			if _, e = os.Stat(path); os.IsNotExist(e) {
+				if e = objectlocation.WriteFile(s.rootPath, "topics/"+slug+"/index.md", []byte(initialDocument(persisted)), 0644); e != nil {
+					return models.Topic{}, e
+				}
+			} else if e != nil {
+				return models.Topic{}, e
+			}
+			if persisted.Mode == models.TopicModeCollection {
+				if _, e = s.Catalog(ctx, slug); os.IsNotExist(e) {
+					if e = objectlocation.WriteJSON(s.rootPath, catalogPath(slug), initialCatalog(slug, req.OperationID), false); e != nil {
+						return models.Topic{}, e
+					}
+				} else if e != nil {
+					return models.Topic{}, e
+				}
+			}
+			if e = r.Complete(op); e != nil {
+				return models.Topic{}, e
+			}
+			return s.Get(ctx, slug)
+		}
+	}
 	if _, err := s.Get(ctx, slug); err == nil {
-		return models.Topic{}, fmt.Errorf("topic %s already exists", slug)
+		return models.Topic{}, objectlocation.ErrConflict
 	}
 	now := time.Now().UTC()
 	autoWeave := true
 	if req.AutoWeave != nil {
 		autoWeave = *req.AutoWeave
 	}
+	if mode == models.TopicModeCollection {
+		autoWeave = false
+	}
 	rules, err := normalizeRule(req.Rules)
 	if err != nil {
 		return models.Topic{}, err
 	}
 	topic := models.Topic{
+		SchemaVersion: 2, Mode: mode, Generation: 1, SearchPolicy: req.SearchPolicy, LastOperationID: req.OperationID,
 		ID:          slug,
 		Name:        name,
 		Slug:        slug,
@@ -96,22 +166,51 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 		UpdatedAt:   now,
 		Members:     []string{},
 	}
+	if topic.SearchPolicy == nil {
+		topic.SearchPolicy = DefaultSearchPolicy()
+	}
+	if req.OperationID != "" {
+		op.TargetPath = "topics/" + slug + "/topic.yaml"
+		op.CandidateHash = objectlocation.HashJSON(topic)
+		op.AfterGeneration = 1
+		op.EventType = "topic.created"
+		if e := r.Prepare(op); e != nil {
+			return models.Topic{}, e
+		}
+	}
 	if err := s.writeTopic(topic); err != nil {
 		return models.Topic{}, err
 	}
 	if err := s.writeDocument(topic, initialDocument(topic)); err != nil {
 		return models.Topic{}, err
 	}
+	if mode == models.TopicModeCollection {
+		if e := objectlocation.WriteJSON(s.rootPath, catalogPath(slug), initialCatalog(slug, req.OperationID), false); e != nil {
+			return models.Topic{}, e
+		}
+	}
+	r.BumpEpoch()
+	if req.OperationID != "" {
+		if e := r.Complete(op); e != nil {
+			return models.Topic{}, e
+		}
+	}
 	return topic, nil
 }
 
 func (s *Store) Update(ctx context.Context, id string, req models.TopicUpdateRequest) (models.Topic, error) {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(id)
 	defer unlock()
 	_ = ctx
 	topic, err := s.Get(ctx, id)
 	if err != nil {
 		return models.Topic{}, err
+	}
+	if topic.Mode == models.TopicModeCollection {
+		return models.Topic{}, errors.New("use versioned settings or catalog for collection topics")
 	}
 	if strings.TrimSpace(req.Name) != "" {
 		topic.Name = strings.TrimSpace(req.Name)
@@ -127,6 +226,7 @@ func (s *Store) Update(ctx context.Context, id string, req models.TopicUpdateReq
 		topic.AutoWeave = *req.AutoWeave
 	}
 	topic.UpdatedAt = time.Now().UTC()
+	topic.Generation++
 	if err := s.writeTopic(topic); err != nil {
 		return models.Topic{}, err
 	}
@@ -134,7 +234,9 @@ func (s *Store) Update(ctx context.Context, id string, req models.TopicUpdateReq
 }
 
 func (s *Store) Get(ctx context.Context, id string) (models.Topic, error) {
-	_ = ctx
+	if e := objectlocation.For(s.rootPath).CheckTopicActive(id); e != nil {
+		return models.Topic{}, e
+	}
 	path, err := s.topicPath(id)
 	if err != nil {
 		return models.Topic{}, err
@@ -144,8 +246,38 @@ func (s *Store) Get(ctx context.Context, id string) (models.Topic, error) {
 		return models.Topic{}, err
 	}
 	var topic models.Topic
-	if err := yaml.Unmarshal(raw, &topic); err != nil {
-		return models.Topic{}, err
+	if err := json.Unmarshal(raw, &topic); err != nil {
+		if err = yaml.Unmarshal(raw, &topic); err != nil {
+			return models.Topic{}, err
+		}
+	}
+	if topic.ImportOperationID != "" {
+		op, e := objectlocation.For(s.rootPath).Operation(topic.ImportOperationID)
+		if e != nil || op.State != "completed" {
+			return topic, os.ErrNotExist
+		}
+	}
+	if topic.ID != id || topic.Slug != id {
+		return models.Topic{}, objectlocation.ErrInvalid
+	}
+	if topic.Mode == "" {
+		topic.Mode = models.TopicModeAggregate
+	}
+	if topic.SearchPolicy == nil {
+		topic.SearchPolicy = DefaultSearchPolicy()
+	}
+	if topic.Mode == models.TopicModeCollection {
+		c, e := s.Catalog(ctx, id)
+		if e != nil {
+			return models.Topic{}, e
+		}
+		topic.Members = []string{}
+		for _, entry := range c.Entries {
+			if entry.Binding.Kind == "thought" {
+				topic.Members = append(topic.Members, entry.Binding.ThoughtID)
+			}
+		}
+		topic.MemberCount = len(topic.Members)
 	}
 	return topic, nil
 }
@@ -168,6 +300,13 @@ func (s *Store) Detail(ctx context.Context, id string) (models.TopicDetail, erro
 }
 
 func (s *Store) detailMemberships(topic models.Topic, document string) ([]models.TopicMembership, error) {
+	if topic.Mode == models.TopicModeCollection {
+		out := []models.TopicMembership{}
+		for _, id := range topic.Members {
+			out = append(out, models.TopicMembership{TopicID: topic.ID, ThoughtID: id, MatchType: "catalog", Status: "linked"})
+		}
+		return out, nil
+	}
 	facts, err := s.readMemberships(topic)
 	if err != nil {
 		return nil, err
@@ -476,24 +615,33 @@ func containsTopicKeyword(searchText, keyword string) bool {
 }
 
 func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (models.Topic, bool, error) {
+	if topic.Mode == models.TopicModeCollection {
+		return topic, false, ErrAggregateOnly
+	}
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	latest, err := s.Get(ctx, topic.ID)
 	if err != nil {
 		return models.Topic{}, false, err
 	}
-	thought, content, err = markdown.ReadThought(s.rootPath, thought.ID)
+	thought, content, err = markdown.ReadThoughtUnderNamespace(s.rootPath, thought.ID)
 	if err != nil {
 		return models.Topic{}, false, err
 	}
 
 	topic = latest
+	if topic.Mode == models.TopicModeCollection {
+		return topic, false, ErrAggregateOnly
+	}
 	if contains(topic.Members, thought.ID) {
 		_, membershipChanged, err := s.upsertMembership(topic, thought.ID, membership, time.Now().UTC())
 		if err != nil {
 			return models.Topic{}, false, err
 		}
-		currentThought, currentContent, err := markdown.ReadThought(s.rootPath, thought.ID)
+		currentThought, currentContent, err := markdown.ReadThoughtUnderNamespace(s.rootPath, thought.ID)
 		if err == nil {
 			thought = currentThought
 			content = currentContent
@@ -538,6 +686,12 @@ func (s *Store) AddMembership(ctx context.Context, topic models.Topic, thought m
 }
 
 func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership) (string, string, string, error) {
+	if topic.Mode == models.TopicModeCollection {
+		return "", "", "", ErrAggregateOnly
+	}
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	latest, err := s.Get(ctx, topic.ID)
@@ -570,6 +724,9 @@ func (s *Store) PreviewMembership(ctx context.Context, topic models.Topic, thoug
 }
 
 func (s *Store) SaveWeaveProposal(ctx context.Context, topic models.Topic, proposal models.TopicWeaveProposal) (models.TopicWeaveProposal, error) {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	_ = ctx
@@ -633,6 +790,9 @@ func (s *Store) GetWeaveProposal(ctx context.Context, topicID string, proposalID
 }
 
 func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topic, proposalID string, document string) (models.TopicWeaveProposal, error) {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	_ = ctx
@@ -652,6 +812,9 @@ func (s *Store) MarkWeaveProposalAccepted(ctx context.Context, topic models.Topi
 }
 
 func (s *Store) ApplyMembershipPatch(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, patch models.TopicDocumentPatch) (models.Topic, bool, string, error) {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	latest, getErr := s.Get(ctx, topic.ID)
@@ -675,11 +838,20 @@ func (s *Store) ApplyMembershipPatch(ctx context.Context, topic models.Topic, th
 }
 
 func (s *Store) ApplyMembershipDocument(ctx context.Context, topic models.Topic, thought models.Thought, content models.ThoughtContent, membership models.TopicMembership, document string, expectedDocument ...string) (models.Topic, bool, error) {
+	if topic.Mode == models.TopicModeCollection {
+		return topic, false, ErrAggregateOnly
+	}
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(topic.ID)
 	defer unlock()
 	latest, err := s.Get(ctx, topic.ID)
 	if err != nil {
 		return models.Topic{}, false, err
+	}
+	if latest.Mode == models.TopicModeCollection {
+		return models.Topic{}, false, ErrAggregateOnly
 	}
 	if !latest.UpdatedAt.Equal(topic.UpdatedAt) {
 		return models.Topic{}, false, errors.New("topic changed; refresh the proposal")
@@ -755,6 +927,13 @@ func (s *Store) Refresh(ctx context.Context, id string) (models.Topic, int, []st
 }
 
 func (s *Store) RefreshWithMatcher(ctx context.Context, id string, matcher MatchFunc) (models.Topic, int, []string, error) {
+	if t, e := s.Get(ctx, id); e == nil && t.Mode == models.TopicModeCollection {
+		v, e := s.RebuildCatalog(ctx, id)
+		return v.Topic, 0, nil, e
+	}
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(id)
 	defer unlock()
 	topic, err := s.Get(ctx, id)
@@ -776,43 +955,43 @@ func (s *Store) RefreshWithMatcher(ctx context.Context, id string, matcher Match
 	found := map[string]bool{}
 	changedPaths := []string{}
 	count := 0
-	err = filepath.WalkDir(filepath.Join(s.rootPath, "thoughts"), func(path string, entry fs.DirEntry, walkErr error) error {
-		if os.IsNotExist(walkErr) {
-			return nil
-		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".md" {
-			return nil
-		}
-		thought, content, e := markdown.ReadThought(s.rootPath, strings.TrimSuffix(entry.Name(), ".md"))
-		if os.IsNotExist(e) {
-			return nil
-		}
-		if e != nil {
-			return e
-		}
-		existing := contains(previous, thought.ID)
-		membership, matches := matcher(ctx, topic, thought, content)
-		if !existing && (!matches || !topic.AutoWeave) {
-			return nil
-		}
-		found[thought.ID] = true
-		if !existing {
-			topic.Members = appendMissing(topic.Members, thought.ID)
-			document = s.weaveDocument(ctx, topic, document, thought, content, membership)
-			if _, _, e = s.upsertMembership(topic, thought.ID, membership, time.Now().UTC()); e != nil {
+	ids, err := markdown.ListThoughtIDs(s.rootPath)
+	if err != nil {
+		return models.Topic{}, 0, nil, err
+	}
+	err = func() error {
+		for _, thoughtID := range ids {
+			thought, content, e := markdown.ReadThoughtUnderNamespace(s.rootPath, thoughtID)
+			if os.IsNotExist(e) {
+				continue
+			}
+			if e != nil {
 				return e
 			}
-			count++
+			existing := contains(previous, thought.ID)
+			membership, matches := matcher(ctx, topic, thought, content)
+			if !existing && (!matches || !topic.AutoWeave) {
+				continue
+			}
+			found[thought.ID] = true
+			if !existing {
+				topic.Members = appendMissing(topic.Members, thought.ID)
+				document = s.weaveDocument(ctx, topic, document, thought, content, membership)
+				if _, _, e = s.upsertMembership(topic, thought.ID, membership, time.Now().UTC()); e != nil {
+					return e
+				}
+				count++
+			}
+			changed, e := s.updateThoughtTopicLink(topic, thought, content, true)
+			if changed {
+				changedPaths = append(changedPaths, thought.Path)
+			}
+			if e != nil {
+				return e
+			}
 		}
-		changed, e := s.updateThoughtTopicLink(topic, thought, content, true)
-		if changed {
-			changedPaths = append(changedPaths, thought.Path)
-		}
-		return e
-	})
+		return nil
+	}()
 	if err != nil {
 		return models.Topic{}, 0, nil, err
 	}
@@ -845,6 +1024,13 @@ func (s *Store) RefreshWithMatcher(ctx context.Context, id string, matcher Match
 
 // RemoveThought preserves authored content and marks its provenance unavailable.
 func (s *Store) RemoveThought(ctx context.Context, id, thoughtID string) (models.Topic, bool, error) {
+	if t, e := s.Get(ctx, id); e == nil && t.Mode == models.TopicModeCollection {
+		_, e = s.RebuildCatalog(ctx, id)
+		return t, false, e
+	}
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(id)
 	defer unlock()
 	topic, err := s.Get(ctx, id)
@@ -883,18 +1069,11 @@ func (s *Store) writeTopic(topic models.Topic) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	raw, err := yaml.Marshal(topic)
+	rel, err := filepath.Rel(s.rootPath, path)
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return err
-	}
-	defer func() {
-		_ = os.Remove(tmp)
-	}()
-	return os.Rename(tmp, path)
+	return objectlocation.WriteJSON(s.rootPath, filepath.ToSlash(rel), topic, false)
 }
 
 func (s *Store) writeDocument(topic models.Topic, document string) error {
@@ -1162,6 +1341,9 @@ func (s *Store) ListSessionCandidates(ctx context.Context, id string) ([]models.
 // empty (but valid) YAML so subsequent reads do not see a "missing
 // file" sentinel.
 func (s *Store) SaveSessionCandidates(ctx context.Context, id string, candidates []models.TopicSessionCandidate) error {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(id)
 	defer unlock()
 	return s.saveSessionCandidatesLocked(ctx, id, candidates)
@@ -1169,6 +1351,9 @@ func (s *Store) SaveSessionCandidates(ctx context.Context, id string, candidates
 
 // UpdateSessionCandidates applies an entire candidate projection transaction.
 func (s *Store) UpdateSessionCandidates(ctx context.Context, id string, update func([]models.TopicSessionCandidate) ([]models.TopicSessionCandidate, error)) error {
+	r := objectlocation.For(s.rootPath)
+	r.Namespace.RLock()
+	defer r.Namespace.RUnlock()
 	unlock := s.lock(id)
 	defer unlock()
 	current, err := s.ListSessionCandidates(ctx, id)
@@ -1541,7 +1726,7 @@ func sourceRelativePath(rootPath string, topic models.Topic, thought models.Thou
 
 func (s *Store) updateThoughtTopicLink(topic models.Topic, thought models.Thought, content models.ThoughtContent, include bool) (bool, error) {
 	changed := false
-	err := markdown.UpdateThought(s.rootPath, thought.ID, func(current *models.Thought, body *models.ThoughtContent) error {
+	err := markdown.UpdateThoughtUnderNamespace(s.rootPath, thought.ID, func(current *models.Thought, body *models.ThoughtContent) error {
 		next := append([]string{}, current.TopicIDs...)
 		if include {
 			next = appendMissing(next, topic.ID)

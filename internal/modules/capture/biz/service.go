@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,6 +21,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/thoughtlock"
 )
 
@@ -135,8 +134,13 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	if thoughtID == "" {
 		thoughtID = models.NewThoughtID(now, original)
 	}
-	relPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
+	location, err := objectlocation.For(s.workspace.RootPath).Reserve(thoughtID, cmd.OwnerTopicID, "capture-"+thoughtID)
+	if err != nil {
+		return models.CaptureResult{}, err
+	}
+	relPath := location.Placement.ThoughtPath
 	thought := models.Thought{
+		OwnerTopicID:            cmd.OwnerTopicID,
 		ID:                      thoughtID,
 		Type:                    cmd.Type,
 		Source:                  source,
@@ -208,7 +212,11 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 	if err != nil {
 		return models.ThoughtSnapshot{}, err
 	}
-	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
+	bindings, e := objectlocation.For(s.workspace.RootPath).Bindings(thoughtID)
+	if e != nil {
+		return models.ThoughtSnapshot{}, e
+	}
+	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings}, nil
 }
 
 func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string) error {
@@ -224,7 +232,11 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
-	thoughtPath := filepath.ToSlash(markdown.ThoughtRelativePath(thoughtID))
+	location, err := objectlocation.For(s.workspace.RootPath).Lookup(thoughtID)
+	if err != nil {
+		return err
+	}
+	thoughtPath := location.Placement.ThoughtPath
 	if s.locker != nil {
 		if err := s.locker.Acquire(thoughtID, sessionID); err != nil {
 			if errors.Is(err, ErrLocked) {
@@ -258,7 +270,7 @@ func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string
 		ResourceType:   models.ResourceTypeThought,
 		ResourceID:     thoughtID,
 		PayloadVersion: 1,
-		Payload:        models.GitCommitRequestedPayload{Paths: []string{thoughtPath, filepath.ToSlash(filepath.Join("documents", thoughtID, "head.json"))}, Reason: "delete", ResourceIDs: []string{thoughtID}},
+		Payload:        models.GitCommitRequestedPayload{Paths: append(markdown.GitPaths(s.workspace.RootPath, thoughtID), location.Placement.DocumentRoot+"/head.json"), Reason: "delete", ResourceIDs: []string{thoughtID}},
 	})
 	return nil
 }
@@ -412,7 +424,11 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 			"paths":  []string{thought.Path},
 		},
 	})
-	return models.ThoughtSnapshot{Thought: thought, Content: content}, nil
+	bindings, e := objectlocation.For(s.workspace.RootPath).Bindings(thoughtID)
+	if e != nil {
+		return models.ThoughtSnapshot{}, e
+	}
+	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings}, nil
 }
 
 // unknownPatchFields returns the JSON keys in rawBody that are not
@@ -523,63 +539,31 @@ func (s *Service) Workspace() *models.Workspace {
 }
 
 func listThoughts(rootPath string) ([]models.Thought, error) {
-	if strings.TrimSpace(rootPath) == "" {
-		return []models.Thought{}, nil
+	ids, err := markdown.ListThoughtIDs(rootPath)
+	if err != nil {
+		return nil, err
 	}
-	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	type listedThought struct {
-		thought models.Thought
-		modTime time.Time
+	thoughts := []models.Thought{}
+	for _, id := range ids {
+		thought, _, e := markdown.ReadThought(rootPath, id)
+		if errors.Is(e, os.ErrNotExist) {
+			continue
+		}
+		if e != nil {
+			return nil, e
+		}
+		thoughts = append(thoughts, thought)
 	}
-	listed := []listedThought{}
-	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// A missing root is an empty workspace; a vanished child must not
-			// discard notes already found elsewhere in the tree.
-			if errors.Is(walkErr, os.ErrNotExist) {
-				return nil
-			}
-			return walkErr
+	sort.Slice(thoughts, func(i, j int) bool {
+		if !thoughts[i].UpdatedAt.Equal(thoughts[j].UpdatedAt) {
+			return thoughts[i].UpdatedAt.After(thoughts[j].UpdatedAt)
 		}
-		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
-			return nil
+		if !thoughts[i].CreatedAt.Equal(thoughts[j].CreatedAt) {
+			return thoughts[i].CreatedAt.After(thoughts[j].CreatedAt)
 		}
-		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
-		thought, _, err := markdown.ReadThought(rootPath, thoughtID)
-		if err != nil {
-			// Tombstones hide interrupted deletions before Markdown cleanup.
-			// Concurrently removed projections have the same per-entry result.
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		var modTime time.Time
-		if info, infoErr := entry.Info(); infoErr == nil {
-			modTime = info.ModTime()
-		}
-		listed = append(listed, listedThought{thought: thought, modTime: modTime})
-		return nil
+		return thoughts[i].ID > thoughts[j].ID
 	})
-	sort.Slice(listed, func(i, j int) bool {
-		left := listed[i].thought
-		right := listed[j].thought
-		if !left.UpdatedAt.Equal(right.UpdatedAt) {
-			return left.UpdatedAt.After(right.UpdatedAt)
-		}
-		if !left.CreatedAt.Equal(right.CreatedAt) {
-			return left.CreatedAt.After(right.CreatedAt)
-		}
-		if !listed[i].modTime.Equal(listed[j].modTime) {
-			return listed[i].modTime.After(listed[j].modTime)
-		}
-		return left.ID > right.ID
-	})
-	thoughts := make([]models.Thought, 0, len(listed))
-	for _, item := range listed {
-		thoughts = append(thoughts, item.thought)
-	}
-	return thoughts, err
+	return thoughts, nil
 }
 
 func findDuplicateThoughts(rootPath string, contentHash string, currentID string) ([]string, error) {
@@ -595,37 +579,27 @@ func findDuplicateThoughts(rootPath string, contentHash string, currentID string
 }
 
 func findDuplicateThoughtsByContent(rootPath, content, contentHash, currentID string) ([]string, error) {
-	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(content) == "" {
-		return []string{}, nil
+	ids, e := markdown.ListThoughtIDs(rootPath)
+	if e != nil {
+		return nil, e
 	}
-	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	duplicates := []string{}
-	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	out := []string{}
+	for _, id := range ids {
+		if id == currentID {
+			continue
 		}
-		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
-			return nil
+		thought, c, e := markdown.ReadThought(rootPath, id)
+		if os.IsNotExist(e) {
+			continue
 		}
-		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
-		if thoughtID == currentID {
-			return nil
+		if e != nil {
+			return nil, e
 		}
-		thought, existing, err := markdown.ReadThought(rootPath, thoughtID)
-		if err != nil {
-			return err
+		if thought.ContentHash == contentHash || nearDuplicateContent(content, firstNonEmptyContent(c.AINotes, c.ExtractedContent, c.Original)) {
+			out = append(out, id)
 		}
-		existingBody := firstNonEmptyContent(existing.AINotes, existing.ExtractedContent, existing.Original)
-		if thought.ContentHash == contentHash || nearDuplicateContent(content, existingBody) {
-			duplicates = append(duplicates, thought.ID)
-		}
-		return nil
-	})
-	if errors.Is(err, os.ErrNotExist) {
-		return []string{}, nil
 	}
-	sort.Strings(duplicates)
-	return duplicates, err
+	return out, nil
 }
 
 func firstNonEmptyContent(values ...string) string {
@@ -684,35 +658,17 @@ func runeShingles(value []rune, width int) map[string]struct{} {
 }
 
 func findDuplicateThoughtRecords(rootPath string, contentHash string, currentID string) ([]models.Thought, error) {
-	if strings.TrimSpace(rootPath) == "" || strings.TrimSpace(contentHash) == "" {
-		return []models.Thought{}, nil
+	thoughts, e := listThoughts(rootPath)
+	if e != nil {
+		return nil, e
 	}
-	thoughtsPath := filepath.Join(rootPath, "thoughts")
-	duplicates := []models.Thought{}
-	err := filepath.WalkDir(thoughtsPath, func(filePath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	out := []models.Thought{}
+	for _, thought := range thoughts {
+		if thought.ID != currentID && thought.ContentHash == contentHash {
+			out = append(out, thought)
 		}
-		if entry.IsDir() || filepath.Ext(filePath) != ".md" {
-			return nil
-		}
-		thoughtID := strings.TrimSuffix(filepath.Base(filePath), ".md")
-		if thoughtID == currentID {
-			return nil
-		}
-		thought, _, err := markdown.ReadThought(rootPath, thoughtID)
-		if err != nil {
-			return err
-		}
-		if thought.ContentHash == contentHash {
-			duplicates = append(duplicates, thought)
-		}
-		return nil
-	})
-	if errors.Is(err, os.ErrNotExist) {
-		return []models.Thought{}, nil
 	}
-	return duplicates, err
+	return out, nil
 }
 
 func validateCaptureCommand(cmd models.CaptureCommand) error {

@@ -50,6 +50,7 @@ type DocumentSource struct {
 	EvidenceHash string `json:"evidence_hash,omitempty"`
 }
 type DocumentRevision struct {
+	ResourceBindingsHash string    `json:"resource_bindings_hash,omitempty"`
 	ProjectionHash       string    `json:"projection_hash,omitempty"`
 	DocumentID           string    `json:"document_id"`
 	RevisionID           string    `json:"revision_id"`
@@ -122,14 +123,15 @@ type FinalizationRecord struct {
 	ReviewMethod           string                 `json:"review_method"`
 }
 type DocumentSnapshot struct {
-	DocumentID      string              `json:"document_id"`
-	Head            DocumentHead        `json:"head"`
-	Revision        DocumentRevision    `json:"revision"`
-	Contract        DocumentContract    `json:"contract"`
-	Sources         SourceManifest      `json:"source_manifest"`
-	Body            string              `json:"body"`
-	Report          *ValidationReport   `json:"report,omitempty"`
-	Freshness       string              `json:"freshness"`
-	Finalization    *FinalizationRecord `json:"finalization,omitempty"`
-	SourceFreshness string              `json:"source_freshness"`
+	ResourceBindings []ResourceBinding   `json:"resource_bindings,omitempty"`
+	DocumentID       string              `json:"document_id"`
+	Head             DocumentHead        `json:"head"`
+	Revision         DocumentRevision    `json:"revision"`
+	Contract         DocumentContract    `json:"contract"`
+	Sources          SourceManifest      `json:"source_manifest"`
+	Body             string              `json:"body"`
+	Report           *ValidationReport   `json:"report,omitempty"`
+	Freshness        string              `json:"freshness"`
+	Finalization     *FinalizationRecord `json:"finalization,omitempty"`
+	SourceFreshness  string              `json:"source_freshness"`
 }

@@ -123,6 +123,8 @@ type Workspace struct {
 }
 
 type Thought struct {
+	OwnerTopicID               string              `json:"owner_topic_id,omitempty"`
+	GlobalSearch               string              `json:"global_search,omitempty"`
 	Document                   *DocumentLink       `json:"document,omitempty"`
 	DocumentParameters         map[string]string   `json:"-"`
 	DocumentSources            *SourceManifest     `json:"-"`
@@ -224,10 +226,11 @@ type ThoughtContent struct {
 }
 
 type ThoughtSnapshot struct {
-	Thought    Thought           `json:"thought"`
-	Content    ThoughtContent    `json:"content,omitempty"`
-	Jobs       []Job             `json:"jobs,omitempty"`
-	GitCommits []GitCommitRecord `json:"git_commits,omitempty"`
+	ResourceBindings []ResourceBinding `json:"resource_bindings,omitempty"`
+	Thought          Thought           `json:"thought"`
+	Content          ThoughtContent    `json:"content,omitempty"`
+	Jobs             []Job             `json:"jobs,omitempty"`
+	GitCommits       []GitCommitRecord `json:"git_commits,omitempty"`
 }
 
 type ThoughtRefinement struct {
@@ -255,6 +258,7 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
+	OwnerTopicID            string            `json:"owner_topic_id,omitempty"`
 	DocumentParameters      map[string]string `json:"document_parameters,omitempty" yaml:"document_parameters,omitempty"`
 	DocumentSources         *SourceManifest   `json:"document_sources,omitempty" yaml:"document_sources,omitempty"`
 	DocumentProfileSnapshot string            `json:"-" yaml:"document_profile_snapshot,omitempty"`
@@ -531,6 +535,7 @@ type EventsRuntimeStatus struct {
 }
 
 type SearchQuery struct {
+	Scope             string        `json:"scope"`
 	Query             string        `json:"q"`
 	Mode              string        `json:"mode"`
 	Sort              string        `json:"sort,omitempty"`
@@ -565,17 +570,19 @@ type SearchExplain struct {
 }
 
 type SearchResult struct {
-	ThoughtID     string         `json:"thought_id"`
-	Title         string         `json:"title"`
-	Snippet       string         `json:"snippet"`
-	Score         float64        `json:"score"`
-	KeywordScore  float64        `json:"keyword_score"`
-	SemanticScore float64        `json:"semantic_score"`
-	RecencyScore  float64        `json:"recency_score"`
-	Path          string         `json:"path"`
-	Topics        []string       `json:"topics,omitempty"`
-	Tags          []string       `json:"tags,omitempty"`
-	Explain       *SearchExplain `json:"explain,omitempty"`
+	IndexedRevisionID string         `json:"indexed_revision_id,omitempty"`
+	VersionKind       string         `json:"version_kind"`
+	ThoughtID         string         `json:"thought_id"`
+	Title             string         `json:"title"`
+	Snippet           string         `json:"snippet"`
+	Score             float64        `json:"score"`
+	KeywordScore      float64        `json:"keyword_score"`
+	SemanticScore     float64        `json:"semantic_score"`
+	RecencyScore      float64        `json:"recency_score"`
+	Path              string         `json:"path"`
+	Topics            []string       `json:"topics,omitempty"`
+	Tags              []string       `json:"tags,omitempty"`
+	Explain           *SearchExplain `json:"explain,omitempty"`
 }
 
 type SearchResponse struct {
@@ -605,15 +612,17 @@ type SearchResultView struct {
 // location) so the Web never accidentally renders a host-local path
 // that the user has no way to dereference.
 type SearchResultSummary struct {
-	ThoughtID string   `json:"thought_id"`
-	Title     string   `json:"title"`
-	Snippet   string   `json:"snippet"`
-	Tags      []string `json:"tags,omitempty"`
-	Topics    []string `json:"topics,omitempty"`
-	Source    string   `json:"source"`
-	SourceID  string   `json:"source_id"`
-	PathHint  string   `json:"path_hint,omitempty"`
-	Actions   []string `json:"actions,omitempty"`
+	IndexedRevisionID string   `json:"indexed_revision_id,omitempty"`
+	VersionKind       string   `json:"version_kind"`
+	ThoughtID         string   `json:"thought_id"`
+	Title             string   `json:"title"`
+	Snippet           string   `json:"snippet"`
+	Tags              []string `json:"tags,omitempty"`
+	Topics            []string `json:"topics,omitempty"`
+	Source            string   `json:"source"`
+	SourceID          string   `json:"source_id"`
+	PathHint          string   `json:"path_hint,omitempty"`
+	Actions           []string `json:"actions,omitempty"`
 }
 
 // SearchResultCandidate is a topic-level candidate surfaced
@@ -630,19 +639,25 @@ type SearchResultCandidate struct {
 }
 
 type Topic struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Slug         string        `json:"slug"`
-	Description  string        `json:"description,omitempty"`
-	Rules        TopicRule     `json:"rules"`
-	Outline      []OutlineNode `json:"outline,omitempty"`
-	AutoWeave    bool          `json:"auto_weave"`
-	MemberCount  int           `json:"member_count"`
-	WordCount    int           `json:"word_count"`
-	LastActiveAt *time.Time    `json:"last_active_at,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
-	Members      []string      `json:"members,omitempty"`
+	ImportOperationID string             `json:"import_operation_id,omitempty" yaml:"import_operation_id,omitempty"`
+	SchemaVersion     int                `json:"schema_version" yaml:"schema_version"`
+	Mode              string             `json:"mode" yaml:"mode"`
+	Generation        uint64             `json:"generation" yaml:"generation"`
+	SearchPolicy      *TopicSearchPolicy `json:"search_policy,omitempty" yaml:"search_policy,omitempty"`
+	LastOperationID   string             `json:"last_operation_id,omitempty" yaml:"last_operation_id,omitempty"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Slug              string             `json:"slug"`
+	Description       string             `json:"description,omitempty"`
+	Rules             TopicRule          `json:"rules"`
+	Outline           []OutlineNode      `json:"outline,omitempty"`
+	AutoWeave         bool               `json:"auto_weave"`
+	MemberCount       int                `json:"member_count"`
+	WordCount         int                `json:"word_count"`
+	LastActiveAt      *time.Time         `json:"last_active_at,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+	Members           []string           `json:"members,omitempty"`
 }
 
 type TopicRule struct {
@@ -745,11 +760,14 @@ type TopicDocumentPatchHunk struct {
 }
 
 type TopicCreateRequest struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Rules       TopicRule     `json:"rules"`
-	Outline     []OutlineNode `json:"outline"`
-	AutoWeave   *bool         `json:"auto_weave,omitempty"`
+	OperationID  string             `json:"operation_id,omitempty"`
+	Mode         string             `json:"mode,omitempty"`
+	SearchPolicy *TopicSearchPolicy `json:"search_policy,omitempty"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description"`
+	Rules        TopicRule          `json:"rules"`
+	Outline      []OutlineNode      `json:"outline"`
+	AutoWeave    *bool              `json:"auto_weave,omitempty"`
 }
 
 type TopicUpdateRequest struct {

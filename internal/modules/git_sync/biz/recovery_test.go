@@ -18,7 +18,10 @@ func TestFailedChangesetSurvivesRestartAndRetriesWithoutEditing(t *testing.T) {
 	runGitForTest(t, root, "init")
 	runGitForTest(t, root, "config", "user.name", "Audit")
 	runGitForTest(t, root, "config", "user.email", "audit@example.test")
-	if err := os.WriteFile(filepath.Join(root, "note.md"), []byte("immutable retry content"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "thoughts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "thoughts/note.md"), []byte("immutable retry content"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	runGitForTest(t, root, "config", "core.hooksPath", filepath.Join(root, ".git/hooks"))
@@ -27,10 +30,10 @@ func TestFailedChangesetSurvivesRestartAndRetriesWithoutEditing(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := NewService(ws, jobstore.New(ws.JobsPath), nil, nil, true, time.Hour)
-	first.EnqueueChangeSet([]string{"note.md"}, "capture", []string{"note"})
+	first.EnqueueChangeSet([]string{"thoughts/note.md"}, "capture", []string{"note"})
 	first.flush()
 	raw, err := os.ReadFile(first.pendingPath())
-	if err != nil || !strings.Contains(string(raw), "note.md") {
+	if err != nil || !strings.Contains(string(raw), "thoughts/note.md") {
 		t.Fatal("failed change was lost", err)
 	}
 	first.Close()
@@ -44,7 +47,7 @@ func TestFailedChangesetSurvivesRestartAndRetriesWithoutEditing(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, err = outputGit(context.Background(), "-C", root, "cat-file", "-e", "HEAD:note.md"); err == nil {
+		if _, err = outputGit(context.Background(), "-C", root, "cat-file", "-e", "HEAD:thoughts/note.md"); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -63,12 +66,12 @@ func TestConcurrentEnqueueDuringCommitRemainsPending(t *testing.T) {
 	ws := &models.Workspace{ID: "local", RootPath: root, RuntimePath: filepath.Join(root, "runtime")}
 	service := NewService(ws, nil, nil, nil, true, time.Hour)
 	defer service.Close()
-	service.EnqueueChangeSet([]string{"same.md"}, "first", nil)
+	service.EnqueueChangeSet([]string{"thoughts/same.md"}, "first", nil)
 	paths, _ := service.takePending()
 	if len(paths) != 1 {
 		t.Fatal(paths)
 	}
-	service.EnqueueChangeSet([]string{"same.md", "new.md"}, "second", nil)
+	service.EnqueueChangeSet([]string{"thoughts/same.md", "thoughts/new.md"}, "second", nil)
 	service.finishPending(true)
 	service.mu.Lock()
 	snapshot := service.pendingChangeSetLocked()
@@ -77,7 +80,7 @@ func TestConcurrentEnqueueDuringCommitRemainsPending(t *testing.T) {
 		t.Fatalf("commit ack lost later event: %+v", snapshot)
 	}
 	raw, err := os.ReadFile(service.pendingPath())
-	if err != nil || !strings.Contains(string(raw), "same.md") {
+	if err != nil || !strings.Contains(string(raw), "thoughts/same.md") {
 		t.Fatal("later event not durable", err)
 	}
 }
@@ -87,7 +90,7 @@ func TestClosedServicePersistsLateEventsWithoutRestartingTimer(t *testing.T) {
 	ws := &models.Workspace{RootPath: root, RuntimePath: filepath.Join(root, "runtime")}
 	service := NewService(ws, nil, nil, nil, true, 0)
 	service.Close()
-	service.EnqueueChangeSet([]string{"late.md"}, "worker drained after Git teardown", []string{"late"})
+	service.EnqueueChangeSet([]string{"thoughts/late.md"}, "worker drained after Git teardown", []string{"late"})
 	service.mu.Lock()
 	timer := service.timer
 	service.mu.Unlock()
@@ -95,7 +98,7 @@ func TestClosedServicePersistsLateEventsWithoutRestartingTimer(t *testing.T) {
 		t.Fatal("late shutdown event started a new timer")
 	}
 	raw, err := os.ReadFile(service.pendingPath())
-	if err != nil || !strings.Contains(string(raw), "late.md") {
+	if err != nil || !strings.Contains(string(raw), "thoughts/late.md") {
 		t.Fatalf("late shutdown event lost: %s %v", raw, err)
 	}
 	service.Close()

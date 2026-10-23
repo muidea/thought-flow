@@ -17,6 +17,7 @@ import (
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 )
 
 func documentHTTPFixture(t *testing.T, family string) (*Service, string) {
@@ -205,7 +206,11 @@ func TestEvidenceStaysPrivateAndMissingEvidenceIsUnavailable(t *testing.T) {
 		t.Fatal("source replacement reused report")
 	}
 	hash := strings.TrimPrefix(next.Sources.Sources[0].EvidenceHash, "sha256:")
-	if e = os.Remove(filepath.Join(s.workspace.RuntimePath, "document-evidence", id, hash+".txt")); e != nil {
+	l, e := objectlocation.For(s.workspace.RootPath).Lookup(id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Remove(filepath.Join(s.workspace.RootPath, l.Placement.EvidenceRoot, hash+".txt")); e != nil {
 		t.Fatal(e)
 	}
 	missing, e := s.documents.Get(id)

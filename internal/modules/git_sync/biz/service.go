@@ -19,6 +19,7 @@ import (
 	"thoughtflow/internal/pkg/eventutil"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -261,6 +262,18 @@ func normalizedCommitPath(value string) (string, bool) {
 		return "", false
 	}
 	lower := strings.ToLower(value)
+	for _, part := range strings.Split(lower, "/") {
+		if part == ".private" || part == "private" || strings.HasPrefix(part, ".stage-") || strings.HasPrefix(part, ".write-") {
+			return "", false
+		}
+	}
+	if strings.HasPrefix(lower, ".content-registry/") {
+		parts := strings.Split(lower, "/")
+		allowed := lower == ".content-registry/schema.json" || (len(parts) == 3 && (parts[1] == "objects" || parts[1] == "resources" || parts[1] == "topic-deletions") && strings.HasSuffix(lower, ".json")) || (len(parts) == 4 && parts[1] == "bindings" && strings.HasSuffix(lower, ".json"))
+		if !allowed {
+			return "", false
+		}
+	}
 	if strings.HasPrefix(lower, ".scratchpad/") || (strings.HasPrefix(lower, "topics/") && strings.HasSuffix(lower, "/candidates.yaml")) || strings.HasPrefix(lower, "documents/capture-") || strings.HasPrefix(lower, "documents/compose-") {
 		return "", false
 	}
@@ -271,7 +284,70 @@ func normalizedCommitPath(value string) (string, bool) {
 	if strings.HasSuffix(base, ".duckdb") || strings.Contains(base, ".duckdb.") {
 		return "", false
 	}
+	if !businessCommitPath(value) {
+		return "", false
+	}
 	return value, true
+}
+func businessCommitPath(value string) bool {
+	p := strings.Split(value, "/")
+	if len(p) < 2 {
+		return false
+	}
+	switch p[0] {
+	case ".content-registry":
+		return true
+	case "thoughts":
+		return strings.HasSuffix(value, ".md")
+	case "attachments":
+		return len(p) == 3
+	case "document-formats":
+		return len(p) == 4 && p[1] == "published" && strings.HasSuffix(p[3], ".md")
+	case "documents":
+		return documentCommitSuffix(p[2:])
+	case "topics":
+		if len(p) == 3 {
+			switch p[2] {
+			case "topic.yaml", "index.md", "catalog.json", "catalog.md", "catalog.archived.json", "resources.json", "storage.snapshot.json":
+				return true
+			}
+			return false
+		}
+		if len(p) < 4 {
+			return false
+		}
+		switch p[2] {
+		case "thoughts":
+			return len(p) == 4 && strings.HasSuffix(value, ".md")
+		case "memberships", "approvals":
+			return len(p) == 4 && strings.HasSuffix(value, ".yaml")
+		case "documents":
+			return len(p) > 4 && documentCommitSuffix(p[4:])
+		case "attachments":
+			return len(p) == 5
+		case "assets":
+			return len(p) == 4
+		case "references":
+			return len(p) == 5 && (p[4] == "snapshot.json" || p[4] == "body.md") || len(p) == 6 && p[4] == "assets"
+		}
+		return false
+	}
+	return false
+}
+func documentCommitSuffix(p []string) bool {
+	if len(p) == 1 {
+		return p[0] == "head.json"
+	}
+	if len(p) == 2 {
+		return (p[0] == "reports" || p[0] == "finalizations") && strings.HasSuffix(p[1], ".json")
+	}
+	if len(p) == 3 && p[0] == "revisions" {
+		switch p[2] {
+		case "manifest.json", "body.md", "contract.json", "source-manifest.json", "profile.snapshot.md", "projection.json", "resources.json":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) isRuntimeCommitPath(path string) bool {
@@ -318,7 +394,10 @@ func (s *Service) Commit(ctx context.Context, paths []string, resourceIDs []stri
 		if !ok || s.isRuntimeCommitPath(path) {
 			continue
 		}
-		targetPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(path))
+		targetPath, pathErr := objectlocation.SafePath(s.workspace.RootPath, path)
+		if pathErr != nil {
+			return models.GitCommitRecord{}, pathErr
+		}
 		if err := workspace.EnsureInside(s.workspace.RootPath, targetPath); err != nil {
 			return models.GitCommitRecord{}, err
 		}

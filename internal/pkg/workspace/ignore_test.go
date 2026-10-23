@@ -40,12 +40,12 @@ func TestPrivateIgnoresPreserveUserRulesAndProtectManualGitAdds(t *testing.T) {
 	if out, err := exec.Command("git", "-C", root, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %s %v", out, err)
 	}
-	for _, path := range []string{".scratchpad/session.json", ".thoughtflow/state.json", "topics/subject/candidates.yaml", "documents/capture-session/HEAD.json", "documents/compose-draft/HEAD.json", "local state[1]/jobs/private.json", "existing.log"} {
+	for _, path := range []string{".content-registry/private/deleted-thoughts/note/projection.md", "topics/subject/.private/evidence/note/key.txt", "topics/subject/documents/note/.stage-revision/body.md", ".scratchpad/session.json", ".thoughtflow/state.json", "topics/subject/candidates.yaml", "documents/capture-session/HEAD.json", "documents/compose-draft/HEAD.json", "local state[1]/jobs/private.json", "existing.log"} {
 		if out, err := exec.Command("git", "-C", root, "check-ignore", "--", path).CombinedOutput(); err != nil {
 			t.Errorf("private path %q is not ignored: %s %v", path, out, err)
 		}
 	}
-	for _, path := range []string{"thoughts/note.md", "topics/subject/index.md", "documents/note/HEAD.json"} {
+	for _, path := range []string{".content-registry/schema.json", ".content-registry/objects/note.json", "topics/subject/catalog.json", "topics/subject/thoughts/note.md", "thoughts/note.md", "topics/subject/index.md", "documents/note/HEAD.json"} {
 		if out, err := exec.Command("git", "-C", root, "check-ignore", "--", path).CombinedOutput(); err == nil {
 			t.Errorf("public content %q ignored: %s", path, out)
 		}

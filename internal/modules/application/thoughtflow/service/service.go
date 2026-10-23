@@ -38,6 +38,7 @@ import (
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/workspace"
@@ -223,6 +224,8 @@ func (s *Service) Close() {
 
 func (s *Service) RegisterRoutes() {
 	s.registerDocumentRoutes()
+	s.registerTopicWorkspaceRoutes()
+	s.replayWorkspaceOutbox()
 	s.registry.AddHandler("/", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/index.html", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/styles.css", engine.GET, s.handleWeb)
@@ -784,12 +787,25 @@ func (s *Service) handleSearch(ctx context.Context, res http.ResponseWriter, req
 	searchQuery := models.SearchQuery{
 		Query:             query.Get("q"),
 		Mode:              "keyword",
+		Scope:             strings.TrimSpace(query.Get("scope")),
 		TopicID:           strings.TrimSpace(query.Get("topic_id")),
 		Tags:              splitCSV(query.Get("tags")),
 		Page:              intQuery(query.Get("page"), 1),
 		PageSize:          limit,
 		Limit:             limit,
 		IncludeCandidates: boolQuery(query.Get("include_candidates")),
+	}
+	if searchQuery.Scope == "" {
+		searchQuery.Scope = "global"
+	}
+	if (searchQuery.Scope != "global" && searchQuery.Scope != "topic") || (searchQuery.Scope == "topic" && searchQuery.TopicID == "") {
+		writeError(res, req, 400, "invalid_scope", "topic scope requires topic_id")
+		return
+	}
+	if s.workspace != nil {
+		var release func()
+		ctx, release = objectlocation.For(s.workspace.RootPath).NamespaceRead(ctx)
+		defer release()
 	}
 	result, err := s.searchService.Search(ctx, searchQuery)
 	if err != nil {
@@ -812,15 +828,15 @@ func (s *Service) buildSearchResultView(ctx context.Context, query models.Search
 	for _, item := range response.Items {
 		sourceID := firstNonEmpty(item.ThoughtID, item.Path)
 		summaries = append(summaries, models.SearchResultSummary{
-			ThoughtID: item.ThoughtID,
-			Title:     item.Title,
-			Snippet:   item.Snippet,
-			Tags:      item.Tags,
-			Topics:    item.Topics,
-			Source:    models.ComposeSourceTypeThought,
-			SourceID:  sourceID,
-			PathHint:  s.normalizeRelativePath(item.Path),
-			Actions:   searchResultActions(item.ThoughtID, item.Path),
+			IndexedRevisionID: item.IndexedRevisionID, VersionKind: item.VersionKind, ThoughtID: item.ThoughtID,
+			Title:    item.Title,
+			Snippet:  item.Snippet,
+			Tags:     item.Tags,
+			Topics:   item.Topics,
+			Source:   models.ComposeSourceTypeThought,
+			SourceID: sourceID,
+			PathHint: s.normalizeRelativePath(item.Path),
+			Actions:  searchResultActions(item.ThoughtID, item.Path),
 		})
 	}
 	view := models.SearchResultView{
@@ -830,7 +846,7 @@ func (s *Service) buildSearchResultView(ctx context.Context, query models.Search
 		Total:    response.Total,
 	}
 	if query.IncludeCandidates && s.topicService != nil {
-		view.Candidates = s.topicService.SearchCandidates(ctx, query.Query, query.Tags, query.TopicID, 5)
+		view.Candidates = s.topicService.SearchCandidatesScoped(ctx, query.Query, query.Tags, query.TopicID, query.Scope, 5)
 	}
 	return view
 }
@@ -1160,7 +1176,11 @@ func (s *Service) handleCreateTopic(ctx context.Context, res http.ResponseWriter
 	}
 	topic, err := s.topicService.CreateTopic(ctx, request)
 	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", err.Error())
+		if errors.Is(err, objectlocation.ErrOperationConflict) || errors.Is(err, objectlocation.ErrConflict) {
+			workspaceError(res, req, err)
+		} else {
+			writeError(res, req, http.StatusBadRequest, "thoughtflow.topic.invalid_request", err.Error())
+		}
 		return
 	}
 	writeJSON(res, req, http.StatusCreated, topic)
@@ -1584,6 +1604,11 @@ func (s *Service) systemMetrics(ctx context.Context, now time.Time) (models.Syst
 		"thoughtflow_git_commit_total":        float64(gitCommitTotal),
 		"thoughtflow_background_jobs":         float64(backgroundJobs.Total),
 	}
+	if s.workspace != nil {
+		for name, value := range objectlocation.For(s.workspace.RootPath).Metrics() {
+			values[name] = value
+		}
+	}
 	return models.SystemMetrics{
 		GeneratedAt:           now,
 		Values:                values,
@@ -1673,6 +1698,20 @@ func renderPrometheusMetrics(metrics models.SystemMetrics) string {
 	}
 	for jobType, count := range metrics.BackgroundJobs.ByType {
 		writePrometheusLabeledSample(&builder, "thoughtflow_background_jobs", map[string]string{"type": jobType}, float64(count))
+	}
+	metricNames := []string{}
+	for name := range metrics.Values {
+		if strings.HasPrefix(name, "thoughtflow_workspace_") {
+			metricNames = append(metricNames, name)
+		}
+	}
+	sort.Strings(metricNames)
+	for _, name := range metricNames {
+		kind := "gauge"
+		if strings.HasSuffix(name, "_total") {
+			kind = "counter"
+		}
+		writePrometheusSample(&builder, name, kind, "Workspace consistency and recovery metric.", metrics.Values[name])
 	}
 	return builder.String()
 }

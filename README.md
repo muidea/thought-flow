@@ -6,6 +6,7 @@ ThoughtFlow 是一个本地优先的碎片笔记采集、加工、检索、专�
 
 - 单二进制本地服务，入口为 `cmd/thoughtflow`。
 - 原始笔记和专题文档落地为 Markdown。
+- 文档集专题支持独立文档、分组目录、连续阅读、物理迁移，以及固定定稿交付和完整备份导入。
 - 运行态数据默认位于 `./thoughtflow-runtime/`，采集会话私有侧文件仍在内容根的 `.scratchpad/`。
 - 支持 REST API、SSE 事件流和嵌入式原生 HTML/CSS/JS UI。
 - 默认无 AI Key 也可运行；配置 OpenAI-compatible provider 后启用模型摘要、embedding、合稿和专题缝合。
@@ -53,6 +54,7 @@ make ci-check      # 远端提交完整验证，含 browser/e2e
 - [使用及配置说明](doc/thoughtflow-usage-config.md)
 - [配置文件模板](doc/application.example.toml)
 - [Web 交互与展示风格改造设计](doc/thoughtflow-web-ux-redesign.md)
+- [专题工作区使用说明与逐项验收记录](doc/ThoughtFlow-Topic-Workspace-Closure-Implementation-v1.md)
 
 ## CI
 
@@ -97,7 +99,9 @@ curl -L https://github.com/muidea/thought-flow/releases/download/v0.0.1/thoughtf
 - Git 功能是本地自动提交，支持持久化待提交集合和失败重试；没有 remote push/pull、合并或多设备同步。存在未解决冲突时保留待提交集合，等待用户解决冲突。
 - 无 API key 使用本地规则与本地向量。处理 URL 仍会联网请求原站/GitHub；Reader 默认启用，可在没有 key 时向其端点发送完整 URL。设置 `[reader] enabled=false` 只禁用 Reader fallback。设置页提供实际外发配置，敏感 URL 应先移除凭据和查询参数。
 - 类型化文档的结构检查与模型语义审查有明确边界；定稿只代表对应冻结版本完成规定检查，不保证事实正确。自定义格式支持 H2–H6。
-- 当前按一个本地服务进程管理一个工作区设计；进程内锁与浏览器跨标签提示不构成多进程或多用户协作协议。不要让两个服务实例同时写同一工作区。
+- 当前按一个本地服务进程管理一个工作区设计；启动时通过 OS writer lock 拒绝第二个写者，并在开放服务前恢复中断的迁移、导入和删除。浏览器跨标签提示不构成多用户协作协议。
+- 专题文档的全局检索参与策略支持继承、显式包含和排除；专题内搜索独立于全局策略。该设置不改变直接访问或公开链接权限。
+- 新内容布局为 v1，最低 writer 协议为 v1。本阶段不提供历史数据自动兼容；请勿用不认识此布局的旧二进制直接接管写入。备份、显式迁移及回退边界见专题工作区验收记录。
 - 默认监听 loopback。公开内容开关允许匿名读取启用的固定内容；服务没有通用多用户认证/授权。远程部署需要额外的认证与网络边界，Origin/Host/CSRF 仍需专项验收。
 - 备份需同时考虑内容目录和运行目录：Markdown、不可变文档 journal、模板、专题属于内容；草稿、任务、Git 待提交集合与证据等位于运行目录或私有侧文件。可重建搜索索引不等于整个运行目录都可删除。
 - 工作区自动维护 `.gitignore`，排除会话、候选和运行目录。忽略规则不会移除已跟踪文件；手工备份、Git 远程发布和公开开关仍需按实际数据范围决定。

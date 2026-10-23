@@ -326,6 +326,32 @@ test("SSE e2e", async (t) => {
     }
   });
 
+  await t.test("collection catalog and policy changes arrive without document bodies", async () => {
+    const created=await postJSON(server.baseURL,"/api/topics",{operation_id:"sse-create",name:"SSE Collection",mode:"collection"});
+    assert.equal(created.status,201,created.text);
+    const topic=created.json.data.id;
+    const catalogResponse=await fetch(`${server.baseURL}/api/topics/${topic}/catalog`);
+    assert.equal(catalogResponse.status,200);
+    const view=(await catalogResponse.json()).data;
+    const received=new Set();
+    const subscription=subscribeEvents(server.baseURL,{types:["topic.catalog_updated","topic.search_policy_updated"],deadlineMs:12000,predicate:frame=>{received.add(frame.event);return received.size===2;}});
+    const saved=await fetch(`${server.baseURL}/api/topics/${topic}/catalog`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation_id:"sse-catalog",expected_generation:view.catalog.generation,groups:view.catalog.groups,entries:[{id:"planned",group_id:"default",title:"Planned delivery",required:true,binding:{kind:"planned"}}]})});
+    assert.equal(saved.status,200,await saved.text());
+    const settings=await fetch(`${server.baseURL}/api/topics/${topic}/settings`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation_id:"sse-policy",expected_generation:view.topic.generation,name:"SSE Collection",description:"Metadata only",search_policy:{topic_global_visible:true,owned_thoughts_global_default:false}})});
+    assert.equal(settings.status,200,await settings.text());
+    const frames=await subscription;
+    for(const type of ["topic.catalog_updated","topic.search_policy_updated"]){
+      const frame=frames.find(item=>item.event===type&&item.payload?.resource_id===topic);
+      assert.ok(frame,`missing ${type}: ${JSON.stringify(frames)}`);
+      assert.ok(frame.payload.payload.operation_id);
+      assert.ok(frame.payload.payload.generation>=1);
+      assert.equal(frame.payload.payload.body,undefined);
+    }
+    const current=(await(await fetch(`${server.baseURL}/api/topics/${topic}/catalog`)).json()).data;
+    assert.equal(current.catalog.entries[0].id,"planned");
+    assert.equal(current.topic.search_policy.owned_thoughts_global_default,false);
+  });
+
   await t.test("type filter suppresses non-matching events", async () => {
     // Filter for a type the system never emits; subscription should
     // hit the deadline (well under the 20s server keepalive) without

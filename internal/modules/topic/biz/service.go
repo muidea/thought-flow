@@ -18,6 +18,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/observability"
 	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/topicstore"
@@ -95,6 +96,8 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 		return
 	}
 	switch domainEvent.EventType {
+	case "thought.restored", "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted", "thought.ownership_changed":
+		_ = s.store.RefreshCollectionsForObject(context.Background(), domainEvent.ResourceID)
 	case models.EventScratchpadContextUpdated, models.EventScratchpadCommitted:
 		sessionID := extractSessionID(domainEvent.Payload)
 		if sessionID != "" {
@@ -123,7 +126,13 @@ func (s *Service) CreateTopic(ctx context.Context, req models.TopicCreateRequest
 		return models.Topic{}, err
 	}
 	changedPaths := []string{}
-	if topic.AutoWeave {
+	if topic.Mode == models.TopicModeCollection {
+		_, err = s.store.RebuildCatalog(ctx, topic.ID)
+		if err != nil {
+			return topic, err
+		}
+	}
+	if topic.Mode != models.TopicModeCollection && topic.AutoWeave {
 		updated, _, paths, err := s.store.RefreshWithMatcher(ctx, topic.ID, func(ctx context.Context, t models.Topic, thought models.Thought, c models.ThoughtContent) (models.TopicMembership, bool) {
 			return s.matchTopic(ctx, t, thought, c, 0)
 		})
@@ -147,7 +156,7 @@ func (s *Service) UpdateTopic(ctx context.Context, id string, req models.TopicUp
 		return models.Topic{}, err
 	}
 	changedPaths := []string{}
-	if topic.AutoWeave {
+	if topic.Mode != models.TopicModeCollection && topic.AutoWeave {
 		updated, _, paths, err := s.store.RefreshWithMatcher(ctx, topic.ID, func(ctx context.Context, t models.Topic, thought models.Thought, c models.ThoughtContent) (models.TopicMembership, bool) {
 			return s.matchTopic(ctx, t, thought, c, 0)
 		})
@@ -172,9 +181,15 @@ func (s *Service) ListTopics(ctx context.Context) ([]models.Topic, error) {
 // existing member set (a populated topic is more likely to be the
 // user's intent than an empty one with the right words).
 func (s *Service) SearchCandidates(ctx context.Context, query string, tags []string, topicID string, limit int) []models.SearchResultCandidate {
+	return s.SearchCandidatesScoped(ctx, query, tags, topicID, "global", limit)
+}
+func (s *Service) SearchCandidatesScoped(ctx context.Context, query string, tags []string, topicID, scope string, limit int) []models.SearchResultCandidate {
 	if limit <= 0 {
 		limit = 5
 	}
+	r := objectlocation.For(s.workspace.RootPath)
+	ctx, release := r.NamespaceRead(ctx)
+	defer release()
 	topics, err := s.store.List(ctx)
 	if err != nil {
 		return nil
@@ -189,6 +204,9 @@ func (s *Service) SearchCandidates(ctx context.Context, query string, tags []str
 	}
 	scores := make([]models.SearchResultCandidate, 0, len(topics))
 	for _, topic := range topics {
+		if scope != "topic" && topic.SearchPolicy != nil && !topic.SearchPolicy.TopicGlobalVisible {
+			continue
+		}
 		if topicID != "" && topic.ID != topicID {
 			continue
 		}
@@ -196,13 +214,19 @@ func (s *Service) SearchCandidates(ctx context.Context, query string, tags []str
 		if score <= 0 {
 			continue
 		}
+		matchedCount := 0
+		for _, id := range topic.Members {
+			if l, e := r.Resolve(ctx, id); e == nil && (scope == "topic" || r.GlobalEligible(l)) {
+				matchedCount++
+			}
+		}
 		scores = append(scores, models.SearchResultCandidate{
 			TopicID:      topic.ID,
 			TopicName:    topic.Name,
 			Slug:         topic.Slug,
 			MatchType:    matchType,
 			Score:        score,
-			MatchedCount: len(topic.Members),
+			MatchedCount: matchedCount,
 		})
 	}
 	sort.Slice(scores, func(i, j int) bool { return scores[i].Score > scores[j].Score })
@@ -695,7 +719,7 @@ func (s *Service) promoteCommittedScratchpad(ctx context.Context, sp scratchpad.
 	count := 0
 	for _, topic := range topics {
 		candidate, matched := s.buildSessionCandidate(ctx, sp, topic)
-		if !matched || !topic.AutoWeave {
+		if !matched || topic.Mode == models.TopicModeCollection || !topic.AutoWeave {
 			continue
 		}
 		now := time.Now().UTC()
@@ -1100,7 +1124,7 @@ func (s *Service) MatchThought(ctx context.Context, thoughtID string) ([]models.
 			continue
 		}
 		memberships = append(memberships, membership)
-		if topic.AutoWeave {
+		if topic.Mode != models.TopicModeCollection && topic.AutoWeave {
 			updatedTopic, changed, err := s.store.AddMembership(ctx, topic, thought, content, membership)
 			if err != nil {
 				return memberships, err
@@ -1372,8 +1396,12 @@ func gitTopicEvent(workspaceID string, topic models.Topic, reason string, extraP
 		"topics/" + topic.Slug + "/topic.yaml",
 		"topics/" + topic.Slug + "/index.md",
 	}
-	for _, id := range topic.Members {
-		paths = append(paths, "topics/"+topic.Slug+"/memberships/"+id+".yaml")
+	if topic.Mode == models.TopicModeCollection {
+		paths = append(paths, "topics/"+topic.Slug+"/catalog.json", "topics/"+topic.Slug+"/catalog.md")
+	} else {
+		for _, id := range topic.Members {
+			paths = append(paths, "topics/"+topic.Slug+"/memberships/"+id+".yaml")
+		}
 	}
 	paths = append(paths, extraPaths...)
 	return models.DomainEvent{

@@ -14,6 +14,9 @@ import (
 	"github.com/muidea/magicCommon/framework/service"
 
 	"thoughtflow/internal/pkg/appconfig"
+	"thoughtflow/internal/pkg/markdown"
+	"thoughtflow/internal/pkg/objectlocation"
+	"thoughtflow/internal/pkg/topicstore"
 
 	_ "thoughtflow/internal/modules/application/thoughtflow"
 	_ "thoughtflow/internal/modules/capture"
@@ -37,7 +40,8 @@ type configurableLifecycle interface {
 }
 
 type applicationLifecycle struct {
-	configDir string
+	configDir     string
+	releaseWriter func()
 }
 
 func main() {
@@ -113,11 +117,36 @@ func (a *applicationLifecycle) Startup(ctx context.Context) error {
 	if err := appconfig.ValidateDirectorySeparation(configDir, cfg); err != nil {
 		return err
 	}
+	release, err := objectlocation.AcquireWriter(cfg.Workspace.ContentDir)
+	if err != nil {
+		return err
+	}
+	a.releaseWriter = release
+	registry := objectlocation.For(cfg.Workspace.ContentDir)
+	if err = registry.Initialize(); err == nil {
+		err = registry.RecoverMigrations()
+		if err == nil {
+			err = topicstore.New(cfg.Workspace.ContentDir).RecoverImports(ctx)
+		}
+		if err == nil {
+			err = markdown.RecoverWorkspace(ctx, cfg.Workspace.ContentDir)
+			if err == nil {
+				err = topicstore.New(cfg.Workspace.ContentDir).RecoverCollections(ctx)
+			}
+		}
+	}
+	if err != nil {
+		release()
+		a.releaseWriter = nil
+		return err
+	}
 	opts := application.Options{
 		ServiceName: "thoughtflow",
 		ConfigDir:   configDir,
 	}
 	if err := application.StartupWithOptions(ctx, service.DefaultService(), opts); err != nil {
+		release()
+		a.releaseWriter = nil
 		return err
 	}
 	return nil
@@ -136,6 +165,10 @@ func (a *applicationLifecycle) Run(ctx context.Context) error {
 
 func (a *applicationLifecycle) Shutdown(ctx context.Context) {
 	application.Shutdown(ctx)
+	if a.releaseWriter != nil {
+		a.releaseWriter()
+		a.releaseWriter = nil
+	}
 }
 
 func interruptSignalContext(parent context.Context) (context.Context, context.CancelFunc) {

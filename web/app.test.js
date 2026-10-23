@@ -526,6 +526,12 @@ function loadAppFunctionsWith(opts = {}) {
       saveDocumentEditor,
       composeDocumentParameters,
       documentSourceInputs,
+      readCollectionEntry,
+      collectionRoute,
+      cleanMarkdownHref,
+      resourceContentHref,
+      setCollectionWorkspace(value){collectionWorkspace=value;},
+      setMarkdownResourceContext(value){markdownResourceContext=value;},
       appState: state,
     });`,
     context,
@@ -3563,4 +3569,17 @@ test("compose late loads cannot overwrite another draft or in-flight local edits
   requests.pending[2].respond({ id: "B", status: "draft", content: "server body" });
   await refresh;
   assert.equal(app.composeReaderState().localContent, "new local edit");
+});
+
+
+test("collection full-body replies use a selection epoch across A-B-A",async()=>{
+ const dom=makeDomStub();for(const id of ["collection-body","collection-controls","collection-copy","collection-favorite","collection-version-form","collection-version-id"]){dom.nodes[id]=makeElementStub();}
+ const requests=deferredAPI();const app=loadAppFunctionsWith({dom,fetch:requests.fetch});app.appState.activeTopicId="topic";app.appState.route={params:{topicId:"topic"},query:{entry:"A",view:"final"}};
+ app.setCollectionWorkspace({workspace_key:"test",entries:["A","B"].map(id=>({entry:{id,title:id,binding:{kind:"thought",thought_id:id}},binding_status:"bound",delivery_status:"ready_for_use",work_status:"no_new_draft",version_status:"latest_finalized",availability:"available"}))});
+ const first=app.readCollectionEntry("topic","A","final","");app.appState.route.query.entry="B";const second=app.readCollectionEntry("topic","B","final","");app.appState.route.query.entry="A";const latest=app.readCollectionEntry("topic","A","final","");
+ requests.pending[2].respond({body:"Current A",revision:{revision_id:"new"}});await latest;const expected=dom.nodes["collection-body"].innerHTML;
+ requests.pending[1].respond({body:"Old B",revision:{revision_id:"b"}});requests.pending[0].respond({body:"Old A",revision:{revision_id:"old"}});await Promise.all([first,second]);assert.equal(dom.nodes["collection-body"].innerHTML,expected);assert.match(expected,/Current A/);assert.doesNotMatch(expected,/Old A|Old B/);
+});
+test("resource links require document context and preserve private-scheme boundaries",()=>{
+ const app=loadAppFunctions();assert.equal(app.cleanMarkdownHref("resource://res-a"),"");app.setMarkdownResourceContext({object_id:"doc-a",links:{"./image.png":"res-a"}});assert.match(app.cleanMarkdownHref("resource://res-a"),/^\/api\/resources\/res-a\/content\?object_id=doc-a$/);assert.equal(app.cleanMarkdownHref("resource://../private"),"");assert.match(app.cleanMarkdownHref("./image.png"),/res-a/);app.setMarkdownResourceContext(null);assert.equal(app.cleanMarkdownHref("javascript:alert(1)"),"");
 });

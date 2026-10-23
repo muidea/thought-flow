@@ -354,6 +354,13 @@ func TestHandleSearchUsesKeywordModeForWebSearch(t *testing.T) {
 	now := time.Date(2026, 6, 20, 12, 42, 0, 0, time.UTC)
 	rgThought := searchHandlerThought("thought-rg", "rg usage", "thoughts/2026/06/thought-rg.md", now)
 	webThought := searchHandlerThought("thought-web", "web capture", "thoughts/2026/06/thought-web.md", now.Add(time.Minute))
+	rgThought.Path = ""
+	webThought.Path = ""
+	for _, thought := range []models.Thought{rgThought, webThought} {
+		if err := markdown.WriteThought(root, thought, models.ThoughtContent{AINotes: "fixture"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := store.IndexThought(ctx, rgThought, models.ThoughtContent{Original: "rg finds text quickly"}); err != nil {
 		t.Fatalf("IndexThought(rg) error = %v", err)
 	}

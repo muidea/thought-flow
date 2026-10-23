@@ -2615,3 +2615,36 @@ textarea:focus-visible {
 .tf-document-issue input:not([type=checkbox]) { width: 100%; }
 .tf-document-dialog aside { max-height: 70vh; overflow: auto; }
 @media (max-width: 760px) { .tf-document-layout { grid-template-columns: 1fr; } }
+
+/* Collection reading keeps catalog, full document and management in one topic. */
+.tf-topic-detail-layout.is-collection { display:block; }
+.tf-topic-detail-layout.is-collection > .tf-topic-side-panel { display:none; }
+.is-collection .tf-topic-document { padding:0; max-width:none; overflow:visible; }
+.collection-toolbar,.collection-actions,.collection-navigation { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:12px 0; }
+.collection-reader { display:grid; grid-template-columns:minmax(180px,260px) minmax(0,1fr); gap:24px; }
+.collection-catalog { max-height:80vh; overflow:auto; position:sticky; top:12px; align-self:start; }
+.collection-catalog label,.collection-management label { display:block; margin:8px 0; }
+.collection-group { margin:12px 0; }
+.collection-group summary { cursor:pointer; font-weight:600; padding:8px; }
+.collection-entry { display:block; padding:10px; border-left:3px solid transparent; border-radius:4px; color:inherit; text-decoration:none; }
+.collection-entry small { display:block; font-size:12px; opacity:.8; margin-top:4px; }
+.collection-entry.active { border-left-color:var(--primary,#3478cf); background:var(--surface-hover,#e8eef81a); }
+.collection-content { min-width:0; overflow-wrap:anywhere; }
+.collection-content .markdown-rendered img { max-width:100%; height:auto; }
+.collection-content dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:8px; }
+.collection-content dd { margin:0; }
+.collection-version { padding:8px; border:1px solid var(--border,#8885); }
+.collection-management,.collection-search { margin-top:24px; border-top:1px solid var(--border,#8885); padding-top:16px; }
+.collection-management form { border-bottom:1px solid var(--border,#8885); padding:12px 0; }
+.collection-management input:not([type=checkbox]),.collection-management textarea,.collection-management select { max-width:100%; width:100%; }
+.collection-edit-entry { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.collection-edit-entry > input:not([type=checkbox]),.collection-edit-entry > select { flex:1; min-width:130px; width:auto; }
+.collection-catalog a:focus-visible,.collection-reader button:focus-visible { outline:2px solid var(--primary,#3478cf); outline-offset:2px; }
+#collection-body { min-height:200px; }
+@media(max-width:760px){.collection-reader{display:block}.collection-catalog{position:static;max-height:45vh;border-bottom:1px solid var(--border,#8885);margin-bottom:16px}.collection-content dl{display:block}.collection-content dd{margin-bottom:8px}.collection-toolbar{position:sticky;top:0;background:var(--surface,#20242c);z-index:2}}
+
+.collection-close{display:none}
+.collection-toc p{margin:.4rem 0}
+.collection-catalog[hidden]{display:none!important}
+.collection-reader:has(.collection-catalog[hidden]){grid-template-columns:1fr}
+@media(max-width:760px){.collection-catalog[role=dialog]{position:fixed;inset:1rem;z-index:20;max-height:calc(100dvh - 2rem);padding:1rem;background:var(--surface,#20242c);box-shadow:0 0 0 100vmax #0009}.collection-close{display:block}}

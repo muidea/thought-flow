@@ -15,6 +15,7 @@ import (
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/workspace"
 )
 
@@ -29,19 +30,39 @@ func ThoughtRelativePath(thoughtID string) string {
 }
 
 func WriteThought(rootPath string, thought models.Thought, content models.ThoughtContent) error {
+	registry := objectlocation.For(rootPath)
+	location, e := registry.Reserve(thought.ID, thought.OwnerTopicID, "create-"+thought.ID)
+	if e != nil {
+		return e
+	}
+	if thought.Path != "" && filepath.ToSlash(thought.Path) != location.Placement.ThoughtPath {
+		return objectlocation.ErrUnsafe
+	}
+	thought.Path = location.Placement.ThoughtPath
 	flow := documentflow.For(rootPath)
 	unlock := flow.Store.Lock(thought.ID)
-	defer unlock()
-	if _, err := flow.SyncProjectionLocked(&thought, &content, false); err != nil {
+	err := func() error {
+		defer unlock()
+		if _, err := flow.SyncProjectionLocked(&thought, &content, false); err != nil {
+			return err
+		}
+		return writeThoughtProjection(rootPath, thought, content)
+	}()
+	if err != nil {
 		return err
 	}
-	return writeThoughtProjection(rootPath, thought, content)
+	if location.Lifecycle == "reserved" {
+		return registry.Activate(thought.ID)
+	}
+	return nil
 }
 
 func writeThoughtProjection(rootPath string, thought models.Thought, content models.ThoughtContent) error {
-	if thought.Path == "" {
-		thought.Path = ThoughtRelativePath(thought.ID)
+	location, e := objectlocation.For(rootPath).Lookup(thought.ID)
+	if e != nil {
+		return e
 	}
+	thought.Path = location.Placement.ThoughtPath
 	targetPath := filepath.Join(rootPath, filepath.FromSlash(thought.Path))
 	if err := workspace.EnsureNoSymlinks(rootPath, targetPath); err != nil {
 		return err
@@ -72,6 +93,7 @@ func writeThoughtProjection(rootPath string, thought models.Thought, content mod
 	if e != nil {
 		return e
 	}
+	objectlocation.For(rootPath).BumpEpoch()
 	if thought.Document != nil {
 		return documentflow.For(rootPath).ProjectionCommittedLocked(thought.ID, thought.Document.RevisionID)
 	}
@@ -121,8 +143,14 @@ func CleanupOrphanThoughtTempFiles(thoughtsPath string) error {
 func ReadThought(rootPath string, thoughtID string) (models.Thought, models.ThoughtContent, error) {
 	flow := documentflow.For(rootPath)
 	unlock := flow.Store.Lock(thoughtID)
-	defer unlock()
-	return readThoughtLocked(rootPath, thoughtID)
+	thought, content, err := readThoughtLocked(rootPath, thoughtID)
+	unlock()
+	if err == nil {
+		if l, e := objectlocation.For(rootPath).Lookup(thoughtID); e == nil && l.Lifecycle == "reserved" {
+			err = objectlocation.For(rootPath).Activate(thoughtID)
+		}
+	}
+	return thought, content, err
 }
 
 // UpdateThought serializes a read-modify-write with projections, deletion and
@@ -131,6 +159,10 @@ func UpdateThought(rootPath, thoughtID string, update func(*models.Thought, *mod
 	flow := documentflow.For(rootPath)
 	unlock := flow.Store.Lock(thoughtID)
 	defer unlock()
+	return updateThoughtLocked(rootPath, thoughtID, update)
+}
+func updateThoughtLocked(rootPath, thoughtID string, update func(*models.Thought, *models.ThoughtContent) error) error {
+	flow := documentflow.For(rootPath)
 	thought, content, err := readThoughtLocked(rootPath, thoughtID)
 	if err != nil {
 		return err
@@ -150,7 +182,14 @@ func UpdateThought(rootPath, thoughtID string, update func(*models.Thought, *mod
 func readThoughtLocked(rootPath, thoughtID string) (models.Thought, models.ThoughtContent, error) {
 	flow := documentflow.For(rootPath)
 	raw, err := ReadThoughtRaw(rootPath, thoughtID)
-	relPath := ThoughtRelativePath(thoughtID)
+	location, locationErr := objectlocation.For(rootPath).Lookup(thoughtID)
+	if locationErr != nil {
+		return models.Thought{}, models.ThoughtContent{}, locationErr
+	}
+	if location.DeletedAt != nil {
+		return models.Thought{}, models.ThoughtContent{}, os.ErrNotExist
+	}
+	relPath := location.Placement.ThoughtPath
 	var thought models.Thought
 	var content models.ThoughtContent
 	if os.IsNotExist(err) {
@@ -181,6 +220,8 @@ func readThoughtLocked(rootPath, thoughtID string) (models.Thought, models.Thoug
 		return models.Thought{}, models.ThoughtContent{}, fmt.Errorf("%w: Markdown identity does not match its path", documentstore.ErrInvalid)
 	}
 	thought.ID = thoughtID
+	thought.OwnerTopicID = location.OwnerTopicID
+	thought.GlobalSearch = location.GlobalSearch
 	thought.Path = filepath.ToSlash(relPath)
 	recover, err := flow.SyncProjectionLocked(&thought, &content, true)
 	if err != nil {
@@ -202,7 +243,14 @@ func ReadThoughtRaw(rootPath string, thoughtID string) ([]byte, error) {
 	if err := documentflow.For(rootPath).Store.CheckActive(thoughtID); err != nil {
 		return nil, err
 	}
-	relPath := ThoughtRelativePath(thoughtID)
+	location, e := objectlocation.For(rootPath).Lookup(thoughtID)
+	if e != nil {
+		return nil, e
+	}
+	if location.DeletedAt != nil {
+		return nil, os.ErrNotExist
+	}
+	relPath := location.Placement.ThoughtPath
 	targetPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
 	if err := workspace.EnsureNoSymlinks(rootPath, targetPath); err != nil {
 		return nil, err

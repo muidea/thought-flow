@@ -8,11 +8,16 @@ import (
 
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/workspace"
 )
 
 // Evidence excerpts stay in runtime storage with 0600 permissions. Back up this
 // directory together with documents if independent support review is required.
+func (s *Service) EvidenceAvailable(id string, sources models.SourceManifest) bool {
+	_, e := s.evidence(id, sources)
+	return e == nil
+}
 func (s *Service) SaveEvidence(id string, manifest *models.SourceManifest, excerpts map[string]string) error {
 	unlock := s.Store.Lock(id)
 	defer unlock()
@@ -93,6 +98,14 @@ func (s *Service) evidencePath(id, hash string) (string, error) {
 		return "", documentstore.ErrInvalid
 	}
 	path := filepath.Join(s.Options.RuntimePath, "document-evidence", id, value+".txt")
+	root := filepath.Dir(s.Store.Root)
+	l, lookupErr := objectlocation.For(root).Lookup(id)
+	if lookupErr != nil && !os.IsNotExist(lookupErr) {
+		return "", lookupErr
+	}
+	if lookupErr == nil && l.Placement.EvidenceRoot != "" {
+		return objectlocation.SafePath(root, l.Placement.EvidenceRoot+"/"+value+".txt")
+	}
 	// Runtime storage has its own boundary, independent of the content root.
 	if e := workspace.EnsureNoSymlinks(s.Options.RuntimePath, path); e != nil {
 		return "", e

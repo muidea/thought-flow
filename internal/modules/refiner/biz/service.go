@@ -240,7 +240,7 @@ func (s *Service) refineJob(ctx context.Context, job models.Job, force bool) {
 				ResourceType: models.ResourceTypeThought,
 				ResourceID:   refinement.ThoughtID,
 				Payload: models.GitCommitRequestedPayload{
-					Paths:       []string{markdown.ThoughtRelativePath(refinement.ThoughtID)},
+					Paths:       markdown.GitPaths(s.workspace.RootPath, refinement.ThoughtID),
 					Reason:      "refine",
 					ResourceIDs: []string{refinement.ThoughtID},
 				},

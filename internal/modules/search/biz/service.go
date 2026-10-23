@@ -17,6 +17,7 @@ import (
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/searchdb"
 	"thoughtflow/internal/pkg/thoughtlock"
 )
@@ -51,6 +52,9 @@ func WithLocker(locker *thoughtlock.Locker) Option {
 }
 
 func NewService(workspace *models.Workspace, jobs *jobstore.Store, store *searchdb.Store, eventHub event.Hub, background task.BackgroundRoutine, embedder ai.EmbeddingProvider, indexPath string, options ...Option) *Service {
+	if store != nil && workspace != nil {
+		store.SetWorkspaceRoot(workspace.RootPath)
+	}
 	service := &Service{
 		runner:     jobstore.NewRunner(jobs),
 		workspace:  workspace,
@@ -79,15 +83,44 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 			switch domainEvent.EventType {
 			case models.EventThoughtDeleted:
 				_ = s.DeleteThought(context.Background(), domainEvent.ResourceID)
-			case models.EventThoughtCaptured, models.EventThoughtRefined, models.EventThoughtPatched, models.EventThoughtExpanded:
+			case "thought.restored", models.EventThoughtCaptured, models.EventThoughtRefined, models.EventThoughtPatched, models.EventThoughtExpanded:
 				_, _ = s.IndexAsyncWithEmbedding(domainEvent.ResourceID, eventEmbedding(domainEvent.Payload))
 			}
+
 		case models.ResourceTypeTopic:
-			if topic, ok := domainEvent.Payload.(models.Topic); ok {
+			topicID := domainEvent.ResourceID
+			var topic models.Topic
+			switch payload := domainEvent.Payload.(type) {
+			case models.Topic:
+				topic = payload
+			case map[string]any:
+				if t, ok := payload["topic"].(models.Topic); ok {
+					topic = t
+				}
+			}
+			if topic.ID != "" {
+				topicID = topic.ID
+			}
+			if latest, e := objectlocation.For(s.workspace.RootPath).Topic(topicID); e == nil {
+				topic = latest
+				if latest.Mode == "collection" {
+					var c models.TopicCatalog
+					if e = objectlocation.ReadJSON(s.workspace.RootPath, "topics/"+topicID+"/catalog.json", &c); e == nil {
+						topic.Members = nil
+						for _, entry := range c.Entries {
+							if entry.Binding.Kind == "thought" {
+								topic.Members = append(topic.Members, entry.Binding.ThoughtID)
+							}
+						}
+					}
+				}
+			}
+			if topic.ID != "" {
 				s.mutationMu.Lock()
 				_ = s.store.UpdateTopicMembers(context.Background(), topic)
 				s.mutationMu.Unlock()
 			}
+
 		}
 	}
 	if result != nil {
@@ -283,7 +316,7 @@ func (s *Service) indexJobContext(ctx context.Context, job models.Job, embedding
 		ResourceType: models.ResourceTypeThought,
 		ResourceID:   job.ResourceID,
 		Payload: models.GitCommitRequestedPayload{
-			Paths:       []string{markdown.ThoughtRelativePath(job.ResourceID)},
+			Paths:       markdown.GitPaths(s.workspace.RootPath, job.ResourceID),
 			Reason:      "index",
 			ResourceIDs: []string{job.ResourceID},
 		},

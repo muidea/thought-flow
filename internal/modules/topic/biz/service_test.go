@@ -1336,3 +1336,42 @@ func (nearMissEmbeddingProvider) Embed(_ context.Context, req ai.EmbedRequest) (
 	}
 	return models.EmbeddingRecord{Model: "test-embedding", Dimension: 3, Vector: vector}, nil
 }
+
+func TestCollectionOutOfOrderDocumentEventsReadCurrentFacts(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := topicstore.New(root)
+	topic, e := store.Create(ctx, models.TopicCreateRequest{OperationID: "create-events", Name: "Events", Mode: "collection"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	id := "20261023-event-source"
+	if e = markdown.WriteThought(root, models.Thought{ID: id, OwnerTopicID: topic.ID}, models.ThoughtContent{AINotes: "independent body"}); e != nil {
+		t.Fatal(e)
+	}
+	c, e := store.Catalog(ctx, topic.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	view, e := store.WriteCatalog(ctx, topic.ID, models.CatalogWriteRequest{OperationID: "bind-events", ExpectedGeneration: c.Generation, Groups: c.Groups, Entries: []models.CatalogEntry{{ID: "entry", GroupID: "default", Title: "Current title", Binding: models.CatalogBinding{Kind: "thought", ThoughtID: id, VersionPolicy: "latest_finalized"}}}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	service := NewService(&models.Workspace{ID: "test", RootPath: root}, nil, store, nil, nil, nil, nil, nil)
+	for _, generation := range []uint64{view.Catalog.Generation + 3, 1, 1, view.Catalog.Generation} {
+		kind := "document.finalized"
+		domain := models.DomainEvent{EventType: kind, ResourceType: models.ResourceTypeThought, ResourceID: id, Payload: map[string]any{"generation": generation, "body": "stale event body", "title": "stale title"}}
+		service.Notify(event.NewEvent(kind, "test", "#", event.NewHeader(), domain), nil)
+	}
+	raw, e := os.ReadFile(filepath.Join(root, "topics", topic.ID, "catalog.md"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(string(raw), "Current title") || strings.Contains(string(raw), "stale") {
+		t.Fatal("event payload replaced authoritative catalog", string(raw))
+	}
+	_, content, e := markdown.ReadThought(root, id)
+	if e != nil || content.AINotes != "independent body" {
+		t.Fatal(content, e)
+	}
+}

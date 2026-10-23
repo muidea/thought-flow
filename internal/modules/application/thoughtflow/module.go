@@ -125,6 +125,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"search.index_failed",
 		"search.reindex_started",
 		"search.reindex_finished",
+		"object.placement_changed", "topic.migration_completed", "topic.migration_failed", "thought.restored", "topic.catalog_updated", "topic.search_policy_updated", "thought.search_policy_updated", "thought.ownership_changed", "topic.resource_updated", "topic.snapshot_created", "topic.mode_changed", "topic.deleted",
 		"topic.created",
 		"topic.matched",
 		"topic.updated",

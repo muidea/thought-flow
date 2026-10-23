@@ -1197,6 +1197,30 @@ test("API e2e", async (t) => {
     }
   });
 
+  await t.test("collection catalog owns independent documents with CAS, migration, resource and scope boundaries",async()=>{
+    let response=await request(server.baseURL,"/api/topics","POST",{body:{operation_id:"e2e-collection-create",mode:"collection",name:"Collection E2E",search_policy:{topic_global_visible:true,owned_thoughts_global_default:false}}});assert.equal(response.status,201,response.text);const topic=envelope(response).data;const base=`/api/topics/${topic.id}`;
+    response=await request(server.baseURL,base+"/catalog","GET");assert.equal(response.status,200,response.text);let catalog=envelope(response).data.catalog;
+    const edit={operation_id:"e2e-planned",expected_generation:catalog.generation,groups:catalog.groups,entries:[{id:"planned",group_id:catalog.groups[0].id,title:"Owned design",required:true,role:"design",binding:{kind:"planned"}}]};response=await request(server.baseURL,base+"/catalog","PUT",{body:edit});assert.equal(response.status,200,response.text);catalog=envelope(response).data.catalog;
+    response=await request(server.baseURL,base+"/catalog","PUT",{body:{...edit,operation_id:"e2e-stale"}});assert.equal(response.status,409,response.text);
+    const profiles=envelope(await request(server.baseURL,"/api/document-profiles","GET")).data.profiles;const profile=profiles.find(p=>p.ref.profile_id==="builtin.design-doc");assert.ok(profile);
+    const body={operation_id:"e2e-owned-draft",expected_generation:catalog.generation,profile:profile.ref,parameters:{},content:"# Owned design\n\nIndependent content for a collection."};for(let i=0;i<2;i++){response=await request(server.baseURL,base+"/entries/planned/drafts","POST",{body});assert.equal(response.status,200,response.text);}
+    const data=envelope(response).data;const id=data.catalog.entries[0].binding.thought_id;assert.ok(id);response=await request(server.baseURL,`/api/thoughts/${id}/placement`,"GET");assert.equal(response.status,200,response.text);let placement=envelope(response).data;assert.equal(placement.owner_topic_id,topic.id);assert.match(placement.placement.thought_path,new RegExp(`^topics/${topic.id}/thoughts/`));
+    response=await request(server.baseURL,base+"/entries/planned/content?view=final","GET");assert.equal(response.status,422,response.text);response=await request(server.baseURL,base+"/entries/planned/content?view=draft","GET");assert.equal(response.status,200,response.text);assert.match(envelope(response).data.body,/Independent content/);
+    let workingHit;
+    for(let attempt=0;attempt<80;attempt++){
+      const scoped=await request(server.baseURL,`/api/search?scope=topic&topic_id=${topic.id}&q=Independent`,"GET");assert.equal(scoped.status,200,scoped.text);
+      workingHit=envelope(scoped).data.results.find(hit=>hit.thought_id===id);
+      if(workingHit?.indexed_revision_id)break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    assert.equal(workingHit?.version_kind,"working");assert.ok(workingHit?.indexed_revision_id);
+    const indexedContent=await request(server.baseURL,base+`/entries/planned/content?view=draft&revision=${workingHit.indexed_revision_id}`,"GET");assert.equal(indexedContent.status,200,indexedContent.text);assert.equal(envelope(indexedContent).data.revision.revision_id,workingHit.indexed_revision_id);
+    response=await request(server.baseURL,base+"/resources","POST",{body:{operation_id:"e2e-resource",object_id:id,expected_generation:placement.generation,name:"readme.txt",content:Buffer.from("shareable attachment").toString("base64")}});assert.equal(response.status,200,response.text);const resource=envelope(response).data;
+    response=await request(server.baseURL,`/api/resources/${resource.id}/content?object_id=${id}`,"GET");assert.equal(response.status,200,response.text);assert.equal(response.text,"shareable attachment");response=await request(server.baseURL,`/api/resources/${resource.id}/content?object_id=other-object`,"GET");assert.equal(response.status,404,response.text);
+    response=await request(server.baseURL,`/api/search?scope=global&q=Independent`,"GET");assert.equal(response.status,200,response.text);assert.ok(!envelope(response).data.results.some(hit=>hit.thought_id===id));response=await request(server.baseURL,"/api/search?scope=topic","GET");assert.equal(response.status,400,response.text);
+    response=await request(server.baseURL,base+"/migrations/preview","POST",{body:{object_id:id,target_topic_id:""}});assert.equal(response.status,200,response.text);const preview=envelope(response).data;assert.equal(preview.before_global,false);assert.equal(preview.after_global,true);response=await request(server.baseURL,base+"/migrations","POST",{body:{operation_id:"e2e-migrate-out",preview_id:preview.id,plan_hash:preview.plan_hash,expected_object_generation:preview.source.generation}});assert.equal(response.status,200,response.text);response=await request(server.baseURL,`/api/thoughts/${id}/placement`,"GET");assert.equal(response.status,200,response.text);placement=envelope(response).data;assert.ok(!placement.owner_topic_id);assert.match(placement.placement.thought_path,/^thoughts\//);response=await request(server.baseURL,base+"/entries/planned/content?view=draft","GET");assert.equal(response.status,200,response.text);assert.match(envelope(response).data.body,/Independent content/);
+  });
+
   await t.test("unknown route returns 404 envelope", async () => {
     const res = await request(server.baseURL, "/api/this-route-does-not-exist", "GET");
     assert.equal(res.status, 404);

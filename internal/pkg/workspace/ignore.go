@@ -18,14 +18,14 @@ func ensurePrivateIgnores(ws *models.Workspace) error {
 	ignoreMu.Lock()
 	defer ignoreMu.Unlock()
 	path := filepath.Join(ws.RootPath, ".gitignore")
-	if err := EnsureInside(ws.RootPath, path); err != nil {
+	if err := EnsureNoSymlinks(ws.RootPath, path); err != nil {
 		return err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	rules := []string{"/.scratchpad/", "/.thoughtflow/", "/topics/*/candidates.yaml", "/documents/capture-*/", "/documents/compose-*/"}
+	rules := []string{"/.scratchpad/", "/.thoughtflow/", "/.content-registry/private/", "/topics/*/.private/", ".stage-*/", ".write-*.tmp", "/topics/*/candidates.yaml", "/documents/capture-*/", "/documents/compose-*/"}
 	if rel, err := filepath.Rel(ws.RootPath, ws.RuntimePath); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 		escape := strings.NewReplacer("\\", "\\\\", " ", "\\ ", "#", "\\#", "!", "\\!", "*", "\\*", "?", "\\?", "[", "\\[", "]", "\\]")
 		rules = append(rules, "/"+escape.Replace(filepath.ToSlash(rel))+"/")
