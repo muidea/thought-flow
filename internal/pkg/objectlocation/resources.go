@@ -45,11 +45,15 @@ func (r *Registry) Bindings(id string) (models.ResourceBindings, error) {
 	if e != nil {
 		return models.ResourceBindings{}, e
 	}
+	return r.bindingsForLocation(l)
+}
+func (r *Registry) bindingsForLocation(l models.ObjectLocation) (models.ResourceBindings, error) {
+	id := l.ObjectID
 	if l.ResourceBindingsRef == nil {
 		return models.ResourceBindings{ObjectID: id, Bindings: []models.ResourceBinding{}}, nil
 	}
 	var b models.ResourceBindings
-	e = ReadJSON(r.Root, l.ResourceBindingsRef.Path, &b)
+	e := ReadJSON(r.Root, l.ResourceBindingsRef.Path, &b)
 	if e != nil {
 		return b, e
 	}

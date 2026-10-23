@@ -40,6 +40,7 @@ type Registry struct {
 	migrations   sync.Map
 	metricsMu    sync.Mutex
 	metrics      map[string]float64
+	privateMu    sync.RWMutex
 	privateRoots []string
 	epoch        uint64
 	Fault        func(string) error
@@ -447,8 +448,8 @@ func (r *Registry) ProtectPrivateRoot(path string) {
 	if err != nil {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.privateMu.Lock()
+	defer r.privateMu.Unlock()
 	for _, existing := range r.privateRoots {
 		if existing == absolute {
 			return
@@ -466,8 +467,8 @@ func (r *Registry) PublicResourcePath(relative string) bool {
 			return false
 		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.privateMu.RLock()
+	defer r.privateMu.RUnlock()
 	for _, private := range r.privateRoots {
 		rel, err := filepath.Rel(private, path)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

@@ -291,6 +291,9 @@ func (s *Store) resumeImport(ctx context.Context, result *ImportResult) (ImportR
 			if e := r.Prepare(result.Operation); e != nil {
 				return *result, e
 			}
+			if e := r.Checkpoint("import_conflict_prepared"); e != nil {
+				return *result, e
+			}
 			if e := objectlocation.WriteJSON(s.rootPath, importBase(result.Operation.ID)+"/state.json", result, true); e != nil {
 				return *result, e
 			}
@@ -425,6 +428,22 @@ func (s *Store) RecoverImports(ctx context.Context) error {
 			continue
 		}
 		if _, e = s.resumeImport(ctx, &result); e != nil {
+			// Only a durable terminal business conflict is safe to skip. A
+			// failed state write, corrupt package or other recovery error is fatal.
+			if errors.Is(e, objectlocation.ErrConflict) {
+				var saved ImportResult
+				if err := objectlocation.ReadJSON(s.rootPath, importBase(entry.Name())+"/state.json", &saved); err != nil {
+					return err
+				}
+				op, err := r.Operation(entry.Name())
+				if err != nil {
+					return err
+				}
+				if saved.Phase == "conflicted" && saved.Operation.State == "conflicted" && op.State == "conflicted" &&
+					saved.Operation.ID == entry.Name() && op.ID == entry.Name() && saved.TopicID == op.TopicID {
+					continue
+				}
+			}
 			return e
 		}
 	}

@@ -1236,3 +1236,61 @@ test("API e2e", async (t) => {
     assert.equal(res.status, 404);
   });
 });
+
+test("first startup records import conflicts and continues healthy recovery", async (t) => {
+  if (!BINARY) return;
+  const crypto = require("node:crypto");
+  const sourceFixture = await createServerFixture();
+  const destFixture = await createServerFixture();
+  t.after(async () => { await sourceFixture.cleanup(); await destFixture.cleanup(); });
+  let source = await startServer(sourceFixture);
+  let dest;
+  try {
+    const topics = [];
+    for (const name of ["Conflicting startup", "Healthy startup"]) {
+      const response = await request(source.baseURL, "/api/topics", "POST", {body:{operation_id:`create-${topics.length}`,mode:"collection",name}});
+      assert.equal(response.status,201,response.text);
+      topics.push(envelope(response).data);
+    }
+    await source.stop(); source = null;
+    dest = await startServer(destFixture);
+    const foreign = await request(dest.baseURL,"/api/topics","POST",{body:{operation_id:"foreign",mode:"collection",name:"Conflicting startup",description:"Created after interrupted import"}});
+    assert.equal(foreign.status,201,foreign.text);
+    await dest.stop(); dest = null;
+    const foreignPath = path.join(destFixture.contentDir,"topics",topics[0].id,"index.md");
+    await fsp.writeFile(foreignPath,"Foreign content survives the first startup.\n");
+    // Materialize the durable validated checkpoint of two empty-topic backups.
+    // All source bytes come from real HTTP-created topics; no live writer runs.
+    for (const [index,topic] of topics.entries()) {
+      const id = `startup-import-${index}`;
+      const base = path.join(destFixture.contentDir,".content-registry/private/imports",id);
+      const files = [];
+      for (const name of ["topic.yaml","catalog.json","index.md"]) {
+        const relative = `topics/${topic.id}/${name}`;
+        const bytes = await fsp.readFile(path.join(sourceFixture.contentDir,relative));
+        const staged = path.join(base,"stage",relative);
+        await fsp.mkdir(path.dirname(staged),{recursive:true}); await fsp.writeFile(staged,bytes);
+        files.push({path:relative,hash:`sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`,size:bytes.length});
+      }
+      const operation = {id,kind:"import",topic_id:topic.id,state:"prepared",created_at:new Date().toISOString(),actor:"local"};
+      await fsp.writeFile(path.join(base,"state.json"),JSON.stringify({operation,topic_id:topic.id,objects:{},phase:"validated",manifest:{schema_version:1,export_kind:"backup",topic_id:topic.id,files,objects:[],relations:[]}}));
+      const operationPath = path.join(destFixture.contentDir,".content-registry/private/operations",`${id}.json`);
+      await fsp.mkdir(path.dirname(operationPath),{recursive:true});await fsp.writeFile(operationPath,JSON.stringify(operation));
+    }
+    dest = await startServer(destFixture); // must become ready on the FIRST restart
+    const status = await request(dest.baseURL,"/api/operations/startup-import-0","GET");
+    assert.equal(status.status,200,status.text);
+    assert.equal(envelope(status).data.operation.state,"conflicted");
+    assert.ok(envelope(status).data.operation.error);
+    const healthy = await request(dest.baseURL,`/api/topics/${topics[1].id}`,"GET");
+    assert.equal(healthy.status,200,healthy.text);
+    const completed = await request(dest.baseURL,"/api/operations/startup-import-1","GET");
+    assert.equal(completed.status,200,completed.text);assert.equal(envelope(completed).data.operation.state,"completed");
+    assert.equal(await fsp.readFile(foreignPath,"utf8"),"Foreign content survives the first startup.\n");
+    const created = await request(dest.baseURL,"/api/thoughts","POST",{body:{type:"text",content:"Unrelated note after conflict recovery"}});
+    assert.equal(created.status,202,created.text);
+  } finally {
+    if (source) await source.stop();
+    if (dest) await dest.stop();
+  }
+});

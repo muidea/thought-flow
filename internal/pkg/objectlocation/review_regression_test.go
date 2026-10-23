@@ -174,12 +174,11 @@ func TestRebuildClearsResolvedAmbiguity(t *testing.T) {
 	if !errors.Is(err, objectlocation.ErrAmbiguous) {
 		t.Fatal(err)
 	}
-	// Keep exactly the path recorded by the ambiguity diagnosis.
-	remove := duplicate
-	if ambiguous.Placement.ThoughtPath == duplicate {
-		remove = original.Placement.ThoughtPath
+	if ambiguous.Placement != original.Placement {
+		t.Fatal("diagnosis replaced authority", ambiguous, original)
 	}
-	if err = os.Remove(filepath.Join(root, remove)); err != nil {
+	// Always remove the accidental copy, preserving the original authority.
+	if err = os.Remove(filepath.Join(root, duplicate)); err != nil {
 		t.Fatal(err)
 	}
 	if err = r.Rebuild(); err != nil {

@@ -116,9 +116,7 @@ func (r *Registry) rebuildLocations() error {
 			continue
 		}
 		if len(locations) != 1 {
-			l := locations[0]
-			l.Lifecycle = "ambiguous"
-			if e = WriteJSON(r.Root, RecordPath(id), l, false); e != nil {
+			if e = r.markAmbiguous(id, locations); e != nil {
 				return e
 			}
 			ambiguous = true
@@ -131,12 +129,21 @@ func (r *Registry) rebuildLocations() error {
 		var existing models.ObjectLocation
 		if e = ReadJSON(r.Root, RecordPath(id), &existing); e == nil {
 			if existing.Placement.ThoughtPath != l.Placement.ThoughtPath {
-				existing.Lifecycle = "ambiguous"
-				if e = WriteJSON(r.Root, RecordPath(id), existing, false); e != nil {
+				if e = r.markAmbiguous(id, locations); e != nil {
 					return e
 				}
 				ambiguous = true
 			} else if existing.Lifecycle == "ambiguous" && existing.DeletedAt == nil {
+				var diagnosis ambiguityDiagnosis
+				if e = ReadJSON(r.Root, ambiguityPath(id), &diagnosis); e == nil && (!diagnosis.HadAuthority || diagnosis.Authority != nil && diagnosis.Authority.Lifecycle != "active") {
+					ambiguous = true
+					continue
+				} else if e != nil && !os.IsNotExist(e) {
+					return e
+				}
+				if e = r.validateRecoveredLocation(existing); e != nil {
+					return e
+				}
 				existing.Lifecycle = "active"
 				existing.Generation++
 				existing.LastOperationID = "registry-rebuild"
