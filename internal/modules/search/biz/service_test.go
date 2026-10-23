@@ -176,10 +176,10 @@ func TestReindexWorkspaceBackfillsEmbeddings(t *testing.T) {
 	}
 	defer store.Close()
 	thought := models.Thought{
-		ID:           "20260620-120000-vector",
-		DisplayTitle: "Vector backfill note",
-		Path:         "thoughts/2026/06/20260620-120000-vector.md",
-		UpdatedAt:    time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
+		ID:        "20260620-120000-vector",
+		UserTitle: "Vector backfill note",
+		Path:      "thoughts/2026/06/20260620-120000-vector.md",
+		UpdatedAt: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
 	}
 	content := models.ThoughtContent{Original: "Semantic backfill should recreate embeddings after reindex."}
 	if err := markdown.WriteThought(root, thought, content); err != nil {

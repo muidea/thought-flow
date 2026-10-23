@@ -1196,7 +1196,7 @@ func (s *Service) matchTopic(ctx context.Context, topic models.Topic, thought mo
 		return models.TopicMembership{}, false
 	}
 	topicText := semanticTopicText(topic)
-	thoughtText := semanticThoughtText(thought, content)
+	thoughtText := models.EmbeddingText(thought)
 	if strings.TrimSpace(topicText) == "" || strings.TrimSpace(thoughtText) == "" {
 		return models.TopicMembership{}, false
 	}
@@ -1287,7 +1287,9 @@ func semanticHardExcluded(topic models.Topic, thought models.Thought, content mo
 	if contains(topic.Rules.ManualExclude, thought.ID) {
 		return true
 	}
-	searchText := strings.ToLower(semanticThoughtText(thought, content))
+	// Hard keyword rules still inspect the complete note, independently of the
+	// compact metadata used for semantic matching.
+	searchText := strings.ToLower(strings.Join([]string{thought.UserTitle, thought.ExtractedTitle, thought.Summary, strings.Join(thought.UserTags, " "), strings.Join(thought.AITags, " "), content.Original, content.ExtractedContent, content.AINotes}, "\n"))
 	for _, excluded := range topic.Rules.Keywords.Exclude {
 		excluded = strings.TrimSpace(strings.ToLower(excluded))
 		if excluded != "" && strings.Contains(searchText, excluded) {
@@ -1315,10 +1317,6 @@ func semanticTopicText(topic models.Topic) string {
 		parts = append(parts, node.Title)
 	}
 	return strings.Join(parts, "\n")
-}
-
-func semanticThoughtText(t models.Thought, c models.ThoughtContent) string {
-	return models.EmbeddingText(t, c)
 }
 
 func cosine(left []float64, right []float64) float64 {

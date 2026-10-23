@@ -924,7 +924,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
 	content, err := p.chatCompletionJSON(ctx,
-		"You refine notes for ThoughtFlow. Return strict JSON only with fields summary string, key_points string array, tags string array, title string.",
+		refinementSystemPrompt(),
 		"Refine this note without changing the original content.\n\nTitle: "+
 			firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)+
 			"\n\nContent:\n"+text,
@@ -937,6 +937,9 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
 		return models.ThoughtRefinement{}, fmt.Errorf("parse refinement json: %w", err)
 	}
+	if strings.TrimSpace(parsed.Title) == "" {
+		return models.ThoughtRefinement{}, ProviderError{Code: "thoughtflow.ai.invalid_refinement_metadata", Message: "generated title must not be empty", Retryable: true}
+	}
 	refinement := models.ThoughtRefinement{
 		ThoughtID:      req.Thought.ID,
 		Status:         models.RefineStatusRefined,
@@ -947,6 +950,9 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		Model:          p.chatModel,
 		InputHash:      models.ContentHash(text),
 		GeneratedAt:    time.Now().UTC(),
+	}
+	if err := ValidateRefinementMetadata(refinement); err != nil {
+		return models.ThoughtRefinement{}, err
 	}
 	return refinement, nil
 }
@@ -1260,11 +1266,7 @@ func stripMarkdownFence(value string) string {
 }
 
 func summarize(text string) string {
-	text = strings.Join(strings.Fields(text), " ")
-	if len(text) <= 240 {
-		return text
-	}
-	return text[:240]
+	return models.BoundedMetadataText(text, models.MetadataSummaryMaxRunes)
 }
 
 func buildLocalCaptureSummary(text string) string {
@@ -1326,7 +1328,10 @@ func keyPoints(text string) []string {
 }
 
 func inferTags(text string) []string {
-	lower := strings.ToLower(text)
+	wordsInText := map[string]bool{}
+	for _, word := range regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9]*`).FindAllString(strings.ToLower(text), -1) {
+		wordsInText[word] = true
+	}
 	candidates := map[string][]string{
 		"ai":                   {"ai", "llm", "embedding", "model", "openai", "deepseek"},
 		"knowledge-management": {"knowledge", "note", "markdown", "obsidian", "logseq", "search"},
@@ -1336,7 +1341,7 @@ func inferTags(text string) []string {
 	ret := []string{}
 	for tag, words := range candidates {
 		for _, word := range words {
-			if strings.Contains(lower, word) {
+			if wordsInText[word] {
 				ret = append(ret, tag)
 				break
 			}

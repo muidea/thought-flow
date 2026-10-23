@@ -30,7 +30,10 @@ func (r *Runner) Start(kind, id string, attempts int, run func(context.Context, 
 	return r.StartResource(kind, models.ResourceTypeThought, id, attempts, run)
 }
 func (r *Runner) StartLatest(kind, id string, run func(context.Context, models.Job)) (models.Job, error) {
-	return r.startResource(kind, models.ResourceTypeThought, id, 1, true, run)
+	return r.StartLatestWithMaxAttempts(kind, id, 1, run)
+}
+func (r *Runner) StartLatestWithMaxAttempts(kind, id string, attempts int, run func(context.Context, models.Job)) (models.Job, error) {
+	return r.startResource(kind, models.ResourceTypeThought, id, attempts, true, run)
 }
 func (r *Runner) StartResource(kind, resourceType, id string, attempts int, run func(context.Context, models.Job)) (models.Job, error) {
 	return r.startResource(kind, resourceType, id, attempts, false, run)

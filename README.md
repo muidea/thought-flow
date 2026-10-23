@@ -92,6 +92,7 @@ curl -L https://github.com/muidea/thought-flow/releases/download/v0.0.1/thoughtf
 ## 当前能力与数据边界
 
 - Web 提供关键词和标签检索；`GET /api/search` 还支持精确专题过滤。语义与混合搜索目前通过内部 Service 使用，主 HTTP 搜索入口未开放模式选择。
+- 笔记向量只使用标题、摘要与标签，不发送正文，也不做全文分块。全文仍用于关键词检索与大模型提炼。生成约束、长度上限、缓存与重建规则见 [元数据向量策略](doc/ThoughtFlow-Metadata-Embedding-2026-10-23.md)。
 - 专题提案支持 API 预览、读取和接受；Web 尚无完整的提案审核流程。刷新保留已接受正文，来源更新需要重新审阅，不自动重写人工确认内容。
 - Git 功能是本地自动提交，支持持久化待提交集合和失败重试；没有 remote push/pull、合并或多设备同步。存在未解决冲突时保留待提交集合，等待用户解决冲突。
 - 无 API key 使用本地规则与本地向量。处理 URL 仍会联网请求原站/GitHub；Reader 默认启用，可在没有 key 时向其端点发送完整 URL。设置 `[reader] enabled=false` 只禁用 Reader fallback。设置页提供实际外发配置，敏感 URL 应先移除凭据和查询参数。

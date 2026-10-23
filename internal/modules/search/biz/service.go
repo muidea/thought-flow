@@ -134,7 +134,7 @@ func (s *Service) IndexThought(ctx context.Context, thoughtID string, embedding 
 	if err := s.store.IndexThought(ctx, thought, content); err != nil {
 		return err
 	}
-	record, err := s.embedding(ctx, thought, content)
+	record, err := s.embedding(ctx, thought)
 	if err != nil {
 		return err
 	}
@@ -305,15 +305,11 @@ func eventEmbedding(payload any) *models.EmbeddingRecord {
 	}
 }
 
-func buildEmbeddingText(t models.Thought, c models.ThoughtContent) string {
-	return models.EmbeddingText(t, c)
-}
-
-func (s *Service) embedding(ctx context.Context, t models.Thought, c models.ThoughtContent) (models.EmbeddingRecord, error) {
+func (s *Service) embedding(ctx context.Context, t models.Thought) (models.EmbeddingRecord, error) {
 	if s.embedder == nil {
 		return models.EmbeddingRecord{}, nil
 	}
-	text := buildEmbeddingText(t, c)
+	text := models.EmbeddingText(t)
 	if text == "" {
 		return models.EmbeddingRecord{}, nil
 	}
@@ -376,7 +372,7 @@ func (s *Service) rebuild(ctx context.Context) (int, int, error) {
 	}
 	records := []models.EmbeddingRecord{}
 	for _, snapshot := range snapshots {
-		record, err := s.embedding(ctx, snapshot.Thought, snapshot.Content)
+		record, err := s.embedding(ctx, snapshot.Thought)
 		if err != nil {
 			return 0, 0, err
 		}

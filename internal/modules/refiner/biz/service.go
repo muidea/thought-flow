@@ -89,6 +89,23 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 	if !ok {
 		return
 	}
+	if domainEvent.EventType == models.EventThoughtPatched {
+		payload, _ := domainEvent.Payload.(map[string]any)
+		keys, _ := payload["patch_keys"].([]string)
+		bodyChanged := false
+		for _, key := range keys {
+			if key == "body" || key == "ai_notes" || key == "ai_notes_append" {
+				bodyChanged = true
+				break
+			}
+		}
+		if !bodyChanged {
+			if result != nil {
+				result.Set(nil, nil)
+			}
+			return
+		}
+	}
 	if domainEvent.ResourceID != "" {
 		_, _ = s.RefineAsync(domainEvent.ResourceID)
 	}
@@ -109,7 +126,7 @@ func (s *Service) refineAsync(thoughtID string, force bool) (models.Job, error) 
 	if strings.TrimSpace(thoughtID) == "" {
 		return models.Job{}, errors.New("thought id is required")
 	}
-	return s.runner.Start(models.JobTypeRefine, thoughtID, refineMaxAttempts, func(ctx context.Context, job models.Job) {
+	return s.runner.StartLatestWithMaxAttempts(models.JobTypeRefine, thoughtID, refineMaxAttempts, func(ctx context.Context, job models.Job) {
 		eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 		s.refineJob(ctx, job, force)
 	})
@@ -293,6 +310,9 @@ func (s *Service) refine(ctx context.Context, thought models.Thought, content mo
 	if ctx.Err() != nil {
 		return models.ThoughtRefinement{}, ctx.Err()
 	}
+	if err == nil {
+		err = ai.ValidateRefinementMetadata(refinement)
+	}
 	if err != nil {
 		errRef := models.NewErrorRef("thoughtflow.refiner.provider_failed", err.Error(), isRetryableRefineError(err))
 		thought.RefineStatus = models.RefineStatusFailed
@@ -325,7 +345,7 @@ func unchangedRefinement(thought models.Thought, content models.ThoughtContent) 
 	if thought.LastRefinedInputHash == "" || thought.LastRefinedInputHash != inputHash {
 		return models.ThoughtRefinement{}, false
 	}
-	return models.ThoughtRefinement{
+	refinement := models.ThoughtRefinement{
 		ThoughtID:      thought.ID,
 		Status:         models.RefineStatusRefined,
 		ExtractedTitle: thought.ExtractedTitle,
@@ -335,7 +355,8 @@ func unchangedRefinement(thought models.Thought, content models.ThoughtContent) 
 		Model:          skippedUnchangedModel,
 		InputHash:      inputHash,
 		GeneratedAt:    time.Now().UTC(),
-	}, true
+	}
+	return refinement, ai.ValidateRefinementMetadata(refinement) == nil
 }
 
 func refinementSkipped(refinement models.ThoughtRefinement) bool {

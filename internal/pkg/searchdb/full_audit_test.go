@@ -42,7 +42,7 @@ func TestFailedReplacementKeepsPreviousTextAndVectors(t *testing.T) {
 	defer store.Close()
 	thought := models.Thought{ID: "original", UserTitle: "Original"}
 	content := models.ThoughtContent{Original: "UNIQUEOLD"}
-	record := models.EmbeddingRecord{ThoughtID: thought.ID, Model: "model", Dimension: 2, Vector: []float64{1, 0}, ContentHash: models.ContentHash(models.EmbeddingText(thought, content))}
+	record := models.EmbeddingRecord{ThoughtID: thought.ID, Model: "model", Dimension: 2, Vector: []float64{1, 0}, ContentHash: models.ContentHash(models.EmbeddingText(thought))}
 	if err = store.ReplaceWorkspace(ctx, []models.ThoughtSnapshot{{Thought: thought, Content: content}}, []models.EmbeddingRecord{record}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +59,13 @@ func TestFailedReplacementKeepsPreviousTextAndVectors(t *testing.T) {
 		t.Fatal("old vector lost")
 	}
 	content.AINotes = "newly edited input"
+	if err = store.IndexThought(ctx, thought, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.GetEmbedding(ctx, thought.ID, "model"); !ok {
+		t.Fatal("body-only edit invalidated unchanged metadata embedding")
+	}
+	thought.Summary = "Newly refined summary"
 	if err = store.IndexThought(ctx, thought, content); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +93,8 @@ func TestVectorIndexesSurviveTransactionalUpdatesAndReopen(t *testing.T) {
 	record := models.EmbeddingRecord{ThoughtID: thought.ID, Model: "local-model", Dimension: 64, Vector: vector}
 	for iteration := range 4 {
 		content.AINotes = fmt.Sprintf("updated evidence %d", iteration)
-		record.ContentHash = models.ContentHash(models.EmbeddingText(thought, content))
+		thought.Summary = fmt.Sprintf("updated summary %d", iteration)
+		record.ContentHash = models.ContentHash(models.EmbeddingText(thought))
 		if err = store.IndexThought(ctx, thought, content); err != nil {
 			t.Fatal(err)
 		}

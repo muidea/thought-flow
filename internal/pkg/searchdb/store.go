@@ -332,8 +332,8 @@ func (s *Store) IndexThought(ctx context.Context, thought models.Thought, conten
 	if err := indexThought(ctx, tx, thought, content); err != nil {
 		return err
 	}
-	// Remove vectors for changed normalized content in the same transaction.
-	hash := models.ContentHash(models.EmbeddingText(thought, content))
+	// Remove vectors for changed normalized metadata in the same transaction.
+	hash := models.ContentHash(models.EmbeddingText(thought))
 	if _, err = tx.ExecContext(ctx, `DELETE FROM thought_embeddings WHERE thought_id=? AND content_hash<>?`, thought.ID, hash); err != nil {
 		return err
 	}
@@ -519,7 +519,7 @@ func (s *Store) ReindexWorkspace(ctx context.Context, rootPath string) (int, err
 	}
 	embeddings := []models.EmbeddingRecord{}
 	for _, snapshot := range snapshots {
-		if cached, ok := s.GetEmbedding(ctx, snapshot.Thought.ID, ""); ok && cached.ContentHash == models.ContentHash(models.EmbeddingText(snapshot.Thought, snapshot.Content)) {
+		if cached, ok := s.GetEmbedding(ctx, snapshot.Thought.ID, ""); ok && cached.ContentHash == models.ContentHash(models.EmbeddingText(snapshot.Thought)) {
 			embeddings = append(embeddings, cached)
 		}
 	}

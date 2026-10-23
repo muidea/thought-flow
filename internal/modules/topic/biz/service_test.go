@@ -88,6 +88,19 @@ func TestServiceCreateTopicAndMatchThought(t *testing.T) {
 	}
 }
 
+func TestSemanticHardRulesStillInspectBody(t *testing.T) {
+	thought := models.Thought{UserTitle: "Generic title", Summary: "Metadata omits the body constraints"}
+	content := models.ThoughtContent{AINotes: "required-body-term excluded-body-term"}
+	topic := models.Topic{Rules: models.TopicRule{Keywords: models.KeywordRule{All: []string{"required-body-term"}}}}
+	if semanticHardExcluded(topic, thought, content) {
+		t.Fatal("required keyword in body was ignored")
+	}
+	topic.Rules.Keywords.Exclude = []string{"excluded-body-term"}
+	if !semanticHardExcluded(topic, thought, content) {
+		t.Fatal("excluded keyword in body was ignored")
+	}
+}
+
 func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
@@ -118,6 +131,7 @@ func TestServiceMatchThoughtBySemanticRule(t *testing.T) {
 	}
 
 	thought := serviceTestThought("20260609-143010-semantic", "Embedding note")
+	thought.Summary = "semantic retrieval with vector embeddings for local notes"
 	content := models.ThoughtContent{Original: "semantic retrieval with vector embeddings for local notes"}
 	if err := markdown.WriteThought(root, thought, content); err != nil {
 		t.Fatalf("WriteThought() error = %v", err)
@@ -198,7 +212,7 @@ func TestServiceSemanticMatchUsesCachedThoughtEmbedding(t *testing.T) {
 		t.Fatalf("WriteThought() error = %v", err)
 	}
 
-	cache.record.ContentHash = models.ContentHash(models.EmbeddingText(thought, content))
+	cache.record.ContentHash = models.ContentHash(models.EmbeddingText(thought))
 
 	memberships, err := service.MatchThought(ctx, thought.ID)
 	if err != nil {

@@ -84,6 +84,7 @@ func TestRebuildCacheFailureAtomicityAndStartupRecovery(t *testing.T) {
 		t.Fatal("topic metadata did not update", err)
 	}
 	content.AINotes = "CHANGED"
+	thought.Summary = "Changed summary"
 	if err = markdown.WriteThought(root, thought, content); err != nil {
 		t.Fatal(err)
 	}
@@ -99,9 +100,9 @@ func TestRebuildCacheFailureAtomicityAndStartupRecovery(t *testing.T) {
 	if err = service.IndexThought(ctx, thought.ID, &models.EmbeddingRecord{Model: "wrong-refiner-model", Vector: []float64{1, 2, 3}}); err != nil {
 		t.Fatal(err)
 	}
-	current, c, _ := markdown.ReadThought(root, thought.ID)
+	current, _, _ := markdown.ReadThought(root, thought.ID)
 	record, ok := store.GetEmbedding(ctx, thought.ID, "audit-model")
-	if !ok || record.ContentHash != models.ContentHash(models.EmbeddingText(current, c)) {
+	if !ok || record.ContentHash != models.ContentHash(models.EmbeddingText(current)) {
 		t.Fatal("patched content kept old vector")
 	}
 	if _, ok = store.GetEmbedding(ctx, thought.ID, "wrong-refiner-model"); ok {
