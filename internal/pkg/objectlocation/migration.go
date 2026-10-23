@@ -22,12 +22,13 @@ type migrationFile struct {
 	RetainSource bool   `json:"retain_source,omitempty"`
 }
 type migrationState struct {
-	Plan      models.MigrationPlan      `json:"plan"`
-	Operation models.WorkspaceOperation `json:"operation"`
-	Phase     string                    `json:"phase"`
-	Bindings  *models.ResourceBindings  `json:"bindings,omitempty"`
-	Files     []migrationFile           `json:"files"`
-	UpdatedAt time.Time                 `json:"updated_at"`
+	Plan           models.MigrationPlan      `json:"plan"`
+	Operation      models.WorkspaceOperation `json:"operation"`
+	Phase          string                    `json:"phase"`
+	Bindings       *models.ResourceBindings  `json:"bindings,omitempty"`
+	Files          []migrationFile           `json:"files"`
+	UpdatedAt      time.Time                 `json:"updated_at"`
+	CreatedTargets []string                  `json:"created_targets,omitempty"`
 }
 
 func migrationPath(id string) string {
@@ -159,7 +160,9 @@ func (r *Registry) PreviewMigration(ctx context.Context, id, targetTopic string)
 			return p, e
 		}
 		if _, e = os.Stat(path); e == nil {
-			p.Conflicts = append(p.Conflicts, f.Target)
+			if !r.reusableMigrationResource(f) {
+				p.Conflicts = append(p.Conflicts, f.Target)
+			}
 		} else if !os.IsNotExist(e) {
 			return p, e
 		}
@@ -203,6 +206,9 @@ func (r *Registry) ExecuteMigration(ctx context.Context, req models.MigrationReq
 		if op.State == "completed" {
 			return op, nil
 		}
+		if op.State == "conflicted" {
+			return op, ErrConflict
+		}
 		e = ReadJSON(r.Root, migrationPath(op.ID), &state)
 		if os.IsNotExist(e) {
 			l, e := r.Resolve(ctx, p.ObjectID)
@@ -230,14 +236,19 @@ func (r *Registry) ExecuteMigration(ctx context.Context, req models.MigrationReq
 		return op, nil
 	}()
 	if e != nil || op.State == "completed" {
+		if errors.Is(e, ErrConflict) && op.Kind == "migration" && op.RequestHash == HashJSON(req) {
+			op.State, op.Error = "conflicted", e.Error()
+			if err := r.failMigration(op); err != nil {
+				return op, errors.Join(e, err)
+			}
+		}
 		return op, e
 	}
 	e = r.runMigration(&state)
 	if e != nil {
-		state.Operation.Error = e.Error()
-		state.Operation.State = "failed"
-		_ = r.failMigration(state.Operation)
-		_ = r.saveMigration(&state)
+		if err := r.recordMigrationFailure(&state, e); err != nil {
+			return state.Operation, errors.Join(e, err)
+		}
 		return state.Operation, e
 	}
 	return state.Operation, nil
@@ -373,7 +384,7 @@ func (r *Registry) resumeMigration(s *migrationState) error {
 				return e
 			}
 			if hash, _, e := FileHash(target); e == nil {
-				if hash != f.Hash {
+				if hash != f.Hash || (!f.RetainSource && !s.createdTarget(f.Target)) {
 					return ErrConflict
 				}
 			} else if !os.IsNotExist(e) {
@@ -401,6 +412,14 @@ func (r *Registry) resumeMigration(s *migrationState) error {
 				}
 				if e = os.Chmod(stage, mode); e != nil {
 					return e
+				}
+				// Record ownership before publication so recovery never removes an
+				// unrelated identical destination that existed before this operation.
+				if !s.createdTarget(f.Target) {
+					s.CreatedTargets = append(s.CreatedTargets, f.Target)
+					if e = r.saveMigration(s); e != nil {
+						return e
+					}
 				}
 				if e = os.Rename(stage, target); e != nil {
 					return e
@@ -579,6 +598,9 @@ func (r *Registry) RecoverMigrations() error {
 		if e = ReadJSON(r.Root, migrationPath(entry.Name()), &s); e != nil {
 			return e
 		}
+		if s.Phase == "conflicted" {
+			continue
+		}
 		if s.Phase == "completed" {
 			if time.Since(s.UpdatedAt) >= 7*24*time.Hour {
 				for _, name := range []string{"stage", "retired"} {
@@ -595,10 +617,18 @@ func (r *Registry) RecoverMigrations() error {
 		}
 		unlock := r.lockMigration(s.Plan.ObjectID)
 		e = r.runMigration(&s)
-		unlock()
 		if e != nil {
-			return e
+			committed := r.migrationCommitted(s)
+			failureErr := r.recordMigrationFailure(&s, e)
+			unlock()
+			if failureErr != nil || committed {
+				return errors.Join(e, failureErr)
+			}
+			// Uncommitted work has not changed authority. A stale preview or
+			// temporary I/O failure remains inspectable without sealing startup.
+			continue
 		}
+		unlock()
 	}
 	return nil
 }
@@ -644,12 +674,14 @@ func (r *Registry) RetryMigration(id string) (models.WorkspaceOperation, error) 
 	if s.Phase == "completed" {
 		return s.Operation, nil
 	}
+	if s.Phase == "conflicted" {
+		return s.Operation, ErrConflict
+	}
 	e := r.runMigration(&s)
 	if e != nil {
-		s.Operation.Error = e.Error()
-		s.Operation.State = "failed"
-		_ = r.failMigration(s.Operation)
-		_ = r.saveMigration(&s)
+		if err := r.recordMigrationFailure(&s, e); err != nil {
+			return s.Operation, errors.Join(e, err)
+		}
 	}
 	return s.Operation, e
 }
@@ -661,4 +693,72 @@ func (r *Registry) failMigration(op models.WorkspaceOperation) error {
 	}
 	op.EventType = "topic.migration_failed"
 	return WriteJSON(r.Root, ".content-registry/private/outbox/"+op.ID+"-failed.json", op, true)
+}
+
+func (r *Registry) reusableMigrationResource(f migrationFile) bool {
+	if !f.RetainSource {
+		return false
+	}
+	path, err := SafePath(r.Root, f.Target)
+	if err != nil {
+		return false
+	}
+	hash, size, err := FileHash(path)
+	return err == nil && hash == f.Hash && size == f.Size
+}
+func (r *Registry) migrationCommitted(s migrationState) bool {
+	l, err := r.Lookup(s.Plan.ObjectID)
+	return err == nil && l.LastOperationID == s.Operation.ID && l.Generation == s.Plan.Target.Generation
+}
+func (r *Registry) recordMigrationFailure(s *migrationState, failure error) error {
+	s.Operation.Error, s.Operation.State = failure.Error(), "failed"
+	if !r.migrationCommitted(*s) && (errors.Is(failure, ErrConflict) || errors.Is(failure, os.ErrNotExist) || errors.Is(failure, ErrUnsafe)) {
+		s.Phase, s.Operation.State = "conflicted", "conflicted"
+		// Retire only exact, uncommitted object copies. Shared resources and any
+		// externally changed target bytes are never removed by conflict cleanup.
+		r.Namespace.Lock()
+		unlock := r.LockObject(s.Plan.ObjectID)
+		l, err := r.Lookup(s.Plan.ObjectID)
+		if err == nil && l.Placement.ThoughtPath == s.Plan.Source.Placement.ThoughtPath {
+			for _, f := range s.Files {
+				if f.RetainSource || f.Target == f.Source || !s.createdTarget(f.Target) {
+					continue
+				}
+				path, e := SafePath(r.Root, f.Target)
+				if e != nil {
+					err = e
+					break
+				}
+				hash, size, e := FileHash(path)
+				if e == nil && hash == f.Hash && size == f.Size {
+					if e = os.Remove(path); e != nil {
+						err = e
+						break
+					}
+					if e = SyncDir(filepath.Dir(path)); e != nil {
+						err = e
+						break
+					}
+				}
+			}
+		}
+		unlock()
+		r.Namespace.Unlock()
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := r.failMigration(s.Operation); err != nil {
+		return err
+	}
+	return r.saveMigration(s)
+}
+
+func (s migrationState) createdTarget(path string) bool {
+	for _, target := range s.CreatedTargets {
+		if target == path {
+			return true
+		}
+	}
+	return false
 }

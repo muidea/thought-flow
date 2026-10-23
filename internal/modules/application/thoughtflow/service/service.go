@@ -827,16 +827,21 @@ func (s *Service) buildSearchResultView(ctx context.Context, query models.Search
 	summaries := make([]models.SearchResultSummary, 0, len(response.Items))
 	for _, item := range response.Items {
 		sourceID := firstNonEmpty(item.ThoughtID, item.Path)
+		source := models.ComposeSourceTypeThought
+		actions := searchResultActions(item.ThoughtID, item.Path)
+		if item.SnapshotID != "" {
+			source, sourceID, actions = models.ComposeSourceTypeSearchResult, item.SnapshotID, []string{}
+		}
 		summaries = append(summaries, models.SearchResultSummary{
-			IndexedRevisionID: item.IndexedRevisionID, VersionKind: item.VersionKind, ThoughtID: item.ThoughtID,
+			IndexedRevisionID: item.IndexedRevisionID, VersionKind: item.VersionKind, ThoughtID: item.ThoughtID, SnapshotID: item.SnapshotID, EntryID: item.EntryID,
 			Title:    item.Title,
 			Snippet:  item.Snippet,
 			Tags:     item.Tags,
 			Topics:   item.Topics,
-			Source:   models.ComposeSourceTypeThought,
+			Source:   source,
 			SourceID: sourceID,
 			PathHint: s.normalizeRelativePath(item.Path),
-			Actions:  searchResultActions(item.ThoughtID, item.Path),
+			Actions:  actions,
 		})
 	}
 	view := models.SearchResultView{

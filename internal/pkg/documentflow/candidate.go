@@ -49,7 +49,7 @@ func (s *Service) Candidate(ctx context.Context, id, body, title string, profile
 	if e = s.Store.PutRecord(id, "reports", r.ReportID, r); e != nil {
 		return models.DocumentSnapshot{}, e
 	}
-	return s.Get(id)
+	return s.GetUnderLease(id)
 }
 
 // CheckDraft records deterministic results without requiring/paying for semantic

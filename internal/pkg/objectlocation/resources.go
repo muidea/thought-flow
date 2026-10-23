@@ -57,7 +57,7 @@ func (r *Registry) Bindings(id string) (models.ResourceBindings, error) {
 		return b, ErrRecovery
 	}
 	for _, binding := range b.Bindings {
-		if !ValidBinding(binding) {
+		if !ValidBinding(binding) || !r.PublicResourcePath(binding.Path) {
 			return b, ErrUnsafe
 		}
 	}
@@ -108,6 +108,9 @@ func (r *Registry) UploadResource(ctx context.Context, topic, id, operation, nam
 		return resource, ErrConflict
 	}
 	path := "topics/" + topic + "/attachments/" + rid + "/" + name
+	if !r.PublicResourcePath(path) {
+		return resource, ErrUnsafe
+	}
 	resource = models.TopicResource{ID: rid, TopicID: topic, Name: name, Path: path, MIME: mime, Hash: Hash(raw), Size: int64(len(raw)), Shareable: true, ObjectIDs: []string{id}}
 	if e = WriteFile(r.Root, path, raw, 0644); e != nil {
 		return resource, e

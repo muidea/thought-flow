@@ -1218,7 +1218,17 @@ test("API e2e", async (t) => {
     response=await request(server.baseURL,base+"/resources","POST",{body:{operation_id:"e2e-resource",object_id:id,expected_generation:placement.generation,name:"readme.txt",content:Buffer.from("shareable attachment").toString("base64")}});assert.equal(response.status,200,response.text);const resource=envelope(response).data;
     response=await request(server.baseURL,`/api/resources/${resource.id}/content?object_id=${id}`,"GET");assert.equal(response.status,200,response.text);assert.equal(response.text,"shareable attachment");response=await request(server.baseURL,`/api/resources/${resource.id}/content?object_id=other-object`,"GET");assert.equal(response.status,404,response.text);
     response=await request(server.baseURL,`/api/search?scope=global&q=Independent`,"GET");assert.equal(response.status,200,response.text);assert.ok(!envelope(response).data.results.some(hit=>hit.thought_id===id));response=await request(server.baseURL,"/api/search?scope=topic","GET");assert.equal(response.status,400,response.text);
-    response=await request(server.baseURL,base+"/migrations/preview","POST",{body:{object_id:id,target_topic_id:""}});assert.equal(response.status,200,response.text);const preview=envelope(response).data;assert.equal(preview.before_global,false);assert.equal(preview.after_global,true);response=await request(server.baseURL,base+"/migrations","POST",{body:{operation_id:"e2e-migrate-out",preview_id:preview.id,plan_hash:preview.plan_hash,expected_object_generation:preview.source.generation}});assert.equal(response.status,200,response.text);response=await request(server.baseURL,`/api/thoughts/${id}/placement`,"GET");assert.equal(response.status,200,response.text);placement=envelope(response).data;assert.ok(!placement.owner_topic_id);assert.match(placement.placement.thought_path,/^thoughts\//);response=await request(server.baseURL,base+"/entries/planned/content?view=draft","GET");assert.equal(response.status,200,response.text);assert.match(envelope(response).data.body,/Independent content/);
+    // Capture refinement may finish after the indexed revision is first visible.
+    // A stale preview must conflict; obtain a fresh plan rather than weakening CAS.
+    for(let attempt=0;attempt<30;attempt++){
+      response=await request(server.baseURL,base+"/migrations/preview","POST",{body:{object_id:id,target_topic_id:""}});assert.equal(response.status,200,response.text);const preview=envelope(response).data;assert.equal(preview.before_global,false);assert.equal(preview.after_global,true);
+      response=await request(server.baseURL,base+"/migrations","POST",{body:{operation_id:`e2e-migrate-out-${attempt}`,preview_id:preview.id,plan_hash:preview.plan_hash,expected_object_generation:preview.source.generation}});
+      if(response.status!==409)break;
+      assert.equal(envelope(response).error.code,"generation_conflict",response.text);
+      const unchanged=envelope(await request(server.baseURL,`/api/thoughts/${id}/placement`,"GET")).data;assert.equal(unchanged.owner_topic_id,topic.id);
+      await sleep(50);
+    }
+    assert.equal(response.status,200,response.text);response=await request(server.baseURL,`/api/thoughts/${id}/placement`,"GET");assert.equal(response.status,200,response.text);placement=envelope(response).data;assert.ok(!placement.owner_topic_id);assert.match(placement.placement.thought_path,/^thoughts\//);response=await request(server.baseURL,base+"/entries/planned/content?view=draft","GET");assert.equal(response.status,200,response.text);assert.match(envelope(response).data.body,/Independent content/);
   });
 
   await t.test("unknown route returns 404 envelope", async () => {

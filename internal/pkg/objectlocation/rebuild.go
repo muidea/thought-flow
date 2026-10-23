@@ -15,6 +15,7 @@ import (
 func (r *Registry) Rebuild() error {
 	r.Namespace.Lock()
 	defer r.Namespace.Unlock()
+	defer r.BumpEpoch()
 	return r.discoverLocked()
 }
 func (r *Registry) scanThoughts() (map[string][]models.ObjectLocation, error) {
@@ -135,6 +136,13 @@ func (r *Registry) rebuildLocations() error {
 					return e
 				}
 				ambiguous = true
+			} else if existing.Lifecycle == "ambiguous" && existing.DeletedAt == nil {
+				existing.Lifecycle = "active"
+				existing.Generation++
+				existing.LastOperationID = "registry-rebuild"
+				if e = WriteJSON(r.Root, RecordPath(id), existing, false); e != nil {
+					return e
+				}
 			}
 			continue
 		} else if !os.IsNotExist(e) {

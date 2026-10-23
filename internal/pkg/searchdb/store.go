@@ -1149,6 +1149,16 @@ func (s *Store) Search(ctx context.Context, query models.SearchQuery) (models.Se
 	if err := rows.Err(); err != nil {
 		return models.SearchResponse{}, err
 	}
+	if s.root != "" && query.Scope == "topic" {
+		if err := s.refreshTopicSnapshots(ctx, query.TopicID); err != nil {
+			return models.SearchResponse{}, err
+		}
+		snapshots, err := s.searchTopicSnapshots(ctx, query, mode, useVector)
+		if err != nil {
+			return models.SearchResponse{}, err
+		}
+		items = append(items, snapshots...)
+	}
 	sortSearchResults(items, sortMode)
 	total := len(items)
 	start := offset

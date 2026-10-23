@@ -9,6 +9,7 @@ import (
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 )
 
 func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) {
@@ -21,6 +22,7 @@ func Open(ctx context.Context, cfg appconfig.Config) (*models.Workspace, error) 
 	if err != nil {
 		return nil, err
 	}
+	objectlocation.For(rootPath).ProtectPrivateRoot(dataPath)
 	documentFormatsPath := strings.TrimSpace(cfg.DocumentProfiles.CustomDir)
 	if documentFormatsPath == "" {
 		documentFormatsPath = filepath.Join(rootPath, "document-formats")

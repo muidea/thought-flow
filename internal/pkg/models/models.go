@@ -570,6 +570,8 @@ type SearchExplain struct {
 }
 
 type SearchResult struct {
+	SnapshotID        string         `json:"snapshot_id,omitempty"`
+	EntryID           string         `json:"entry_id,omitempty"`
 	IndexedRevisionID string         `json:"indexed_revision_id,omitempty"`
 	VersionKind       string         `json:"version_kind"`
 	ThoughtID         string         `json:"thought_id"`
@@ -612,6 +614,8 @@ type SearchResultView struct {
 // location) so the Web never accidentally renders a host-local path
 // that the user has no way to dereference.
 type SearchResultSummary struct {
+	SnapshotID        string   `json:"snapshot_id,omitempty"`
+	EntryID           string   `json:"entry_id,omitempty"`
 	IndexedRevisionID string   `json:"indexed_revision_id,omitempty"`
 	VersionKind       string   `json:"version_kind"`
 	ThoughtID         string   `json:"thought_id"`

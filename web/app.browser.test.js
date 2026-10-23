@@ -1794,13 +1794,19 @@ function startFixtureServer(options = {}) {
         }));
       }
     }
+    if (options.collection && url.pathname === "/api/search" && url.searchParams.get("scope") === "topic") {
+      const query=url.searchParams.get("q") || "";
+      const reply=()=>json(res,api({results:[{thought_id:"thought-A",title:`Result ${query}`,snippet:query,indexed_revision_id:"rev-A",version_kind:"working"}]}));
+      if(query==="old")return setTimeout(reply,180);
+      return reply();
+    }
     if (options.collection && url.pathname.startsWith("/api/topics/demo")) {
-      const catalog={schema_version:1,topic_id:"demo",generation:4,required_delivery_level:"ready_for_use",groups:[{id:"first",title:"Architecture"},{id:"second",title:"Implementation"}],entries:[{id:"A",group_id:"first",title:"Design A",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-A",version_policy:"latest_finalized"}},{id:"B",group_id:"second",title:"Design B",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-B",version_policy:"latest_finalized"}},{id:"planned",group_id:"second",title:"Missing plan",required:true,binding:{kind:"planned"}}]};
+      const catalog={schema_version:1,topic_id:"demo",generation:4,required_delivery_level:"ready_for_use",groups:[{id:"second",title:"Implementation"},{id:"first",title:"Architecture"}],entries:[{id:"A",group_id:"first",title:"Design A",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-A",version_policy:"latest_finalized"}},{id:"B",group_id:"second",title:"Design B",role:"design",required:true,binding:{kind:"thought",thought_id:"thought-B",version_policy:"latest_finalized"}},{id:"planned",group_id:"second",title:"Missing plan",required:true,binding:{kind:"planned"}},{id:"C",group_id:"first",title:"Design C",required:true,binding:{kind:"thought",thought_id:"thought-C",version_policy:"latest_finalized"}}]};
       const topic={id:"demo",slug:"demo",name:"Demo Collection",mode:"collection",generation:2,search_policy:{topic_global_visible:true,owned_thoughts_global_default:false},rules:{},outline:[],auto_weave:false};
       if(url.pathname==="/api/topics/demo")return json(res,api({topic,document:"Manual overview",members:[]}));
-      if(url.pathname==="/api/topics/demo/catalog")return json(res,api({workspace_key:"browser",topic,catalog,required_count:3,delivered_count:1,uncatalogued:[],entries:catalog.entries.map(entry=>({entry,binding_status:entry.id==="planned"?"planned":"bound",delivery_status:entry.id==="A"?"ready_for_use":"not_finalized",work_status:entry.id==="B"?"new_draft":"no_new_draft",has_new_draft:entry.id==="B",version_status:"latest_finalized",availability:"available",selected_revision_id:entry.id==="A"?"rev-A":""}))}));
+      if(url.pathname==="/api/topics/demo/catalog")return json(res,api({workspace_key:"browser",topic,catalog,required_count:3,delivered_count:1,uncatalogued:[],entries:catalog.entries.map(entry=>({entry,binding_status:entry.id==="planned"?"planned":"bound",delivery_status:entry.id==="A"?"ready_for_use":"not_finalized",work_status:entry.id==="B"?"new_draft":"no_new_draft",has_new_draft:entry.id==="B",version_status:"latest_finalized",availability:"available",selected_revision_id:entry.id==="A"?(options.collectionLatestRevision||"rev-A"):entry.id==="C"?"rev-C":""}))}));
       const match=url.pathname.match(/^\/api\/topics\/demo\/entries\/([^/]+)\/content$/);
-      if(match){const id=match[1];if(id!=="A"&&url.searchParams.get("view")!=="draft")return json(res,JSON.stringify({data:null,error:{message:"No finalized version"}}),422);return json(res,api({document_id:`thought-${id}`,revision:{revision_id:`rev-${id}`},body:`# ${id} full document\n\n## Details\n\nComplete independent body ${id}.`,resource_bindings:[]}));}
+      if(match){const id=match[1];if(id!=="A"&&id!=="C"&&url.searchParams.get("view")!=="draft")return json(res,JSON.stringify({data:null,error:{message:"No finalized version"}}),422);return json(res,api({document_id:`thought-${id}`,revision:{revision_id:url.searchParams.get("revision")||(id==="A"?(options.collectionLatestRevision||"rev-A"):`rev-${id}`)},body:`# ${id} full document\n\n## Details\n\nComplete independent body ${id}.`,resource_bindings:[]}));}
       if(url.pathname.endsWith("/candidates"))return json(res,api([]));
     }
     switch (url.pathname) {
@@ -2698,10 +2704,12 @@ test("typed document editor separates draft, review, confirmation and pinned exp
 
 test("collection continuous reading keeps filters, deep links and mobile focus", async (t) => {
  if(!chromePath){t.skip("Chrome executable not found");return;}
- const server=await startFixtureServer({collection:true});t.after(()=>server.close());
+ const fixtureOptions={collection:true,collectionLatestRevision:"rev-A"};
+ const server=await startFixtureServer(fixtureOptions);t.after(()=>server.close());
  const target=browserTargets.find(item=>item.name==="chrome");
  for(const viewport of viewports()){
  await t.test(viewport.name,async()=>{
+  fixtureOptions.collectionLatestRevision="rev-A";
   const browser=await target.launch(viewport);
   try{
    const page=await connectPage(browser);const errors=[];
@@ -2718,15 +2726,46 @@ test("collection continuous reading keeps filters, deep links and mobile focus",
     await page.evaluate(()=>document.querySelector("#collection-toggle").click());
    }
    await page.evaluate(()=>{const filter=document.querySelector("#collection-filter");filter.value="Design";filter.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("#collection-next").click();});
-   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("No finalized version"));
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body C."));
    assert.equal(await page.evaluate(()=>document.querySelector("#collection-filter").value),"Design");
-   assert.match(await page.evaluate(()=>window.location.hash),/entry=B/);
+   assert.match(await page.evaluate(()=>window.location.hash),/entry=C/);
+   await page.evaluate(()=>document.querySelector("#collection-prev").click());
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body A."));
+   await page.evaluate(()=>document.querySelector('.collection-entry[data-entry="B"]').click());
+   await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("No finalized version"));
    await page.evaluate(()=>document.querySelector('#collection-controls a[href*="view=draft"]').click());
    await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body B."));
    assert.match(await page.evaluate(()=>document.querySelector(".collection-version").textContent),/Working version/);
-   await page.evaluate(()=>document.querySelector("#collection-prev").click());
+   await page.evaluate(()=>document.querySelector("#collection-next").click());
    await page.waitForExpression(()=>document.querySelector("#collection-body")?.textContent.includes("Complete independent body A."));
-   await page.evaluate(()=>{window.location.hash="#/topics/demo?tab=documents&entry=A&view=final&revision=rev-A&section=details";});
+   await page.evaluate(()=>document.querySelector('#collection-controls a[href*="view=final"]').click());
+   await page.waitForExpression(()=>document.querySelector(".collection-version")?.textContent.includes("Finalized version"));
+   // Exercise the actual TOC click, history and precise-link button.
+   await page.evaluate(()=>{
+    Object.defineProperty(navigator,"clipboard",{configurable:true,value:{writeText:async text=>{window.__copiedCollectionLink=text;}}});
+    document.querySelector("#collection-copy").click();
+   });
+   const copied=await page.evaluate(()=>window.__copiedCollectionLink);
+   assert.match(copied,/revision=rev-A/);
+   await page.evaluate(()=>document.querySelector('.collection-toc a[href*="section=details"]').click());
+   await page.waitForExpression(()=>new URLSearchParams(location.hash.split("?")[1]).get("section")==="details");
+   assert.match(await page.evaluate(()=>window.location.hash),/revision=rev-A/);
+   await page.waitForExpression(()=>{const r=document.querySelector("#details")?.getBoundingClientRect();return r&&r.top<innerHeight&&r.bottom>0;});
+   await page.evaluate(()=>history.back());
+   await page.waitForExpression(()=>!new URLSearchParams(location.hash.split("?")[1]).has("section"));
+   await page.evaluate(()=>history.forward());
+   await page.waitForExpression(()=>new URLSearchParams(location.hash.split("?")[1]).get("section")==="details");
+   fixtureOptions.collectionLatestRevision="rev-A2";
+   await page.evaluate(()=>{location.hash="#/topics/demo?tab=documents&entry=A&view=final";});
+   await page.waitForExpression(()=>document.querySelector(".collection-version")?.textContent.includes("rev-A2"));
+   await page.evaluate(()=>{location.hash=new URL(window.__copiedCollectionLink).hash;});
+   await page.waitForExpression(()=>document.querySelector(".collection-version")?.textContent.includes("rev-A")&&!document.querySelector(".collection-version")?.textContent.includes("rev-A2"));
+   await page.evaluate(()=>{document.querySelector("#details").dataset.obsolete="true";document.querySelector('.collection-toc a[href*="section=details"]').click();});
+   await page.waitForExpression(()=>new URLSearchParams(location.hash.split("?")[1]).get("section")==="details"&&document.querySelector("#details")&&!document.querySelector("#details").dataset.obsolete);
+   // A later old search response must not replace the newest query results.
+   await page.evaluate(()=>{document.querySelector(".collection-search").open=true;const q=document.querySelector("#collection-search-query");q.value="old";document.querySelector("#collection-search-form").requestSubmit();q.value="new";document.querySelector("#collection-search-form").requestSubmit();});
+   await page.waitForExpression(()=>document.querySelector("#collection-search-results")?.textContent.includes("Result new")&&performance.getEntriesByType("resource").some(e=>e.name.includes("q=old")&&e.responseEnd>0));
+   assert.doesNotMatch(await page.evaluate(()=>document.querySelector("#collection-search-results").textContent),/Result old/);
    await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");
    await page.send("Page.reload");
    await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");

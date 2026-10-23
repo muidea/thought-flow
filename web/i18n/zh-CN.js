@@ -43,6 +43,8 @@ export const messages = {
   "workspace.draft": "查看草稿",
   "workspace.copy_link": "复制应用内链接",
   "workspace.favorite": "收藏",
+  "workspace.offline_partial": "部分图片或附件为外部链接或缺失，无法保证完整离线阅读。",
+  "workspace.snapshot_version": "快照版本",
   "workspace.working_version": "工作版本",
   "workspace.final_version": "定稿版本",
   "workspace.information": "文档信息",

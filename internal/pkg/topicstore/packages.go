@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"thoughtflow/internal/pkg/documentstore"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/objectlocation"
 )
@@ -34,18 +35,26 @@ type PackageFile struct {
 	Size    int64  `json:"size"`
 	Private bool   `json:"private,omitempty"`
 }
+type PackageRelation struct {
+	EntryID   string `json:"entry_id"`
+	Kind      string `json:"kind"`
+	ThoughtID string `json:"thought_id,omitempty"`
+}
 type PackageManifest struct {
-	SchemaVersion     int                       `json:"schema_version"`
-	Kind              string                    `json:"kind"`
-	TopicID           string                    `json:"topic_id"`
-	TopicGeneration   uint64                    `json:"topic_generation"`
-	CatalogGeneration uint64                    `json:"catalog_generation"`
-	FrozenAt          time.Time                 `json:"frozen_at"`
-	Private           bool                      `json:"contains_private"`
-	EvidenceReview    string                    `json:"evidence_review"`
-	Files             []PackageFile             `json:"files"`
-	Objects           []models.ObjectLocation   `json:"objects"`
-	Selections        []models.CatalogEntryView `json:"selections,omitempty"`
+	OfflineStatus     string                        `json:"offline_status"`
+	ResourceIssues    []models.OfflineResourceIssue `json:"resource_issues,omitempty"`
+	Relations         []PackageRelation             `json:"relations"`
+	SchemaVersion     int                           `json:"schema_version"`
+	Kind              string                        `json:"kind"`
+	TopicID           string                        `json:"topic_id"`
+	TopicGeneration   uint64                        `json:"topic_generation"`
+	CatalogGeneration uint64                        `json:"catalog_generation"`
+	FrozenAt          time.Time                     `json:"frozen_at"`
+	Private           bool                          `json:"contains_private"`
+	EvidenceReview    string                        `json:"evidence_review"`
+	Files             []PackageFile                 `json:"files"`
+	Objects           []models.ObjectLocation       `json:"objects"`
+	Selections        []models.CatalogEntryView     `json:"selections,omitempty"`
 }
 type ExportResult struct {
 	ID          string          `json:"id"`
@@ -95,9 +104,25 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 		e = objectlocation.ReadJSON(s.rootPath, exportBase(op.ID)+".json", &result)
 		return result, e
 	}
-	manifest := PackageManifest{SchemaVersion: 1, Kind: req.Kind, TopicID: id, TopicGeneration: view.Topic.Generation, CatalogGeneration: view.Catalog.Generation, FrozenAt: time.Now().UTC(), Private: req.IncludePrivate, EvidenceReview: "Private evidence is excluded; offline evidence review is not complete.", Files: []PackageFile{}, Objects: []models.ObjectLocation{}, Selections: view.Entries}
+	manifest := PackageManifest{OfflineStatus: "complete", SchemaVersion: 1, Kind: req.Kind, TopicID: id, TopicGeneration: view.Topic.Generation, CatalogGeneration: view.Catalog.Generation, FrozenAt: time.Now().UTC(), Private: req.IncludePrivate, EvidenceReview: "Private evidence is excluded; offline evidence review is not complete.", Files: []PackageFile{}, Objects: []models.ObjectLocation{}, Selections: view.Entries}
+	if req.Kind == "backup" {
+		manifest.OfflineStatus = "not_evaluated"
+	}
 	if req.IncludePrivate {
 		manifest.EvidenceReview = "Private evidence explicitly included; handle this backup as private."
+	}
+	for _, v := range view.Entries {
+		kind := v.Entry.Binding.Kind
+		if kind == "thought" {
+			if v.BindingStatus == "missing" || v.Location == nil {
+				kind = "missing"
+			} else if v.Location.OwnerTopicID == id {
+				kind = "owned"
+			} else {
+				kind = "external_reference"
+			}
+		}
+		manifest.Relations = append(manifest.Relations, PackageRelation{EntryID: v.Entry.ID, Kind: kind, ThoughtID: v.Entry.Binding.ThoughtID})
 	}
 	files := map[string][]byte{}
 	total := int64(0)
@@ -158,9 +183,40 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 			if l.ResourceBindingsRef != nil {
 				paths = append(paths, l.ResourceBindingsRef.Path)
 			}
-			journal, e := ds.ContentPaths(l.ObjectID)
-			if e != nil && !os.IsNotExist(e) {
-				return result, e
+			var journal []string
+			if _, err := ds.Head(l.ObjectID); err == nil {
+				journal, e = ds.ContentPaths(l.ObjectID)
+				if e != nil {
+					return result, e
+				}
+			} else if !os.IsNotExist(err) {
+				return result, err
+			} else {
+				projection, err := objectlocation.SafePath(s.rootPath, l.Placement.ThoughtPath)
+				if err != nil {
+					return result, err
+				}
+				raw, err := objectlocation.ReadFileBounded(projection, objectlocation.MaxResourceBytes)
+				if err != nil {
+					return result, err
+				}
+				note, _ := markdown.ParseThought(raw)
+				if note.DocumentProfile != nil {
+					return result, objectlocation.ErrRecovery
+				}
+				// A remaining journal without HEAD is damaged formal history,
+				// even if an external edit also removed projection metadata.
+				journalRoot, err := objectlocation.SafePath(s.rootPath, l.Placement.DocumentRoot)
+				if err != nil {
+					return result, err
+				}
+				entries, err := os.ReadDir(journalRoot)
+				if err != nil && !os.IsNotExist(err) {
+					return result, err
+				}
+				if len(entries) > 0 {
+					return result, objectlocation.ErrRecovery
+				}
 			}
 			paths = append(paths, journal...)
 			for _, path := range paths {
@@ -280,6 +336,14 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 					body = d.Body
 					bindings = d.Resources.Bindings
 				}
+				issues := objectlocation.OfflineResourceIssues(body, bindings)
+				for _, issue := range issues {
+					issue.EntryID = entry.ID
+					manifest.ResourceIssues = append(manifest.ResourceIssues, issue)
+				}
+				if len(issues) > 0 {
+					manifest.OfflineStatus = "partial"
+				}
 				for _, binding := range bindings {
 					if binding.Private {
 						return result, objectlocation.ErrUnsafe
@@ -322,7 +386,11 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 					return result, e
 				}
 				htmlPath := "documents/" + entry.ID + ".html"
-				if e = add(htmlPath, offlineHTML(entry.Title, rendered.String()), false); e != nil {
+				renderedBody := rendered.String()
+				if len(issues) > 0 {
+					renderedBody = "<p role=alert>Offline resources incomplete; consult manifest.json for external or missing assets.</p>" + renderedBody
+				}
+				if e = add(htmlPath, offlineHTML(entry.Title, renderedBody), false); e != nil {
 					return result, e
 				}
 				fmt.Fprintf(&indexHTML, "<li><a href=%q>%s</a></li>", htmlPath, html.EscapeString(entry.Title))

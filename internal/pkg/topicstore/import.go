@@ -3,6 +3,7 @@ package topicstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,8 +227,45 @@ func (s *Store) ImportPackage(ctx context.Context, operation string, raw []byte)
 			return result, e
 		}
 	}
-	// Validate catalog shape and bound immutable versions against staging only.
-	if e = New(stageRoot).validateCatalog(ctx, importedCatalog); e != nil {
+	// External references and missing sources are relations, not objects owned by
+	// this package. Keep them unresolved until the destination can resolve them.
+	if !validCatalogShape(importedCatalog) {
+		return result, objectlocation.ErrInvalid
+	}
+	if len(manifest.Relations) != len(importedCatalog.Entries) {
+		return result, objectlocation.ErrInvalid
+	}
+	relations := map[string]PackageRelation{}
+	for _, relation := range manifest.Relations {
+		if _, duplicate := relations[relation.EntryID]; duplicate {
+			return result, objectlocation.ErrInvalid
+		}
+		relations[relation.EntryID] = relation
+	}
+	checked := importedCatalog
+	checked.Entries = append([]models.CatalogEntry{}, importedCatalog.Entries...)
+	for i, entry := range checked.Entries {
+		relation, ok := relations[entry.ID]
+		if !ok || relation.ThoughtID != entry.Binding.ThoughtID {
+			return result, objectlocation.ErrInvalid
+		}
+		if entry.Binding.Kind == "thought" {
+			_, owned := objects[entry.Binding.ThoughtID]
+			if owned && relation.Kind != "owned" {
+				return result, objectlocation.ErrInvalid
+			}
+			if !owned {
+				if relation.Kind != "external_reference" && relation.Kind != "missing" {
+					return result, objectlocation.ErrInvalid
+				}
+				checked.Entries[i].Binding = models.CatalogBinding{Kind: "planned"}
+			}
+		} else if relation.Kind != entry.Binding.Kind {
+			return result, objectlocation.ErrInvalid
+		}
+	}
+	// Validate owned immutable versions and snapshots against staging only.
+	if e = New(stageRoot).validateCatalog(ctx, checked); e != nil {
 		return result, e
 	}
 	result.Phase = "validated"
@@ -243,6 +281,21 @@ func (s *Store) resumeImport(ctx context.Context, result *ImportResult) (ImportR
 	r := objectlocation.For(s.rootPath)
 	if op, e := r.Operation(result.Operation.ID); e == nil && op.State == "completed" {
 		return s.finishImport(result)
+	}
+	if result.Phase == "conflicted" {
+		return *result, objectlocation.ErrConflict
+	}
+	if err := s.checkImportTargets(result); err != nil {
+		if errors.Is(err, objectlocation.ErrConflict) {
+			result.Phase, result.Operation.State, result.Operation.Error = "conflicted", "conflicted", err.Error()
+			if e := r.Prepare(result.Operation); e != nil {
+				return *result, e
+			}
+			if e := objectlocation.WriteJSON(s.rootPath, importBase(result.Operation.ID)+"/state.json", result, true); e != nil {
+				return *result, e
+			}
+		}
+		return *result, err
 	}
 	stage := importBase(result.Operation.ID) + "/stage"
 	save := func() error {
@@ -368,7 +421,7 @@ func (s *Store) RecoverImports(ctx context.Context) error {
 		if e != nil {
 			return e
 		}
-		if result.Phase == "completed" {
+		if result.Phase == "completed" || result.Phase == "conflicted" {
 			continue
 		}
 		if _, e = s.resumeImport(ctx, &result); e != nil {
@@ -431,4 +484,62 @@ func (s *Store) ImportStatus(id string) (ImportResult, error) {
 	}
 	err := objectlocation.ReadJSON(s.rootPath, importBase(id)+"/state.json", &result)
 	return result, err
+}
+
+// Every recovery attempt preflights every live destination before any write.
+// Exact immutable bytes can be reused; mutable topic identity must be reserved
+// by this operation. A foreign creation or edit is never replayed over.
+func (s *Store) checkImportTargets(result *ImportResult) error {
+	for _, file := range result.Manifest.Files {
+		path, err := objectlocation.SafePath(s.rootPath, file.Path)
+		if err != nil {
+			return err
+		}
+		raw, err := objectlocation.ReadFileBounded(path, objectlocation.MaxResourceBytes)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if file.Path == "topics/"+result.TopicID+"/topic.yaml" {
+			var live, staged models.Topic
+			if json.Unmarshal(raw, &live) != nil || live.ImportOperationID != result.Operation.ID {
+				return objectlocation.ErrConflict
+			}
+			if err = objectlocation.ReadJSON(s.rootPath, importBase(result.Operation.ID)+"/stage/"+file.Path, &staged); err != nil {
+				return err
+			}
+			staged.ImportOperationID = result.Operation.ID
+			if objectlocation.HashJSON(live) != objectlocation.HashJSON(staged) {
+				return objectlocation.ErrConflict
+			}
+		} else if strings.HasPrefix(file.Path, ".content-registry/objects/") {
+			var live models.ObjectLocation
+			if json.Unmarshal(raw, &live) != nil || live.ImportOperationID != result.Operation.ID {
+				return objectlocation.ErrConflict
+			}
+			id := strings.TrimSuffix(filepath.Base(file.Path), ".json")
+			found := false
+			for _, expected := range result.Manifest.Objects {
+				if expected.ObjectID != id {
+					continue
+				}
+				expected.Lifecycle, expected.ImportOperationID, expected.LastOperationID = live.Lifecycle, result.Operation.ID, result.Operation.ID
+				if live.Lifecycle != "active" && live.Lifecycle != "import_pending" {
+					return objectlocation.ErrConflict
+				}
+				if objectlocation.HashJSON(live) != objectlocation.HashJSON(expected) {
+					return objectlocation.ErrConflict
+				}
+				found = true
+			}
+			if !found {
+				return objectlocation.ErrConflict
+			}
+		} else if objectlocation.Hash(raw) != file.Hash || int64(len(raw)) != file.Size {
+			return objectlocation.ErrConflict
+		}
+	}
+	return nil
 }

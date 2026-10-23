@@ -123,6 +123,13 @@ func (a *applicationLifecycle) Startup(ctx context.Context) error {
 	}
 	a.releaseWriter = release
 	registry := objectlocation.For(cfg.Workspace.ContentDir)
+	runtimePath, pathErr := appconfig.RuntimeStateDir(cfg)
+	if pathErr != nil {
+		release()
+		a.releaseWriter = nil
+		return pathErr
+	}
+	registry.ProtectPrivateRoot(runtimePath)
 	if err = registry.Initialize(); err == nil {
 		err = registry.RecoverMigrations()
 		if err == nil {

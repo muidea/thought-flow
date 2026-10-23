@@ -78,7 +78,10 @@ func (r *Registry) relativeBindings(source models.ObjectLocation) (models.Resour
 				return ast.WalkStop, nil
 			}
 			rel := filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(source.Placement.ThoughtPath), filepath.FromSlash(u.Path))))
-			if strings.Contains(rel, "/.private/") || strings.HasPrefix(rel, ".content-registry/") {
+			parts := strings.Split(rel, "/")
+			approved := len(parts) >= 2 && parts[0] == "attachments"
+			approved = approved || (len(parts) >= 4 && parts[0] == "topics" && ValidID(parts[1]) && parts[2] == "attachments")
+			if !approved || !r.PublicResourcePath(rel) {
 				failure = ErrUnsafe
 				return ast.WalkStop, nil
 			}

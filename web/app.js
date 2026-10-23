@@ -688,6 +688,7 @@ let captureSelectionEpoch = 0;
 let searchRequestEpoch = 0;
 let topicRequestEpoch = 0;
 let collectionReadEpoch = 0;
+let collectionSearchEpoch = 0;
 let collectionWorkspace = null;
 let markdownResourceContext = null;
 let thoughtRequestEpoch = 0;
@@ -4104,7 +4105,7 @@ function renderSearchResultItem(item, options = {}) {
   const thoughtID = item.thought_id || item.id || "";
   const title = item.title || thoughtID;
   const sourceID = item.source_id || thoughtID;
-  const actions = new Set(Array.isArray(item.actions) && item.actions.length > 0
+  const actions = new Set(Array.isArray(item.actions)
     ? item.actions
     : ["preview", "open_note", "add_to_compose", "copy_path"]);
   const canPreview = actions.has("preview") && thoughtID;
@@ -5771,7 +5772,7 @@ function collectionVisibleEntries() {
   const status = $("#collection-status")?.value || "";
   const prefs = collectionPreferences(state.activeTopicId);
   const list = $("#collection-list")?.value || "all";
-  return (collectionWorkspace?.entries || []).filter(
+  const filtered = (collectionWorkspace?.entries || []).filter(
     (v) =>
       (!filter ||
         `${v.entry.title} ${v.original_title || ""} ${v.entry.role} ${v.entry.binding.thought_id || ""}`
@@ -5787,6 +5788,14 @@ function collectionVisibleEntries() {
         ].includes(status)) &&
       (list === "all" || (prefs[list] || []).includes(v.entry.id)),
   );
+  return (collectionWorkspace?.catalog?.groups || []).flatMap(group =>
+    filtered.filter(v => v.entry.group_id === group.id));
+}
+function collectionReadableEntries(view) {
+ return collectionVisibleEntries().filter(v =>
+   v.entry.binding.kind !== "planned" && v.binding_status !== "missing" &&
+   v.availability === "available" &&
+   (view === "draft" || Boolean(v.selected_revision_id)));
 }
 function collectionCatalogHTML(selected) {
   const data = collectionWorkspace;
@@ -5884,16 +5893,18 @@ function renderCollectionWorkspace(selected) {
   renderCollectionEditor();
 }
 function navigateCollection(offset) {
-  const visible = collectionVisibleEntries();
+  const view = state.route?.query?.view || "final";
+  const visible = collectionReadableEntries(view);
   const selected =
     state.route?.query?.entry ||
     collectionPreferences(state.activeTopicId).entry;
   const index = visible.findIndex((v) => v.entry.id === selected);
   const next = visible[index + offset];
-  if (next) navigateHash(collectionRoute(next.entry.id), { force: true });
+  if (next) navigateHash(collectionRoute(next.entry.id, view), { force: true });
 }
 async function readCollectionEntry(topic, entry, view, revision) {
   const epoch = ++collectionReadEpoch;
+  let resolvedRevision = revision;
   const topicEpoch = topicRequestEpoch;
   const item = collectionWorkspace?.entries.find((v) => v.entry.id === entry);
   const body = $("#collection-body");
@@ -5913,9 +5924,10 @@ async function readCollectionEntry(topic, entry, view, revision) {
       openDocumentEditor(item.entry.binding.thought_id).catch((error) =>
         toast(error.message),
       );
+  $("#collection-copy").disabled = true;
   $("#collection-copy").onclick = () =>
-    copyText(
-      `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, revision)}`,
+    token() && resolvedRevision && copyText(
+      `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, resolvedRevision)}`,
     );
   $("#collection-favorite").onclick = () => {
     const prefs = collectionPreferences(topic);
@@ -5934,6 +5946,8 @@ async function readCollectionEntry(topic, entry, view, revision) {
       `/api/topics/${encodeURIComponent(topic)}/entries/${encodeURIComponent(entry)}/content?${new URLSearchParams({ view, ...(revision ? { revision } : {}) })}`,
     );
     if (!token()) return;
+    resolvedRevision = snap.revision?.revision_id || "";
+    $("#collection-copy").disabled = !resolvedRevision;
     markdownResourceContext =
       item.entry.binding.kind === "snapshot"
         ? { topic_id: topic, snapshot_id: item.entry.binding.snapshot_id }
@@ -5945,7 +5959,7 @@ async function readCollectionEntry(topic, entry, view, revision) {
     );
     const html = renderMarkdown(snap.body || "");
     markdownResourceContext = null;
-    body.innerHTML = `<p class="collection-version">${escapeHTML(t(view === "draft" ? "workspace.working_version" : "workspace.final_version"))} · ${escapeHTML(snap.revision?.revision_id || t("workspace.status.ordinary_note"))}</p><div class="markdown-rendered">${html}</div><details><summary>${escapeHTML(t("workspace.information"))}</summary><dl><dt>${escapeHTML(t("workspace.original_title"))}</dt><dd>${escapeHTML(item.original_title || "")}</dd><dt>${escapeHTML(t("workspace.profile"))}</dt><dd>${escapeHTML(item.profile?.profile_id || "")}</dd><dt>${escapeHTML(t("workspace.location"))}</dt><dd>${escapeHTML(item.location?.placement?.thought_path || "")}</dd><dt>${escapeHTML(t("workspace.revision"))}</dt><dd>${escapeHTML(snap.revision?.revision_id || "")}</dd><dt>${escapeHTML(t("workspace.validation"))}</dt><dd>${escapeHTML(item.validation_status)}</dd></dl><form id="collection-version-form"><label>${escapeHTML(t("workspace.revision"))}<input id="collection-version-id" value="${escapeHTML(revision)}"></label><button class="tf-btn">${escapeHTML(t("workspace.open_version"))}</button></form></details><p class="topic-meta">${escapeHTML(t("workspace.local_link_notice"))}</p>`;
+    body.innerHTML = `<p class="collection-version">${escapeHTML(t(view === "draft" ? "workspace.working_version" : "workspace.final_version"))} · ${escapeHTML(snap.revision?.revision_id || t("workspace.status.ordinary_note"))}</p>${snap.offline_status === "partial" ? `<p role="status">${escapeHTML(t("workspace.offline_partial"))}</p>` : ""}<div class="markdown-rendered">${html}</div><details><summary>${escapeHTML(t("workspace.information"))}</summary><dl><dt>${escapeHTML(t("workspace.original_title"))}</dt><dd>${escapeHTML(item.original_title || "")}</dd><dt>${escapeHTML(t("workspace.profile"))}</dt><dd>${escapeHTML(item.profile?.profile_id || "")}</dd><dt>${escapeHTML(t("workspace.location"))}</dt><dd>${escapeHTML(item.location?.placement?.thought_path || "")}</dd><dt>${escapeHTML(t("workspace.revision"))}</dt><dd>${escapeHTML(snap.revision?.revision_id || "")}</dd><dt>${escapeHTML(t("workspace.validation"))}</dt><dd>${escapeHTML(item.validation_status)}</dd></dl><form id="collection-version-form"><label>${escapeHTML(t("workspace.revision"))}<input id="collection-version-id" value="${escapeHTML(resolvedRevision)}"></label><button class="tf-btn">${escapeHTML(t("workspace.open_version"))}</button></form></details><p class="topic-meta">${escapeHTML(t("workspace.local_link_notice"))}</p>`;
     $("#collection-version-form").onsubmit = (e) => {
       e.preventDefault();
       navigateHash(
@@ -5956,7 +5970,7 @@ async function readCollectionEntry(topic, entry, view, revision) {
     saveCollectionPreference(topic, {
       entry,
       view,
-      revision,
+      revision: resolvedRevision,
       recent: [
         entry,
         ...(collectionPreferences(topic).recent || []).filter(
@@ -5981,7 +5995,7 @@ async function readCollectionEntry(topic, entry, view, revision) {
     if (headings.length) {
       const toc = document.createElement("details");
       toc.className = "collection-toc";
-      toc.innerHTML = `<summary>${escapeHTML(t("workspace.sections"))}</summary>${headings.map((h) => `<p><a href="${escapeHTML(collectionRoute(entry, view, revision, h.id))}">${escapeHTML(h.textContent)}</a> <button class="tf-btn" data-copy-section="${escapeHTML(h.id)}">${escapeHTML(t("workspace.copy_link"))}</button></p>`).join("")}`;
+      toc.innerHTML = `<summary>${escapeHTML(t("workspace.sections"))}</summary>${headings.map((h) => `<p><a href="${escapeHTML(collectionRoute(entry, view, resolvedRevision, h.id))}">${escapeHTML(h.textContent)}</a> <button class="tf-btn" data-copy-section="${escapeHTML(h.id)}">${escapeHTML(t("workspace.copy_link"))}</button></p>`).join("")}`;
       body.prepend(toc);
       toc
         .querySelectorAll("[data-copy-section]")
@@ -5989,7 +6003,7 @@ async function readCollectionEntry(topic, entry, view, revision) {
           (button) =>
             (button.onclick = () =>
               copyText(
-                `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, revision, button.dataset.copySection)}`,
+                `${window.location.origin}${window.location.pathname || "/"}${collectionRoute(entry, view, resolvedRevision, button.dataset.copySection)}`,
               )),
         );
     }
@@ -6002,13 +6016,17 @@ async function readCollectionEntry(topic, entry, view, revision) {
     }
     body.querySelectorAll('a[href^="#"]').forEach((link) =>
       link.addEventListener("click", (e) => {
+        const href = link.getAttribute("href");
+        if (!token() || href.startsWith("#/")) return;
         e.preventDefault();
+        let section = href.slice(1);
+        try { section = decodeURIComponent(section); } catch {}
         navigateHash(
           collectionRoute(
             entry,
             view,
-            revision,
-            link.getAttribute("href").slice(1),
+            resolvedRevision,
+            section,
           ),
           { force: true },
         );
@@ -6023,20 +6041,27 @@ async function readCollectionEntry(topic, entry, view, revision) {
 async function searchCollection(event) {
   event.preventDefault();
   const topic = state.activeTopicId;
-  const epoch = collectionReadEpoch;
+  const epoch = ++collectionSearchEpoch;
+  const selection = collectionReadEpoch;
+  const topicEpoch = topicRequestEpoch;
+  const node = $("#collection-search-results");
+  const current = () => topic === state.activeTopicId && epoch === collectionSearchEpoch && selection === collectionReadEpoch && topicEpoch === topicRequestEpoch && node === $("#collection-search-results");
+  try {
   const result = await api(
     `/api/search?${new URLSearchParams({ scope: "topic", topic_id: topic, q: $("#collection-search-query").value, limit: "100" })}`,
   );
-  if (topic !== state.activeTopicId || epoch !== collectionReadEpoch) return;
+  if (topic !== state.activeTopicId || epoch !== collectionSearchEpoch || selection !== collectionReadEpoch || topicEpoch !== topicRequestEpoch || node !== $("#collection-search-results")) return;
   $("#collection-search-results").innerHTML =
     (result.results || [])
       .map((hit) => {
         const entry = collectionWorkspace.entries.find(
-          (v) => v.entry.binding.thought_id === hit.thought_id,
+          (v) => hit.snapshot_id ? v.entry.id === hit.entry_id && v.entry.binding.snapshot_id === hit.snapshot_id : v.entry.binding.thought_id === hit.thought_id,
         );
-        return `<article><strong>${escapeHTML(hit.title)}</strong> · ${escapeHTML(t("workspace.working_version"))}<p>${escapeHTML(hit.snippet)}</p>${entry ? `<a href="${escapeHTML(collectionRoute(entry.entry.id, "draft", hit.indexed_revision_id || ""))}">${escapeHTML(t("workspace.open_document"))}</a>` : ""}</article>`;
+        return `<article><strong>${escapeHTML(hit.title)}</strong> · ${escapeHTML(t(hit.version_kind === "snapshot" ? "workspace.snapshot_version" : "workspace.working_version"))}<p>${escapeHTML(hit.snippet)}</p>${entry ? `<a href="${escapeHTML(collectionRoute(entry.entry.id, hit.version_kind === "snapshot" ? "final" : "draft", hit.indexed_revision_id || ""))}">${escapeHTML(t("workspace.open_document"))}</a>` : ""}</article>`;
       })
       .join("") || escapeHTML(t("workspace.no_results"));
+  } catch (error) { if (current() && node) node.textContent = error.message; }
+
 }
 function renderCollectionEditor() {
   const data = collectionWorkspace;
@@ -6073,49 +6098,62 @@ function renderCollectionEditor() {
  <button class="tf-btn" id="collection-activity">${escapeHTML(t("workspace.activity"))}</button><div id="collection-activity-list"></div><button class="tf-btn" id="collection-delete">${escapeHTML(t("workspace.delete_empty"))}</button>
  <div class="collection-actions"><button class="tf-btn" data-export-kind="delivery">${escapeHTML(t("workspace.export_delivery"))}</button><button class="tf-btn" data-export-kind="backup">${escapeHTML(t("workspace.export_backup"))}</button><label><input id="collection-private" type="checkbox">${escapeHTML(t("workspace.include_private"))}</label><button class="tf-btn" id="collection-rebuild">${escapeHTML(t("workspace.rebuild"))}</button></div><div id="collection-export-result"></div><form id="collection-import"><label>${escapeHTML(t("workspace.import_backup"))}<input name="file" type="file" accept=".zip" required></label><button class="tf-btn">${escapeHTML(t("workspace.import_backup"))}</button></form><div id="collection-management-error" role="alert"></div>`;
   const topic = state.activeTopicId;
-  const fail = (error) => {
-    $("#collection-management-error").textContent = error.message;
-  };
+  const actionRequests = new Map();
   const action = (fn) => async (event) => {
     event.preventDefault();
+    const epoch = topicRequestEpoch, selection = collectionReadEpoch;
+    const target = event.currentTarget || event.target;
+    const key = target?.dataset?.exportKind ? "export" : target?.id || target;
+    const request = (actionRequests.get(key) || 0) + 1;
+    actionRequests.set(key, request);
+    const current = () => topic === state.activeTopicId &&
+      epoch === topicRequestEpoch && selection === collectionReadEpoch &&
+      editor === $("#collection-editor") && actionRequests.get(key) === request;
+    if (!current()) return;
+    const scopedAPI = async (...args) => {
+      if (!current()) throw new Error("stale_workspace_action");
+      const value = await api(...args);
+      if (!current()) throw new Error("stale_workspace_action");
+      return value;
+    };
     try {
-      await fn(event);
+      await fn(event, scopedAPI, current);
     } catch (error) {
-      fail(error);
+      if (current()) $("#collection-management-error").textContent = error.message;
     }
   };
-  $("#collection-threshold").onsubmit = action(async (e) => {
+  $("#collection-threshold").onsubmit = action(async (e, api, current) => {
     const c = structuredClone(data.catalog);
     c.required_delivery_level = e.target.elements.level.value;
-    await saveCollectionCatalog(c);
+    await saveCollectionCatalog(c, topic, api);
   });
   editor.querySelectorAll("[data-edit-group]").forEach((form) => {
-    form.onsubmit = action(async () => {
+    form.onsubmit = action(async (_event, api, current) => {
       const c = structuredClone(data.catalog);
       c.groups.find((g) => g.id === form.dataset.editGroup).title =
         form.elements.title.value;
-      await saveCollectionCatalog(c);
+      await saveCollectionCatalog(c, topic, api);
     });
     form.querySelectorAll("[data-group-move]").forEach(
       (button) =>
-        (button.onclick = action(async () => {
+        (button.onclick = action(async (_event, api, current) => {
           const c = structuredClone(data.catalog);
           const i = c.groups.findIndex((g) => g.id === form.dataset.editGroup),
             j = i + Number(button.dataset.groupMove);
           if (j < 0 || j >= c.groups.length) return;
           [c.groups[i], c.groups[j]] = [c.groups[j], c.groups[i]];
-          await saveCollectionCatalog(c);
+          await saveCollectionCatalog(c, topic, api);
         })),
     );
-    form.querySelector("[data-group-remove]").onclick = action(async () => {
+    form.querySelector("[data-group-remove]").onclick = action(async (_event, api, current) => {
       const c = structuredClone(data.catalog);
       if (c.entries.some((e) => e.group_id === form.dataset.editGroup))
         throw new Error(t("workspace.group_not_empty"));
       c.groups = c.groups.filter((g) => g.id !== form.dataset.editGroup);
-      await saveCollectionCatalog(c);
+      await saveCollectionCatalog(c, topic, api);
     });
   });
-  $("#collection-snapshot").onsubmit = action(async (e) => {
+  $("#collection-snapshot").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const snap = await api(
       `/api/topics/${encodeURIComponent(topic)}/snapshots`,
@@ -6138,9 +6176,9 @@ function renderCollectionEditor() {
       required: false,
       binding: { kind: "snapshot", snapshot_id: snap.id },
     });
-    await saveCollectionCatalog(c);
+    await saveCollectionCatalog(c, topic, api);
   });
-  $("#collection-convert").onsubmit = action(async (e) => {
+  $("#collection-convert").onsubmit = action(async (e, api, current) => {
     const plan = await api(
       `/api/topics/${encodeURIComponent(topic)}/mode-conversions/preview`,
       {
@@ -6150,7 +6188,7 @@ function renderCollectionEditor() {
     );
     $("#collection-convert-preview").innerHTML =
       `<p>${escapeHTML(t("workspace.conversion_notice"))}</p><pre>${escapeHTML(JSON.stringify(plan, null, 2))}</pre><button class="tf-btn" id="collection-convert-confirm">${escapeHTML(t("workspace.confirm_conversion"))}</button>`;
-    $("#collection-convert-confirm").onclick = action(async () => {
+    $("#collection-convert-confirm").onclick = action(async (_event, api, current) => {
       await api(`/api/topics/${encodeURIComponent(topic)}/mode-conversions`, {
         method: "POST",
         body: JSON.stringify({
@@ -6162,7 +6200,7 @@ function renderCollectionEditor() {
       await reloadCurrentCollection(topic);
     });
   });
-  $("#collection-activity").onclick = action(async () => {
+  $("#collection-activity").onclick = action(async (_event, api, current) => {
     const activities = await api(
       `/api/topics/${encodeURIComponent(topic)}/activity`,
     );
@@ -6176,7 +6214,7 @@ function renderCollectionEditor() {
       .querySelectorAll("[data-retry-operation]")
       .forEach(
         (button) =>
-          (button.onclick = action(async () => {
+          (button.onclick = action(async (_event, api, current) => {
             await api(
               `/api/operations/${encodeURIComponent(button.dataset.retryOperation)}/retry`,
               { method: "POST" },
@@ -6185,7 +6223,7 @@ function renderCollectionEditor() {
           })),
       );
   });
-  $("#collection-delete").onclick = action(async () => {
+  $("#collection-delete").onclick = action(async (_event, api, current) => {
     await api(`/api/topics/${encodeURIComponent(topic)}`, {
       method: "DELETE",
       body: JSON.stringify({
@@ -6196,7 +6234,7 @@ function renderCollectionEditor() {
     });
     navigateHash("#/topics", { force: true });
   });
-  $("#collection-settings").onsubmit = action(async (e) => {
+  $("#collection-settings").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     await api(`/api/topics/${encodeURIComponent(topic)}/settings`, {
       method: "PATCH",
@@ -6213,15 +6251,15 @@ function renderCollectionEditor() {
     });
     await reloadCurrentCollection(topic);
   });
-  $("#collection-group-add").onsubmit = action(async (e) => {
+  $("#collection-group-add").onsubmit = action(async (e, api, current) => {
     const c = structuredClone(data.catalog);
     c.groups.push({
       id: workspaceOperationID(),
       title: e.target.elements.title.value,
     });
-    await saveCollectionCatalog(c);
+    await saveCollectionCatalog(c, topic, api);
   });
-  $("#collection-entry-add").onsubmit = action(async (e) => {
+  $("#collection-entry-add").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const c = structuredClone(data.catalog);
     const id = f.elements.thought_id.value.trim();
@@ -6239,10 +6277,10 @@ function renderCollectionEditor() {
           }
         : { kind: "planned" },
     });
-    await saveCollectionCatalog(c);
+    await saveCollectionCatalog(c, topic, api);
   });
   editor.querySelectorAll(".collection-edit-entry").forEach((form) => {
-    form.onsubmit = action(async () => {
+    form.onsubmit = action(async (_event, api, current) => {
       const c = structuredClone(data.catalog);
       const entry = c.entries.find((v) => v.id === form.dataset.entryId);
       entry.title = form.elements.title.value;
@@ -6258,28 +6296,28 @@ function renderCollectionEditor() {
           delete entry.binding.finalization_id;
         }
       }
-      await saveCollectionCatalog(c);
+      await saveCollectionCatalog(c, topic, api);
     });
     form.querySelectorAll("[data-move]").forEach(
       (button) =>
-        (button.onclick = action(async () => {
+        (button.onclick = action(async (_event, api, current) => {
           const c = structuredClone(data.catalog);
           const i = c.entries.findIndex((v) => v.id === form.dataset.entryId);
           const j = i + Number(button.dataset.move);
           if (j < 0 || j >= c.entries.length) return;
           [c.entries[i], c.entries[j]] = [c.entries[j], c.entries[i]];
-          await saveCollectionCatalog(c);
+          await saveCollectionCatalog(c, topic, api);
         })),
     );
-    form.querySelector("[data-remove]").onclick = action(async () => {
+    form.querySelector("[data-remove]").onclick = action(async (_event, api, current) => {
       const c = structuredClone(data.catalog);
       c.entries = c.entries.filter((v) => v.id !== form.dataset.entryId);
-      await saveCollectionCatalog(c);
+      await saveCollectionCatalog(c, topic, api);
     });
   });
   editor.querySelectorAll("[data-bind-owned]").forEach(
     (button) =>
-      (button.onclick = action(async () => {
+      (button.onclick = action(async (_event, api, current) => {
         const c = structuredClone(data.catalog);
         c.entries.push({
           id: workspaceOperationID(),
@@ -6293,11 +6331,11 @@ function renderCollectionEditor() {
             version_policy: "latest_finalized",
           },
         });
-        await saveCollectionCatalog(c);
+        await saveCollectionCatalog(c, topic, api);
       })),
   );
-  editor.querySelectorAll("[data-restore-thought]").forEach(button=>button.onclick=action(async()=>{await api(`/api/thoughts/${encodeURIComponent(button.dataset.restoreThought)}/restore`,{method:"POST",body:JSON.stringify({operation_id:workspaceOperationID(),expected_generation:Number(button.dataset.generation)})});await reloadCurrentCollection(topic);}));
-  $("#collection-placement").onsubmit = action(async (e) => {
+  editor.querySelectorAll("[data-restore-thought]").forEach(button=>button.onclick=action(async(_event, api, current)=>{await api(`/api/thoughts/${encodeURIComponent(button.dataset.restoreThought)}/restore`,{method:"POST",body:JSON.stringify({operation_id:workspaceOperationID(),expected_generation:Number(button.dataset.generation)})});await reloadCurrentCollection(topic);}));
+  $("#collection-placement").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const id = f.elements.thought_id.value.trim();
     const l = await api(`/api/thoughts/${encodeURIComponent(id)}/placement`);
@@ -6311,7 +6349,7 @@ function renderCollectionEditor() {
     });
     await reloadCurrentCollection(topic);
   });
-  $("#collection-migrate").onsubmit = action(async (e) => {
+  $("#collection-migrate").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const p = await api(
       `/api/topics/${encodeURIComponent(topic)}/migrations/preview`,
@@ -6328,7 +6366,7 @@ function renderCollectionEditor() {
     $("#collection-confirm-migration").disabled = Boolean(
       p.conflicts?.length || p.missing?.length,
     );
-    $("#collection-confirm-migration").onclick = action(async () => {
+    $("#collection-confirm-migration").onclick = action(async (_event, api, current) => {
       await api(`/api/topics/${encodeURIComponent(topic)}/migrations`, {
         method: "POST",
         body: JSON.stringify({
@@ -6341,7 +6379,7 @@ function renderCollectionEditor() {
       await reloadCurrentCollection(topic);
     });
   });
-  $("#collection-resource").onsubmit = action(async (e) => {
+  $("#collection-resource").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const id = f.elements.thought_id.value.trim();
     const file = f.elements.file.files[0];
@@ -6369,7 +6407,7 @@ function renderCollectionEditor() {
   });
   editor.querySelectorAll("[data-export-kind]").forEach(
     (button) =>
-      (button.onclick = action(async () => {
+      (button.onclick = action(async (_event, api, current) => {
         const result = await api(
           `/api/topics/${encodeURIComponent(topic)}/exports`,
           {
@@ -6384,16 +6422,16 @@ function renderCollectionEditor() {
           },
         );
         $("#collection-export-result").innerHTML =
-          `<a href="${escapeHTML(result.download_url)}" download>${escapeHTML(t("workspace.download"))}</a> · ${escapeHTML(result.manifest.evidence_review)}`;
+          `<a href="${escapeHTML(result.download_url)}" download>${escapeHTML(t("workspace.download"))}</a> · ${escapeHTML(result.manifest.evidence_review)}${result.manifest.offline_status === "partial" ? `<p role="status">${escapeHTML(t("workspace.offline_partial"))}</p>` : ""}`;
       })),
   );
-  $("#collection-rebuild").onclick = action(async () => {
+  $("#collection-rebuild").onclick = action(async (_event, api, current) => {
     await api(`/api/topics/${encodeURIComponent(topic)}/index/rebuild`, {
       method: "POST",
     });
     await reloadCurrentCollection(topic);
   });
-  $("#collection-import").onsubmit = action(async (e) => {
+  $("#collection-import").onsubmit = action(async (e, api, current) => {
     const file = e.target.elements.file.files[0];
     const response = await fetch(
       `/api/topic-imports?operation_id=${encodeURIComponent(workspaceOperationID())}`,
@@ -6403,10 +6441,12 @@ function renderCollectionEditor() {
         headers: { "Content-Type": "application/zip" },
       },
     );
+    if (!current()) return;
     if (!response.ok) throw new Error(await response.text());
+    if (!current()) return;
     await loadTopics();
   });
-  $("#collection-draft").onsubmit = action(async (e) => {
+  $("#collection-draft").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const profiles = await api("/api/document-profiles");
     const list = Array.isArray(profiles)
@@ -6435,10 +6475,9 @@ function renderCollectionEditor() {
 async function reloadCurrentCollection(topic) {
   if (state.route?.params?.topicId === topic) await openTopic(topic);
 }
-async function saveCollectionCatalog(catalog) {
-  const topic = state.activeTopicId;
+async function saveCollectionCatalog(catalog, topic = state.activeTopicId, request = api) {
   try {
-    await api(`/api/topics/${encodeURIComponent(topic)}/catalog`, {
+    await request(`/api/topics/${encodeURIComponent(topic)}/catalog`, {
       method: "PUT",
       body: JSON.stringify({
         operation_id: workspaceOperationID(),

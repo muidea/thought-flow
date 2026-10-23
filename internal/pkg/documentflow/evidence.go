@@ -134,6 +134,9 @@ func (s *Service) evidence(id string, sources models.SourceManifest) (map[string
 	return out, nil
 }
 func (s *Service) sourceFreshness(id string, sources models.SourceManifest) string {
+	return s.sourceFreshnessWithHasher(id, sources, s.Options.SourceHash)
+}
+func (s *Service) sourceFreshnessWithHasher(id string, sources models.SourceManifest, hasher func(models.DocumentSource) (string, error)) string {
 	status := "snapshot"
 	if _, e := s.evidence(id, sources); e != nil {
 		return "unavailable"
@@ -142,8 +145,8 @@ func (s *Service) sourceFreshness(id string, sources models.SourceManifest) stri
 		if source.VerificationStatus != "verified" && status == "snapshot" {
 			status = "unverified"
 		}
-		if s.Options.SourceHash != nil && source.ResourceID != "" {
-			hash, e := s.Options.SourceHash(source)
+		if hasher != nil && source.ResourceID != "" {
+			hash, e := hasher(source)
 			if e != nil {
 				status = "unavailable"
 			} else if hash != source.Hash && status != "unavailable" {

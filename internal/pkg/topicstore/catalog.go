@@ -102,7 +102,7 @@ func (s *Store) validateCatalog(ctx context.Context, c models.TopicCatalog) erro
 			if e := objectlocation.ReadJSON(s.rootPath, "topics/"+c.TopicID+"/references/"+b.SnapshotID+"/snapshot.json", &snap); e != nil {
 				return e
 			}
-			if snap.ID != b.SnapshotID || snap.Private || snap.Complete != "complete" {
+			if snap.ID != b.SnapshotID || snap.Private || (snap.Complete != "complete" && snap.Complete != "partial") {
 				return objectlocation.ErrUnsafe
 			}
 			path, e := objectlocation.SafePath(s.rootPath, "topics/"+c.TopicID+"/references/"+b.SnapshotID+"/body.md")
@@ -368,7 +368,7 @@ func (s *Store) entryView(ctx context.Context, topic string, entry models.Catalo
 	}
 	v.WorkingRevisionID = h.WorkingRevisionID
 	v.HasNewDraft = h.FinalizedRevisionID != "" && h.WorkingRevisionID != h.FinalizedRevisionID
-	working, e := flow.Get(id)
+	working, e := flow.GetUnderLease(id)
 	if e != nil {
 		v.Availability = "unavailable"
 		v.Error = e.Error()
@@ -554,7 +554,7 @@ func (s *Store) EntryContent(ctx context.Context, id, entryID, view, revision st
 		if snap.ID != entry.Binding.SnapshotID || snap.Private || objectlocation.Hash(raw) != snap.BodyHash {
 			return models.DocumentSnapshot{}, ErrRevisionUnavailable
 		}
-		return models.DocumentSnapshot{ResourceBindings: snap.Resources, DocumentID: snap.SourceThoughtID, Revision: models.DocumentRevision{RevisionID: snap.RevisionID, BodyHash: snap.BodyHash}, Body: string(raw), Freshness: "snapshot"}, nil
+		return models.DocumentSnapshot{OfflineStatus: snap.Complete, ResourceIssues: snap.ResourceIssues, ResourceBindings: snap.Resources, DocumentID: snap.SourceThoughtID, Revision: models.DocumentRevision{RevisionID: snap.RevisionID, BodyHash: snap.BodyHash}, Body: string(raw), Freshness: "snapshot"}, nil
 	}
 	if entry.Binding.Kind != "thought" {
 		return models.DocumentSnapshot{}, ErrRevisionUnavailable
@@ -578,7 +578,7 @@ func (s *Store) EntryContent(ctx context.Context, id, entryID, view, revision st
 	if view == "draft" {
 		h, err := flow.Store.ActiveHead(thoughtID)
 		if os.IsNotExist(err) {
-			raw, e := markdown.ReadThoughtRaw(s.rootPath, thoughtID)
+			raw, e := markdown.ReadThoughtRawUnderLease(s.rootPath, thoughtID)
 			if e != nil {
 				return models.DocumentSnapshot{}, e
 			}
@@ -609,7 +609,7 @@ func (s *Store) EntryContent(ctx context.Context, id, entryID, view, revision st
 			}
 			return models.DocumentSnapshot{}, ErrRevisionUnavailable
 		}
-		return flow.Get(thoughtID)
+		return flow.GetUnderLease(thoughtID)
 	}
 	if view != "final" {
 		return models.DocumentSnapshot{}, objectlocation.ErrInvalid

@@ -83,6 +83,10 @@ func (s *Store) CreateSnapshot(ctx context.Context, topic string, req SnapshotRe
 		return snapshot, e
 	}
 	snapshot = models.TopicSnapshot{DeliveryLevel: f.DeliveryLevel, ID: id, SourceThoughtID: req.ThoughtID, RevisionID: f.RevisionID, FinalizationID: f.FinalizationID, BodyHash: objectlocation.Hash([]byte(d.Body)), Complete: "complete", CreatedAt: time.Now().UTC(), Resources: []models.ResourceBinding{}}
+	snapshot.ResourceIssues = objectlocation.OfflineResourceIssues(d.Body, d.Resources.Bindings)
+	if len(snapshot.ResourceIssues) > 0 {
+		snapshot.Complete = "partial"
+	}
 	for _, b := range d.Resources.Bindings {
 		b.Path = base + "/assets/" + b.ResourceID + filepath.Ext(b.Path)
 		if e = objectlocation.WriteFile(s.rootPath, b.Path, resources[b.ResourceID], 0644); e != nil {

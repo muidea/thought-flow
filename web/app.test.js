@@ -528,6 +528,10 @@ function loadAppFunctionsWith(opts = {}) {
       documentSourceInputs,
       readCollectionEntry,
       collectionRoute,
+      collectionVisibleEntries,
+      collectionReadableEntries,
+      renderCollectionEditor,
+      searchCollection,
       cleanMarkdownHref,
       resourceContentHref,
       setCollectionWorkspace(value){collectionWorkspace=value;},
@@ -3582,4 +3586,62 @@ test("collection full-body replies use a selection epoch across A-B-A",async()=>
 });
 test("resource links require document context and preserve private-scheme boundaries",()=>{
  const app=loadAppFunctions();assert.equal(app.cleanMarkdownHref("resource://res-a"),"");app.setMarkdownResourceContext({object_id:"doc-a",links:{"./image.png":"res-a"}});assert.match(app.cleanMarkdownHref("resource://res-a"),/^\/api\/resources\/res-a\/content\?object_id=doc-a$/);assert.equal(app.cleanMarkdownHref("resource://../private"),"");assert.match(app.cleanMarkdownHref("./image.png"),/res-a/);app.setMarkdownResourceContext(null);assert.equal(app.cleanMarkdownHref("javascript:alert(1)"),"");
+});
+
+function collectionTestData() {
+ const entries=[
+  {id:"A",group_id:"a",title:"A",binding:{kind:"thought",thought_id:"note-A"}},
+  {id:"B",group_id:"b",title:"B",binding:{kind:"thought",thought_id:"note-B"}},
+  {id:"P",group_id:"a",title:"Plan",binding:{kind:"planned"}},
+  {id:"M",group_id:"a",title:"Missing",binding:{kind:"thought",thought_id:"missing"}},
+ ];
+ return {topic:{id:"topic",name:"Topic",generation:1},workspace_key:"test",catalog:{generation:1,groups:[{id:"b",title:"B first"},{id:"a",title:"A later"}],entries},uncatalogued:[],deleted:[],entries:entries.map(entry=>({entry,binding_status:entry.id==="M"?"missing":entry.binding.kind,availability:entry.id==="M"||entry.id==="P"?"unavailable":"available",selected_revision_id:entry.binding.kind==="thought"?"rev-"+entry.id:""}))};
+}
+test("collection directory and continuous reading share group order and skip unreadable entries",()=>{
+ const app=loadAppFunctions();app.appState.activeTopicId="topic";app.setCollectionWorkspace(collectionTestData());
+ assert.deepEqual(Array.from(app.collectionVisibleEntries(),v=>v.entry.id),["B","A","P","M"]);
+ assert.deepEqual(Array.from(app.collectionReadableEntries("final"),v=>v.entry.id),["B","A"]);
+ assert.deepEqual(Array.from(app.collectionReadableEntries("draft"),v=>v.entry.id),["B","A"]);
+});
+test("collection copy freezes the verified response revision even when request followed latest",async()=>{
+ const dom=makeDomStub();for(const id of ["collection-body","collection-controls","collection-copy","collection-favorite","collection-version-form","collection-version-id"]){dom.nodes[id]=makeElementStub();}
+ const requests=deferredAPI();const app=loadAppFunctionsWith({dom,fetch:requests.fetch});app.appState.activeTopicId="topic";app.appState.route={params:{topicId:"topic"},query:{entry:"A"}};app.setCollectionWorkspace(collectionTestData());
+ const read=app.readCollectionEntry("topic","A","final","");assert.equal(dom.nodes["collection-copy"].disabled,true);
+ requests.pending[0].respond({body:"Final revision one",revision:{revision_id:"rev-one"}});await read;
+ app.setCollectionWorkspace({...collectionTestData(),entries:collectionTestData().entries.map(v=>({...v,selected_revision_id:"rev-two"}))});
+ dom.nodes["collection-copy"].onclick();assert.match(dom.nodes.toast.textContent,/revision=rev-one/);assert.doesNotMatch(dom.nodes.toast.textContent,/rev-two/);
+});
+test("collection overlapping searches preserve the latest query and snapshot identity",async()=>{
+ const dom=makeDomStub();dom.nodes["collection-search-query"]={value:"old"};dom.nodes["collection-search-results"]=makeElementStub();
+ const requests=deferredAPI();const app=loadAppFunctionsWith({dom,fetch:requests.fetch});app.appState.activeTopicId="topic";app.setCollectionWorkspace(collectionTestData());
+ const first=app.searchCollection({preventDefault(){}});dom.nodes["collection-search-query"].value="new";const latest=app.searchCollection({preventDefault(){}});
+ requests.pending[1].respond({results:[{thought_id:"note-A",title:"NEW",snippet:"new result"}]});await latest;
+ requests.pending[0].respond({results:[{thought_id:"note-A",title:"OLD",snippet:"old result"}]});await first;
+ assert.match(dom.nodes["collection-search-results"].innerHTML,/NEW/);assert.doesNotMatch(dom.nodes["collection-search-results"].innerHTML,/OLD/);
+});
+function installCollectionManagementDom(dom) {
+ const ids=["collection-editor","collection-management-error","collection-threshold","collection-snapshot","collection-convert","collection-activity","collection-delete","collection-settings","collection-group-add","collection-entry-add","collection-placement","collection-migrate","collection-resource","collection-rebuild","collection-import","collection-draft","collection-convert-preview","collection-activity-list","collection-migration-preview","collection-export-result","collection-upload-result","collection-private"];
+ for(const id of ids){dom.nodes[id]=makeElementStub();dom.nodes[id].id=id;}
+ const button=makeElementStub("button");button.dataset.exportKind="delivery";
+ dom.nodes["collection-editor"].querySelectorAll=selector=>selector==="[data-export-kind]"?[button]:[];
+ return button;
+}
+for(const kind of ["activity","migrate","convert","export"]){test(`collection late ${kind} reply cannot populate another topic or install confirmation`,async()=>{
+ const dom=makeDomStub();const exportButton=installCollectionManagementDom(dom);const requests=deferredAPI();const app=loadAppFunctionsWith({dom,fetch:requests.fetch});
+ app.appState.activeTopicId="topic";app.appState.route={params:{topicId:"topic"},query:{entry:"A"}};
+ const data=collectionTestData();data.catalog.entries=[];data.entries=[];app.setCollectionWorkspace(data);app.renderCollectionEditor();
+ const target=kind==="export"?exportButton:dom.nodes["collection-"+kind];target.elements={thought_id:{value:"note-A"},target:{value:"other"},mode:{value:"aggregate"}};
+ const handler=kind==="activity"||kind==="export"?target.onclick:target.onsubmit;
+ const pending=handler({preventDefault(){},target,currentTarget:target});assert.equal(requests.pending.length,1);
+ app.appState.activeTopicId="other";app.appState.route.params.topicId="other";
+ const resultNode=dom.nodes[kind==="activity"?"collection-activity-list":kind==="export"?"collection-export-result":kind==="migrate"?"collection-migration-preview":"collection-convert-preview"];resultNode.innerHTML="CURRENT TOPIC";
+ requests.pending[0].respond(kind==="activity"?[{kind:"old",state:"failed",id:"old-operation"}]:{});await pending;
+ assert.equal(resultNode.innerHTML,"CURRENT TOPIC");assert.equal(dom.nodes["collection-management-error"].textContent,"");
+});}
+
+
+test("snapshot search summaries do not inherit thought actions", () => {
+ const app = loadAppFunctions();
+ const html = app.renderSearchResultItem({snapshot_id:"snapshot-1",source:"search_result",source_id:"snapshot-1",title:"Frozen copy",actions:[]});
+ assert.doesNotMatch(html,/data-compose-source-id|data-open-id|data-preview-id/);
 });

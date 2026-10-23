@@ -31,17 +31,18 @@ const LayoutVersion = 1
 const WriterVersion = 1
 
 type Registry struct {
-	Root        string
-	Namespace   sync.RWMutex
-	mu          sync.Mutex
-	initialized bool
-	initErr     error
-	objects     sync.Map
-	migrations  sync.Map
-	metricsMu   sync.Mutex
-	metrics     map[string]float64
-	epoch       uint64
-	Fault       func(string) error
+	Root         string
+	Namespace    sync.RWMutex
+	mu           sync.Mutex
+	initialized  bool
+	initErr      error
+	objects      sync.Map
+	migrations   sync.Map
+	metricsMu    sync.Mutex
+	metrics      map[string]float64
+	privateRoots []string
+	epoch        uint64
+	Fault        func(string) error
 }
 
 var registries sync.Map
@@ -438,3 +439,40 @@ func ValidLocation(l models.ObjectLocation) bool {
 
 // Checkpoint provides deterministic crash injection without changing persisted facts.
 func (r *Registry) Checkpoint(phase string) error { return r.fault(phase) }
+
+// ProtectPrivateRoot remembers configured runtime locations, including those
+// nested below an otherwise approved attachment namespace.
+func (r *Registry) ProtectPrivateRoot(path string) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, existing := range r.privateRoots {
+		if existing == absolute {
+			return
+		}
+	}
+	r.privateRoots = append(r.privateRoots, absolute)
+}
+func (r *Registry) PublicResourcePath(relative string) bool {
+	path, err := SafePath(r.Root, relative)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(relative, "/") {
+		if strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, private := range r.privateRoots {
+		rel, err := filepath.Rel(private, path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return false
+		}
+	}
+	return true
+}

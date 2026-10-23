@@ -185,13 +185,13 @@ func TestMigrationPreservesRelativeResourcesAndSharedOriginal(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	base := filepath.Dir(l.Placement.ThoughtPath)
-	attachment := filepath.ToSlash(filepath.Join(base, "shared.txt"))
+	_ = l
+	attachment := "attachments/shared.txt"
 	if e = objectlocation.WriteFile(root, attachment, []byte("shared text"), 0644); e != nil {
 		t.Fatal(e)
 	}
 	if e = markdown.UpdateThought(root, id, func(_ *models.Thought, c *models.ThoughtContent) error {
-		c.AINotes = "[attachment](./shared.txt)"
+		c.AINotes = "[attachment](../../../attachments/shared.txt)"
 		return nil
 	}); e != nil {
 		t.Fatal(e)
@@ -216,7 +216,7 @@ func TestMigrationPreservesRelativeResourcesAndSharedOriginal(t *testing.T) {
 		t.Fatal("immutable body changed", e)
 	}
 	bindings, e := r.Bindings(id)
-	if e != nil || len(bindings.Bindings) != 1 || bindings.Bindings[0].OriginalLocator != "./shared.txt" {
+	if e != nil || len(bindings.Bindings) != 1 || bindings.Bindings[0].OriginalLocator != "../../../attachments/shared.txt" {
 		t.Fatal(bindings, e)
 	}
 	_, raw, e := r.ReadResource(context.Background(), bindings.Bindings[0].ResourceID, id)

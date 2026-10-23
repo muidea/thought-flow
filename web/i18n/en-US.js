@@ -43,6 +43,8 @@ export const messages = {
   "workspace.draft": "Working draft",
   "workspace.copy_link": "Copy app link",
   "workspace.favorite": "Favorite",
+  "workspace.offline_partial": "Some images or attachments are external or missing. This package is not complete for offline reading.",
+  "workspace.snapshot_version": "Snapshot version",
   "workspace.working_version": "Working version",
   "workspace.final_version": "Finalized version",
   "workspace.information": "Document information",

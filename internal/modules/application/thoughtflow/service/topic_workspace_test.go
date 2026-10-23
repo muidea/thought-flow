@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -112,4 +114,75 @@ func TestWorkspaceHTTPRestoreDeletedDocument(t *testing.T) {
 	if code != 200 {
 		t.Fatal("replay", code, string(raw))
 	}
+}
+
+func TestPublicRawReadKeepsLeaseUntilMigrationSafe(t *testing.T) {
+	s, id := documentHTTPFixture(t, "design")
+	s.config.Server.PublicThoughtsEnabled = true
+	ctx := context.Background()
+	r := objectlocation.For(s.workspace.RootPath)
+	topic, err := topicstore.New(s.workspace.RootPath).Create(ctx, models.TopicCreateRequest{OperationID: "create", Name: "Raw reading", Mode: "collection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.PreviewMigration(ctx, id, topic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	resolved, resume := make(chan struct{}), make(chan struct{})
+	r.Fault = func(phase string) error {
+		if phase == "thought_raw_resolved" && reads.Add(1) == 2 {
+			close(resolved)
+			<-resume
+		}
+		return nil
+	}
+	type reply struct {
+		status int
+		body   string
+	}
+	done := make(chan reply, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		s.handlePublicThought(ctx, w, httptest.NewRequest("GET", "/p/thoughts/"+id, nil))
+		done <- reply{w.Code, w.Body.String()}
+	}()
+	select {
+	case <-resolved:
+	case <-time.After(3 * time.Second):
+		t.Fatal("public raw read not reached")
+	}
+	moved := make(chan error, 1)
+	go func() {
+		_, err := r.ExecuteMigration(ctx, models.MigrationRequest{OperationID: "move", PreviewID: plan.ID, PlanHash: plan.PlanHash, ExpectedObjectGeneration: plan.Source.Generation})
+		moved <- err
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for r.Namespace.TryRLock() {
+		r.Namespace.RUnlock()
+		if time.Now().After(deadline) {
+			close(resume)
+			t.Fatal("migration was not blocked by raw read")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(resume)
+	select {
+	case reply := <-done:
+		if reply.status != 200 || len(reply.body) == 0 {
+			t.Fatal(reply)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("public read deadlocked")
+	}
+	select {
+	case err := <-moved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("migration deadlocked")
+	}
+	r.Fault = nil
 }

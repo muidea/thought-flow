@@ -29,21 +29,22 @@ type Repairer interface {
 	RepairDocument(context.Context, documentstore.RevisionData, []models.DocumentIssue, []string) (string, error)
 }
 type Options struct {
-	Projected         func(string)
-	Commit            func([]string)
-	RuntimePath       string
-	SourceHash        func(models.DocumentSource) (string, error)
-	Jobs              *jobstore.Store
-	Enabled           bool
-	Families          []string
-	Reviewer          Reviewer
-	Repairer          Repairer
-	ReviewTimeout     time.Duration
-	MaxRepairAttempts int
-	Concurrency       int
-	SemanticRequired  bool
-	AllowManual       bool
-	Emit              func(string, map[string]any)
+	Projected            func(string)
+	Commit               func([]string)
+	RuntimePath          string
+	SourceHash           func(models.DocumentSource) (string, error)
+	SourceHashUnderLease func(models.DocumentSource) (string, error)
+	Jobs                 *jobstore.Store
+	Enabled              bool
+	Families             []string
+	Reviewer             Reviewer
+	Repairer             Repairer
+	ReviewTimeout        time.Duration
+	MaxRepairAttempts    int
+	Concurrency          int
+	SemanticRequired     bool
+	AllowManual          bool
+	Emit                 func(string, map[string]any)
 }
 type Service struct {
 	Store    *documentstore.Store
@@ -296,6 +297,19 @@ func clone(in map[string]string) map[string]string {
 	return out
 }
 func (s *Service) Get(id string) (models.DocumentSnapshot, error) {
+	return s.get(id, s.Options.SourceHash)
+}
+
+// GetUnderLease must not invoke callbacks which acquire another namespace or
+// object lock. Callers provide the consistent document lease.
+func (s *Service) GetUnderLease(id string) (models.DocumentSnapshot, error) {
+	hasher := s.Options.SourceHashUnderLease
+	if hasher == nil && s.Options.SourceHash != nil {
+		hasher = func(models.DocumentSource) (string, error) { return "", ErrUnavailable }
+	}
+	return s.get(id, hasher)
+}
+func (s *Service) get(id string, hasher func(models.DocumentSource) (string, error)) (models.DocumentSnapshot, error) {
 	h, e := s.Store.ActiveHead(id)
 	if e != nil {
 		return models.DocumentSnapshot{}, e
@@ -319,7 +333,7 @@ func (s *Service) Get(id string) (models.DocumentSnapshot, error) {
 			out.Report = &copy
 		}
 	}
-	out.SourceFreshness = s.sourceFreshness(id, d.Sources)
+	out.SourceFreshness = s.sourceFreshnessWithHasher(id, d.Sources, hasher)
 	if out.Report != nil && !h.PendingProjection {
 		out.Freshness = "stale"
 		if out.Report.ValidationKey == documentvalidation.Key(d) {
@@ -355,7 +369,7 @@ func (s *Service) CreateRevision(id string, expected uint64, d documentstore.Rev
 		return models.DocumentSnapshot{}, e
 	}
 	s.emit("document.revision_created", id, h, "")
-	return s.Get(id)
+	return s.GetUnderLease(id)
 }
 func (s *Service) enabledFamily(f string) bool {
 	if len(s.Options.Families) == 0 {

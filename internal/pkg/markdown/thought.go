@@ -181,7 +181,7 @@ func updateThoughtLocked(rootPath, thoughtID string, update func(*models.Thought
 
 func readThoughtLocked(rootPath, thoughtID string) (models.Thought, models.ThoughtContent, error) {
 	flow := documentflow.For(rootPath)
-	raw, err := ReadThoughtRaw(rootPath, thoughtID)
+	raw, err := ReadThoughtRawUnderLease(rootPath, thoughtID)
 	location, locationErr := objectlocation.For(rootPath).Lookup(thoughtID)
 	if locationErr != nil {
 		return models.Thought{}, models.ThoughtContent{}, locationErr
@@ -240,11 +240,22 @@ func readThoughtLocked(rootPath, thoughtID string) (models.Thought, models.Thoug
 // It performs the same workspace-boundary validation as ReadThought so
 // callers that need a lossless representation do not reconstruct paths.
 func ReadThoughtRaw(rootPath string, thoughtID string) ([]byte, error) {
+	release := objectlocation.For(rootPath).ReadLease(thoughtID)
+	defer release()
+	return ReadThoughtRawUnderLease(rootPath, thoughtID)
+}
+
+// ReadThoughtRawUnderLease requires an existing namespace lease. The atomic
+// projection can also be inspected without locking a second source object.
+func ReadThoughtRawUnderLease(rootPath string, thoughtID string) ([]byte, error) {
 	if err := documentflow.For(rootPath).Store.CheckActive(thoughtID); err != nil {
 		return nil, err
 	}
 	location, e := objectlocation.For(rootPath).Lookup(thoughtID)
 	if e != nil {
+		return nil, e
+	}
+	if e = objectlocation.For(rootPath).Checkpoint("thought_raw_resolved"); e != nil {
 		return nil, e
 	}
 	if location.DeletedAt != nil {

@@ -44,6 +44,8 @@ export const Key = Object.freeze({
   WorkspaceDraft: "workspace.draft",
   WorkspaceCopyLink: "workspace.copy_link",
   WorkspaceFavorite: "workspace.favorite",
+  "workspace.offline_partial",
+  "workspace.snapshot_version",
   WorkspaceWorkingVersion: "workspace.working_version",
   WorkspaceFinalVersion: "workspace.final_version",
   WorkspaceInformation: "workspace.information",

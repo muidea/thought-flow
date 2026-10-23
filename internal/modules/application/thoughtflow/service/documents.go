@@ -62,6 +62,17 @@ func (s *Service) configureDocuments() {
 		}
 		return documentstore.HashJSON(content), nil
 	}
+	opts.SourceHashUnderLease = func(source models.DocumentSource) (string, error) {
+		if source.Type != "thought" {
+			return source.Hash, nil
+		}
+		raw, err := markdown.ReadThoughtRawUnderLease(s.workspace.RootPath, source.ResourceID)
+		if err != nil {
+			return "", err
+		}
+		_, content := markdown.ParseThought(raw)
+		return documentstore.HashJSON(content), nil
+	}
 	s.documents = documentflow.Configure(s.workspace.RootPath, s.documentProfiles, opts)
 }
 func (s *Service) registerDocumentRoutes() {

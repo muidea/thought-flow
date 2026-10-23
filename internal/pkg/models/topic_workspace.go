@@ -182,15 +182,21 @@ type ResourceBindings struct {
 	ObjectID string            `json:"object_id"`
 	Bindings []ResourceBinding `json:"bindings"`
 }
+type OfflineResourceIssue struct {
+	EntryID string `json:"entry_id,omitempty"`
+	Locator string `json:"locator"`
+	Reason  string `json:"reason"`
+}
 type TopicSnapshot struct {
-	DeliveryLevel   string            `json:"delivery_level"`
-	ID              string            `json:"id"`
-	SourceThoughtID string            `json:"source_thought_id"`
-	RevisionID      string            `json:"revision_id"`
-	FinalizationID  string            `json:"finalization_id"`
-	BodyHash        string            `json:"body_hash"`
-	Complete        string            `json:"complete"`
-	Private         bool              `json:"private"`
-	Resources       []ResourceBinding `json:"resources"`
-	CreatedAt       time.Time         `json:"created_at"`
+	ResourceIssues  []OfflineResourceIssue `json:"resource_issues,omitempty"`
+	DeliveryLevel   string                 `json:"delivery_level"`
+	ID              string                 `json:"id"`
+	SourceThoughtID string                 `json:"source_thought_id"`
+	RevisionID      string                 `json:"revision_id"`
+	FinalizationID  string                 `json:"finalization_id"`
+	BodyHash        string                 `json:"body_hash"`
+	Complete        string                 `json:"complete"`
+	Private         bool                   `json:"private"`
+	Resources       []ResourceBinding      `json:"resources"`
+	CreatedAt       time.Time              `json:"created_at"`
 }

@@ -123,15 +123,17 @@ type FinalizationRecord struct {
 	ReviewMethod           string                 `json:"review_method"`
 }
 type DocumentSnapshot struct {
-	ResourceBindings []ResourceBinding   `json:"resource_bindings,omitempty"`
-	DocumentID       string              `json:"document_id"`
-	Head             DocumentHead        `json:"head"`
-	Revision         DocumentRevision    `json:"revision"`
-	Contract         DocumentContract    `json:"contract"`
-	Sources          SourceManifest      `json:"source_manifest"`
-	Body             string              `json:"body"`
-	Report           *ValidationReport   `json:"report,omitempty"`
-	Freshness        string              `json:"freshness"`
-	Finalization     *FinalizationRecord `json:"finalization,omitempty"`
-	SourceFreshness  string              `json:"source_freshness"`
+	OfflineStatus    string                 `json:"offline_status,omitempty"`
+	ResourceIssues   []OfflineResourceIssue `json:"resource_issues,omitempty"`
+	ResourceBindings []ResourceBinding      `json:"resource_bindings,omitempty"`
+	DocumentID       string                 `json:"document_id"`
+	Head             DocumentHead           `json:"head"`
+	Revision         DocumentRevision       `json:"revision"`
+	Contract         DocumentContract       `json:"contract"`
+	Sources          SourceManifest         `json:"source_manifest"`
+	Body             string                 `json:"body"`
+	Report           *ValidationReport      `json:"report,omitempty"`
+	Freshness        string                 `json:"freshness"`
+	Finalization     *FinalizationRecord    `json:"finalization,omitempty"`
+	SourceFreshness  string                 `json:"source_freshness"`
 }
