@@ -145,37 +145,131 @@ func TestCaptureReportsUnsupportedCapabilitiesWithoutRetry(t *testing.T) {
 	}
 }
 
-func TestCaptureInvalidJSONFallbackDoesNotRepeatOrUpdateArchiveContext(t *testing.T) {
-	for _, content := range []string{"不是 JSON", `{"candidate_summary":"无有效回答的归档摘要"}`} {
-		t.Run(content, func(t *testing.T) {
+func TestCaptureFallbackFailuresKeepDiagnosticsAndBoundRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		status        int
+		emptyChoices  bool
+		want          string
+	}{
+		{name: "malformed", content: "不是 JSON", status: 200, want: "无法解析为 JSON"},
+		{name: "missing-answer", content: `{"candidate_summary":"无有效回答的归档摘要"}`, status: 200, want: "缺少必填回答字段 assistant_reply"},
+		{name: "wrong-type", content: `{"assistant_reply":["invalid"]}`, status: 200, want: "JSON 字段类型不符合"},
+		{name: "unavailable", status: 503, want: "模型服务暂时不可用（HTTP 503）"},
+		{name: "gateway-upstream-forbidden", status: 502, want: "模型服务暂时不可用（HTTP 502）"},
+		{name: "limited", status: 429, want: "模型服务限流（HTTP 429）"},
+		{name: "empty", status: 200, emptyChoices: true, want: "模型服务未返回候选回答"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After-Ms", "1")
 				if attempts.Add(1) == 1 {
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+				w.WriteHeader(tc.status)
+				if tc.status != 200 {
+					if tc.status == 502 {
+						_, _ = w.Write([]byte(`{"error":{"code":"upstream","message":"chatgpt upstream: code:6, message:bootstrap: HTTP 403 (upstream)"}}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"error":{"message":"UPSTREAM_PRIVATE_DETAIL"}}`))
+					return
+				}
+				if tc.emptyChoices {
+					_, _ = w.Write([]byte(`{"choices":[]}`))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": tc.content}}}})
 			}))
 			defer server.Close()
-			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second, AllowJSONFallback: true}, appconfig.EmbeddingConfig{})
-			store := scratchpad.New(t.TempDir())
+			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
+			root := t.TempDir()
+			store := scratchpad.New(root)
 			svc := NewScratchpadService(store, WithCaptureContextProvider(provider), WithEventHub(newRecordingEventHub(true)), WithCaptureContextRetryDelays(0, 0))
 			if _, err := svc.AppendMessage("fallback", "user", "解释 ISA-95"); err != nil {
 				t.Fatal(err)
 			}
-			waitFor(t, func() bool {
-				sp, err := store.Get("fallback")
-				return err == nil && len(sp.Messages) == 2
-			})
-			sp, err := store.Get("fallback")
+			waitFor(t, func() bool { sp, err := store.Get("fallback"); return err == nil && len(sp.Messages) == 2 })
+			sp, err := scratchpad.New(root).Get("fallback")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if attempts.Load() != 2 || sp.SessionContext.AssistantReply != "" || sp.SessionContext.CandidateSummary != "" || !strings.Contains(sp.Messages[1].Text, "未能获得通过校验的 JSON 结果") {
-				t.Fatalf("invalid fallback leaked or retried: attempts=%d scratchpad=%#v", attempts.Load(), sp)
+			wantAttempts := int32(2)
+			if attempts.Load() != wantAttempts || sp.SessionContext.AssistantReply != "" || sp.SessionContext.CandidateSummary != "" {
+				t.Fatalf("invalid result leaked or retried: attempts=%d scratchpad=%#v", attempts.Load(), sp)
+			}
+			if sp.Messages[0].Text != "解释 ISA-95" || !strings.Contains(sp.Messages[1].Text, tc.want) || strings.Contains(sp.Messages[1].Text, "UPSTREAM_PRIVATE_DETAIL") {
+				t.Fatalf("bad persisted diagnosis: %#v", sp.Messages)
+			}
+			if tc.status == 200 && !tc.emptyChoices && !strings.Contains(sp.Messages[1].Text, "不会自动重试") {
+				t.Fatal("invalid content must remain terminal")
+			}
+			if tc.status >= 400 && strings.Contains(sp.Messages[1].Text, "JSON 输出能力") {
+				t.Fatal("transport failure blamed on JSON capability")
 			}
 		})
 	}
+}
+
+func TestCaptureCachedFallbackRequiresExplicitRetryAfterGateway(t *testing.T) {
+	var formatted, plain atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After-Ms", "1")
+		if _, found := request["response_format"]; found {
+			formatted.Add(1)
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
+			return
+		}
+		turn := plain.Add(1)
+		if turn == 2 {
+			w.WriteHeader(502)
+			_, _ = w.Write([]byte(`{"error":{"code":"upstream","message":"bootstrap: HTTP 403 (upstream)"}}`))
+			return
+		}
+		reply := "ISA-95 定义企业与制造运营边界。"
+		if turn > 2 {
+			reply = "ERP、MES/MOM 和控制系统承担不同职责。"
+		}
+		content, _ := json.Marshal(map[string]string{"assistant_reply": reply, "candidate_summary": reply})
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(content)}}}})
+	}))
+	defer server.Close()
+	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}, appconfig.EmbeddingConfig{})
+	root := t.TempDir()
+	store := scratchpad.New(root)
+	svc := NewScratchpadService(store, WithCaptureContextProvider(provider), WithEventHub(newRecordingEventHub(true)), WithCaptureContextRetryDelays(0, 0))
+	if _, err := svc.AppendMessage("s", "user", "调研 ISA-95"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { sp, _ := store.Get("s"); return len(sp.Messages) == 2 })
+	if _, err := svc.AppendMessage("s", "user", "涉及哪些信息系统"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { sp, _ := store.Get("s"); return len(sp.Messages) == 4 })
+	sp, err := scratchpad.New(root).Get("s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if formatted.Load() != 1 || plain.Load() != 2 || sp.Messages[1].Text != "ISA-95 定义企业与制造运营边界。" || !strings.Contains(sp.Messages[3].Text, "HTTP 502") {
+		t.Fatalf("unexpected replay or lost input: %+v", sp)
+	}
+	if _, err := svc.AppendMessage("s", "user", "请重试涉及哪些信息系统"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { sp, _ := store.Get("s"); return len(sp.Messages) == 6 })
+	sp, _ = scratchpad.New(root).Get("s")
+	if formatted.Load() != 1 || plain.Load() != 3 || sp.Messages[5].Text != "ERP、MES/MOM 和控制系统承担不同职责。" {
+		t.Fatalf("explicit retry failed: %+v", sp)
+	}
+
 }

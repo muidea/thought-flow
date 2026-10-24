@@ -209,3 +209,37 @@ func TestCaptureDraftRemainsPrivateWhenPublicSharingIsEnabled(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveStartupDoesNotRegenerateUnknownCompletion(t *testing.T) {
+	root := t.TempDir()
+	for _, state := range []string{"preparing", "interrupted", "saving"} {
+		store := scratchpad.New(filepath.Join(root, state))
+		_, err := store.Save(scratchpad.Scratchpad{SessionID: "unknown", Content: "User input remains", InputGeneration: 2, Operation: &scratchpad.ArchiveOperation{ID: "op-unknown", State: state, GenerationStarted: true, InputGeneration: 2, AutoCommit: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == "preparing" {
+			if _, err := store.Update("unknown", func(sp *scratchpad.Scratchpad) error {
+				sp.SaveCommand = &scratchpad.SaveCommand{OperationID: "prior-save", State: "completed"}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Reopen storage to model a restart after a request was sent, before output
+		// publication. Recovery must not queue another model request.
+		store = scratchpad.New(filepath.Join(root, state))
+		svc := capturebiz.NewScratchpadService(store)
+		queue := &queuedArchiveBackground{}
+		handler := &Service{scratchpad: store, scratchpadSvc: svc, background: queue}
+		handler.resumeCaptureArchives()
+		got, err := store.Get("unknown")
+		if err != nil || len(queue.work) != 0 || got.Operation.State != "failed" || got.Content != "User input remains" || !strings.Contains(got.Operation.Error, "explicit retry") {
+			t.Fatalf("unknown execution replayed: %+v %v", got, err)
+		}
+		next, err := svc.BeginPreview("unknown", true)
+		if err != nil || next.Operation.GenerationStarted || next.Operation.ID == "op-unknown" {
+			t.Fatalf("explicit retry unavailable: %+v %v", next, err)
+		}
+	}
+}

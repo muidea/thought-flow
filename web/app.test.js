@@ -402,7 +402,7 @@ function loadAppFunctionsWith(opts = {}) {
     },
     window: {
       clearTimeout: () => {},
-      setTimeout: () => 0,
+      setTimeout: opts.setTimeout || (() => 0),
       tflow_i18n: stubTflow,
       location: {
         hash: opts.hash || "",
@@ -486,17 +486,17 @@ function loadAppFunctionsWith(opts = {}) {
       buildCaptureExpansionSections,
       formatPatchFeedback,
       upsertCaptureContextMessage,
-      upsertArchivePreviewMessage,
       loadCaptureSessions,
       saveCaptureSessions,
       rememberCaptureSession,
-      renderArchivePreviewCard,
-      renderArchivePreviewBody,
-      renderCaptureContextRows,
       renderDocumentProfileOptions,
       loadDocumentProfiles,
       aboutDocumentProfilesHTML,
       renderCaptureBubbleBody,
+      renderCaptureConversation,
+      captureArchiveStatusMessage,
+      refreshActiveScratchpadContext,
+      resumeCaptureArchivePolling,
       handleCaptureComposerKeydown,
       handleTabClick,
       openCaptureSessionsDrawer,
@@ -504,11 +504,8 @@ function loadAppFunctionsWith(opts = {}) {
       renderCaptureSessionItem,
       switchCaptureSession,
       openNewCaptureSession,
-      previewArchive,
-      renderCaptureArchiveControls,
-      renderArchivePreviewPanel,
-      saveCaptureParameters,
-      saveCaptureDraft,
+      requestCaptureArchive,
+      dispatchCaptureCommand,
       patchActiveThought,
       newCaptureSession,
       previewThought,
@@ -2432,113 +2429,29 @@ test("renderCaptureBubbleBody falls back to stored html/text for non-bound messa
   assert.match(htmlOut, /<b>static<\/b>/);
 });
 
-test("capture context is rendered as markdown conversation text", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
+test("capture renders assistant replies without exposing session metadata", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
   app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_title: "Draft title",
-      candidate_tags: ["draft"],
-      candidate_summary: "**当前收敛结论**\n\n主题已经形成可继续推进的整理方向。",
-    },
-  };
-  const first = app.upsertCaptureContextMessage();
-  assert.equal(first.kind, "context");
-  assert.equal(app._state.capture.messages.length, 1);
-  const html = app.renderCaptureBubbleBody(first);
-  assert.doesNotMatch(html, /capture\.context\.title/);
-  assert.doesNotMatch(html, /tf-capture-message-card/);
-  assert.match(html, /<strong>当前收敛结论<\/strong>/);
-  assert.match(html, /主题已经形成可继续推进的整理方向/);
-  assert.doesNotMatch(html, /Draft title/);
-
-  app._state.capture.activeScratchpad.session_context.candidate_title = "Updated title";
-  const updated = app.upsertCaptureContextMessage();
-  assert.equal(updated.id, first.id);
-  assert.equal(app._state.capture.messages.length, 1);
-  assert.match(app.renderCaptureBubbleBody(updated), /主题已经形成可继续推进的整理方向/);
-  assert.doesNotMatch(app.renderCaptureBubbleBody(updated), /Updated title/);
-});
-
-test("capture context text can render a pending placeholder and is moved to the latest turn", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.messages = [
-    { id: "u1", role: "user", text: "first user turn" },
-  ];
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_title: "First title",
-      candidate_summary: "First summary",
-      candidate_body: "First body draft",
-    },
-  };
+  app._state.capture.activeScratchpad = { session_id: "s1", session_context: {
+    candidate_title: "PRIVATE_TITLE", candidate_summary: "PRIVATE_SUMMARY",
+    candidate_body: "PRIVATE_BODY", confirmed_facts: ["PRIVATE_FACT"],
+  }};
+  assert.equal(app.upsertCaptureContextMessage(), null);
   const pending = app.upsertCaptureContextMessage({ pending: true });
-  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 1].kind, "context");
-  assert.match(app.renderCaptureBubbleBody(pending), /capture\.context\.pending/);
-
-  app._state.capture.activeScratchpad.session_context = {
-    candidate_title: "Updated title",
-    candidate_summary: "Updated summary",
-    candidate_body: "Updated body draft should stay out of the conversation card",
-  };
-  const resolved = app.upsertCaptureContextMessage();
-  const resolvedHTML = app.renderCaptureBubbleBody(resolved);
-  assert.equal(resolved.id, pending.id);
-  assert.equal(app._state.capture.messages.length, 2);
-  assert.doesNotMatch(resolvedHTML, /Updated body draft should stay out of the conversation card/);
-  assert.match(resolvedHTML, /<p>Updated summary<\/p>/);
-  assert.doesNotMatch(resolvedHTML, /Updated title/);
-  assert.doesNotMatch(resolvedHTML, /tf-capture-context-card/);
-
-  app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
-  app._state.capture.activeScratchpad.session_context = {
-    candidate_title: "Second title",
-    candidate_summary: "Second summary",
-  };
-  const moved = app.upsertCaptureContextMessage();
-  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 1].id, moved.id);
-  assert.equal(app._state.capture.messages[app._state.capture.messages.length - 2].id, "u2");
-});
-
-test("capture context messages stay interleaved with their user turn snapshots", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.messages = [
-    { id: "u1", role: "user", text: "first user turn" },
-  ];
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_body: "First body",
-      candidate_summary: "First summary",
-    },
-  };
+  assert.match(app.renderCaptureBubbleBody(pending), /capture.context.pending/);
+  app._state.capture.activeScratchpad.session_context.assistant_reply = "**Answer** to your question";
   const first = app.upsertCaptureContextMessage();
-
-  app._state.capture.messages.push({ id: "u2", role: "user", text: "second user turn" });
-  app._state.capture.activeScratchpad.session_context = {
-    candidate_body: "Second body",
-    candidate_summary: "Second summary",
-  };
-  const secondPending = app.upsertCaptureContextMessage({ pending: true });
+  assert.equal(first.id, pending.id);
+  assert.match(app.renderCaptureBubbleBody(first), /<strong>Answer<\/strong>/);
+  app._state.capture.messages.push({id:"u2", role:"user", text:"Next question"});
+  app._state.capture.activeScratchpad.session_context.assistant_reply = "Second answer";
   const second = app.upsertCaptureContextMessage();
-
-  assert.equal(first.id, app._state.capture.messages[1].id);
-  assert.equal(app._state.capture.messages[0].id, "u1");
-  assert.equal(app._state.capture.messages[1].kind, "context");
-  assert.equal(app._state.capture.messages[2].id, "u2");
-  assert.equal(app._state.capture.messages[3].id, second.id);
-  assert.equal(secondPending.id, second.id);
-
-  const firstHTML = app.renderCaptureBubbleBody(app._state.capture.messages[1]);
-  const secondHTML = app.renderCaptureBubbleBody(app._state.capture.messages[3]);
-  assert.match(firstHTML, /First summary/);
-  assert.doesNotMatch(firstHTML, /Second body/);
-  assert.doesNotMatch(secondHTML, /Second body/);
-  assert.match(secondHTML, /Second summary/);
+  assert.notEqual(second.id, first.id);
+  assert.match(app.renderCaptureBubbleBody(first), /Answer/);
+  assert.doesNotMatch(app.renderCaptureBubbleBody(first), /Second answer/);
+  app.renderCaptureConversation();
+  assert.doesNotMatch(dom.nodes["capture-conversation"].innerHTML, /PRIVATE_/);
 });
 
 test("capture context restore keeps persisted message timeline without duplicating last context", () => {
@@ -2552,7 +2465,7 @@ test("capture context restore keeps persisted message timeline without duplicati
   app._state.capture.activeScratchpad = {
     session_id: "s1",
     session_context: {
-      candidate_summary: "second synthesized reply",
+      assistant_reply: "second synthesized reply",
     },
   };
 
@@ -2580,7 +2493,7 @@ test("scratchpad context event replaces pending context with persisted ai reply"
               { role: "ai", text: "synthesized reply", at: "2026-06-18T00:00:01Z" },
             ],
             session_context: {
-              candidate_summary: "synthesized reply",
+              assistant_reply: "synthesized reply",
             },
           },
         }),
@@ -2604,386 +2517,60 @@ test("scratchpad context event replaces pending context with persisted ai reply"
   ]);
 });
 
-test("scratchpad context event auto-previews llm archive intent before commit", async () => {
-  const calls = [];
-  const app = loadAppFunctionsWith({
-    exposeState: true,
-    fetch: async (url, options = {}) => {
-      calls.push({ url, method: options.method || "GET", body: options.body || "" });
-      if (url === "/api/capture/sessions/s1") {
-        return {
-          ok: true,
-          json: async () => ({
-            data: {
-              session_id: "s1",
-              archive_intent: "llm",
-              archive_strategy: "new",
-              messages: [
-                { role: "user", text: "将上述内容进行归档", at: "2026-06-18T00:00:00Z" },
-                { role: "ai", text: "ready to archive", at: "2026-06-18T00:00:01Z" },
-              ],
-              session_context: {
-                candidate_summary: "ready to archive",
-                archive_intent: "llm",
-                archive_strategy: "new",
-              },
-            },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/s1/intent") {
-        return { ok: true, json: async () => ({ data: { session_id: "s1" } }) };
-      }
-      if (url === "/api/capture/sessions/s1/archive/preview?strategy=new") {
-        return {
-          ok: true,
-          json: async () => ({
-            data: {
-              persisted: true, operation: {id:"op1", state:"saved"}, scratchpad: {session_id:"s1", committed_thought_id:"thought-1", archive_operation:{id:"op1",state:"saved"}},
-              preview: {
-                title: "Archive title",
-                body: "Archive body",
-                tags: [],
-                source_links: [],
-                strategy: "new",
-              },
-            },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/s1/archive") {
-        return { ok: true, json: async () => ({ data: { thought_id: "thought-1" } }) };
-      }
-      if (url === "/api/thoughts/thought-1") {
-        return { ok: true, json: async () => ({ data: { thought: { id: "thought-1" } } }) };
-      }
-      throw new Error(`unexpected fetch ${options.method || "GET"} ${url}`);
-    },
-  });
-  app._state.capture.sessionId = "s1";
-
-  await app.handleCaptureEvent("scratchpad.context_updated", JSON.stringify({
-    resource_id: "s1",
-    payload: {},
-  }));
-
-  assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
-    "GET /api/capture/sessions/s1",
-    "POST /api/capture/sessions/s1/intent",
-    "POST /api/capture/sessions/s1/archive/preview?strategy=new",
-    "GET /api/thoughts/thought-1",
-  ]);
-  assert.equal(app._state.capture.activeThoughtId, "thought-1");
+test("context events only observe backend archive state, including repeated notifications", async () => {
+  for (const operation of [undefined, {id:"op",state:"preparing"}, {id:"op",state:"saved"}]) {
+    const calls = [];
+    const dom = makeDomStub();
+    const app = loadAppFunctionsWith({ dom, exposeState: true, setTimeout: (fn, ms) => ms === 0 ? setTimeout(fn, 0) : 0, fetch: async (url, options = {}) => {
+      calls.push({url, method:options.method || "GET"});
+      return {ok:true,json:async()=>({data:{session_id:"s",input_generation:2,
+        archive_intent:"llm",content:"Archive this discussion",archive_operation:operation,
+        committed_thought_id:operation?.state === "saved" ? "t1" : "",
+        messages:[{role:"user",text:"Archive this discussion"},{role:"ai",text:"Reply"}],
+        session_context:{assistant_reply:"Reply",candidate_body:"PRIVATE_BODY",archive_intent:"llm"},
+        archive_preview:{body:"PRIVATE_PREVIEW"},
+      }})};
+    }});
+    app._state.capture.sessionId="s";
+    const event=JSON.stringify({resource_id:"s",payload:{}});
+    await app.handleCaptureEvent("scratchpad.context_updated",event);
+    await app.handleCaptureEvent("scratchpad.context_updated",event);
+    await app.refreshActiveScratchpadContext({attempts:1,delayMs:0});
+    assert.equal(calls.length,3);
+    assert.ok(calls.every(call=>call.method==="GET" && call.url==="/api/capture/sessions/s"));
+    const html=dom.nodes["capture-conversation"].innerHTML;
+    assert.match(html,/Reply/);
+    assert.doesNotMatch(html,/PRIVATE_|archive_preview/);
+    assert.equal((html.match(/data-kind="archive_status"/g)||[]).length,operation ? 1 : 0);
+    if(operation?.state==="saved") assert.match(html,/#\/notes\?id=t1/);
+  }
 });
 
-test("scratchpad context archive intent ignores duplicate event while commit is in flight", async () => {
-  const calls = [];
-  let releasePreview;
-  const previewGate = new Promise((resolve) => { releasePreview = resolve; });
-  let markPreviewStarted;
-  const previewStarted = new Promise((resolve) => { markPreviewStarted = resolve; });
-  const app = loadAppFunctionsWith({
-    exposeState: true,
-    fetch: async (url, options = {}) => {
-      calls.push({ url, method: options.method || "GET" });
-      if (url === "/api/capture/sessions/s1") {
-        return {
-          ok: true,
-          json: async () => ({
-            data: {
-              session_id: "s1",
-              archive_intent: "llm",
-              archive_strategy: "new",
-              messages: [
-                { role: "user", text: "将上述内容进行归档", at: "2026-06-18T00:00:00Z" },
-                { role: "ai", text: "ready to archive", at: "2026-06-18T00:00:01Z" },
-              ],
-              session_context: {
-                candidate_summary: "ready to archive",
-                archive_intent: "llm",
-                archive_strategy: "new",
-              },
-            },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/s1/intent") {
-        return { ok: true, json: async () => ({ data: { session_id: "s1" } }) };
-      }
-      if (url === "/api/capture/sessions/s1/archive/preview?strategy=new") {
-        markPreviewStarted();
-        await previewGate;
-        return {
-          ok: true,
-          json: async () => ({
-            data: { persisted:true, operation:{id:"op1",state:"saved"}, scratchpad:{session_id:"s1",committed_thought_id:"thought-1",archive_operation:{id:"op1",state:"saved"}}, preview: { title: "Archive title", body: "Archive body", strategy: "new" } },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/s1/archive") {
-        return { ok: true, json: async () => ({ data: { thought_id: "thought-1" } }) };
-      }
-      if (url === "/api/thoughts/thought-1") {
-        return { ok: true, json: async () => ({ data: { thought: { id: "thought-1" } } }) };
-      }
-      throw new Error(`unexpected fetch ${options.method || "GET"} ${url}`);
-    },
-  });
-  app._state.capture.sessionId = "s1";
-  const event = JSON.stringify({ resource_id: "s1", payload: {} });
-
-  const first = app.handleCaptureEvent("scratchpad.context_updated", event);
-  await previewStarted;
-  await app.handleCaptureEvent("scratchpad.context_updated", event);
-  releasePreview();
-  await first;
-
-  const previewCalls = calls.filter((call) => call.url.includes("/archive/preview"));
-  const commitCalls = calls.filter((call) => call.url.endsWith("/archive") && call.method === "POST");
-  assert.equal(previewCalls.length, 1);
-  assert.equal(commitCalls.length, 0);
-});
-
-test("opened committed capture history auto-archives llm intent after follow-up turns", async () => {
-  const calls = [];
-  const app = loadAppFunctionsWith({
-    exposeState: true,
-    fetch: async (url, options = {}) => {
-      calls.push({ url, method: options.method || "GET", body: options.body || "" });
-      if (url === "/api/capture/sessions/history-1") {
-        return {
-          ok: true,
-          json: async () => ({
-            data: {
-              session_id: "history-1",
-              committed_thought_id: "thought-1",
-              archive_intent: "llm",
-              archive_strategy: "new",
-              content: "继续补充历史会话\n\n请将上述内容归档",
-              messages: [
-                { role: "user", text: "继续补充历史会话", at: "2026-06-18T00:00:00Z" },
-                { role: "ai", text: "continued summary", at: "2026-06-18T00:00:01Z" },
-                { role: "user", text: "请将上述内容归档", at: "2026-06-18T00:01:00Z" },
-                { role: "ai", text: "ready to archive", at: "2026-06-18T00:01:01Z" },
-              ],
-              session_context: {
-                candidate_summary: "ready to archive",
-                candidate_body: "final body",
-                archive_intent: "llm",
-                archive_strategy: "new",
-              },
-            },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/history-1/intent") {
-        return { ok: true, json: async () => ({ data: { session_id: "history-1" } }) };
-      }
-      if (url === "/api/capture/sessions/history-1/archive/preview?strategy=new") {
-        return {
-          ok: true,
-          json: async () => ({
-            data: { persisted:true, operation:{id:"op1",state:"saved"}, scratchpad:{session_id:"s1",committed_thought_id:"thought-1",archive_operation:{id:"op1",state:"saved"}}, preview: { title: "Archive title", body: "final body", strategy: "new" } },
-          }),
-        };
-      }
-      if (url === "/api/capture/sessions/history-1/archive") {
-        return { ok: true, json: async () => ({ data: { thought_id: "thought-1" } }) };
-      }
-      if (url === "/api/thoughts/thought-1") {
-        return { ok: true, json: async () => ({ data: { thought: { id: "thought-1" } } }) };
-      }
-      throw new Error(`unexpected fetch ${options.method || "GET"} ${url}`);
-    },
-  });
-  app._state.capture.sessionId = "history-1";
-  app._state.capture.activeThoughtId = "thought-1";
-
-  await app.handleCaptureEvent("scratchpad.context_updated", JSON.stringify({
-    resource_id: "history-1",
-    payload: {},
-  }));
-
-  assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
-    "GET /api/capture/sessions/history-1",
-    "POST /api/capture/sessions/history-1/intent",
-    "POST /api/capture/sessions/history-1/archive/preview?strategy=new",
-    "GET /api/thoughts/thought-1",
-  ]);
-});
-
-test("capture context text drops duplicate and low-signal LLM fields", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_body: "我想整理一个主题方向，用于后续继续讨论。\n\n我想整理一个主题方向，用于后续继续讨论。",
-      candidate_summary: "我想整理一个主题方向",
-      candidate_title: "我想整理一个主题方向",
-      topic: "我想整理一个主题方向",
-      goal: "持续收集并澄清当前主题",
-      open_questions: [
-        "最终产出更适合作为说明、提纲、草稿、方案还是行动清单？",
-        "当前主题最重要的成功标准是什么？",
-      ],
-      conflicts: ["持续收集并澄清当前主题"],
-      candidate_tags: ["整理", "主题"],
-    },
-  };
-  const message = app.upsertCaptureContextMessage();
-  const html = app.renderCaptureBubbleBody(message);
-
-  assert.doesNotMatch(html, /我想整理一个主题方向，用于后续继续讨论。/);
-  assert.match(html, /<strong>capture\.conversation\.questions<\/strong>/);
-  assert.match(html, /最终产出更适合/);
-  assert.match(html, /当前主题最重要的成功标准/);
-  assert.doesNotMatch(html, /持续收集并澄清当前主题/);
-  assert.doesNotMatch(html, /整理, 主题/);
-});
-
-test("capture context text prefers synthesized summary over mechanical context fields", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_body: "我想整理一个主题方向，用于后续继续讨论。",
-      candidate_summary: [
-        "## 当前收敛结论",
-        "",
-        "正在形成一个可继续讨论、加工或归档的主题材料。",
-        "",
-        "## 下一轮建议补充",
-        "",
-        "- 补充背景、边界和预期产出。",
-      ].join("\n"),
-      confirmed_facts: ["原始输入已经提供主题方向", "产出需要能用于后续归档或继续讨论"],
-      open_questions: ["最终产出更适合作为说明、提纲、草稿、方案还是行动清单？"],
-      candidate_tags: ["整理", "主题"],
-    },
-  };
-  const message = app.upsertCaptureContextMessage();
-  const html = app.renderCaptureBubbleBody(message);
-
-  assert.doesNotMatch(html, /我想整理一个主题方向，用于后续继续讨论。/);
-  assert.match(html, /当前收敛结论/);
-  assert.match(html, /正在形成一个可继续讨论、加工或归档的主题材料/);
-  assert.match(html, /下一轮建议补充/);
-  assert.doesNotMatch(html, /capture\.conversation\.facts/);
-  assert.doesNotMatch(html, /capture\.conversation\.questions/);
-  assert.doesNotMatch(html, /原始输入已经提供主题方向/);
-  assert.doesNotMatch(html, /最终产出更适合/);
-  assert.doesNotMatch(html, /整理, 主题/);
-});
-
-test("capture context text keeps cumulative candidate body out of an ordinary reply", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_summary: "可以按一个可配置的采集工具继续收敛。",
-      candidate_body: [
-        "## 当前收敛结论",
-        "",
-        "这个需求更像是一个面向命令行和配置文件的 Web 采集工具，需要先明确目标输入、字段抽取、存储格式和运行边界。",
-        "",
-        "## 已确认约束",
-        "",
-        "- 使用 Golang 实现。",
-        "- 目标站点可以通过配置文件或命令行输入。",
-        "- 数据采用文件方式落盘。",
-        "",
-        "## 下一轮建议补充",
-        "",
-        "- 明确目标网站是否需要登录、验证码或 JS 渲染。",
-        "- 确认输出文件格式采用 JSONL、CSV 还是分目录文件。",
-      ].join("\n"),
-    },
-  };
-
-  const message = app.upsertCaptureContextMessage();
-  const html = app.renderCaptureBubbleBody(message);
-
-  assert.match(html, /可以按一个可配置的采集工具继续收敛/);
-	assert.doesNotMatch(html, /当前收敛结论/);
-	assert.doesNotMatch(html, /Golang 实现/);
-	assert.doesNotMatch(html, /JSONL、CSV/);
-});
-
-test("persisted complete context reply suppresses duplicate synthetic bubble", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  const ctx = {
-    candidate_summary: "下面是更新后的结构化工作笔记。",
-    candidate_body: "## 候选实体\n\n- Credential\n\n## 一致性约束\n\n- 同一类型只能有一条有效凭证。",
-  };
-  app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = { session_id: "s1", session_context: ctx };
-  app._state.capture.messages = [
-    { id: "u1", role: "user", text: "增加一致性约束" },
-    { id: "a1", role: "ai", text: `${ctx.candidate_summary}\n\n${ctx.candidate_body}` },
-  ];
-
-  const message = app.upsertCaptureContextMessage();
-
-  assert.equal(message, null);
-  assert.equal(app._state.capture.messages.length, 2);
-  assert.match(app.renderCaptureBubbleBody(app._state.capture.messages[1]), /一致性约束/);
-});
-
-test("capture context text strips raw input embedded in synthesized sections", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.activeScratchpad = {
-    session_id: "s1",
-    session_context: {
-      candidate_body: "我想整理一个主题方向\n\n补充背景、目标和预期产出",
-      candidate_summary: [
-        "我想整理一个主题方向 补充背景、目标和预期产出",
-        "",
-        "**可展开方向**",
-        "- 明确主题边界、受众、产出形式和判断标准。",
-      ].join("\n"),
-      open_questions: ["最终产出更适合作为说明、提纲、草稿、方案还是行动清单？"],
-    },
-  };
-  const message = app.upsertCaptureContextMessage();
-  const html = app.renderCaptureBubbleBody(message);
-
-  assert.doesNotMatch(html, /我想整理一个主题方向/);
-  assert.doesNotMatch(html, /补充背景、目标和预期产出/);
-  assert.match(html, /明确主题边界、受众、产出形式和判断标准/);
-  assert.doesNotMatch(html, /最终产出更适合/);
-});
-
-test("archive preview is rendered as markdown conversation text with a stored snapshot", () => {
-  const app = loadAppFunctionsWith({ exposeState: true });
-  app._state.capture.sessionId = "s1";
-  app._state.capture.archivePreview = {
-    title: "Preview title",
-    strategy: "update_thought",
-    thought_id: "thought-target",
-    tags: ["capture"],
-    body: "Preview body",
-    diff: {
-      before: "Old body",
-      after: "Preview body",
-      changed_fields: ["body"],
-    },
-  };
-  const message = app.upsertArchivePreviewMessage();
-  assert.equal(message.kind, "archive_preview");
-  const html = app.renderCaptureBubbleBody(message);
-  assert.doesNotMatch(html, /capture\.archive\.preview_title/);
-  assert.doesNotMatch(html, /tf-capture-preview-card/);
-  assert.match(html, /Preview title/);
-  assert.match(html, /Preview body/);
-  assert.match(html, /thought-target/);
-  assert.match(html, /Old body/);
-
-  app._state.capture.archivePreview = null;
-  assert.match(app.renderCaptureBubbleBody(message), /Preview title/);
+test("archive feedback survives state restoration and hides internal preview content", () => {
+  const dom=makeDomStub();
+  const app=loadAppFunctionsWith({dom,exposeState:true});
+  app._state.capture.sessionId="s";
+  app._state.capture.messages=[{role:"user",text:"Archive it"},
+    {kind:"archive_preview",role:"ai",preview:{body:"LEAKED_PREVIEW"}},
+    {kind:"context",role:"ai",sessionContext:{candidate_summary:"LEAKED_METADATA"}}];
+  app._state.capture.activeScratchpad={session_id:"s",archive_operation:{id:"op",state:"blocked",error:"Fix <unsafe> content"},
+    archive_preview:{body:"LEAKED_BODY",validation:{issues:[{code:"input_required",section:"audience",severity:"error"}]}}};
+  app.renderCaptureConversation();
+  let html=dom.nodes["capture-conversation"].innerHTML;
+  assert.match(html,/capture.archive.state.blocked/);
+  assert.match(html,/capture.archive.missing_input/);
+  assert.match(html,/Fix &lt;unsafe&gt; content/);
+  assert.doesNotMatch(html,/LEAKED_|<unsafe>/);
+  app._state.capture.activeScratchpad={session_id:"s",committed_thought_id:"t1",archive_operation:{id:"op",state:"saved"}};
+  app._state.capture.messages.push({role:"ai",thoughtId:"t1",text:"Old saved anchor"});
+  app.renderCaptureConversation();
+  html=dom.nodes["capture-conversation"].innerHTML;
+  assert.match(html,/capture.archive.state.saved/);
+  assert.match(html,/#\/notes\?id=t1/);
+  assert.equal((html.match(/data-thought-id="t1"/g)||[]).length,1);
+  assert.doesNotMatch(html,/Old saved anchor/);
+  app._state.capture.sessionId="other";
+  assert.equal(app.captureArchiveStatusMessage(),null);
 });
 
 test("capture session history drawer opens with visible drawer state", () => {
@@ -3171,7 +2758,7 @@ test("formatPatchFeedback picks the right message per PATCH shape", () => {
   assert.match(app.formatPatchFeedback({}, snap), /capture\.session\.saved_path/);
 });
 
-test("document profile UI renders dynamic choices and strict validation issues", () => {
+test("document profile options render dynamic choices", () => {
   const app = loadAppFunctionsWith({ exposeState: true });
   app._state.documentProfiles = [
     { name: "Note", description: "Flexible note", ref: { profile_id: "builtin.note", version: 1, family: "note" } },
@@ -3180,27 +2767,6 @@ test("document profile UI renders dynamic choices and strict validation issues",
   const options = app.renderDocumentProfileOptions("builtin.design-doc", 1);
   assert.match(options, /builtin\.design-doc/);
   assert.match(options, /selected/);
-
-  const context = app.renderCaptureContextRows({
-    candidate_profile_id: "builtin.design-doc",
-    candidate_profile_version: 1,
-    candidate_document_family: "design",
-    profile_confidence: 96,
-    profile_match_reason: "Explicit design request",
-  }, { includeBody: true }).join("");
-  assert.match(context, /data-capture-profile-select/);
-  assert.match(context, /96%/);
-  assert.match(context, /Explicit design request/);
-
-  const preview = app.renderArchivePreviewBody({
-    title: "Design",
-    body: "# Design",
-    document_profile: { profile_id: "builtin.design-doc", version: 1 },
-    validation: { status: "invalid", issues: [{ code: "missing", message: "Missing rollback section" }] },
-  });
-  assert.match(preview, /builtin\.design-doc/);
-  assert.match(preview, /document_profile\.validation_invalid/);
-  assert.match(preview, /Missing rollback section/);
 });
 
 test("about page document profile guide summarizes loaded profiles and registry issues", () => {
@@ -3513,7 +3079,7 @@ test("archive preview keeps its original target and stops after selection change
   const requests = deferredAPI(); const app = loadAppFunctionsWith({ fetch: requests.fetch });
   app.appState.capture.sessionId = "A";
   app.appState.capture.sessions = [{ sessionId: "B", messages: [] }];
-  const preview = app.previewArchive();
+  const preview = app.requestCaptureArchive();
   app.switchCaptureSession("B");
   requests.pending[0].respond({});
   await preview;
@@ -3683,7 +3249,7 @@ test("archive preview never delegates a second commit to the browser", async () 
   const requests=[];
   const app=loadAppFunctionsWith({exposeState:true,fetch:async(url,options={})=>{requests.push({url,...options});return {ok:true,json:async()=>({data:url.endsWith("/intent")?{}:result})};}});
   app._state.capture.sessionId="s";
-  await app.previewArchive({commitAfterPreview:true});
+  await app.requestCaptureArchive({});
   assert.equal(requests.filter(r=>r.url.endsWith("/archive")).length,0);
   const command=requests.find(r=>r.url.endsWith("/archive/preview"));
   assert.equal(command.method,"POST");
@@ -3692,30 +3258,61 @@ test("archive preview never delegates a second commit to the browser", async () 
  }
 });
 
-test("capture parameter form submits the generation it rendered and preserves structured errors", async () => {
- let request;
- const app=loadAppFunctionsWith({exposeState:true,fetch:async(url,options={})=>{request={url,...options};return {ok:false,status:409,json:async()=>({error:{code:"thoughtflow.archive.preview_stale",message:"changed",details:{generation:9}}})};}});
+test("one archive action generates and saves without a separate preview confirmation", async () => {
+ const requests=[];
+ const app=loadAppFunctionsWith({exposeState:true,fetch:async(url,options={})=>{
+  requests.push({url,...options});
+  return {ok:true,json:async()=>({data:url.endsWith("/intent")?{}:{operation:{id:"auto-op",state:"preparing"},scratchpad:{session_id:"s",archive_operation:{id:"auto-op",state:"preparing"}}}})};
+ }});
  app._state.capture.sessionId="s";
- app._state.capture.activeScratchpad={session_id:"s",session_generation:9};
- const node={captureGeneration:7,querySelectorAll:selector=>selector.includes("parameter")?[{dataset:{captureParameter:"audience"},value:"engineers"}]:[],querySelector:()=>({value:"https://example.org/evidence"})};
- await assert.rejects(app.saveCaptureParameters(node),error=>error.code==="thoughtflow.archive.preview_stale"&&error.details.generation===9);
- assert.equal(request.headers["If-Match"],"7");
- assert.deepEqual(JSON.parse(request.body),{values:{audience:"engineers"},resolutions:{},source_links:["https://example.org/evidence"]});
+ await app.dispatchCaptureCommand("/save");
+ const command=requests.find(r=>r.url.endsWith("/archive/preview"));
+ assert.equal(JSON.parse(command.body).commit_after_preview,true);
+ assert.equal(requests.filter(r=>r.url.endsWith("/archive")).length,0);
+ assert.equal(requests.filter(r=>r.url.endsWith("/parameters")).length,0);
 });
 
-test("saving private capture draft uses draft identity without a committed marker", async () => {
- const sp={session_id:"s",draft_thought_id:"draft-1",messages:[{role:"user",text:"unfinished"}],archive_operation:{state:"draft_saved"}};
- const app=loadAppFunctionsWith({exposeState:true,fetch:async(url)=>({ok:true,json:async()=>({data:url.endsWith("/archive/draft")?{draft_thought_id:"draft-1",scratchpad:sp}:{thought:{id:"draft-1",capture_draft:true}}})})});
- app._state.capture.sessionId="s";
- await app.saveCaptureDraft();
- assert.equal(app._state.capture.activeThoughtId,"draft-1");
- assert.equal(app._state.capture.activeScratchpad.committed_thought_id,undefined);
- assert.equal(app._state.capture.activeScratchpad.messages[0].text,"unfinished");
- assert.match(app.renderCaptureArchiveControls(),/draft-1/);
+test("archive polling restores saved feedback without SSE or a second write", async () => {
+  const dom = makeDomStub();
+  const timers = [], calls = [];
+  const app = loadAppFunctionsWith({dom, exposeState:true,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    fetch: async (url, options = {}) => {
+      calls.push({url,method:options.method || "GET"});
+      return {ok:true,json:async()=>({data:url.startsWith("/api/thoughts/")
+        ? {thought:{id:"saved-note"}}
+        : {session_id:"s",committed_thought_id:"saved-note",archive_operation:{id:"op",state:"saved"}}})};
+    },
+  });
+  app._state.capture.sessionId="s";
+  app._state.capture.activeScratchpad={session_id:"s",archive_operation:{id:"op",state:"preparing"}};
+  app.renderCaptureConversation();
+  assert.match(dom.nodes["capture-conversation"].innerHTML,/capture.archive.state.preparing/);
+  app.resumeCaptureArchivePolling(); app.resumeCaptureArchivePolling();
+  assert.equal(timers.length,1);
+  await timers.shift()();
+  assert.equal(timers.length,0);
+  assert.equal(app._state.capture.activeThoughtId,"saved-note");
+  assert.match(dom.nodes["capture-conversation"].innerHTML,/capture.archive.state.saved/);
+  assert.match(dom.nodes["capture-conversation"].innerHTML,/#\/notes\?id=saved-note/);
+  assert.ok(calls.every(call=>call.method==="GET"));
 });
 
-test("archive validation appears before the rendered document body",()=>{
- const app=loadAppFunctionsWith({exposeState:true});
- const html=app.renderArchivePreviewBody({title:"Report",body:"LONG_BODY_MARKER",validation:{status:"invalid",issues:[{code:"input_required",section:"audience"}]}});
- assert.ok(html.indexOf("tf-validation-issues")<html.indexOf("LONG_BODY_MARKER"));
+test("late archive polling cannot replace another selected session", async () => {
+  const dom=makeDomStub(), timers=[];
+  let respond;
+  const app=loadAppFunctionsWith({dom,exposeState:true,setTimeout:(fn)=>timers.push(fn),
+    fetch:()=>new Promise(resolve=>{respond=resolve;}),
+  });
+  app._state.capture.sessionId="A";
+  app._state.capture.activeScratchpad={session_id:"A",archive_operation:{id:"op",state:"preparing"}};
+  app.resumeCaptureArchivePolling();
+  const pending=timers.shift()();
+  app._state.capture.sessionId="B";
+  app._state.capture.activeScratchpad={session_id:"B"};
+  respond({ok:true,json:async()=>({data:{session_id:"A",committed_thought_id:"a-note",archive_operation:{id:"op",state:"saved"}}})});
+  await pending;
+  assert.equal(app._state.capture.activeScratchpad.session_id,"B");
+  assert.equal(app._state.capture.activeThoughtId,"");
+  assert.equal(app.captureArchiveStatusMessage(),null);
 });

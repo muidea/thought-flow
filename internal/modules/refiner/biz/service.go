@@ -201,6 +201,9 @@ func (s *Service) refineNow(ctx context.Context, thoughtID string, force bool) (
 }
 
 func (s *Service) refineJob(ctx context.Context, job models.Job, force bool) {
+	ctx = ai.WithGenerationScope(ctx, job.ID)
+	ctx, cancel := ai.WithGenerationBudget(ctx, s.provider)
+	defer cancel()
 	if s.locker != nil {
 		release, err := s.locker.Lease(ctx, job.ResourceID, refinerSessionID+":"+job.ID)
 		if err != nil {
@@ -265,7 +268,8 @@ func (s *Service) refineJob(ctx context.Context, job models.Job, force bool) {
 			return
 		}
 		errRef := models.NewErrorRef("thoughtflow.refiner.failed", err.Error(), isRetryableRefineError(err))
-		if errRef.Retryable && job.Attempt < job.MaxAttempts {
+		var fetchFailure retryableRefineError
+		if (ai.CanAutomaticallyRetry(err) || errors.As(err, &fetchFailure)) && job.Attempt < job.MaxAttempts {
 			job, _ = s.jobs.MarkRetrying(job, errRef, "refine retrying")
 			eventutil.Post(s.eventHub, jobEvent(s.workspace.ID, job))
 			continue

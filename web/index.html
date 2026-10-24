@@ -148,50 +148,12 @@
                 <button class="tf-btn" id="capture-sessions-toggle" type="button" aria-controls="capture-sessions-drawer" aria-expanded="false" data-i18n="capture.session.sessions">Recent sessions</button>
               </div>
             </div>
-            <details class="tf-usage-guide" open>
-              <summary><span data-i18n="capture.guide_title">How to use Capture</span></summary>
-              <div class="tf-usage-guide-body">
-                <p data-i18n="capture.guide_summary">Capture turns raw ideas, URLs, and follow-up notes into archived thoughts.</p>
-                <ol class="tf-usage-steps">
-                  <li>
-                    <strong data-i18n="capture.guide_step_input_title">Send material</strong>
-                    <span data-i18n="capture.guide_step_input_body">Type an idea, paste a URL, or continue the current session from the composer.</span>
-                  </li>
-                  <li>
-                    <strong data-i18n="capture.guide_step_review_title">Review context</strong>
-                    <span data-i18n="capture.guide_step_review_body">Check the extracted context and archive preview before saving.</span>
-                  </li>
-                  <li>
-                    <strong data-i18n="capture.guide_step_archive_title">Archive thought</strong>
-                    <span data-i18n="capture.guide_step_archive_body">Archive when the preview is ready; recent sessions can be reopened from the session drawer.</span>
-                  </li>
-                </ol>
-              </div>
-            </details>
             <section class="tf-card tf-capture-shell">
               <div id="capture-lock-indicator" class="tf-capture-lock" hidden>
                 <span data-i18n="capture.session.locked">Locked by another session</span>
                 <button class="tf-btn" id="capture-lock-takeover" type="button" data-i18n="capture.session.takeover">Take over</button>
               </div>
               <ol id="capture-conversation" class="tf-capture-conversation" aria-live="polite"></ol>
-              <div class="tf-capture-workbench" hidden aria-hidden="true">
-                <section class="tf-capture-panel" aria-labelledby="capture-context-title">
-                  <div class="tf-capture-panel-header">
-                    <h4 id="capture-context-title" data-i18n="capture.context.title">Session context</h4>
-                  </div>
-                  <div id="capture-context-panel" class="tf-capture-context" data-i18n="capture.context.empty">No context extracted yet.</div>
-                </section>
-                <section class="tf-capture-panel" aria-labelledby="capture-preview-title">
-                  <div class="tf-capture-panel-header">
-                    <h4 id="capture-preview-title" data-i18n="capture.archive.preview_title">Archive preview</h4>
-                    <div class="tf-action-row">
-                      <button class="tf-btn" id="capture-refresh-preview" type="button" data-i18n="capture.archive.preview_action" disabled>Preview</button>
-                      <button class="tf-btn tf-btn-primary" id="capture-archive-commit" type="button" data-i18n="capture.archive.save_action" disabled>Archive</button>
-                    </div>
-                  </div>
-                  <div id="capture-archive-preview" class="tf-capture-preview" data-i18n="capture.archive.preview_empty">Preview appears before saving.</div>
-                </section>
-              </div>
               <p class="tf-text-secondary" data-i18n="privacy.notice">Text AI actions send content to enabled model services. URL processing contacts the origin or GitHub and may send the full URL to Reader. Details are in Settings.</p>
               <form id="capture-composer" class="tf-capture-composer" autocomplete="off">
                 <label class="tf-sr-only" for="capture-composer-input" data-i18n="capture.composer.aria_label">Capture input</label>

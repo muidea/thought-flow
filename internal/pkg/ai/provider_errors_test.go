@@ -25,6 +25,8 @@ func TestJSONRequestsDoNotDowngradeOrRetryParameterErrors(t *testing.T) {
 		{"conversion-type", 400, map[string]any{"type": "conversion_unsupported", "feature": "response_format", "unsupported_features": []string{"response_format", "tools"}}, "thoughtflow.ai.conversion_unsupported"},
 		{"misclassified-conversion", 503, map[string]any{"code": "conversion_unsupported", "feature": "response_format", "unsupported_features": []string{"response_format", "tools"}}, "thoughtflow.ai.conversion_unsupported"},
 		{"other-parameter-error", 400, map[string]any{"code": "invalid_request_error"}, "thoughtflow.ai.http_status"},
+		{"unauthorized", 401, map[string]any{"code": "invalid_api_key"}, "thoughtflow.ai.http_status"},
+		{"forbidden", 403, map[string]any{"code": "access_denied"}, "thoughtflow.ai.http_status"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var attempts atomic.Int32
@@ -42,10 +44,8 @@ func TestJSONRequestsDoNotDowngradeOrRetryParameterErrors(t *testing.T) {
 					t.Error("JSON request silently lost response_format")
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if tc.code == "thoughtflow.ai.conversion_unsupported" {
-					// The semantic failure must override even an upstream retry hint.
-					w.Header().Set("X-Should-Retry", "true")
-				}
+				// Terminal failures must override even an upstream retry hint.
+				w.Header().Set("X-Should-Retry", "true")
 				w.WriteHeader(tc.status)
 				_ = json.NewEncoder(w).Encode(map[string]any{"error": tc.body})
 			}))
@@ -53,7 +53,7 @@ func TestJSONRequestsDoNotDowngradeOrRetryParameterErrors(t *testing.T) {
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
 			_, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "解释 ISA-95"})
 			var failure ProviderError
-			if !errors.As(err, &failure) || failure.Code != tc.code || failure.Retryable || failure.StatusCode != tc.status {
+			if !errors.As(err, &failure) || failure.Code != tc.code || CanAutomaticallyRetry(err) || failure.StatusCode != tc.status {
 				t.Fatalf("unexpected failure: %#v, %v", failure, err)
 			}
 			if attempts.Load() != 1 {
@@ -86,7 +86,7 @@ func TestPlainTextCompletionDoesNotSendResponseFormat(t *testing.T) {
 	}
 }
 
-func TestExplicitJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T) {
+func TestAutomaticJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		features map[string]any
@@ -120,7 +120,7 @@ func TestExplicitJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T) 
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"assistant_reply":"实质回答","candidate_summary":"归档摘要","candidate_body":"工作材料"}`}}}})
 			}))
 			defer server.Close()
-			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second, AllowJSONFallback: true}, appconfig.EmbeddingConfig{})
+			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
 			result, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "解释 ISA-95"})
 			if tc.fallback {
 				if err != nil || attempts.Load() != 2 || result.AssistantReply != "实质回答" || result.CandidateSummary != "归档摘要" {
@@ -133,21 +133,26 @@ func TestExplicitJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T) 
 	}
 }
 
-func TestJSONFallbackRejectsInvalidResultsAndDoesNotRetryTransientFailure(t *testing.T) {
+func TestJSONFallbackRejectsInvalidResultsAndBoundsTransientRecovery(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		content string
 		status  int
 		code    string
+		reason  string
+		field   string
 	}{
-		{"malformed", "这是普通文字，不是 JSON", 200, "thoughtflow.ai.invalid_json_fallback"},
-		{"missing-answer", `{"candidate_summary":"只有摘要"}`, 200, "thoughtflow.ai.invalid_json_fallback"},
-		{"transient", "", 503, "thoughtflow.ai.json_fallback_failed"},
+		{"malformed", "这是普通文字，不是 JSON", 200, "thoughtflow.ai.invalid_json_fallback", "invalid_json", ""},
+		{"missing-answer", `{"candidate_summary":"只有摘要"}`, 200, "thoughtflow.ai.invalid_json_fallback", "missing_required_field", "assistant_reply"},
+		{"wrong-field-type", `{"assistant_reply": ["not a string"]}`, 200, "thoughtflow.ai.invalid_json_fallback", "invalid_field_type", "assistant_reply"},
+		{"transient", "", 503, "thoughtflow.ai.json_fallback_failed", "thoughtflow.ai.transient_status", ""},
+		{"rate-limited", "", 429, "thoughtflow.ai.json_fallback_failed", "thoughtflow.ai.transient_status", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var attempts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After-Ms", "1")
 				if attempts.Add(1) == 1 {
 					w.WriteHeader(400)
 					_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
@@ -157,10 +162,11 @@ func TestJSONFallbackRejectsInvalidResultsAndDoesNotRetryTransientFailure(t *tes
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": tc.content}}}})
 			}))
 			defer server.Close()
-			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second, AllowJSONFallback: true}, appconfig.EmbeddingConfig{})
+			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
 			_, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "解释 ISA-95"})
 			var failure ProviderError
-			if attempts.Load() != 2 || !errors.As(err, &failure) || failure.Code != tc.code || failure.Retryable {
+			wantAttempts := int32(2)
+			if attempts.Load() != wantAttempts || !errors.As(err, &failure) || failure.Code != tc.code || failure.Reason != tc.reason || failure.Field != tc.field || CanAutomaticallyRetry(err) {
 				t.Fatalf("attempts=%d error=%#v", attempts.Load(), err)
 			}
 		})
@@ -179,10 +185,54 @@ func TestJSONFallbackPreservesFurtherUnsupportedFeatureDiagnostics(t *testing.T)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "conversion_unsupported", "feature": feature, "unsupported_features": []string{feature}}})
 	}))
 	defer server.Close()
-	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second, AllowJSONFallback: true}, appconfig.EmbeddingConfig{})
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
 	_, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "解释 ISA-95"})
 	var failure ProviderError
-	if attempts.Load() != 2 || !errors.As(err, &failure) || failure.Code != "thoughtflow.ai.conversion_unsupported" || failure.Feature != "temperature" || len(failure.UnsupportedFeatures) != 1 || failure.Retryable {
+	if attempts.Load() != 2 || !errors.As(err, &failure) || failure.Code != "thoughtflow.ai.conversion_unsupported" || failure.Feature != "temperature" || len(failure.UnsupportedFeatures) != 1 || CanAutomaticallyRetry(err) {
 		t.Fatalf("lost fallback error diagnostics: attempts=%d error=%#v", attempts.Load(), err)
+	}
+}
+
+func TestCachedJSONFallbackKeepsGatewayFailureSeparateFromJSONValidation(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		turn := attempts.Add(1)
+		_, hasFormat := request["response_format"]
+		if hasFormat != (turn == 1) {
+			t.Errorf("request %d: response_format present=%v", turn, hasFormat)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After-Ms", "1")
+		switch turn {
+		case 1:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
+		case 2:
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"assistant_reply":"ISA-95 connects enterprise and manufacturing operations."}`}}}})
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"code":"upstream","message":"chatgpt upstream: code:6, message:bootstrap: HTTP 403 (upstream)"}}`))
+		}
+	}))
+	defer server.Close()
+	cfg := appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}
+	provider := NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})
+	if _, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "Explain ISA-95"}); err != nil {
+		t.Fatal(err)
+	}
+	// A second instance must reuse the capability decision, while preserving
+	// the gateway's status independently of the 403 text inside its message.
+	provider = NewOpenAICompatibleProvider(cfg, appconfig.EmbeddingConfig{})
+	_, err := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "Which systems are involved?"})
+	var failure ProviderError
+	if !errors.As(err, &failure) || failure.Code != "thoughtflow.ai.json_fallback_failed" || failure.StatusCode != 502 || failure.Reason != "thoughtflow.ai.transient_status" || CanAutomaticallyRetry(err) || !strings.Contains(failure.Message, "HTTP 403") {
+		t.Fatalf("lost gateway diagnosis: %#v, %v", failure, err)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("cached fallback failure exceeded recovery budget: %d", attempts.Load())
 	}
 }

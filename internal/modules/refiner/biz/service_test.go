@@ -360,7 +360,7 @@ func TestRefineURLProviderFailurePreservesFetchedContent(t *testing.T) {
 	}
 }
 
-func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
+func TestRefineJobDoesNotReplayUnknownProviderFailure(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{
 		ID:           "local",
@@ -403,14 +403,14 @@ func TestRefineJobRetriesRetryableProviderFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(job) error = %v", err)
 	}
-	if loaded.Status != models.JobStatusSucceeded || loaded.Attempt != 2 || loaded.Error != nil {
+	if loaded.Status != models.JobStatusFailed || loaded.Attempt != 1 || loaded.Error == nil {
 		t.Fatalf("loaded job = %#v", loaded)
 	}
 	gotThought, _, err := markdown.ReadThought(root, thoughtID)
 	if err != nil {
 		t.Fatalf("ReadThought() error = %v", err)
 	}
-	if gotThought.RefineStatus != models.RefineStatusRefined || gotThought.Summary != "retry succeeded" {
+	if gotThought.RefineStatus != models.RefineStatusFailed || gotThought.Summary != "" {
 		t.Fatalf("thought after retry = %#v", gotThought)
 	}
 }

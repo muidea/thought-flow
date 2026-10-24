@@ -36,7 +36,7 @@ func (p *invalidThenValidMetadata) Refine(_ context.Context, req ai.RefineReques
 	return r, nil
 }
 
-func TestInvalidMetadataRetriesWithoutPersistingInvalidSummary(t *testing.T) {
+func TestInvalidMetadataStopsWithoutPersistingInvalidSummary(t *testing.T) {
 	root := t.TempDir()
 	ws := &models.Workspace{RootPath: root, JobsPath: filepath.Join(root, "runtime/jobs")}
 	thought := models.Thought{ID: "20261023-100000-retry", UserTitle: "Note", Summary: "Previous valid summary"}
@@ -53,11 +53,11 @@ func TestInvalidMetadataRetriesWithoutPersistingInvalidSummary(t *testing.T) {
 	}
 	service.refineJob(context.Background(), job, false)
 	stored, err := jobs.Get(job.ID)
-	if err != nil || stored.Status != models.JobStatusSucceeded || stored.Attempt != 2 || provider.calls != 2 {
+	if err != nil || stored.Status != models.JobStatusFailed || stored.Attempt != 1 || provider.calls != 1 {
 		t.Fatalf("invalid metadata was not retried: %+v, calls=%d, %v", stored, provider.calls, err)
 	}
 	current, _, err := markdown.ReadThought(root, thought.ID)
-	if err != nil || current.Summary != "Corrected summary" {
+	if err != nil || current.Summary != "Previous valid summary" {
 		t.Fatalf("corrected metadata not saved: %+v %v", current, err)
 	}
 }

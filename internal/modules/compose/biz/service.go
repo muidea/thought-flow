@@ -372,7 +372,7 @@ func (s *Service) generateDraftJob(job models.Job, req models.ComposeRequest, fi
 
 	// Force CreateDraft to update the existing placeholder rather than
 	// minting a second draft id for the same request.
-	_, err := s.CreateDraft(s.workCtx, req, createDraftOptions{
+	_, err := s.CreateDraft(ai.WithGenerationScope(s.workCtx, job.ID), req, createDraftOptions{
 		DraftID:            job.ResourceID,
 		RequestFingerprint: fingerprint,
 		JobID:              job.ID,
@@ -456,6 +456,12 @@ type createDraftOptions struct {
 // source_links list is unioned across all sources so the saved
 // Thought can carry a complete provenance trail.
 func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, opts ...createDraftOptions) (models.ComposeDraft, error) {
+	budgetProvider := any(s.synthesis)
+	if s.documentGenerator != nil {
+		budgetProvider = s.documentGenerator
+	}
+	ctx, cancel := ai.WithGenerationBudget(ctx, budgetProvider)
+	defer cancel()
 	if s == nil || s.draftStore == nil {
 		return models.ComposeDraft{}, errors.New("compose service is not ready")
 	}

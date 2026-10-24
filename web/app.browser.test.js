@@ -806,7 +806,6 @@ test("capture composer starts a new session, persists a thought, and shows the c
     // The current capture flow keeps the raw user input in the user
     // bubble. The context bubble may briefly show a pending reply and
     // should not be required to repeat the raw input.
-    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]'));
     await page.waitForExpression(() => /thought-capture|Browser capture/.test(document.querySelector('#capture-conversation .tf-msg-ai[data-thought-id="thought-capture"]')?.textContent || ""));
     const messages = await page.evaluate(() => Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.textContent || ""));
     assert.ok(messages.some((text) => text.includes("Browser session smoke text")), "user message should be in conversation");
@@ -824,8 +823,8 @@ test("capture composer starts a new session, persists a thought, and shows the c
   }
 });
 
-test("capture conversation re-renders the AI bubble in place after a PATCH command", async (t) => {
-  const server = await startFixtureServer();
+test("capture conversation accepts edits and archives through chat", async (t) => {
+  const server = await startFixtureServer({captureAutomaticArchive:true});
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
@@ -860,7 +859,6 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       document.querySelector("#capture-composer").requestSubmit();
     });
     await page.waitForExpression(() => /Multi-turn browser smoke/.test(document.querySelector("#capture-conversation")?.textContent || ""));
-    await page.waitForExpression(() => !!document.querySelector('#capture-conversation .tf-msg-ai[data-kind="context"]'), 30000);
     await waitForCaptureComposerIdle(page);
     // Issue a rename command; in the current capture flow it updates
     // session_context.CandidateTitle rather than PATCHing a Thought.
@@ -869,42 +867,20 @@ test("capture conversation re-renders the AI bubble in place after a PATCH comma
       input.value = "rename to Renamed in browser";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    // Poll for the rename to land in the conversation context and for the preview
-    // action to produce a before-save archive preview.
-    let renamed = false;
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      renamed = await page.evaluate(() => {
-        const context = document.querySelector("#capture-conversation");
-        return context && /Renamed in browser/.test(context.textContent || "");
-      });
-      if (renamed) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!renamed) {
-      const dump = await page.evaluate(() => ({
-        messages: Array.from(document.querySelectorAll("#capture-conversation .tf-msg")).map((el) => el.outerHTML),
-        composerValue: document.querySelector("#capture-composer-input")?.value || "",
-      }));
-      console.error("DEBUG: rename never landed.\nMessages:\n" + dump.messages.join("\n---\n") + "\nComposer value: " + JSON.stringify(dump.composerValue));
-    }
-    assert.ok(renamed, "rename command should update the session context title");
+    await page.waitForExpression(() => /Renamed in browser/.test(document.querySelector("#capture-conversation")?.textContent || ""));
     await waitForCaptureComposerIdle(page);
     await page.evaluate(() => {
-      const input = document.querySelector("#capture-composer-input");
-      input.value = "/save";
+      document.querySelector("#capture-composer-input").value = "/save";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    await page.waitForExpression(() => /Archive preview|归档预览/.test(document.querySelector("#capture-conversation")?.textContent || "")
-      && /Renamed in browser/.test(document.querySelector("#capture-conversation")?.textContent || ""));
-    const rendered = await page.evaluate(() => {
-      return {
-        context: document.querySelector("#capture-conversation")?.textContent || "",
-        preview: Array.from(document.querySelectorAll('#capture-conversation .tf-msg-ai[data-kind="archive_preview"]')).map((el) => el.textContent || "").join("\n"),
-      };
-    });
-    assert.match(rendered.context, /Renamed in browser/);
-    assert.match(rendered.preview, /Renamed in browser/);
+    await page.waitForExpression(() => !!document.querySelector('#capture-conversation [data-kind="archive_status"][data-thought-id="thought-capture"]'));
+    const rendered = await page.evaluate(() => ({
+      conversation: document.querySelector("#capture-conversation").textContent,
+      previews: document.querySelectorAll('[data-kind="archive_preview"], #capture-workbench, #capture-archive-preview, #capture-context-panel').length,
+    }));
+    assert.match(rendered.conversation, /Renamed in browser/);
+    assert.match(rendered.conversation, /Archived/);
+    assert.equal(rendered.previews, 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -1136,14 +1112,13 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
   }
 });
 
-test("scratchpad.context_updated event drives context card re-render via SSE", async (t) => {
+test("scratchpad.context_updated updates assistant replies while context stays internal", async (t) => {
   // The real backend's enrichSessionContextAsync runs the LLM after the
   // user submits a message and publishes scratchpad.context_updated
   // when it lands. The front-end refetches the scratchpad and
-  // re-renders #capture-context-panel from the new session_context.
-  // 800 ms enrichment delay exercises the full SSE path; the assertion
-  // fires when the LLM-enriched string lands in the panel.
-  const server = await startFixtureServer({ enrichEnabled: true, enrichDelayMs: 800 });
+  // renders the persisted assistant reply without exposing context fields.
+  // The 800 ms delay exercises the real SSE subscription and GET path.
+  const server = await startFixtureServer({ enrichEnabled: true, enrichDelayMs: 800, answerFirst: true });
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   const target = browserTargets.find((item) => item.name === "chrome");
@@ -1173,35 +1148,21 @@ test("scratchpad.context_updated event drives context card re-render via SSE", a
       input.value = "LLM enrichment probe";
       document.querySelector("#capture-composer").requestSubmit();
     });
-    // Pre-enrichment: only the locally-computed context string is visible.
-    await page.waitForExpression(() => {
-      const el = document.querySelector("#capture-context-panel");
-      return el && /LLM enrichment probe/.test(el.textContent || "");
-    }, 6000);
-    // Post-enrichment (after scratchpad.context_updated lands via SSE).
-    // The session_context card only renders the high-level fields
-    // (title / summary / tags / related_thought_ids / suggested_topic_ids);
-    // the deeper fields (key_points / url_followups / expansion_plan) are
-    // surfaced in the thought-anchored bubble once the scratchpad
-    // commits — see the dedicated LLM-enriched test below.
-    await page.waitForExpression(() => {
-      const el = document.querySelector("#capture-context-panel");
-      return el && /LLM-enriched summary/.test(el.textContent || "");
-    }, 8000);
-    const panelText = await page.evaluate(() => document.querySelector("#capture-context-panel")?.textContent || "");
-    assert.match(panelText, /LLM-enriched summary/);
-    assert.match(panelText, /LLM enrichment probe/, "candidate_title keeps the priming text");
-    assert.match(panelText, /browser/);
-    assert.match(panelText, /enriched/);
-    assert.match(panelText, /thought-1/);
-    assert.match(panelText, /demo/);
+    await page.waitForExpression(() => document.querySelector("#capture-conversation")?.textContent.includes("ERP 下达生产订单"), 8000);
+    const result = await page.evaluate(() => ({
+      conversation: document.querySelector("#capture-conversation").textContent,
+      panels: document.querySelectorAll('#capture-context-panel, #capture-archive-preview, #capture-workbench').length,
+    }));
+    assert.match(result.conversation, /LLM enrichment probe/);
+    assert.doesNotMatch(result.conversation, /ARCHIVE_METADATA_ONLY|LLM-enriched summary/);
+    assert.equal(result.panels, 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }
 });
 
-test("SSE context response arriving after A-B-A preserves the latest conversation and preview", async (t) => {
+test("SSE context response arriving after A-B-A preserves the latest conversation", async (t) => {
   const server = await startFixtureServer();
   t.after(() => server.close());
   const baseURL = `http://127.0.0.1:${server.address().port}`;
@@ -1262,9 +1223,9 @@ test("SSE context response arriving after A-B-A preserves the latest conversatio
       document.querySelector("#capture-sessions-toggle").click();
       document.querySelector('.tf-sessions-open[data-session-id="A"]').click();
     });
-    await page.waitForExpression(() => document.querySelector("#capture-archive-preview").textContent.includes("Latest A follow-up"));
+    await page.waitForExpression(() => document.querySelector("#capture-conversation").textContent.includes("Latest A follow-up"));
     const before = await page.evaluate(() => ({
-      preview: document.querySelector("#capture-archive-preview").textContent,
+      panels: document.querySelectorAll("#capture-archive-preview, #capture-context-panel").length,
       conversation: document.querySelector("#capture-conversation").textContent,
     }));
     assert.match(before.conversation, /Latest A follow-up/);
@@ -1273,7 +1234,7 @@ test("SSE context response arriving after A-B-A preserves the latest conversatio
       // API decoding and the synchronous SSE state update finish in microtasks
       // before the next paint. Compare the actual visible UI after two paints.
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      return { preview: document.querySelector("#capture-archive-preview").textContent, conversation: document.querySelector("#capture-conversation").textContent };
+      return { panels: document.querySelectorAll("#capture-archive-preview, #capture-context-panel").length, conversation: document.querySelector("#capture-conversation").textContent };
     });
     assert.deepEqual(after, before);
   } finally {
@@ -1650,6 +1611,14 @@ function startFixtureServer(options = {}) {
         live.session_context.candidate_summary = "ARCHIVE_METADATA_ONLY";
         live.messages.push({role:"ai",text:reply,at:new Date().toISOString()});
       }
+      if (options.captureBackgroundArchive && text.includes("归档")) {
+        live.archive_operation = { id:"background-op", state:options.captureBackgroundArchive, input_generation:live.input_generation };
+        live.archive_preview = {body:"INTERNAL_ARCHIVE_PREVIEW", validation:{status:"valid",issues:[]}};
+        if(options.captureBackgroundArchive === "saved") live.committed_thought_id = "thought-capture";
+        if(options.captureBackgroundArchive === "needs_input") {
+          live.archive_preview.validation = {status:"invalid",issues:[{code:"input_required",section:"scope",severity:"error"}]};
+        }
+      }
       captureSessions.set(sessionID, live);
       eventBus.emit("event", "scratchpad.context_updated", {
         resource_type: "session",
@@ -1736,6 +1705,7 @@ function startFixtureServer(options = {}) {
         return json(res, api(sp));
       }
       if (suffix === `${sessionID}/parameters` && req.method === "PATCH") {
+        if(options.captureAutomaticArchive){res.statusCode=500;return json(res,api(null));} // No confirmation call is part of automatic archiving.
         const body=await readJson(req);
         if (Number(req.headers["if-match"])!==sp.session_generation) {res.statusCode=409;return json(res,api(null));}
         sp.session_context.document_parameters=body.values;
@@ -1753,6 +1723,7 @@ function startFixtureServer(options = {}) {
         return json(res, api({preview:sp.archive_preview || null, persisted:!!sp.archive_preview, scratchpad:sp}));
       }
       if (suffix === `${sessionID}/archive/preview` && req.method === "POST") {
+        const archiveRequest=(await readJson(req)) || {};
         sp.archive_preview = {
           validation: {status:"valid", issues:[]},
           title: sp.session_context.candidate_title || "Browser capture",
@@ -1767,6 +1738,11 @@ function startFixtureServer(options = {}) {
           const valid=!!sp.session_context.document_parameters?.audience;
           sp.archive_preview.validation={status:valid?"valid":"invalid",issues:valid?[]:[{code:"input_required",section:"audience",severity:"error"}]};
           sp.archive_operation={id:"preview-op",state:valid?"ready":"needs_input",input_generation:sp.input_generation};
+        }
+        if(options.captureAutomaticArchive && archiveRequest.commit_after_preview && sp.archive_preview.validation.status==="valid"){
+          sp.committed_thought_id="thought-capture";
+          sp.archive_operation={id:"auto-op",state:"saved",input_generation:sp.input_generation};
+          sp.content="";sp.messages=[];sp.archive_preview=null;
         }
         captureSessions.set(sessionID, sp);
         return json(res, api({ preview: sp.archive_preview, operation:sp.archive_operation, persisted: true, scratchpad:sp }));
@@ -2470,9 +2446,9 @@ class CDPPage {
     await loaded;
   }
 
-  async evaluate(fn) {
+  async evaluate(fn, arg) {
     const result = await this.send("Runtime.evaluate", {
-      expression: `(${fn.toString()})()`,
+      expression: `(${fn.toString()})(${JSON.stringify(arg) ?? ""})`,
       returnByValue: true,
       awaitPromise: true,
     });
@@ -2705,8 +2681,8 @@ class PlaywrightPage {
     await this.page.goto(url, { waitUntil: "load", timeout: 15000 });
   }
 
-  async evaluate(fn) {
-    return await this.page.evaluate(fn);
+  async evaluate(fn, arg) {
+    return await this.page.evaluate(fn, arg);
   }
 
   async waitForExpression(fn, timeout = 10000) {
@@ -2844,34 +2820,87 @@ test("capture research replies answer both turns and survive a browser reload", 
  } finally {await browser.close();}
 });
 
-test("capture archive form saves an incomplete private draft and confirms inputs after reload", async(t)=>{
- if(!chromePath){t.skip("Chrome executable not found");return;}
- const server=await startFixtureServer({captureNeedsInputs:true});t.after(()=>server.close());
- const baseURL=`http://127.0.0.1:${server.address().port}`;
- const browser=await browserTargets.find(target=>target.name==="chrome").launch(viewports()[0]);
- try{
-  const page=await connectPage(browser);const errors=[];
-  page.onEvent("Runtime.exceptionThrown",e=>errors.push(e.exceptionDetails?.exception?.description||e.exceptionDetails?.text));
-  await page.send("Runtime.enable");await page.send("Page.enable");
-  await page.navigate(`${baseURL}/?lang=en-US#/capture`);
-  await page.waitForExpression(()=>document.querySelector("#page-capture")?.classList.contains("active"));
-  await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="Unfinished private research";document.querySelector("#capture-composer").requestSubmit();});
-  await page.waitForExpression(()=>document.querySelector("#capture-refresh-preview")?.disabled===false);
-  await page.evaluate(()=>document.querySelector("#capture-refresh-preview").click());
-  await page.waitForExpression(()=>document.querySelector('[data-capture-save-draft]')?.disabled===false && !!document.querySelector('[data-capture-parameter="audience"]'));
-  assert.equal(await page.evaluate(()=>document.querySelector("#capture-archive-commit").disabled),true);
-  await page.evaluate(()=>document.querySelector('[data-capture-save-draft]').click());
-  await page.waitForExpression(()=>document.querySelector("#capture-archive-preview")?.textContent.includes("Private draft saved"));
-  await page.send("Page.reload");
-  await page.waitForExpression(()=>document.querySelector("#capture-archive-preview")?.textContent.includes("Private draft saved"));
-  await page.evaluate(()=>{const input=document.querySelector('[data-capture-parameter="audience"]');input.value="Manufacturing engineers";input.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector('[data-capture-save-parameters]').click();});
-  await page.waitForExpression(()=>document.querySelector("#capture-archive-commit")?.disabled===false);
-  const confirmed=await page.evaluate(async()=>{const list=await(await fetch("/api/capture/sessions")).json();const id=list.data.last_active_session_id;return (await(await fetch(`/api/capture/sessions/${id}`)).json()).data;});
-  assert.equal(confirmed.session_context.document_parameters.audience,"Manufacturing engineers");
-  assert.equal(confirmed.draft_thought_id,"thought-capture");
-  assert.ok(!confirmed.committed_thought_id);
-  await page.evaluate(()=>document.querySelector("#capture-archive-commit").click());
-  await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-thought-id="thought-capture"]'));
-  assert.deepEqual(errors,[]);
- }finally{await browser.close();}
+// Scripted element.click() also activates controls inside hidden ancestors.
+// Use browser input and hit testing for archive controls that users must reach.
+async function clickVisibleCaptureControl(page, selector) {
+ const point=await page.evaluate((selector)=>{
+  const node=document.querySelector(selector);
+  if(!node) throw new Error(`Missing control: ${selector}`);
+  node.scrollIntoView({block:"center"});
+  const rect=node.getBoundingClientRect();
+  const style=getComputedStyle(node);
+  if(node.disabled || node.closest('[hidden], [aria-hidden="true"]') || rect.width<=0 || rect.height<=0 || style.visibility!=="visible") throw new Error(`Control is not available: ${selector}`);
+  const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+  const hit=document.elementFromPoint(x,y);
+  if(!hit || !node.contains(hit)) throw new Error(`Control is covered: ${selector}`);
+  return {x,y};
+ },selector);
+ await page.send("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,...point});
+ await page.send("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,...point});
+}
+
+test("capture archives through chat and restores its result without context or preview panels", async (t) => {
+ if (!chromePath) { t.skip("Chrome executable not found"); return; }
+ for (const viewport of viewports()) await t.test(viewport.name, async (t) => {
+  const server = await startFixtureServer({captureAutomaticArchive:true}); t.after(()=>server.close());
+  const browser = await browserTargets.find(target=>target.name==="chrome").launch(viewport);
+  try {
+   const page = await connectPage(browser); const errors=[];
+   page.onEvent("Runtime.exceptionThrown",event=>errors.push(event.exceptionDetails?.text));
+   await page.send("Runtime.enable"); await page.send("Page.enable");
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/capture`);
+   await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="ISA-95 discussion";});
+   await clickVisibleCaptureControl(page,"#capture-composer-send");
+   await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("ISA-95 discussion"));
+   await waitForCaptureComposerIdle(page);
+   await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="/save";});
+   await clickVisibleCaptureControl(page,"#capture-composer-send");
+   const assertChatOnly = async () => {
+    await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="archive_status"][data-thought-id="thought-capture"] a'));
+    const ui=await page.evaluate(()=>({
+     panels:document.querySelectorAll('#capture-workbench, #capture-context-panel, #capture-archive-preview, [data-kind="archive_preview"], [data-capture-parameter]').length,
+     status:document.querySelector('#capture-conversation [data-kind="archive_status"]').textContent,
+     href:document.querySelector('#capture-conversation [data-kind="archive_status"] a').getAttribute("href"),
+    }));
+    assert.equal(ui.panels,0); assert.match(ui.status,/Archived/); assert.equal(ui.href,"#/notes?id=thought-capture");
+   };
+   await assertChatOnly();
+   await page.send("Page.reload"); await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   await clickVisibleCaptureControl(page,"#capture-sessions-toggle");
+   await page.waitForExpression(()=>!!document.querySelector('.tf-sessions-open[data-session-id="browser-session"]'));
+   await clickVisibleCaptureControl(page,'.tf-sessions-open[data-session-id="browser-session"]');
+   await assertChatOnly();
+   await clickVisibleCaptureControl(page,'#capture-conversation [data-kind="archive_status"] a');
+   await page.waitForExpression(()=>document.querySelector("#page-thoughts")?.classList.contains("active") && document.querySelector("#thought-detail")?.textContent.includes("thought-capture"));
+   assert.deepEqual(errors,[]);
+  } finally { await browser.close(); }
+ });
+});
+
+test("backend archive events report saved or missing information through bubbles without browser generation", async (t) => {
+ if (!chromePath) { t.skip("Chrome executable not found"); return; }
+ for (const status of ["saved", "needs_input"]) await t.test(status, async (t) => {
+  const server=await startFixtureServer({enrichEnabled:true,enrichDelayMs:800,answerFirst:true,captureBackgroundArchive:status}); t.after(()=>server.close());
+  const browser=await browserTargets.find(target=>target.name==="chrome").launch(viewports()[0]);
+  try {
+   const page=await connectPage(browser); const writes=[];
+   await page.send("Network.enable"); await page.send("Page.enable");
+   page.onEvent("Network.requestWillBeSent",event=>{if(event.request.method!=="GET") writes.push(event.request.url);});
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/capture`);
+   await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   await waitForFixtureEventClient(`http://127.0.0.1:${server.address().port}`);
+   await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="将 ISA-95 的讨论归档";});
+   await clickVisibleCaptureControl(page,"#capture-composer-send");
+   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="archive_status"]'));
+   const ui=await page.evaluate(()=>({text:document.querySelector("#capture-conversation").textContent,previews:document.querySelectorAll('#capture-context-panel, #capture-archive-preview, [data-kind="archive_preview"]').length}));
+   assert.equal(ui.previews,0); assert.doesNotMatch(ui.text,/INTERNAL_ARCHIVE_PREVIEW|ARCHIVE_METADATA_ONLY/);
+   assert.match(ui.text,status==="saved"?/Archived/:/Essential information is missing/);
+   assert.equal(writes.filter(url=>/\/(archive|parameters|intent)(?:[/?]|$)/.test(url)).length,0);
+   if(status==="needs_input") {
+    await page.send("Page.reload");
+    await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-kind="archive_status"]')?.textContent.includes("Essential information is missing"));
+   }
+  } finally { await browser.close(); }
+ });
 });

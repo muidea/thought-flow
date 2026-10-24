@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/eventutil"
@@ -71,6 +72,7 @@ func (s *ScratchpadService) PublishPreview(initial scratchpad.Scratchpad, previe
 		}
 		preview.OperationID = sp.Operation.ID
 		preview.InputGeneration = sp.InputGeneration
+		sp.Operation.InputGeneration = sp.InputGeneration
 		if profile.SchemaVersion == 2 && s.archiveDocuments() != nil && archiveTarget(*sp) == "" {
 			candidate, err := s.archiveDocuments().Candidate(context.Background(), sp.ObjectID, preview.Body, preview.Title, profile, preview.Parameters, *preview.Sources, preview.ContextHash)
 			if err != nil {
@@ -386,6 +388,22 @@ func (s *ScratchpadService) PreviewAndArchive(ctx context.Context, sp scratchpad
 	if sp.Operation == nil {
 		return fmt.Errorf("archive operation is required")
 	}
+	// Persist before any potentially generative context/document call. A crash
+	// after this point has unknown completion and needs an explicit user retry.
+	if _, err := s.store.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
+		if current.Operation == nil || current.Operation.ID != sp.Operation.ID || current.InputGeneration != sp.InputGeneration {
+			return ErrArchivePreviewStale
+		}
+		current.Operation.GenerationStarted = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	var err error
+	sp, err = s.prepareAutomaticArchiveContext(ctx, sp)
+	if err != nil {
+		return err
+	}
 	var current *models.ThoughtSnapshot
 	if id := archiveTarget(sp); id != "" {
 		value, e := s.capture.GetThought(ctx, id)
@@ -399,6 +417,9 @@ func (s *ScratchpadService) PreviewAndArchive(ctx context.Context, sp scratchpad
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	saved, err := s.PublishPreview(sp, preview)
 	if err != nil {
 		return err
@@ -408,6 +429,37 @@ func (s *ScratchpadService) PreviewAndArchive(ctx context.Context, sp scratchpad
 		_, err = s.Commit(ctx, sp.SessionID)
 	}
 	return err
+}
+
+// A menu click may arrive before the asynchronous context response. Classify
+// and extract from this generation instead of silently archiving as a default
+// note. The same CAS rules prevent a late result from consuming newer input.
+func (s *ScratchpadService) prepareAutomaticArchiveContext(ctx context.Context, sp scratchpad.Scratchpad) (scratchpad.Scratchpad, error) {
+	hasProfile := sp.SessionContext.CandidateProfileID != "" || sp.SessionContext.FrozenProfile != ""
+	if s.profiles == nil || s.contextAI == nil || strings.TrimSpace(sp.Content) == "" || (hasProfile && strings.TrimSpace(sp.SessionContext.CandidateBody) != "") {
+		return sp, nil
+	}
+	result, err := s.buildCaptureContextWithRetry(ctx, sp.SessionID, sp.Content, ai.CaptureContextRequest{
+		SessionID: sp.SessionID, Content: sp.Content, Messages: captureContextMessages(sp.Messages),
+		Existing:          captureContextFromScratchpad(enrichmentSeedContext(sp)),
+		AvailableProfiles: s.availableProfileDescriptors(sp), ExistingProfile: s.existingProfile(sp),
+	})
+	if err != nil {
+		return sp, err
+	}
+	if result.ProfileContractHash != "" {
+		profile, err := s.profiles.Resolve(models.DocumentProfileRef{ProfileID: result.CandidateProfileID, Version: result.CandidateProfileVersion})
+		if err != nil || profile.Ref.ContentHash != result.ProfileContractHash {
+			return sp, ErrArchivePreviewStale
+		}
+	}
+	result = preserveLatestUserTurns(result, sp.Messages)
+	next := captureContextToScratchpad(result, sp)
+	// A menu's accepted target and save intent remain authoritative even when
+	// the extraction model describes exploration rather than an archive intent.
+	next.ArchiveStrategy = sp.ArchiveStrategy
+	next.ArchiveIntent = sp.ArchiveIntent
+	return s.updateSessionContextAt(sp.SessionID, next, false, &sp.InputGeneration)
 }
 
 func archiveTarget(sp scratchpad.Scratchpad) string {

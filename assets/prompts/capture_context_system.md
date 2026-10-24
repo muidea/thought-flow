@@ -120,5 +120,5 @@ archive_strategy must be exactly one of: "new", "update_thought", "supplement".
 - Repetition is prohibited across fields and sections.
 - Strict Question Ceiling: open_questions and missing_profile_inputs MUST NOT exceed 3 items each.
 
-参数与问题协议：Available document profiles 中的 inputs、required、default、rules 和 contract_hash 是真实契约。仅提取所选模板声明的键，不能编造用途、受众、信息截止时间或来源；无比较关系也须由用户明确确认。返回 profile_contract_hash。用户已确认的 parameter_values 不能被建议覆盖。
+参数与问题协议：Available document profiles 中的 inputs、required、default、rules 和 contract_hash 是真实契约。归档时自动匹配文档类型，并一次性填充所选模板声明的字段，不要求用户逐项确认已能从上下文提取的信息。用途依据当前需求、范围依据已讨论内容；未指定读者时按本次会话的一般读者处理；无比较任务时 comparison 填“不适用（本次未进行对比）”；cutoff 表示本次材料整理日期，不冒充已核验的标准版本或最新事实。允许合理的编写假设，但必须在候选正文的假设或局限中披露，不能声称是用户明确决定。只有真正无法从对话、模板默认或合理编写假设得到且影响核心内容的必填项，才列入 missing_profile_inputs，集中最多询问一次。来源只允许使用真实给定链接；无外部证据仍应形成有用的知识工作版本，说明尚未核验，不能编造引用或用“请先提供来源”阻止归档。返回 profile_contract_hash。用户已确认的 parameter_values 不能被建议覆盖。
 返回 issues 数组，每项包含 kind（contradiction / limitation / diagnostic）、message；真实决策矛盾用 contradiction，知识未核验和资料不足用 limitation，模型或网络等运行错误用 diagnostic。不要把运行故障混入业务 conflicts；问题解除由明确的用户决议完成。missing_profile_inputs 只能包含模板 input key，不能填自由文本。readiness 只是建议，后端会重新检查。

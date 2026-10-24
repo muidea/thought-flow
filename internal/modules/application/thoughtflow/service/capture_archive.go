@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"thoughtflow/internal/pkg/ai"
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
@@ -120,6 +121,7 @@ func (s *Service) startCaptureArchive(sp scratchpad.Scratchpad) error {
 			timeout = 2 * time.Minute
 		}
 		ctx, cancel := context.WithTimeout(base, timeout)
+		ctx = ai.WithGenerationScope(ctx, sp.Operation.ID)
 		defer cancel()
 		var err error
 		if sp.SaveCommand != nil && sp.SaveCommand.State != "completed" {
@@ -162,6 +164,10 @@ func (s *Service) resumeCaptureArchives() {
 			sp, err = s.scratchpadSvc.BeginPreview(sp.SessionID, true)
 		}
 		if err != nil || sp.Operation == nil {
+			continue
+		}
+		if sp.Operation.GenerationStarted && (sp.SaveCommand == nil || sp.SaveCommand.State == "completed" || sp.SaveCommand.OperationID != sp.Operation.ID) && (sp.Operation.State == "preparing" || sp.Operation.State == "interrupted" || sp.Operation.State == "saving") {
+			s.scratchpadSvc.FailOperation(sp.SessionID, sp.Operation.ID, fmt.Errorf("model execution completion is unknown; explicit retry required"))
 			continue
 		}
 		if (sp.SaveCommand != nil && sp.SaveCommand.State != "completed" && sp.Operation.State != "conflicted") || sp.Operation.State == "interrupted" || sp.Operation.State == "preparing" || sp.Operation.State == "saving" || (sp.Operation.State == "ready" && sp.Operation.AutoCommit) {

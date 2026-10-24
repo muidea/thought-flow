@@ -88,6 +88,8 @@ func (LocalRefineClassify) Classify(_ context.Context, req ClassifyRequest) (Cla
 // `chatCompletion` helper used by Refine/Weave/Synthesize/Expand is
 // reused here so error mapping and retry semantics stay identical.
 func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyRequest) (ClassifyResult, error) {
+	ctx, cancel := generationContext(ctx, p.requestTimeout)
+	defer cancel()
 	temperature := req.Temperature
 	if temperature == 0 {
 		temperature = 0
@@ -125,14 +127,7 @@ func (p *OpenAICompatibleProvider) chatCompletionWithMaxTokens(ctx context.Conte
 	if maxTokens > 0 {
 		params.MaxTokens = openai.Int(int64(maxTokens))
 	}
-	resp, err := p.client.Chat.Completions.New(ctx, params)
-	if err != nil {
-		return "", wrapSDKError(err)
-	}
-	if len(resp.Choices) == 0 {
-		return "", errors.New("chat completion returned no choices")
-	}
-	return resp.Choices[0].Message.Content, nil
+	return p.executeGeneration(ctx, params)
 }
 
 // DefaultClassifySystem is the system prompt used by the capture service

@@ -29,7 +29,7 @@
 
 操作状态包括 preparing、needs_input、blocked、ready、saving、draft_saved、saved、failed、interrupted、conflicted。preparing/saving 和停机中断的任务可由恢复扫描继续；已冻结保存命令复用原 ID。目标冲突不由启动扫描盲目覆盖。GET 返回的是当前状态，后台输入变化可能使刚生成的预览失效；调用方需读取状态并显式重新预览。
 
-这些接口调整不提供旧客户端兼容桥。`llm.allow_json_fallback` 继续默认关闭，仅在明确且仅不支持 response_format 时补发一次，仍须经过解析和业务校验。
+这些接口调整不提供旧客户端兼容桥。当时 JSON 容错为显式开关；2026-10-24 用户已要求内置默认启用并移除开关，兼容通道增加有界临时故障恢复，详情见 [后续核对](ThoughtFlow-Capture-Archive-Followup-2026-10-24.md)。原有解析及业务校验保持。
 
 ## 专项验收索引
 

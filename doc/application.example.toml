@@ -74,9 +74,11 @@ base_url = "https://api.openai.com"
 api_key = ""
 chat_model = "gpt-4o-mini"
 timeout_seconds = 30
-# 默认要求 Provider 支持 JSON 输出。显式开启后，仅当 conversion_unsupported
-# 明确且只涉及 response_format 时，允许移除该参数重发一次；结果仍须通过校验。
-allow_json_fallback = false
+# JSON 兼容自动启用，无配置开关：仅当 conversion_unsupported 明确且只涉及
+# response_format 时移除该参数；结果仍须通过 JSON 解析及业务校验。
+# 同一服务地址、凭据和模型共享进程内降级状态，后续直接省略该参数；重启后重新探测。
+# 生成请求不因一般网络/429/5xx 自动重发；仅明确格式拒绝允许一次参数降级。
+# 能力缓存最多 256 项，容量不足时回收闲置项；无周期性重新探测。
 
 [llm.prompts]
 # 可选：采集会话上下文匹配和抽取协议的系统提示词文件。

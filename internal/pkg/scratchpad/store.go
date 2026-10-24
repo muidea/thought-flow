@@ -177,11 +177,12 @@ type ArchivePreview struct {
 // §3.1.1. The v1 → v2 migration is implemented in loadFromDisk —
 // old files are read as-is and the new fields are zero-valued.
 type ArchiveOperation struct {
-	ID              string `json:"id"`
-	State           string `json:"state"`
-	InputGeneration uint64 `json:"input_generation"`
-	Error           string `json:"error,omitempty"`
-	AutoCommit      bool   `json:"auto_commit"`
+	GenerationStarted bool   `json:"generation_started,omitempty"`
+	ID                string `json:"id"`
+	State             string `json:"state"`
+	InputGeneration   uint64 `json:"input_generation"`
+	Error             string `json:"error,omitempty"`
+	AutoCommit        bool   `json:"auto_commit"`
 }
 type SaveCommand struct {
 	ExpectedTargetHash string                `json:"expected_target_hash,omitempty"`

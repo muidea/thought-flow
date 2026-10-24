@@ -323,10 +323,12 @@ func (s *ScratchpadService) updateSessionContextAt(sessionID string, ctx scratch
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
+	resumeAcceptedArchive := false
 	saved, err := s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
 		if expected != nil && sp.InputGeneration != *expected {
 			return ErrArchivePreviewStale
 		}
+		resumeAcceptedArchive = sp.Operation != nil && sp.Operation.AutoCommit && sp.Operation.State == "preparing" && sp.Operation.InputGeneration == sp.InputGeneration
 		sp.SessionContext = scratchpad.SessionContext{
 			FrozenProfile:           ctx.FrozenProfile,
 			ParameterValues:         ctx.ParameterValues,
@@ -378,7 +380,7 @@ func (s *ScratchpadService) updateSessionContextAt(sessionID string, ctx scratch
 		return scratchpad.Scratchpad{}, err
 	}
 	s.publishContextUpdatedEvent(sessionID)
-	if appendReply && saved.ArchiveIntent == scratchpad.ArchiveIntentLLM && s.archiveScheduler != nil {
+	if appendReply && (saved.ArchiveIntent == scratchpad.ArchiveIntentLLM || resumeAcceptedArchive) && s.archiveScheduler != nil {
 		pending, e := s.BeginPreview(sessionID, true)
 		if e == nil {
 			e = s.archiveScheduler(pending)
@@ -539,6 +541,8 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 }
 
 func (s *ScratchpadService) buildCaptureContextWithRetry(ctx context.Context, sessionID, contentAtSchedule string, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
+	ctx, cancel := ai.WithGenerationBudget(ctx, s.contextAI)
+	defer cancel()
 	var lastErr error
 	maxAttempts := len(s.contextRetryDelays) + 1
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -554,6 +558,9 @@ func (s *ScratchpadService) buildCaptureContextWithRetry(ctx context.Context, se
 			}
 		}
 		result, err := s.contextAI.BuildCaptureContext(ctx, req)
+		if ctx.Err() != nil {
+			return ai.CaptureContextResult{}, ctx.Err()
+		}
 		if err == nil {
 			return result, nil
 		}
@@ -593,9 +600,9 @@ func isRetryableCaptureContextError(err error) bool {
 	}
 	var providerErr ai.ProviderError
 	if errors.As(err, &providerErr) {
-		return providerErr.Retryable
+		return ai.CanAutomaticallyRetry(err)
 	}
-	return strings.Contains(err.Error(), "parse capture context json")
+	return false
 }
 
 func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error, expected ...uint64) {
@@ -635,8 +642,31 @@ func captureContextFailureText(cause error) string {
 	}
 	var providerErr ai.ProviderError
 	if errors.As(cause, &providerErr) {
-		if providerErr.Code == "thoughtflow.ai.invalid_json_fallback" || providerErr.Code == "thoughtflow.ai.json_fallback_failed" {
-			return "LLM 兼容请求失败：未能获得通过校验的 JSON 结果。请检查模型及 Provider 的 JSON 输出能力；本次兼容请求不会自动重试。"
+		if providerErr.Code == "thoughtflow.ai.invalid_json_fallback" || providerErr.Code == "thoughtflow.ai.invalid_json_response" {
+			detail := "JSON 结果未通过业务校验"
+			switch providerErr.Reason {
+			case "invalid_json":
+				detail = "模型返回内容无法解析为 JSON"
+			case "invalid_field_type":
+				detail = "返回的 JSON 字段类型不符合请求协议"
+			case "missing_required_field":
+				detail = "返回的 JSON 缺少必填回答字段 assistant_reply"
+			}
+			return "LLM 兼容输出校验失败：" + detail + "。已保留用户输入，本次结果未用于更新会话；不会自动重试。"
+		}
+		if providerErr.Code == "thoughtflow.ai.json_fallback_failed" {
+			detail := "请求未能完成，请检查模型服务连接或响应"
+			switch {
+			case providerErr.Reason == "thoughtflow.ai.output_truncated":
+				detail = "模型输出被长度限制截断，请调整模型服务输出限制或缩短本轮内容"
+			case providerErr.Reason == "thoughtflow.ai.empty_completion":
+				detail = "模型服务未返回候选回答"
+			case providerErr.StatusCode == 429:
+				detail = "模型服务限流（HTTP 429），请稍后重试"
+			case providerErr.StatusCode >= 500:
+				detail = fmt.Sprintf("模型服务暂时不可用（HTTP %d），请稍后重试", providerErr.StatusCode)
+			}
+			return "LLM 兼容请求失败：" + detail + "。已保留用户输入，本轮处理已结束，可稍后重试。"
 		}
 		if providerErr.Code == "thoughtflow.ai.conversion_unsupported" {
 			features := mergeContextStrings([]string{providerErr.Feature}, providerErr.UnsupportedFeatures)
@@ -1256,6 +1286,8 @@ func equalStringSets(left, right []string) bool {
 }
 
 func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
+	ctx, cancel := ai.WithGenerationBudget(ctx, s.documentGenerator)
+	defer cancel()
 	// A persisted preview is output, not source material. Feeding it back into a
 	// fresh generation recursively nests the previous rendered document and can
 	// multiply every section on each preview/re-archive attempt.
@@ -1279,7 +1311,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	}
 	preview.InputGeneration = sp.InputGeneration
 	preview.Sources = archiveSources(preview.SourceLinks)
-	if issues := archivePreflight(profile, sp, parameters); len(issues) > 0 {
+	if issues := archivePreflight(profile, parameters); len(issues) > 0 {
 		preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationInvalid, Issues: issues, ValidatedAt: s.now()}
 		return preview, nil
 	}
@@ -1320,6 +1352,17 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			SourceLinks: append([]string(nil), preview.SourceLinks...),
 		},
 	}
+	assumedKeys := make([]string, 0, len(sp.SessionContext.ParameterValues))
+	for key := range sp.SessionContext.ParameterValues {
+		assumedKeys = append(assumedKeys, key)
+	}
+	sort.Strings(assumedKeys)
+	for _, key := range assumedKeys {
+		value := sp.SessionContext.ParameterValues[key]
+		if value.Source == "assumed" && parameters[key] == value.Value {
+			request.Context.Assumptions = append(request.Context.Assumptions, key+" = "+value.Value)
+		}
+	}
 	var rendered documentprofile.RenderResult
 	var draft models.DocumentDraft
 	generator := s.documentGenerator
@@ -1346,6 +1389,9 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			}
 		}
 		draft = compactArchiveDraft(request, draft)
+		draft.Assumptions = uniqueStrings(append(draft.Assumptions, request.Context.Assumptions...))
+		foldArchiveAssumptions(&draft, profile)
+		discloseUnverifiedResearch(&draft, profile, preview.Sources)
 		rendered = documentprofile.Render(profile, draft, parameters)
 		if issue := archiveSourceCoverageIssue(request.Context.Body, rendered.Content); issue != nil {
 			rendered.Validation.Issues = append(rendered.Validation.Issues, *issue)
@@ -1358,6 +1404,10 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			}
 			preview.Document = &candidate
 			for _, issue := range candidate.Report.Issues {
+				if captureEvidenceWarning(issue, profile, preview.Sources) {
+					rendered.Validation.Issues = append(rendered.Validation.Issues, models.ValidationIssue{Code: issue.Code, Severity: "warning", Section: issue.Section, Message: issue.Basis})
+					continue
+				}
 				if issue.Severity == "error" {
 					rendered.Validation.Status = models.ArchiveValidationInvalid
 					rendered.Validation.Issues = append(rendered.Validation.Issues, models.ValidationIssue{Code: issue.Code, Severity: issue.Severity, Section: issue.Section, Message: issue.Basis})
@@ -1588,7 +1638,7 @@ func recoverableArchiveDocumentGenerationError(err error) bool {
 	}
 	var providerErr ai.ProviderError
 	if errors.As(err, &providerErr) {
-		return providerErr.Code == "thoughtflow.ai.output_truncated"
+		return providerErr.AutoRetry && providerErr.Retryable
 	}
 	return strings.Contains(err.Error(), "parse document draft json")
 }

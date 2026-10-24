@@ -115,40 +115,19 @@ func TestOpenAICompatibleClassify_ParsesJSONResponse(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleClassify_RetriesTransient(t *testing.T) {
+func TestOpenAICompatibleClassifyDoesNotReplayGatewayFailure(t *testing.T) {
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
-		if attempts == 1 {
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"choices": [{
-				"index": 0,
-				"message": {"role": "assistant", "content": "{\"type\":\"text\",\"confidence\":0.7}"},
-				"finish_reason": "stop"
-			}]
-		}`))
+		w.WriteHeader(502)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
 	}))
 	defer server.Close()
-
 	p := NewOpenAICompatibleProvider(testConfig(server.URL), testEmbeddingConfig())
-	result, err := p.Classify(context.Background(), ClassifyRequest{
-		System: DefaultClassifySystem,
-		User:   "ambiguous input",
-	})
-	if err != nil {
-		t.Fatalf("Classify returned error: %v", err)
-	}
-	if attempts < 2 {
-		t.Fatalf("expected retry on 502, got %d attempts", attempts)
-	}
-	parsed := decodeClassify(t, result.Raw)
-	if parsed.Type != "text" {
-		t.Errorf("expected type=text after retry, got %q", parsed.Type)
+	_, err := p.Classify(context.Background(), ClassifyRequest{User: "ambiguous"})
+	if err == nil || attempts != 1 {
+		t.Fatalf("calls=%d error=%v", attempts, err)
 	}
 }
 
