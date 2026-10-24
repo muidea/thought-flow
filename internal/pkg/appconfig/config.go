@@ -121,11 +121,12 @@ type EventsConfig struct {
 }
 
 type LLMConfig struct {
-	BaseURL   string
-	APIKey    string
-	ChatModel string
-	Timeout   time.Duration
-	Prompts   LLMPromptsConfig
+	BaseURL           string
+	APIKey            string
+	ChatModel         string
+	Timeout           time.Duration
+	Prompts           LLMPromptsConfig
+	AllowJSONFallback bool
 }
 
 type LLMPromptsConfig struct {
@@ -348,6 +349,7 @@ func applyFrameworkOverrides(cfg *Config, configDir string) {
 	cfg.LLM.BaseURL = configString(appConfig, "llm.base_url", cfg.LLM.BaseURL)
 	cfg.LLM.APIKey = configString(appConfig, "llm.api_key", cfg.LLM.APIKey)
 	cfg.LLM.ChatModel = configString(appConfig, "llm.chat_model", cfg.LLM.ChatModel)
+	cfg.LLM.AllowJSONFallback = configBool(appConfig, "llm.allow_json_fallback", cfg.LLM.AllowJSONFallback)
 	cfg.LLM.Timeout = time.Duration(configInt(appConfig, "llm.timeout_seconds", int(cfg.LLM.Timeout/time.Second))) * time.Second
 	cfg.LLM.Prompts.CaptureContextSystemPath = configPath(appConfig, "llm.prompts.capture_context_system_path", cfg.LLM.Prompts.CaptureContextSystemPath, configDir)
 	cfg.Embedding.BaseURL = configString(appConfig, "embedding.base_url", cfg.Embedding.BaseURL)

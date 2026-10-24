@@ -89,8 +89,20 @@ func (s *Service) Notify(ev event.Event, result event.Result) {
 	if !ok {
 		return
 	}
+	if thought, ok := domainEvent.Payload.(models.Thought); ok && thought.CaptureDraft {
+		if result != nil {
+			result.Set(nil, nil)
+		}
+		return
+	}
 	if domainEvent.EventType == models.EventThoughtPatched {
 		payload, _ := domainEvent.Payload.(map[string]any)
+		if draft, _ := payload["capture_draft"].(bool); draft {
+			if result != nil {
+				result.Set(nil, nil)
+			}
+			return
+		}
 		keys, _ := payload["patch_keys"].([]string)
 		bodyChanged := false
 		for _, key := range keys {
@@ -275,6 +287,9 @@ func (s *Service) refineJob(ctx context.Context, job models.Job, force bool) {
 }
 
 func (s *Service) refine(ctx context.Context, thought models.Thought, content models.ThoughtContent, force bool) (models.ThoughtRefinement, error) {
+	if thought.CaptureDraft {
+		return models.ThoughtRefinement{}, errors.New("capture draft must be edited through its frozen document workflow")
+	}
 	if !force {
 		if refinement, ok := unchangedRefinement(thought, content); ok {
 			return refinement, nil

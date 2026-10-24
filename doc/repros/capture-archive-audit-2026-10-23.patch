@@ -1,0 +1,223 @@
+diff --git a/internal/modules/application/thoughtflow/service/capture_archive_audit_tmp_test.go b/internal/modules/application/thoughtflow/service/capture_archive_audit_tmp_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/modules/application/thoughtflow/service/capture_archive_audit_tmp_test.go
+@@ -0,0 +1,83 @@
++package service
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"testing"
++	"time"
++
++	capturebiz "thoughtflow/internal/modules/capture/biz"
++	"thoughtflow/internal/pkg/ai"
++	"thoughtflow/internal/pkg/documentprofile"
++	"thoughtflow/internal/pkg/models"
++	"thoughtflow/internal/pkg/scratchpad"
++)
++
++type auditBlockingGenerator struct{ started, release chan struct{} }
++
++func (g *auditBlockingGenerator) GenerateDocument(ctx context.Context, req ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
++	select {
++	case g.started <- struct{}{}:
++	default:
++	}
++	select {
++	case <-g.release:
++	case <-ctx.Done():
++		return models.DocumentDraft{}, ctx.Err()
++	}
++	return ai.NewLocalRefineProvider().GenerateDocument(ctx, req)
++}
++
++func TestAuditReproducesPreviewOverwritingNewMessage(t *testing.T) {
++	root := t.TempDir()
++	store := scratchpad.New(filepath.Join(root, "scratchpad"))
++	registry, err := documentprofile.NewRegistry("", "", documentprofile.Limits{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	gen := &auditBlockingGenerator{make(chan struct{}, 1), make(chan struct{})}
++	svc := capturebiz.NewScratchpadService(store, capturebiz.WithDocumentProfiles(registry, gen, 10, 0))
++	initial := scratchpad.Scratchpad{SessionID: "audit", Content: "original", Messages: []scratchpad.Message{{Role: "user", Text: "original"}}, SessionContext: scratchpad.SessionContext{CandidateBody: "original content", CandidateProfileID: "builtin.design-doc", CandidateProfileVersion: 1}}
++	if _, err := store.Save(initial); err != nil {
++		t.Fatal(err)
++	}
++	handler := &Service{scratchpad: store, scratchpadSvc: svc, captureService: capturebiz.NewService(&models.Workspace{RootPath: root}, nil, nil)}
++	res := httptest.NewRecorder()
++	req := httptest.NewRequest(http.MethodGet, "/api/capture/sessions/audit/archive/preview", nil)
++	done := make(chan struct{})
++	go func() { defer close(done); handler.handleArchivePreview(req.Context(), res, req) }()
++	select {
++	case <-gen.started:
++	case <-time.After(10 * time.Second):
++		t.Fatal("generation not entered")
++	}
++	if _, err := svc.AppendMessage("audit", "user", "NEW MESSAGE DURING PREVIEW"); err != nil {
++		close(gen.release)
++		t.Fatal(err)
++	}
++	before, _ := store.Get("audit")
++	if len(before.Messages) != 2 {
++		close(gen.release)
++		t.Fatalf("concurrent message not saved: %d", len(before.Messages))
++	}
++	close(gen.release)
++	select {
++	case <-done:
++	case <-time.After(10 * time.Second):
++		t.Fatal("handler timeout")
++	}
++	after, _ := store.Get("audit")
++	if res.Code != 200 {
++		t.Fatalf("preview status=%d body=%s", res.Code, res.Body)
++	}
++	if len(after.Messages) != 1 || after.Content != "original" {
++		t.Fatalf("expected current defect, messages=%d content=%q", len(after.Messages), after.Content)
++	}
++	reloaded, _ := scratchpad.New(filepath.Join(root, "scratchpad")).Get("audit")
++	if len(reloaded.Messages) != 1 {
++		t.Fatal("expected overwrite persisted on disk")
++	}
++	t.Log("CONFIRMED: real HTTP handler overwrote a successfully persisted message; disk reload also lost it")
++}
+diff --git a/internal/modules/capture/biz/capture_archive_audit_tmp_test.go b/internal/modules/capture/biz/capture_archive_audit_tmp_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/modules/capture/biz/capture_archive_audit_tmp_test.go
+@@ -0,0 +1,130 @@
++package biz
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"thoughtflow/internal/pkg/ai"
++	"thoughtflow/internal/pkg/documentprofile"
++	"thoughtflow/internal/pkg/markdown"
++	"thoughtflow/internal/pkg/models"
++	"thoughtflow/internal/pkg/scratchpad"
++)
++
++type auditConcurrentCapture struct {
++	*stubCapture
++	entered chan struct{}
++	release chan struct{}
++	calls   atomic.Int32
++}
++
++func (c *auditConcurrentCapture) Capture(_ context.Context, _ models.CaptureCommand) (models.CaptureResult, error) {
++	n := c.calls.Add(1)
++	c.entered <- struct{}{}
++	<-c.release
++	return models.CaptureResult{Thought: models.Thought{ID: fmt.Sprintf("audit-thought-%d", n)}}, nil
++}
++
++func TestAuditReproducesConcurrentFirstArchive(t *testing.T) {
++	store := scratchpad.New(filepath.Join(t.TempDir(), "scratchpad"))
++	profiles, err := documentprofile.NewRegistry("", "", documentprofile.Limits{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	capture := &auditConcurrentCapture{stubCapture: &stubCapture{}, entered: make(chan struct{}, 2), release: make(chan struct{})}
++	svc := NewScratchpadService(store, WithCapture(capture), WithDocumentProfiles(profiles, nil, 10, 0))
++	sp := scratchpad.Scratchpad{SessionID: "audit", Content: "Archive my material", ArchiveStrategy: scratchpad.ArchiveStrategyNew, SessionContext: scratchpad.SessionContext{CandidateTitle: "Audit", CandidateBody: "Archive my material", CandidateProfileID: "builtin.note", CandidateProfileVersion: 1}}
++	p, err := svc.PrepareArchive(context.Background(), sp, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.Validation.Status != models.ArchiveValidationValid {
++		t.Fatalf("invalid test preview: %+v", p.Validation)
++	}
++	sp.ArchivePreview = &p
++	if _, err := store.Save(sp); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 2)
++	for i := 0; i < 2; i++ {
++		go func() { _, err := svc.Commit(context.Background(), "audit"); done <- err }()
++	}
++	for i := 0; i < 2; i++ {
++		select {
++		case <-capture.entered:
++		case <-time.After(10 * time.Second):
++			close(capture.release)
++			t.Fatal("both commits did not enter Capture")
++		}
++	}
++	close(capture.release)
++	for i := 0; i < 2; i++ {
++		if err := <-done; err != nil {
++			t.Fatal(err)
++		}
++	}
++	if capture.calls.Load() != 2 {
++		t.Fatal("expected duplicate capture invocations")
++	}
++	t.Log("CONFIRMED: two validated first-archive requests both invoked Capture; using a stub writer, not claiming two real Markdown files")
++}
++
++func TestAuditReproducesConflictsWithoutResolution(t *testing.T) {
++	current := scratchpad.Scratchpad{SessionContext: scratchpad.SessionContext{Conflicts: []string{"old unresolved item"}}}
++	result := captureContextToScratchpad(ai.CaptureContextResult{}, current)
++	if len(result.Conflicts) != 1 {
++		t.Fatal("expected append-only conflict behavior")
++	}
++	t.Log("CONFIRMED: a subsequent provider result with no conflicts cannot clear a prior conflict")
++}
++
++type auditFailCommittedStore struct {
++	*scratchpad.Store
++	failed bool
++}
++
++func (s *auditFailCommittedStore) MarkCommitted(session, thought string) (scratchpad.Scratchpad, error) {
++	if !s.failed {
++		s.failed = true
++		return scratchpad.Scratchpad{}, errors.New("injected commit marker failure")
++	}
++	return s.Store.MarkCommitted(session, thought)
++}
++
++func TestAuditReproducesDuplicateMarkdownOnCommitMarkerRetry(t *testing.T) {
++	root := t.TempDir()
++	store := &auditFailCommittedStore{Store: scratchpad.New(filepath.Join(root, "scratchpad"))}
++	profiles, err := documentprofile.NewRegistry("", "", documentprofile.Limits{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	realCapture := NewService(&models.Workspace{ID: "audit", RootPath: root}, nil, nil)
++	svc := NewScratchpadService(store, WithCapture(realCapture), WithDocumentProfiles(profiles, nil, 10, 0))
++	sp := scratchpad.Scratchpad{SessionID: "audit", Content: "Retry-safe archive content", ArchiveStrategy: scratchpad.ArchiveStrategyNew, SessionContext: scratchpad.SessionContext{CandidateTitle: "Audit", CandidateBody: "Retry-safe archive content", CandidateProfileID: "builtin.note", CandidateProfileVersion: 1}}
++	p, err := svc.PrepareArchive(context.Background(), sp, nil)
++	if err != nil || p.Validation.Status != models.ArchiveValidationValid {
++		t.Fatalf("prepare preview: %+v %v", p.Validation, err)
++	}
++	sp.ArchivePreview = &p
++	if _, err := store.Save(sp); err != nil {
++		t.Fatal(err)
++	}
++	first, err := svc.Commit(context.Background(), "audit")
++	if err == nil || first.Thought.ID == "" {
++		t.Fatalf("expected post-write marker failure, result=%+v err=%v", first, err)
++	}
++	second, err := svc.Commit(context.Background(), "audit")
++	if err != nil {
++		t.Fatal(err)
++	}
++	ids, err := markdown.ListThoughtIDs(root)
++	if err != nil || len(ids) != 2 || first.Thought.ID == second.Thought.ID {
++		t.Fatalf("expected duplicate Markdown files, IDs=%v err=%v", ids, err)
++	}
++	t.Logf("CONFIRMED: real Capture persisted two different Thought Markdown files after marker failure and retry: %v", ids)
++}

@@ -22,6 +22,7 @@ import (
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/objectlocation"
+	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/pkg/thoughtlock"
 )
 
@@ -95,11 +96,15 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	// A compose save persists this reservation before calling capture. On
 	// replay, read the existing Markdown instead of overwriting user/AI edits.
 	if cmd.ThoughtID != "" {
-		if cmd.Source != models.ThoughtSourceCompose || strings.ContainsAny(cmd.ThoughtID, `/\`) {
+		if (cmd.Source != models.ThoughtSourceCompose && !s.validCaptureSave(cmd)) || strings.ContainsAny(cmd.ThoughtID, `/\`) {
 			return models.CaptureResult{}, errors.New("invalid reserved capture ID")
 		}
-		existing, _, err := markdown.ReadThought(s.workspace.RootPath, cmd.ThoughtID)
+		snapshot, err := s.GetThought(ctx, cmd.ThoughtID)
+		existing, content := snapshot.Thought, snapshot.Content
 		if err == nil {
+			if cmd.Source != models.ThoughtSourceCompose && !captureSaveMatches(existing, content, cmd) {
+				return models.CaptureResult{}, scratchpad.ErrConflict
+			}
 			return models.CaptureResult{Thought: existing, Jobs: []models.Job{}}, nil
 		}
 		if !errors.Is(err, os.ErrNotExist) {
@@ -140,6 +145,7 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	}
 	relPath := location.Placement.ThoughtPath
 	thought := models.Thought{
+		CaptureDraft:            cmd.CaptureDraft,
 		OwnerTopicID:            cmd.OwnerTopicID,
 		ID:                      thoughtID,
 		Type:                    cmd.Type,
@@ -170,6 +176,14 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		Links:   renderLinks(cmd.Links),
 	}
 
+	if cmd.SaveOperationID != "" {
+		if h, e := s.Documents().Store.ActiveHead(thoughtID); e == nil {
+			thought.Document = &models.DocumentLink{DocumentID: thoughtID, RevisionID: h.WorkingRevisionID, Generation: h.Generation}
+			thought.DocumentExpectedGeneration = &h.Generation
+		} else if !os.IsNotExist(e) {
+			return models.CaptureResult{}, e
+		}
+	}
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.CaptureResult{}, err
 	}
@@ -184,22 +198,24 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		PayloadVersion: 1,
 		Payload:        thought,
 	}
-	eventutil.Post(s.eventHub, captured)
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:    models.EventGitCommitRequested,
-		SourceUnit:   "capture",
-		OccurredAt:   now,
-		WorkspaceID:  s.workspace.ID,
-		ResourceType: models.ResourceTypeThought,
-		ResourceID:   thought.ID,
-		Payload: models.GitCommitRequestedPayload{
-			Paths:       []string{thought.Path},
-			Reason:      "capture",
-			ResourceIDs: []string{thought.ID},
-		},
-		PayloadVersion: 1,
-	})
+	if cmd.SaveOperationID == "" {
+		eventutil.Post(s.eventHub, captured)
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:    models.EventGitCommitRequested,
+			SourceUnit:   "capture",
+			OccurredAt:   now,
+			WorkspaceID:  s.workspace.ID,
+			ResourceType: models.ResourceTypeThought,
+			ResourceID:   thought.ID,
+			Payload: models.GitCommitRequestedPayload{
+				Paths:       []string{thought.Path},
+				Reason:      "capture",
+				ResourceIDs: []string{thought.ID},
+			},
+			PayloadVersion: 1,
+		})
 
+	}
 	return models.CaptureResult{Thought: thought, Jobs: []models.Job{}}, nil
 }
 
@@ -211,6 +227,16 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 	thought, content, err := markdown.ReadThought(s.workspace.RootPath, thoughtID)
 	if err != nil {
 		return models.ThoughtSnapshot{}, err
+	}
+	if thought.Document != nil {
+		d, e := s.Documents().Store.Revision(thoughtID, thought.Document.RevisionID)
+		if e != nil {
+			return models.ThoughtSnapshot{}, e
+		}
+		thought.DocumentParameters = cloneStringMap(d.Contract.Parameters)
+		delete(thought.DocumentParameters, "_links_hash")
+		thought.DocumentSources = &d.Sources
+		thought.DocumentProfileSnapshot = d.Profile
 	}
 	bindings, e := objectlocation.For(s.workspace.RootPath).Bindings(thoughtID)
 	if e != nil {
@@ -324,6 +350,18 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if err != nil {
 		return models.ThoughtSnapshot{}, err
 	}
+	if request.ExpectedCaptureHash != "" && thought.Document != nil {
+		d, e := s.Documents().Store.Revision(thoughtID, thought.Document.RevisionID)
+		if e != nil {
+			return models.ThoughtSnapshot{}, e
+		}
+		thought.DocumentParameters = cloneStringMap(d.Contract.Parameters)
+		delete(thought.DocumentParameters, "_links_hash")
+		thought.DocumentSources = &d.Sources
+	}
+	if request.ExpectedCaptureHash != "" && request.ExpectedCaptureHash != captureTargetHash(thought, content) {
+		return models.ThoughtSnapshot{}, scratchpad.ErrConflict
+	}
 	if thought.Document != nil && request.ExpectedDocumentGeneration != nil {
 		head, e := s.Documents().Store.Head(thought.ID)
 		if e != nil {
@@ -334,6 +372,15 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 		}
 	}
 	thought.DocumentExpectedGeneration = request.ExpectedDocumentGeneration
+	if request.DocumentProfileSnapshot != "" {
+		thought.DocumentProfileSnapshot = request.DocumentProfileSnapshot
+	}
+	if request.CaptureDraft != nil {
+		thought.CaptureDraft = *request.CaptureDraft
+	}
+	if request.DocumentSources != nil {
+		thought.DocumentSources = request.DocumentSources
+	}
 	if request.DocumentParameters != nil {
 		thought.DocumentParameters = *request.DocumentParameters
 	}
@@ -397,33 +444,33 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if err := markdown.WriteThought(s.workspace.RootPath, thought, content); err != nil {
 		return models.ThoughtSnapshot{}, err
 	}
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:      models.EventThoughtPatched,
-		SourceUnit:     "capture",
-		OccurredAt:     now,
-		WorkspaceID:    s.workspace.ID,
-		ResourceType:   models.ResourceTypeThought,
-		ResourceID:     thought.ID,
-		PayloadVersion: 1,
-		Payload: map[string]any{
-			"thought_id": thought.ID,
-			"patched_by": sessionID,
-			"patch_keys": patchKeys(request),
-		},
-	})
-	eventutil.Post(s.eventHub, models.DomainEvent{
-		EventType:      models.EventGitCommitRequested,
-		SourceUnit:     "capture",
-		OccurredAt:     now,
-		WorkspaceID:    s.workspace.ID,
-		ResourceType:   models.ResourceTypeThought,
-		ResourceID:     thought.ID,
-		PayloadVersion: 1,
-		Payload: map[string]any{
-			"reason": "patch",
-			"paths":  []string{thought.Path},
-		},
-	})
+	if request.SaveOperationID == "" {
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:      models.EventThoughtPatched,
+			SourceUnit:     "capture",
+			OccurredAt:     now,
+			WorkspaceID:    s.workspace.ID,
+			ResourceType:   models.ResourceTypeThought,
+			ResourceID:     thought.ID,
+			PayloadVersion: 1,
+			Payload: map[string]any{
+				"thought_id":    thought.ID,
+				"capture_draft": thought.CaptureDraft,
+				"patched_by":    sessionID,
+				"patch_keys":    patchKeys(request),
+			},
+		})
+		eventutil.Post(s.eventHub, models.DomainEvent{
+			EventType:      models.EventGitCommitRequested,
+			SourceUnit:     "capture",
+			OccurredAt:     now,
+			WorkspaceID:    s.workspace.ID,
+			ResourceType:   models.ResourceTypeThought,
+			ResourceID:     thought.ID,
+			PayloadVersion: 1,
+			Payload:        models.GitCommitRequestedPayload{Reason: "patch", Paths: markdown.GitPaths(s.workspace.RootPath, thought.ID), ResourceIDs: []string{thought.ID}},
+		})
+	}
 	bindings, e := objectlocation.For(s.workspace.RootPath).Bindings(thoughtID)
 	if e != nil {
 		return models.ThoughtSnapshot{}, e

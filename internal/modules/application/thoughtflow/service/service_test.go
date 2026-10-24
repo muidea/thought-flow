@@ -3226,3 +3226,17 @@ func TestComposeBasketHTTPRejectsUnversionedAndStaleWrites(t *testing.T) {
 		t.Fatalf("basket changed: %+v err=%v", current, err)
 	}
 }
+
+func (f *fakeScratchpadStore) Update(id string, change func(*scratchpad.Scratchpad) error) (scratchpad.Scratchpad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sp, ok := f.items[id]
+	if !ok {
+		sp.SessionID = id
+	}
+	if err := change(&sp); err != nil {
+		return scratchpad.Scratchpad{}, err
+	}
+	f.items[id] = sp
+	return sp, nil
+}

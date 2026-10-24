@@ -92,3 +92,13 @@ func assertNextEvent(t *testing.T, events <-chan models.DomainEvent, eventID str
 		t.Fatalf("expected event %s", eventID)
 	}
 }
+
+func TestStableOutboxReplayDoesNotDuplicateStreamHistory(t *testing.T) {
+	stream := New(10)
+	event := models.DomainEvent{EventID: "archive-op-captured", EventType: models.EventThoughtCaptured}
+	stream.Publish(event)
+	stream.Publish(event)
+	if got := stream.History(); len(got) != 1 {
+		t.Fatalf("replayed history entries=%d", len(got))
+	}
+}

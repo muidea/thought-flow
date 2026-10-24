@@ -55,6 +55,14 @@ func (s *Stream) Notify(ev event.Event, result event.Result) {
 
 func (s *Stream) Publish(domainEvent models.DomainEvent) {
 	s.mu.Lock()
+	if domainEvent.EventID != "" {
+		for _, previous := range s.history {
+			if previous.EventID == domainEvent.EventID {
+				s.mu.Unlock()
+				return
+			}
+		}
+	}
 	s.history = append(s.history, domainEvent)
 	if len(s.history) > s.limit {
 		s.history = s.history[len(s.history)-s.limit:]

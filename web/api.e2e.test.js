@@ -195,6 +195,32 @@ function request(baseURL, path, method, { body, headers } = {}) {
   });
 }
 
+
+async function generateArchivePreview(baseURL, endpoint, body = {}) {
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    let response = await request(baseURL, endpoint, "POST", {body});
+    assert.ok([200,202].includes(response.status), response.text);
+    const operationID = envelope(response).data.operation?.id;
+    while (["preparing","saving"].includes(envelope(response).data.operation?.state) && Date.now() < deadline) {
+      await sleep(30);
+      response = await request(baseURL, endpoint, "GET");
+      assert.equal(envelope(response).data.operation?.id, operationID, "polling must not start another operation");
+    }
+    const data = envelope(response).data;
+    assert.ok(!["preparing","saving"].includes(data.operation?.state), response.text);
+    const superseded = data.operation?.input_generation !== data.scratchpad?.input_generation;
+    if (Date.now() < deadline && (superseded || data.operation?.state === "conflicted")) {
+      // Background enrichment/refinement can invalidate a just-requested preview.
+      // Retry the explicit generation command, while GET remains read-only.
+      await sleep(50);
+      continue;
+    }
+    assert.ok(data.preview || data.operation?.state === "saved", response.text);
+    return response;
+  }
+}
+
 function envelope(res) {
   assert.ok(res.json, `expected JSON body, got status ${res.status} text=${res.text}`);
   assert.equal(typeof res.json.request_id, "string", "envelope.request_id must be a string");
@@ -232,7 +258,7 @@ async function confirmArchive(baseURL, sessionID, body) {
     if (response.status !== 409 || Date.now() >= deadline) return { ...response, refreshedPreview };
     const code = envelope(response).error?.code;
     if (code === "thoughtflow.archive.preview_required" || code === "thoughtflow.archive.preview_stale") {
-      const preview = await request(baseURL, `${archivePath}/preview`, "GET");
+      const preview = await generateArchivePreview(baseURL, `${archivePath}/preview`);
       assert.equal(preview.status, 200, `refresh preview status=${preview.status} body=${preview.text}`);
       refreshedPreview = envelope(preview).data.preview;
       assert.equal(refreshedPreview.validation?.status, "valid", preview.text);
@@ -507,9 +533,20 @@ test("API e2e", async (t) => {
     const refreshed = await request(server.baseURL, `/api/topics/${topic.id}/refresh`, "POST", {});
     assert.equal(refreshed.status, 202, refreshed.text);
     await waitForSearchHit(server.baseURL, `/api/search?q=topicindexbeta&topic_id=${topic.id}`, seeds[1].title);
-    const old = await request(server.baseURL, `/api/search?q=topicindexalpha&topic_id=${topic.id}`, "GET");
-    assert.equal(old.status, 200, old.text);
-    assert.equal(envelope(old).data.results.length, 0, "refresh must remove obsolete search membership");
+    // The new member now contains alpha too, so a late content index can
+    // legitimately return it. Pin the removed identity, not an empty result
+    // set, and allow the asynchronous membership update to finish.
+    const deadline = Date.now() + 8000;
+    let results;
+    do {
+      const old = await request(server.baseURL, `/api/search?q=topicindexalpha&topic_id=${topic.id}`, "GET");
+      assert.equal(old.status, 200, old.text);
+      results = envelope(old).data.results;
+      assert.ok(results.every((result) => ids.includes(result.thought_id)), old.text);
+      if (!results.some((result) => result.thought_id === ids[0])) break;
+      await sleep(150);
+    } while (Date.now() < deadline);
+    assert.ok(!results.some((result) => result.thought_id === ids[0]), `refresh must remove obsolete search membership: ${JSON.stringify(results)}`);
   });
 
   await t.test("document profile republishing returns a conflict without overwriting", async () => {
@@ -811,11 +848,7 @@ test("API e2e", async (t) => {
     });
     assert.equal(start.status, 200);
 
-    const preview = await request(
-      server.baseURL,
-      `/api/capture/sessions/${sessionID}/archive/preview`,
-      "GET"
-    );
+    const preview = await generateArchivePreview(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`);
     assert.equal(preview.status, 200, `preview status=${preview.status} body=${preview.text}`);
     const previewData = envelope(preview).data;
     assert.ok(previewData.preview, "preview response must include preview block");
@@ -866,7 +899,7 @@ test("API e2e", async (t) => {
     });
     assert.equal(strategy.status, 200, `strategy update status=${strategy.status} body=${strategy.text}`);
 
-    const preview = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
+    const preview = await generateArchivePreview(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`);
     assert.equal(preview.status, 200, `update preview status=${preview.status} body=${preview.text}`);
     const previewData = envelope(preview).data.preview;
     assert.equal(previewData.strategy, "update_thought");
@@ -918,7 +951,7 @@ test("API e2e", async (t) => {
     });
     assert.equal(followup.status, 200, `followup status=${followup.status} body=${followup.text}`);
 
-    const preview = await request(server.baseURL, `/api/capture/sessions/${newSession}/archive/preview`, "GET");
+    const preview = await generateArchivePreview(server.baseURL, `/api/capture/sessions/${newSession}/archive/preview`);
     assert.equal(preview.status, 200, `reopen preview status=${preview.status} body=${preview.text}`);
     const previewData = envelope(preview).data.preview;
     assert.equal(previewData.strategy, "update_thought");
@@ -941,7 +974,7 @@ test("API e2e", async (t) => {
       headers: { "X-Session-Id": sessionID },
     });
     assert.equal(start.status, 200, start.text);
-    const preview = await request(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`, "GET");
+    const preview = await generateArchivePreview(server.baseURL, `/api/capture/sessions/${sessionID}/archive/preview`);
     assert.equal(preview.status, 200, preview.text);
     assert.equal(envelope(preview).data.preview.validation?.status, "valid", preview.text);
 
@@ -966,6 +999,30 @@ test("API e2e", async (t) => {
     assert.notEqual(commit.refreshedPreview.context_hash, envelope(preview).data.preview.context_hash);
     assert.equal(envelope(saved).data.content.ai_notes, commit.refreshedPreview.body.replace(/\n*$/, "\n"),
       "archive must persist the regenerated, confirmed body exactly");
+  });
+
+  await t.test("archive GET is read-only; private draft survives reload and archives with one ID", async () => {
+    const sessionID = `e2e-private-draft-${Date.now()}`;
+    await request(server.baseURL,"/api/capture/sessions","POST",{body:{content:"Private draft material"},headers:{"X-Session-Id":sessionID}});
+    const endpoint = `/api/capture/sessions/${sessionID}/archive/preview`;
+    const before = await request(server.baseURL,endpoint,"GET");
+    assert.equal(envelope(before).data.preview,null);
+    assert.equal(envelope(before).data.operation,null);
+    const preview = await generateArchivePreview(server.baseURL,endpoint);
+    const stored = await request(server.baseURL,endpoint,"GET");
+    assert.deepEqual(envelope(stored).data.preview,envelope(preview).data.preview);
+    const draft = await request(server.baseURL,`/api/capture/sessions/${sessionID}/archive/draft`,"POST");
+    assert.equal(draft.status,200,draft.text);
+    const id = envelope(draft).data.draft_thought_id;
+    const detail = envelope(await request(server.baseURL,`/api/capture/sessions/${sessionID}`,"GET")).data;
+    assert.equal(detail.draft_thought_id,id);
+    assert.ok(!detail.committed_thought_id);
+    assert.ok(detail.messages.length);
+    const privateRead = await request(server.baseURL,`/p/thoughts/${id}`,"GET");
+    assert.equal(privateRead.status,404,privateRead.text);
+    const commit = await confirmArchive(server.baseURL,sessionID,{strategy:"new",confirmed:true});
+    assert.equal(commit.status,200,commit.text);
+    assert.equal(envelope(commit).data.thought.id,id);
   });
 
   await t.test("topic candidates list returns matching unarchived sessions", async () => {

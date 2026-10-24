@@ -46,6 +46,7 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
+	archiveScheduler   func(scratchpad.Scratchpad) error
 	store              ScratchpadStore
 	capture            CaptureCommitter
 	eventHub           eventHub
@@ -67,6 +68,7 @@ var defaultCaptureContextRetryDelays = []time.Duration{2 * time.Second, 5 * time
 const captureContextEnricherObserverID = "capture.context-enricher"
 
 type captureContextEnrichRequest struct {
+	InputGeneration   uint64
 	SessionID         string
 	ContentAtSchedule string
 	ExistingContext   scratchpad.SessionContext
@@ -78,6 +80,7 @@ type captureContextEnrichRequest struct {
 type ScratchpadStore interface {
 	Get(sessionID string) (scratchpad.Scratchpad, error)
 	Save(sp scratchpad.Scratchpad) (scratchpad.Scratchpad, error)
+	Update(string, func(*scratchpad.Scratchpad) error) (scratchpad.Scratchpad, error)
 	Delete(sessionID string) error
 	MarkCommitted(sessionID, thoughtID string) (scratchpad.Scratchpad, error)
 	Reset(sessionID string) (scratchpad.Scratchpad, error)
@@ -214,22 +217,23 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 	if text == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad message text is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	existingContext := enrichmentSeedContext(sp)
-	sp.Messages = append(sp.Messages, scratchpad.Message{Role: role, Text: text, At: s.now()})
-	if role == "user" {
-		if sp.Content != "" {
-			sp.Content += "\n\n"
+	var existingContext scratchpad.SessionContext
+	saved, err := s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		existingContext = enrichmentSeedContext(*sp)
+		sp.Messages = append(sp.Messages, scratchpad.Message{Role: role, Text: text, At: s.now()})
+		if role == "user" {
+			if sp.Content != "" {
+				sp.Content += "\n\n"
+			}
+			sp.Content += text
+			// Keep authoritative decisions while the new answer is pending.
+			old := sp.SessionContext
+			sp.SessionContext = scratchpad.SessionContext{DocumentParameters: old.DocumentParameters, ParameterValues: old.ParameterValues, SourceLinks: old.SourceLinks, SourceLinksConfirmed: old.SourceLinksConfirmed, Issues: old.Issues, FrozenProfile: old.FrozenProfile, ProfileExplicit: old.ProfileExplicit, CandidateProfileID: old.CandidateProfileID, CandidateProfileVersion: old.CandidateProfileVersion, CandidateDocumentFamily: old.CandidateDocumentFamily}
+			sp.ArchiveIntent = scratchpad.ArchiveIntentNone
+			sp.ArchivePreview = nil
 		}
-		sp.Content += text
-		sp.SessionContext = scratchpad.SessionContext{}
-		sp.ArchiveIntent = scratchpad.ArchiveIntentNone
-		sp.ArchivePreview = nil
-	}
-	saved, err := s.store.Save(sp)
+		return nil
+	})
 	if err != nil {
 		return scratchpad.Scratchpad{}, err
 	}
@@ -258,42 +262,40 @@ func (s *ScratchpadService) AppendDraft(sessionID string, draft scratchpad.Draft
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	if t := strings.TrimSpace(draft.TitleSet); t != "" {
-		sp.Draft.TitleSet = t
-		sp.Title = t
-	}
-	if added := trimNonEmpty(draft.TagsAdded); len(added) > 0 {
-		sp.Draft.TagsAdded = unionStrings(sp.Draft.TagsAdded, added)
-		sp.Tags = unionStrings(sp.Tags, added)
-	}
-	if removed := trimNonEmpty(draft.TagsRemoved); len(removed) > 0 {
-		sp.Draft.TagsRemoved = unionStrings(sp.Draft.TagsRemoved, removed)
-		sp.Tags = subtractStrings(sp.Tags, removed)
-	}
-	if notes := trimNonEmpty(draft.NotesAppended); len(notes) > 0 {
-		sp.Draft.NotesAppended = append(sp.Draft.NotesAppended, notes...)
-		// Notes go into Content rather than the draft's `NotesAppended` accumulator
-		// alone — at commit time the capture pipeline uses the same content
-		// path. We append at the end so the chat ordering is preserved.
-		for _, note := range notes {
-			if sp.Content != "" {
-				sp.Content += "\n\n"
-			}
-			sp.Content += note
+	return s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		if t := strings.TrimSpace(draft.TitleSet); t != "" {
+			sp.Draft.TitleSet = t
+			sp.Title = t
 		}
-	}
-	if topics := trimNonEmpty(draft.TopicIDs); len(topics) > 0 {
-		sp.Draft.TopicIDs = unionStrings(sp.Draft.TopicIDs, topics)
-		sp.TopicHints = unionStrings(sp.TopicHints, topics)
-	}
-	if draft.RefineRequested {
-		sp.Draft.RefineRequested = true
-	}
-	return s.store.Save(sp)
+		if added := trimNonEmpty(draft.TagsAdded); len(added) > 0 {
+			sp.Draft.TagsAdded = unionStrings(sp.Draft.TagsAdded, added)
+			sp.Tags = unionStrings(sp.Tags, added)
+		}
+		if removed := trimNonEmpty(draft.TagsRemoved); len(removed) > 0 {
+			sp.Draft.TagsRemoved = unionStrings(sp.Draft.TagsRemoved, removed)
+			sp.Tags = subtractStrings(sp.Tags, removed)
+		}
+		if notes := trimNonEmpty(draft.NotesAppended); len(notes) > 0 {
+			sp.Draft.NotesAppended = append(sp.Draft.NotesAppended, notes...)
+			// Notes go into Content rather than the draft's `NotesAppended` accumulator
+			// alone — at commit time the capture pipeline uses the same content
+			// path. We append at the end so the chat ordering is preserved.
+			for _, note := range notes {
+				if sp.Content != "" {
+					sp.Content += "\n\n"
+				}
+				sp.Content += note
+			}
+		}
+		if topics := trimNonEmpty(draft.TopicIDs); len(topics) > 0 {
+			sp.Draft.TopicIDs = unionStrings(sp.Draft.TopicIDs, topics)
+			sp.TopicHints = unionStrings(sp.TopicHints, topics)
+		}
+		if draft.RefineRequested {
+			sp.Draft.RefineRequested = true
+		}
+		return nil
+	})
 }
 
 // UpdateSessionContext replaces the session-context block on a
@@ -311,6 +313,9 @@ func (s *ScratchpadService) UpdateSessionContext(sessionID string, ctx scratchpa
 }
 
 func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpad.SessionContext, appendReply bool) (scratchpad.Scratchpad, error) {
+	return s.updateSessionContextAt(sessionID, ctx, appendReply, nil)
+}
+func (s *ScratchpadService) updateSessionContextAt(sessionID string, ctx scratchpad.SessionContext, appendReply bool, expected *uint64) (scratchpad.Scratchpad, error) {
 	if s == nil || s.store == nil {
 		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
 	}
@@ -318,53 +323,70 @@ func (s *ScratchpadService) updateSessionContext(sessionID string, ctx scratchpa
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	sp.SessionContext = scratchpad.SessionContext{
-		Topic:                   strings.TrimSpace(ctx.Topic),
-		Goal:                    strings.TrimSpace(ctx.Goal),
-		ConfirmedFacts:          trimNonEmpty(ctx.ConfirmedFacts),
-		OpenQuestions:           trimNonEmpty(ctx.OpenQuestions),
-		Conflicts:               trimNonEmpty(ctx.Conflicts),
-		CandidateTitle:          strings.TrimSpace(ctx.CandidateTitle),
-		CandidateTags:           trimNonEmpty(ctx.CandidateTags),
-		CandidateSummary:        strings.TrimSpace(ctx.CandidateSummary),
-		CandidateBody:           ctx.CandidateBody,
-		SourceLinks:             trimNonEmpty(ctx.SourceLinks),
-		RelatedThoughtIDs:       trimNonEmpty(ctx.RelatedThoughtIDs),
-		SuggestedTopicIDs:       trimNonEmpty(ctx.SuggestedTopicIDs),
-		ArchiveIntent:           normalizeArchiveIntent(ctx.ArchiveIntent),
-		ArchiveStrategy:         normalizeArchiveStrategy(ctx.ArchiveStrategy),
-		CandidateDocumentFamily: strings.TrimSpace(ctx.CandidateDocumentFamily),
-		CandidateProfileID:      strings.TrimSpace(ctx.CandidateProfileID),
-		CandidateProfileVersion: ctx.CandidateProfileVersion,
-		ProfileConfidence:       ctx.ProfileConfidence,
-		ProfileMatchReason:      strings.TrimSpace(ctx.ProfileMatchReason),
-		ProfileExplicit:         ctx.ProfileExplicit,
-		DocumentParameters:      cloneStringMap(ctx.DocumentParameters),
-		MissingProfileInputs:    trimNonEmpty(ctx.MissingProfileInputs),
-		ArchiveReadiness:        normalizeOptionalArchiveReadiness(ctx.ArchiveReadiness),
-	}
-	if sp.SessionContext.ArchiveIntent == scratchpad.ArchiveIntentNone {
-		sp.SessionContext.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
-	}
-	if sp.SessionContext.ArchiveStrategy == scratchpad.ArchiveStrategyNew {
-		sp.SessionContext.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
-	}
-	sp.ArchiveIntent = sp.SessionContext.ArchiveIntent
-	sp.ArchiveStrategy = sp.SessionContext.ArchiveStrategy
-	if appendReply {
-		if reply := sessionContextReplyText(sp.SessionContext); reply != "" {
-			sp.Messages = appendContextReplyMessage(sp.Messages, reply, s.now())
+	saved, err := s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		if expected != nil && sp.InputGeneration != *expected {
+			return ErrArchivePreviewStale
 		}
-	}
-	saved, err := s.store.Save(sp)
+		sp.SessionContext = scratchpad.SessionContext{
+			FrozenProfile:           ctx.FrozenProfile,
+			ParameterValues:         ctx.ParameterValues,
+			Issues:                  ctx.Issues,
+			SourceLinksConfirmed:    ctx.SourceLinksConfirmed,
+			AssistantReply:          strings.TrimSpace(ctx.AssistantReply),
+			Topic:                   strings.TrimSpace(ctx.Topic),
+			Goal:                    strings.TrimSpace(ctx.Goal),
+			ConfirmedFacts:          trimNonEmpty(ctx.ConfirmedFacts),
+			OpenQuestions:           trimNonEmpty(ctx.OpenQuestions),
+			Conflicts:               trimNonEmpty(ctx.Conflicts),
+			CandidateTitle:          strings.TrimSpace(ctx.CandidateTitle),
+			CandidateTags:           trimNonEmpty(ctx.CandidateTags),
+			CandidateSummary:        strings.TrimSpace(ctx.CandidateSummary),
+			CandidateBody:           ctx.CandidateBody,
+			SourceLinks:             trimNonEmpty(ctx.SourceLinks),
+			RelatedThoughtIDs:       trimNonEmpty(ctx.RelatedThoughtIDs),
+			SuggestedTopicIDs:       trimNonEmpty(ctx.SuggestedTopicIDs),
+			ArchiveIntent:           normalizeArchiveIntent(ctx.ArchiveIntent),
+			ArchiveStrategy:         normalizeArchiveStrategy(ctx.ArchiveStrategy),
+			CandidateDocumentFamily: strings.TrimSpace(ctx.CandidateDocumentFamily),
+			CandidateProfileID:      strings.TrimSpace(ctx.CandidateProfileID),
+			CandidateProfileVersion: ctx.CandidateProfileVersion,
+			ProfileConfidence:       ctx.ProfileConfidence,
+			ProfileMatchReason:      strings.TrimSpace(ctx.ProfileMatchReason),
+			ProfileExplicit:         ctx.ProfileExplicit,
+			DocumentParameters:      cloneStringMap(ctx.DocumentParameters),
+			MissingProfileInputs:    trimNonEmpty(ctx.MissingProfileInputs),
+			ArchiveReadiness:        normalizeOptionalArchiveReadiness(ctx.ArchiveReadiness),
+		}
+		if sp.SessionContext.ArchiveIntent == scratchpad.ArchiveIntentNone {
+			sp.SessionContext.ArchiveIntent = normalizeArchiveIntent(sp.ArchiveIntent)
+		}
+		if sp.SessionContext.ArchiveStrategy == scratchpad.ArchiveStrategyNew {
+			sp.SessionContext.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
+		}
+		sp.ArchiveIntent = sp.SessionContext.ArchiveIntent
+		sp.ArchiveStrategy = sp.SessionContext.ArchiveStrategy
+		if appendReply {
+			if reply := sessionContextReplyText(sp.SessionContext); reply != "" {
+				sp.Messages = appendContextReplyMessage(sp.Messages, reply, s.now())
+			}
+		}
+		s.normalizeProfileContext(&sp.SessionContext)
+		sp.ArchivePreview = nil
+		return nil
+	})
 	if err != nil {
 		return scratchpad.Scratchpad{}, err
 	}
 	s.publishContextUpdatedEvent(sessionID)
+	if appendReply && saved.ArchiveIntent == scratchpad.ArchiveIntentLLM && s.archiveScheduler != nil {
+		pending, e := s.BeginPreview(sessionID, true)
+		if e == nil {
+			e = s.archiveScheduler(pending)
+		}
+		if e != nil && pending.Operation != nil {
+			s.FailOperation(sessionID, pending.Operation.ID, e)
+		}
+	}
 	return saved, nil
 }
 
@@ -425,6 +447,7 @@ func (s *ScratchpadService) requestSessionContextEnrichment(sp scratchpad.Scratc
 		captureContextEnricherObserverID,
 		event.NewHeader(),
 		captureContextEnrichRequest{
+			InputGeneration:   sp.InputGeneration,
 			SessionID:         sessionID,
 			ContentAtSchedule: contentAtSchedule,
 			ExistingContext:   existingContext,
@@ -480,7 +503,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 		return
 	}
 	current, err := s.store.Get(sessionID)
-	if err != nil || current.Content != contentAtSchedule {
+	if err != nil || current.Content != contentAtSchedule || (req.InputGeneration != 0 && current.InputGeneration != req.InputGeneration) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
@@ -490,24 +513,29 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 		Content:           current.Content,
 		Messages:          captureContextMessages(current.Messages),
 		Existing:          captureContextFromScratchpad(req.ExistingContext),
-		AvailableProfiles: s.availableProfileDescriptors(),
+		AvailableProfiles: s.availableProfileDescriptors(current),
 		ExistingProfile:   s.existingProfile(current),
 	}
 	result, err := s.buildCaptureContextWithRetry(ctx, sessionID, contentAtSchedule, request)
 	if err != nil {
-		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err)
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err, current.InputGeneration)
 		return
 	}
+	if result.ProfileContractHash != "" && s.profiles != nil {
+		p, e := s.profiles.Resolve(models.DocumentProfileRef{ProfileID: result.CandidateProfileID, Version: result.CandidateProfileVersion})
+		if e != nil || p.Ref.ContentHash != result.ProfileContractHash {
+			s.markContextEnrichmentFailed(sessionID, contentAtSchedule, ErrArchivePreviewStale, current.InputGeneration)
+			return
+		}
+	}
 	latest, err := s.store.Get(sessionID)
-	if err != nil || latest.Content != contentAtSchedule {
+	if err != nil || latest.Content != contentAtSchedule || latest.InputGeneration != current.InputGeneration {
 		return
 	}
 	contextBase := latest
-	if !hasSessionContext(contextBase.SessionContext) {
-		contextBase.SessionContext = req.ExistingContext
-	}
+	contextBase.SessionContext = req.ExistingContext
 	result = preserveLatestUserTurns(result, latest.Messages)
-	_, _ = s.updateSessionContext(sessionID, captureContextToScratchpad(result, contextBase), true)
+	_, _ = s.updateSessionContextAt(sessionID, captureContextToScratchpad(result, contextBase), true, &latest.InputGeneration)
 }
 
 func (s *ScratchpadService) buildCaptureContextWithRetry(ctx context.Context, sessionID, contentAtSchedule string, req ai.CaptureContextRequest) (ai.CaptureContextResult, error) {
@@ -563,28 +591,35 @@ func isRetryableCaptureContextError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if strings.Contains(err.Error(), "parse capture context json") {
-		return true
-	}
 	var providerErr ai.ProviderError
-	return errors.As(err, &providerErr) && providerErr.Retryable
+	if errors.As(err, &providerErr) {
+		return providerErr.Retryable
+	}
+	return strings.Contains(err.Error(), "parse capture context json")
 }
 
-func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error) {
+func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error, expected ...uint64) {
 	slog.Warn("capture context enrichment failed", "session_id", sessionID, "error", cause)
 	latest, err := s.store.Get(sessionID)
-	if err != nil || latest.Content != contentAtSchedule {
+	if err != nil || latest.Content != contentAtSchedule || (len(expected) > 0 && latest.InputGeneration != expected[0]) {
 		return
 	}
 	text := captureContextFailureText(cause)
 	if text == "" {
 		return
 	}
-	latest.Messages = appendContextReplyMessage(latest.Messages, text, s.now())
-	if _, err := s.store.Save(latest); err != nil {
+	_, err = s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		if sp.InputGeneration != latest.InputGeneration {
+			return ErrArchivePreviewStale
+		}
+		sp.Messages = appendContextReplyMessage(sp.Messages, text, s.now())
+		return nil
+	})
+	if err != nil {
 		slog.Warn("persist capture context enrichment failure failed", "session_id", sessionID, "error", err)
 		return
 	}
+
 	s.publishContextUpdatedEvent(sessionID)
 }
 
@@ -600,6 +635,17 @@ func captureContextFailureText(cause error) string {
 	}
 	var providerErr ai.ProviderError
 	if errors.As(cause, &providerErr) {
+		if providerErr.Code == "thoughtflow.ai.invalid_json_fallback" || providerErr.Code == "thoughtflow.ai.json_fallback_failed" {
+			return "LLM 兼容请求失败：未能获得通过校验的 JSON 结果。请检查模型及 Provider 的 JSON 输出能力；本次兼容请求不会自动重试。"
+		}
+		if providerErr.Code == "thoughtflow.ai.conversion_unsupported" {
+			features := mergeContextStrings([]string{providerErr.Feature}, providerErr.UnsupportedFeatures)
+			detail := ""
+			if len(features) > 0 {
+				detail = "（" + strings.Join(features, "、") + "）"
+			}
+			return "LLM 请求参数不受当前模型或 Provider 支持" + detail + "。当前流程依赖 JSON 输出，请使用支持所需能力的模型及 Provider；本次参数错误不会自动重试。"
+		}
 		switch providerErr.StatusCode {
 		case 401, 403:
 			return "LLM 整理失败：模型服务鉴权失败，请检查 API Key 和模型服务配置。"
@@ -631,6 +677,7 @@ func captureContextMessages(messages []scratchpad.Message) []ai.CaptureContextMe
 
 func captureContextFromScratchpad(ctx scratchpad.SessionContext) ai.CaptureContextResult {
 	return ai.CaptureContextResult{
+		AssistantReply:          ctx.AssistantReply,
 		Topic:                   ctx.Topic,
 		Goal:                    ctx.Goal,
 		ConfirmedFacts:          append([]string(nil), ctx.ConfirmedFacts...),
@@ -658,7 +705,7 @@ func captureContextFromScratchpad(ctx scratchpad.SessionContext) ai.CaptureConte
 }
 
 func hasSessionContext(ctx scratchpad.SessionContext) bool {
-	return strings.TrimSpace(ctx.Topic) != "" ||
+	return strings.TrimSpace(ctx.AssistantReply) != "" || strings.TrimSpace(ctx.Topic) != "" ||
 		strings.TrimSpace(ctx.Goal) != "" ||
 		strings.TrimSpace(ctx.CandidateTitle) != "" ||
 		strings.TrimSpace(ctx.CandidateSummary) != "" ||
@@ -674,6 +721,9 @@ func hasSessionContext(ctx scratchpad.SessionContext) bool {
 }
 
 func sessionContextReplyText(ctx scratchpad.SessionContext) string {
+	if reply := strings.TrimSpace(ctx.AssistantReply); reply != "" {
+		return reply
+	}
 	summary := strings.TrimSpace(ctx.CandidateSummary)
 	body := strings.TrimSpace(ctx.CandidateBody)
 	if summary == "" {
@@ -725,17 +775,32 @@ func appendContextReplyMessage(messages []scratchpad.Message, reply string, at t
 }
 
 func captureContextToScratchpad(result ai.CaptureContextResult, current scratchpad.Scratchpad) scratchpad.SessionContext {
+	if !current.SessionContext.ProfileExplicit && result.CandidateProfileID != "" && (result.CandidateProfileID != current.SessionContext.CandidateProfileID || result.CandidateProfileVersion != current.SessionContext.CandidateProfileVersion) {
+		current.SessionContext.FrozenProfile = ""
+		current.SessionContext.DocumentParameters = nil
+		current.SessionContext.ParameterValues = nil
+	}
+	if current.SessionContext.ProfileExplicit {
+		result.CandidateProfileID = current.SessionContext.CandidateProfileID
+		result.CandidateProfileVersion = current.SessionContext.CandidateProfileVersion
+		result.CandidateDocumentFamily = current.SessionContext.CandidateDocumentFamily
+	}
 	return scratchpad.SessionContext{
+		// A reply belongs only to this turn; never reuse an older reply.
+		AssistantReply:          strings.TrimSpace(result.AssistantReply),
 		Topic:                   firstNonEmptyString(result.Topic, current.SessionContext.Topic),
 		Goal:                    firstNonEmptyString(result.Goal, current.SessionContext.Goal),
 		ConfirmedFacts:          mergeContextStrings(current.SessionContext.ConfirmedFacts, result.ConfirmedFacts),
 		OpenQuestions:           trimNonEmpty(result.OpenQuestions),
-		Conflicts:               mergeContextStrings(current.SessionContext.Conflicts, result.Conflicts),
+		Issues:                  mergeIssues(current.SessionContext.Issues, result.Issues, result.Conflicts),
+		ParameterValues:         current.SessionContext.ParameterValues,
+		Conflicts:               activeConflicts(mergeIssues(mergeIssues(current.SessionContext.Issues, nil, current.SessionContext.Conflicts), result.Issues, result.Conflicts)),
 		CandidateTitle:          firstNonEmptyString(result.CandidateTitle, current.SessionContext.CandidateTitle),
 		CandidateTags:           mergeContextStrings(current.SessionContext.CandidateTags, result.CandidateTags),
 		CandidateSummary:        firstNonEmptyString(result.CandidateSummary, current.SessionContext.CandidateSummary),
 		CandidateBody:           firstNonEmptyString(result.CandidateBody, current.SessionContext.CandidateBody),
-		SourceLinks:             mergeContextStrings(current.SessionContext.SourceLinks, result.SourceLinks),
+		SourceLinks:             contextSourceLinks(current.SessionContext, result.SourceLinks),
+		SourceLinksConfirmed:    current.SessionContext.SourceLinksConfirmed,
 		RelatedThoughtIDs:       mergeContextStrings(current.SessionContext.RelatedThoughtIDs, result.RelatedThoughtIDs),
 		SuggestedTopicIDs:       mergeContextStrings(current.SessionContext.SuggestedTopicIDs, result.SuggestedTopicIDs),
 		ArchiveIntent:           normalizeArchiveIntent(scratchpad.ArchiveIntent(firstNonEmptyString(result.ArchiveIntent, string(current.ArchiveIntent)))),
@@ -746,7 +811,7 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		ProfileConfidence:       result.ProfileConfidence,
 		ProfileMatchReason:      firstNonEmptyString(result.ProfileMatchReason, current.SessionContext.ProfileMatchReason),
 		ProfileExplicit:         result.ProfileExplicit || current.SessionContext.ProfileExplicit,
-		DocumentParameters:      mergeStringMaps(current.SessionContext.DocumentParameters, result.DocumentParameters),
+		DocumentParameters:      reconcileParameters(current.SessionContext, result.DocumentParameters),
 		FrozenProfile:           current.SessionContext.FrozenProfile,
 		MissingProfileInputs:    trimNonEmpty(result.MissingProfileInputs),
 		ArchiveReadiness:        normalizeArchiveReadiness(firstNonEmptyString(result.ArchiveReadiness, current.SessionContext.ArchiveReadiness)),
@@ -964,18 +1029,16 @@ func (s *ScratchpadService) SetArchiveIntent(sessionID string, intent scratchpad
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	switch scratchpad.ArchiveIntent(strings.TrimSpace(string(intent))) {
-	case scratchpad.ArchiveIntentMenu, scratchpad.ArchiveIntentLLM:
-		sp.ArchiveIntent = intent
-	default:
-		sp.ArchiveIntent = scratchpad.ArchiveIntentNone
-	}
-	sp.SessionContext.ArchiveIntent = sp.ArchiveIntent
-	return s.store.Save(sp)
+	return s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		switch scratchpad.ArchiveIntent(strings.TrimSpace(string(intent))) {
+		case scratchpad.ArchiveIntentMenu, scratchpad.ArchiveIntentLLM:
+			sp.ArchiveIntent = intent
+		default:
+			sp.ArchiveIntent = scratchpad.ArchiveIntentNone
+		}
+		sp.SessionContext.ArchiveIntent = sp.ArchiveIntent
+		return nil
+	})
 }
 
 // SetArchiveStrategy records the routing decision the user (or, by
@@ -996,68 +1059,70 @@ func (s *ScratchpadService) SetArchiveStrategy(sessionID string, strategy scratc
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	switch scratchpad.ArchiveStrategy(strings.TrimSpace(string(strategy))) {
-	case scratchpad.ArchiveStrategyUpdate, scratchpad.ArchiveStrategySupplement:
-		sp.ArchiveStrategy = strategy
-	default:
-		sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
-	}
-	sp.SessionContext.ArchiveStrategy = sp.ArchiveStrategy
-	if thoughtID = strings.TrimSpace(thoughtID); thoughtID != "" {
-		// The strategy decision may name a target thought (update
-		// or supplement). Persist it on SourceThoughtID so a
-		// subsequent BuildArchivePreview / Commit can find it
-		// without the HTTP layer re-sending it on every call.
-		sp.SourceThoughtID = thoughtID
-	}
-	return s.store.Save(sp)
+	return s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		switch scratchpad.ArchiveStrategy(strings.TrimSpace(string(strategy))) {
+		case scratchpad.ArchiveStrategyUpdate, scratchpad.ArchiveStrategySupplement:
+			sp.ArchiveStrategy = strategy
+		default:
+			sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
+		}
+		sp.SessionContext.ArchiveStrategy = sp.ArchiveStrategy
+		if thoughtID = strings.TrimSpace(thoughtID); thoughtID != "" {
+			// The strategy decision may name a target thought (update
+			// or supplement). Persist it on SourceThoughtID so a
+			// subsequent BuildArchivePreview / Commit can find it
+			// without the HTTP layer re-sending it on every call.
+			sp.SourceThoughtID = thoughtID
+		}
+		return nil
+	})
 }
 
 func (s *ScratchpadService) SetDocumentProfile(sessionID, profileID string, version int) (scratchpad.Scratchpad, error) {
 	if s == nil || s.store == nil {
 		return scratchpad.Scratchpad{}, ErrScratchpadUnavailable
 	}
-	sp, err := s.store.Get(strings.TrimSpace(sessionID))
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	profileID = strings.TrimSpace(profileID)
-	if profileID == "" {
-		sp.SessionContext.CandidateDocumentFamily = ""
-		sp.SessionContext.CandidateProfileID = ""
-		sp.SessionContext.CandidateProfileVersion = 0
-		sp.SessionContext.ProfileConfidence = 0
-		sp.SessionContext.ProfileMatchReason = ""
-		sp.SessionContext.ProfileExplicit = false
-		sp.SessionContext.FrozenProfile = ""
+	return s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
+		profileID = strings.TrimSpace(profileID)
+		if profileID == "" {
+			sp.SessionContext.CandidateDocumentFamily = ""
+			sp.SessionContext.CandidateProfileID = ""
+			sp.SessionContext.CandidateProfileVersion = 0
+			sp.SessionContext.ProfileConfidence = 0
+			sp.SessionContext.ProfileMatchReason = ""
+			sp.SessionContext.ProfileExplicit = false
+			sp.SessionContext.FrozenProfile = ""
+			sp.ArchivePreview = nil
+			return nil
+		}
+		if s.profiles == nil {
+			return errors.New("capture: document profile registry is not ready")
+		}
+		var err error
+		var profile documentprofile.DocumentProfile
+		if version > 0 {
+			profile, err = s.profiles.Resolve(models.DocumentProfileRef{ProfileID: profileID, Version: version})
+		} else {
+			profile, err = s.profiles.ResolveLatest(profileID)
+		}
+		if err != nil {
+			return err
+		}
+		if sp.SessionContext.CandidateProfileID != profile.Ref.ProfileID || sp.SessionContext.CandidateProfileVersion != profile.Ref.Version {
+			sp.SessionContext.DocumentParameters = nil
+			sp.SessionContext.ParameterValues = nil
+		}
+		sp.SessionContext.CandidateDocumentFamily = profile.Ref.Family
+		sp.SessionContext.CandidateProfileID = profile.Ref.ProfileID
+		sp.SessionContext.CandidateProfileVersion = profile.Ref.Version
+		sp.SessionContext.ProfileConfidence = 100
+		sp.SessionContext.ProfileMatchReason = "explicit user profile selection"
+		sp.SessionContext.ProfileExplicit = true
+		sp.SessionContext.FrozenProfile = profile.Snapshot
+		s.normalizeProfileContext(&sp.SessionContext)
 		sp.ArchivePreview = nil
-		return s.store.Save(sp)
-	}
-	if s.profiles == nil {
-		return scratchpad.Scratchpad{}, errors.New("capture: document profile registry is not ready")
-	}
-	var profile documentprofile.DocumentProfile
-	if version > 0 {
-		profile, err = s.profiles.Resolve(models.DocumentProfileRef{ProfileID: profileID, Version: version})
-	} else {
-		profile, err = s.profiles.ResolveLatest(profileID)
-	}
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	sp.SessionContext.CandidateDocumentFamily = profile.Ref.Family
-	sp.SessionContext.CandidateProfileID = profile.Ref.ProfileID
-	sp.SessionContext.CandidateProfileVersion = profile.Ref.Version
-	sp.SessionContext.ProfileConfidence = 100
-	sp.SessionContext.ProfileMatchReason = "explicit user profile selection"
-	sp.SessionContext.ProfileExplicit = true
-	sp.SessionContext.FrozenProfile = profile.Snapshot
-	sp.ArchivePreview = nil
-	return s.store.Save(sp)
+		return nil
+	})
 }
 
 // BuildArchivePreview renders a read-only ArchivePreview for a
@@ -1212,6 +1277,12 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	if currentThought != nil && currentThought.Thought.Document != nil {
 		preview.SourceGeneration = currentThought.Thought.Document.Generation
 	}
+	preview.InputGeneration = sp.InputGeneration
+	preview.Sources = archiveSources(preview.SourceLinks)
+	if issues := archivePreflight(profile, sp, parameters); len(issues) > 0 {
+		preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationInvalid, Issues: issues, ValidatedAt: s.now()}
+		return preview, nil
+	}
 	if profile.Ref.Family == models.DocumentFamilyNote {
 		if profile.Template == "" {
 			preview.Validation = models.ArchiveValidation{Status: models.ArchiveValidationValid, ValidatedAt: s.now()}
@@ -1265,6 +1336,9 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 				slog.Warn("archive document generation returned malformed output; retrying", "attempt", attempt+1, "max_attempts", s.maxRepairAttempts+1, "error", err)
 				continue
 			}
+			if profile.SchemaVersion == 2 {
+				return scratchpad.ArchivePreview{}, fmt.Errorf("capture: document generation failed after bounded repair: %w", err)
+			}
 			slog.Warn("archive document generation remained malformed; using local fallback", "attempts", attempt+1, "error", err)
 			draft, err = ai.NewLocalRefineProvider().GenerateDocument(ctx, request)
 			if err != nil {
@@ -1277,6 +1351,19 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 			rendered.Validation.Issues = append(rendered.Validation.Issues, *issue)
 			rendered.Validation.Status = models.ArchiveValidationInvalid
 		}
+		if profile.SchemaVersion == 2 {
+			candidate, e := documentflow.CheckCandidate(rendered.Content, draft.Title, profile, parameters, *preview.Sources, preview.ContextHash)
+			if e != nil {
+				return scratchpad.ArchivePreview{}, e
+			}
+			preview.Document = &candidate
+			for _, issue := range candidate.Report.Issues {
+				if issue.Severity == "error" {
+					rendered.Validation.Status = models.ArchiveValidationInvalid
+					rendered.Validation.Issues = append(rendered.Validation.Issues, models.ValidationIssue{Code: issue.Code, Severity: issue.Severity, Section: issue.Section, Message: issue.Basis})
+				}
+			}
+		}
 		rendered.Validation.RepairCount = attempt
 		if rendered.Validation.Status == models.ArchiveValidationValid {
 			break
@@ -1284,7 +1371,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 		request.PreviousDraft = &draft
 		request.RepairIssues = append([]models.ValidationIssue(nil), rendered.Validation.Issues...)
 	}
-	if rendered.Validation.Status != models.ArchiveValidationValid {
+	if rendered.Validation.Status != models.ArchiveValidationValid && profile.SchemaVersion != 2 {
 		fallbackDraft, fallbackErr := ai.NewLocalRefineProvider().GenerateDocument(ctx, request)
 		if fallbackErr == nil {
 			fallbackDraft = compactArchiveDraft(request, fallbackDraft)
@@ -1303,23 +1390,7 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 	preview.Title = firstNonEmptyString(strings.TrimSpace(draft.Title), preview.Title)
 	preview.Body = strings.TrimSpace(rendered.Content)
 	preview.Validation = rendered.Validation
-	if profile.SchemaVersion == 2 && s.archiveDocuments() != nil {
-		sources := models.SourceManifest{SchemaVersion: 1, Sources: []models.DocumentSource{}}
-		for i, link := range preview.SourceLinks {
-			sources.Sources = append(sources.Sources, models.DocumentSource{ID: fmt.Sprintf("S%d", i+1), Type: "external", Locator: link, VerificationStatus: "unverified"})
-		}
-		candidate, e := s.archiveDocuments().Candidate(ctx, "capture-"+sp.SessionID, preview.Body, preview.Title, profile, parameters, sources, preview.ContextHash)
-		if e != nil {
-			return scratchpad.ArchivePreview{}, e
-		}
-		preview.Document = &candidate
-		for _, i := range candidate.Report.Issues {
-			if i.Severity == "error" {
-				preview.Validation.Status = models.ArchiveValidationInvalid
-				preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{Code: i.Code, Severity: i.Severity, Section: i.Section, Message: i.Basis})
-			}
-		}
-	}
+
 	applyArchiveContextValidation(&preview, sp)
 	preview.GeneratedAt = s.now()
 	if preview.Strategy == scratchpad.ArchiveStrategyUpdate && currentThought != nil {
@@ -1331,23 +1402,6 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 func applyArchiveContextValidation(preview *scratchpad.ArchivePreview, sp scratchpad.Scratchpad) {
 	if preview == nil {
 		return
-	}
-	for _, missing := range trimNonEmpty(sp.SessionContext.MissingProfileInputs) {
-		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
-			Code:     "thoughtflow.profile.input_required",
-			Severity: models.ValidationSeverityError,
-			Section:  missing,
-			Message:  fmt.Sprintf("required profile input %q is missing", missing),
-		})
-		preview.Validation.Status = models.ArchiveValidationInvalid
-	}
-	if readiness := strings.TrimSpace(sp.SessionContext.ArchiveReadiness); readiness != "" && readiness != "ready" {
-		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
-			Code:     "thoughtflow.archive.not_ready",
-			Severity: models.ValidationSeverityError,
-			Message:  fmt.Sprintf("archive readiness is %q; resolve the remaining context before archiving", readiness),
-		})
-		preview.Validation.Status = models.ArchiveValidationInvalid
 	}
 	if len(trimNonEmpty(sp.SessionContext.Conflicts)) > 0 {
 		preview.Validation.Issues = append(preview.Validation.Issues, models.ValidationIssue{
@@ -1532,11 +1586,11 @@ func recoverableArchiveDocumentGenerationError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if strings.Contains(err.Error(), "parse document draft json") {
-		return true
-	}
 	var providerErr ai.ProviderError
-	return errors.As(err, &providerErr) && providerErr.Code == "thoughtflow.ai.output_truncated"
+	if errors.As(err, &providerErr) {
+		return providerErr.Code == "thoughtflow.ai.output_truncated"
+	}
+	return strings.Contains(err.Error(), "parse document draft json")
 }
 
 func (s *ScratchpadService) resolveArchiveProfile(sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (documentprofile.DocumentProfile, error) {
@@ -1566,8 +1620,12 @@ func profileParameters(profile documentprofile.DocumentProfile, values map[strin
 			out[input.Key] = input.Default
 		}
 	}
+	allowed := map[string]bool{}
+	for _, input := range profile.Inputs {
+		allowed[input.Key] = true
+	}
 	for key, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
+		if value = strings.TrimSpace(value); allowed[key] {
 			out[key] = value
 		}
 	}
@@ -1618,15 +1676,14 @@ func (s *ScratchpadService) validateArchivePreview(ctx context.Context, sp scrat
 		}
 	}
 	var current *models.ThoughtSnapshot
-	if sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate || sp.ArchiveStrategy == scratchpad.ArchiveStrategySupplement {
-		if strings.TrimSpace(sp.SourceThoughtID) != "" {
-			snapshot, err := s.capture.GetThought(ctx, sp.SourceThoughtID)
-			if err != nil {
-				return err
-			}
-			current = &snapshot
+	if target := archiveTarget(sp); target != "" {
+		snapshot, err := s.capture.GetThought(ctx, target)
+		if err != nil {
+			return err
 		}
+		current = &snapshot
 	}
+
 	if preview.ContextHash == "" || preview.ContextHash != archiveContextHash(sp, current, preview.DocumentProfile) {
 		return ErrArchivePreviewStale
 	}
@@ -1730,8 +1787,8 @@ func archiveTextLineCoverage(container, candidate string) float64 {
 
 // archiveBody returns the body that should be shown in archive
 // preview and persisted on commit. The LLM-facing contract treats
-// CandidateSummary as the primary user-visible synthesis and
-// CandidateBody as the archive body, but providers can return an
+// AssistantReply as the per-turn chat answer, CandidateSummary as archive
+// metadata and CandidateBody as the archive body, but providers can return an
 // incomplete final body. The cumulative SessionContext remains the
 // single source of truth; historical AI bubbles are never concatenated
 // into the archive because they may be obsolete full-document revisions.
@@ -1827,7 +1884,7 @@ func archiveTextScore(value string) int {
 // routing that case to a "append to existing thought" path, which
 // is implemented in a later stage.
 func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (models.CaptureCommand, error) {
-	if strings.TrimSpace(sp.CommittedThoughtID) != "" {
+	if strings.TrimSpace(sp.CommittedThoughtID) != "" && sp.ArchivePreview == nil {
 		return models.CaptureCommand{}, ErrAlreadyCommitted
 	}
 	content := archiveBody(sp)
@@ -1881,7 +1938,8 @@ func (s *ScratchpadService) BuildCaptureCommand(sp scratchpad.Scratchpad) (model
 		SuggestedTopicIDs:       uniqueStrings(sp.SessionContext.SuggestedTopicIDs),
 		Source:                  models.ThoughtSourceScratchpadCommit,
 		DocumentProfile:         profileRef,
-		DocumentParameters:      sp.SessionContext.DocumentParameters,
+		DocumentParameters:      previewParameters(sp),
+		DocumentSources:         previewSources(sp),
 		DocumentProfileSnapshot: previewSnapshot(sp),
 	}, nil
 }
@@ -1900,284 +1958,14 @@ func (s *ScratchpadService) ResetAfterCommit(sessionID string) (scratchpad.Scrat
 	if sessionID == "" {
 		return scratchpad.Scratchpad{}, errors.New("capture: scratchpad session id is required")
 	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return scratchpad.Scratchpad{}, err
-	}
-	if sp.CommittedThoughtID == "" {
-		// Not committed: a plain reset still wipes Content/Messages/Draft
-		// so the user gets a clean slate. We bypass the store-level
-		// Reset to avoid a no-op when the scratchpad is empty.
+	return s.store.Update(sessionID, func(sp *scratchpad.Scratchpad) error {
 		sp.Content = ""
 		sp.Messages = nil
 		sp.Draft = scratchpad.Draft{}
-		return s.store.Save(sp)
-	}
-	return s.store.Reset(sessionID)
-}
-
-// Commit turns a scratchpad into a real thought. The strategy on
-// the scratchpad (ArchiveStrategy) drives the routing:
-//
-//   - "new" (or empty) — first commit: capture a fresh thought and
-//     apply the chat-time draft; subsequent commits PATCH the
-//     existing thought (the "继续追加" path). This is the default
-//     for a normal capture session.
-//
-//   - "update_thought" — PATCH the thought named by
-//     SourceThoughtID with the scratchpad's projected body / tags.
-//     Goes through the regular PatchThought path so a human
-//     PATCH and the scratchpad update serialise on thoughtlock.
-//
-//   - "supplement" — capture a new thought whose body is prefixed
-//     with "[补充] 前置 thought-{parent.ID}" and whose
-//     RelatedThoughtIDs includes the parent. Then PATCH the
-//     parent to add the new thought to ITS RelatedThoughtIDs
-//     (bidirectional backlink). The scratchpad's
-//     CommittedThoughtID points at the new thought so a follow-up
-//     "继续追加" keeps piling on the supplement, not the parent.
-//
-// Returns the CaptureResult. For "update_thought" the Thought
-// field is a zero-value Thought (PatchThought returns a Snapshot)
-// — the caller reads Result.Thought.ID via the scratchpad's
-// SourceThoughtID instead.
-func (s *ScratchpadService) Commit(ctx context.Context, sessionID string) (models.CaptureResult, error) {
-	if s == nil || s.store == nil {
-		return models.CaptureResult{}, ErrScratchpadUnavailable
-	}
-	if s.capture == nil {
-		return models.CaptureResult{}, errors.New("capture: scratchpad commit pipeline is not wired up")
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return models.CaptureResult{}, errors.New("capture: scratchpad session id is required")
-	}
-	sp, err := s.store.Get(sessionID)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	if err := s.validateArchivePreview(ctx, sp); err != nil {
-		return models.CaptureResult{}, err
-	}
-
-	// Repeat commit (already committed) is allowed to have empty
-	// Content — Reset has wiped the volatile fields. The user is
-	// still entitled to "commit" again, and the helper degrades to
-	// a no-op reset so the UI is in a clean state. First-time
-	// commit, on the other hand, requires Content: a scratchpad
-	// with nothing to capture is a no-op that should never have
-	// been sent to Begin With. "update_thought" never requires
-	// Content (the body comes from the scratchpad's draft / context
-	// projection; an empty projection is just a no-op patch).
-	if sp.ArchiveStrategy != scratchpad.ArchiveStrategyUpdate &&
-		sp.ArchiveStrategy != scratchpad.ArchiveStrategySupplement &&
-		sp.CommittedThoughtID == "" && strings.TrimSpace(sp.Content) == "" {
-		return models.CaptureResult{}, errors.New("capture: scratchpad content is empty")
-	}
-
-	switch sp.ArchiveStrategy {
-	case scratchpad.ArchiveStrategyUpdate:
-		return s.commitUpdate(ctx, sp)
-	case scratchpad.ArchiveStrategySupplement:
-		return s.commitSupplement(ctx, sp)
-	default:
-		if sp.ArchiveStrategy != scratchpad.ArchiveStrategyNew && sp.ArchiveStrategy != "" {
-			// Unknown strategy — degrade to "new" rather than error.
-			sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
-		}
-		if sp.CommittedThoughtID == "" {
-			return s.commitFresh(ctx, sp)
-		}
-		return s.commitRepeat(ctx, sp)
-	}
-}
-
-// commitFresh is the first-commit path: capture the thought, then
-// apply the chat-time draft commands (rename / add_tag / notes /
-// topics) onto the freshly committed thought.
-func (s *ScratchpadService) commitFresh(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
-	cmd, err := s.BuildCaptureCommand(sp)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	result, err := s.capture.Capture(ctx, cmd)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	if _, err := s.store.MarkCommitted(sp.SessionID, result.Thought.ID); err != nil {
-		return result, err
-	}
-	s.publishCommittedEvent(result.Thought.ID, sp.SessionID, "fresh")
-	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-		return result, err
-	}
-	return result, nil
-}
-
-// commitRepeat is the "继续追加" path: the scratchpad is anchored
-// to a thought already, and the user's latest chat adds more
-// content / commands on top. We translate the scratchpad state
-// into a single PATCH and let the existing patch pipeline fire the
-// git commit + emit the events.
-func (s *ScratchpadService) commitRepeat(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
-	patch, rawBody, err := buildPatchFromScratchpad(sp, true)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	if patch == nil {
-		// Nothing to apply: the user typed a commit command without
-		// adding new content. Reset the scratchpad and bail out as
-		// a no-op so the UI gets a clean state.
-		if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-			return models.CaptureResult{}, err
-		}
-		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, nil
-	}
-	sessionID := s.sessionID
-	if sessionID == "" {
-		sessionID = sp.SessionID
-	}
-	if sp.ArchivePreview != nil && sp.ArchivePreview.SourceGeneration > 0 {
-		generation := sp.ArchivePreview.SourceGeneration
-		patch.ExpectedDocumentGeneration = &generation
-	}
-	if _, err := s.capture.ApplyDraftInternal(ctx, sp.CommittedThoughtID, sessionID, *patch, rawBody); err != nil {
-		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, err
-	}
-	s.publishCommittedEvent(sp.CommittedThoughtID, sp.SessionID, "repeat")
-	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-		return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, err
-	}
-	return models.CaptureResult{Thought: models.Thought{ID: sp.CommittedThoughtID}}, nil
-}
-
-// commitUpdate is the "update_thought" path. It PATCHes the
-// thought named by SourceThoughtID with the scratchpad's
-// projected body / title / tags. Unlike the repeat-commit path
-// (which uses ApplyDraftInternal to avoid racing the refiner
-// job that the Capture step just enqueued), this path uses the
-// regular PatchThought — there is no Capture step here, so the
-// refiner lock cannot conflict.
-//
-// SourceThoughtID is required; we still verify by issuing
-// GetThought first so the failure mode is a clean 404 instead of
-// the file-not-found you'd get from PatchThought on a missing
-// thought.
-//
-// The scratchpad's CommittedThoughtID is NOT set — the scratchpad
-// is still "open" relative to the source thought (the user can
-// keep iterating). A subsequent "继续追加" with strategy
-// "update_thought" keeps editing the same source.
-func (s *ScratchpadService) commitUpdate(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
-	thoughtID := strings.TrimSpace(sp.SourceThoughtID)
-	if thoughtID == "" {
-		return models.CaptureResult{}, errors.New("capture: update_thought requires source_thought_id")
-	}
-	current, gerr := s.capture.GetThought(ctx, thoughtID)
-	if gerr != nil {
-		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
-	}
-	// Commit must remain safe even for note-profile callers that reach this
-	// path without a persisted preview. Always project a complete document,
-	// never only the latest supplement, before building the replacement patch.
-	fullBody := fullUpdateArchiveBody(current.Content, archiveBody(sp))
-	if strings.TrimSpace(fullBody) != "" {
-		if sp.ArchivePreview == nil {
-			sp.ArchivePreview = &scratchpad.ArchivePreview{
-				Strategy:   scratchpad.ArchiveStrategyUpdate,
-				Validation: models.ArchiveValidation{Status: models.ArchiveValidationValid},
-			}
-		}
-		sp.ArchivePreview.Body = fullBody
-	}
-	if e := s.validateMergedTypedArchive(ctx, sp, current, fullBody); e != nil {
-		return models.CaptureResult{}, e
-	}
-	patch, rawBody, err := buildPatchForUpdate(sp)
-	if patch != nil && current.Thought.Document != nil && sp.ArchivePreview != nil {
-		generation := sp.ArchivePreview.SourceGeneration
-		if generation == 0 {
-			return models.CaptureResult{}, ErrArchivePreviewStale
-		}
-		patch.ExpectedDocumentGeneration = &generation
-	}
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	if patch == nil {
-		// Nothing actually changed; degrade to a no-op reset so the
-		// UI is in a clean state. We still return a successful
-		// CaptureResult with the source thought's id so callers can
-		// show "no change" in the toast.
-		if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-			return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
-		}
-		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, nil
-	}
-	sessionID := s.sessionID
-	if sessionID == "" {
-		sessionID = sp.SessionID
-	}
-	if _, err := s.capture.PatchThought(ctx, thoughtID, sessionID, *patch, rawBody); err != nil {
-		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
-	}
-	if _, err := s.store.MarkCommitted(sp.SessionID, thoughtID); err != nil {
-		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
-	}
-	s.publishCommittedEvent(thoughtID, sp.SessionID, "update")
-	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-		return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, err
-	}
-	return models.CaptureResult{Thought: models.Thought{ID: thoughtID}}, nil
-}
-
-// commitSupplement is the "supplement" path. It captures a new
-// thought related to the source thought, then patches the source
-// thought with the reverse relationship so navigation is
-// bidirectional.
-func (s *ScratchpadService) commitSupplement(ctx context.Context, sp scratchpad.Scratchpad) (models.CaptureResult, error) {
-	parentID := strings.TrimSpace(sp.SourceThoughtID)
-	if parentID == "" {
-		return models.CaptureResult{}, errors.New("capture: supplement requires source_thought_id")
-	}
-	parent, gerr := s.capture.GetThought(ctx, parentID)
-	if gerr != nil {
-		return models.CaptureResult{}, fmt.Errorf("capture: source thought not found: %w", gerr)
-	}
-	cmd, err := s.BuildCaptureCommand(sp)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	cmd.Source = models.ThoughtSourceScratchpadSupplement
-	cmd.RelatedThoughtIDs = uniqueStrings(append(cmd.RelatedThoughtIDs, parentID))
-	if cmd.DocumentProfile == nil || cmd.DocumentProfile.Family == models.DocumentFamilyNote {
-		prefix := fmt.Sprintf("[补充] 前置 thought-%s\n\n", parentID)
-		if !strings.HasPrefix(cmd.Content, prefix) {
-			cmd.Content = prefix + cmd.Content
-		}
-	}
-	result, err := s.capture.Capture(ctx, cmd)
-	if err != nil {
-		return models.CaptureResult{}, err
-	}
-	parentRelated := uniqueStrings(append(parent.Thought.RelatedThoughtIDs, result.Thought.ID))
-	parentPatch := models.ThoughtPatchRequest{RelatedThoughtIDs: &parentRelated}
-	parentRaw, err := patchRequestToRawBody(parentPatch)
-	if err != nil {
-		return result, err
-	}
-	sessionID := firstNonEmptyString(s.sessionID, sp.SessionID)
-	if _, err := s.capture.PatchThought(ctx, parentID, sessionID, parentPatch, parentRaw); err != nil {
-		return result, fmt.Errorf("capture: add supplement backlink: %w", err)
-	}
-	if _, err := s.store.MarkCommitted(sp.SessionID, result.Thought.ID); err != nil {
-		return result, err
-	}
-	s.publishCommittedEvent(result.Thought.ID, sp.SessionID, "supplement")
-	if _, err := s.ResetAfterCommit(sp.SessionID); err != nil {
-		return result, err
-	}
-	return result, nil
+		sp.ArchivePreview = nil
+		sp.Operation = nil
+		return nil
+	})
 }
 
 // ReopenFromThought seeds a brand-new scratchpad from an existing
@@ -2280,7 +2068,13 @@ func (s *ScratchpadService) ReopenFromThought(ctx context.Context, thoughtID, se
 		ArchiveStrategy: scratchpad.ArchiveStrategyUpdate,
 		ArchiveIntent:   scratchpad.ArchiveIntentMenu,
 	}
-	return s.store.Save(sp)
+	return s.store.Update(newID, func(current *scratchpad.Scratchpad) error {
+		if current.SessionGeneration != 0 {
+			return scratchpad.ErrConflict
+		}
+		*current = sp
+		return nil
+	})
 }
 
 func reopenThoughtBody(content models.ThoughtContent) string {
@@ -2585,15 +2379,36 @@ func normalizeArchiveStrategy(strategy scratchpad.ArchiveStrategy) scratchpad.Ar
 	}
 }
 
-func (s *ScratchpadService) availableProfileDescriptors() []documentprofile.DocumentProfileDescriptor {
+func (s *ScratchpadService) availableProfileDescriptors(preferred ...scratchpad.Scratchpad) []documentprofile.DocumentProfileDescriptor {
 	if s == nil || s.profiles == nil {
 		return nil
 	}
 	profiles := s.profiles.ListEnabled()
+	if len(preferred) > 0 && preferred[0].SessionContext.CandidateProfileID != "" {
+		if p, e := s.resolveArchiveProfile(preferred[0], nil); e == nil {
+			ordered := []documentprofile.DocumentProfileDescriptor{p.Descriptor()}
+			for _, item := range profiles {
+				if item.ID != p.Ref.ProfileID || item.Version != p.Ref.Version {
+					ordered = append(ordered, item)
+				}
+			}
+			profiles = ordered
+		}
+	}
 	if s.maxMatchCandidates > 0 && len(profiles) > s.maxMatchCandidates {
 		profiles = profiles[:s.maxMatchCandidates]
 	}
-	return profiles
+	var bounded []documentprofile.DocumentProfileDescriptor
+	size := 0
+	for _, profile := range profiles {
+		raw, _ := json.Marshal(profile)
+		if size+len(raw) > 65536 {
+			break
+		}
+		bounded = append(bounded, profile)
+		size += len(raw)
+	}
+	return bounded
 }
 
 func (s *ScratchpadService) existingProfile(sp scratchpad.Scratchpad) *models.DocumentProfileRef {
@@ -2776,30 +2591,8 @@ func (s *ScratchpadService) archiveDocuments() *documentflow.Service {
 	return nil
 }
 
-func (s *ScratchpadService) validateMergedTypedArchive(ctx context.Context, sp scratchpad.Scratchpad, current models.ThoughtSnapshot, body string) error {
-	documents := s.archiveDocuments()
-	if documents == nil || sp.ArchivePreview == nil || sp.ArchivePreview.ProfileSnapshot == "" {
-		return nil
-	}
-	profile, e := documentprofile.Parse([]byte(sp.ArchivePreview.ProfileSnapshot), documentprofile.Limits{})
-	if e != nil {
-		return e
-	}
-	if profile.SchemaVersion != 2 {
-		return nil
-	}
-	sources := models.SourceManifest{SchemaVersion: 1}
-	if sp.ArchivePreview.Document != nil {
-		sources = sp.ArchivePreview.Document.Sources
-	}
-	candidate, e := documents.Candidate(ctx, "capture-"+sp.SessionID, body, sp.ArchivePreview.Title, profile, sp.ArchivePreview.Parameters, sources, sp.ArchivePreview.ContextHash)
-	if e != nil {
-		return e
-	}
-	for _, issue := range candidate.Report.Issues {
-		if issue.Severity == "error" {
-			return ErrArchiveFormatInvalid
-		}
-	}
-	return nil
+// SetArchiveScheduler is installed during application setup, before requests.
+// The scheduler owns shutdown and accepted tasks; context delivery only queues.
+func (s *ScratchpadService) SetArchiveScheduler(schedule func(scratchpad.Scratchpad) error) {
+	s.archiveScheduler = schedule
 }

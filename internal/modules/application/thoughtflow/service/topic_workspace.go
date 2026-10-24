@@ -526,6 +526,10 @@ func (s *Service) replayWorkspaceOutbox() {
 		return
 	}
 	for _, op := range ops {
+		if op.Kind == "capture_save" && op.State == "completed" && s.captureService != nil {
+			_ = s.captureService.ReplayCaptureSave(op.ID)
+			continue
+		}
 		if op.EventType == "" || op.EventType == "object.reserved" {
 			continue
 		}

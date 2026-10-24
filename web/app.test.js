@@ -225,7 +225,7 @@ function makeDomStub(initial = {}) {
   };
   nodes["capture-refresh-preview"] = { disabled: false };
   nodes["capture-archive-commit"] = { disabled: false };
-  nodes["capture-archive-preview"] = { innerHTML: "" };
+  nodes["capture-archive-preview"] = { innerHTML: "", querySelector: () => null, querySelectorAll: () => [] };
   nodes["capture-lock-indicator"] = {
     hidden: true,
     setAttribute: () => {},
@@ -505,6 +505,10 @@ function loadAppFunctionsWith(opts = {}) {
       switchCaptureSession,
       openNewCaptureSession,
       previewArchive,
+      renderCaptureArchiveControls,
+      renderArchivePreviewPanel,
+      saveCaptureParameters,
+      saveCaptureDraft,
       patchActiveThought,
       newCaptureSession,
       previewThought,
@@ -2635,6 +2639,7 @@ test("scratchpad context event auto-previews llm archive intent before commit", 
           ok: true,
           json: async () => ({
             data: {
+              persisted: true, operation: {id:"op1", state:"saved"}, scratchpad: {session_id:"s1", committed_thought_id:"thought-1", archive_operation:{id:"op1",state:"saved"}},
               preview: {
                 title: "Archive title",
                 body: "Archive body",
@@ -2665,8 +2670,7 @@ test("scratchpad context event auto-previews llm archive intent before commit", 
   assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
     "GET /api/capture/sessions/s1",
     "POST /api/capture/sessions/s1/intent",
-    "GET /api/capture/sessions/s1/archive/preview?strategy=new",
-    "POST /api/capture/sessions/s1/archive",
+    "POST /api/capture/sessions/s1/archive/preview?strategy=new",
     "GET /api/thoughts/thought-1",
   ]);
   assert.equal(app._state.capture.activeThoughtId, "thought-1");
@@ -2712,7 +2716,7 @@ test("scratchpad context archive intent ignores duplicate event while commit is 
         return {
           ok: true,
           json: async () => ({
-            data: { preview: { title: "Archive title", body: "Archive body", strategy: "new" } },
+            data: { persisted:true, operation:{id:"op1",state:"saved"}, scratchpad:{session_id:"s1",committed_thought_id:"thought-1",archive_operation:{id:"op1",state:"saved"}}, preview: { title: "Archive title", body: "Archive body", strategy: "new" } },
           }),
         };
       }
@@ -2737,7 +2741,7 @@ test("scratchpad context archive intent ignores duplicate event while commit is 
   const previewCalls = calls.filter((call) => call.url.includes("/archive/preview"));
   const commitCalls = calls.filter((call) => call.url.endsWith("/archive") && call.method === "POST");
   assert.equal(previewCalls.length, 1);
-  assert.equal(commitCalls.length, 1);
+  assert.equal(commitCalls.length, 0);
 });
 
 test("opened committed capture history auto-archives llm intent after follow-up turns", async () => {
@@ -2779,7 +2783,7 @@ test("opened committed capture history auto-archives llm intent after follow-up 
         return {
           ok: true,
           json: async () => ({
-            data: { preview: { title: "Archive title", body: "final body", strategy: "new" } },
+            data: { persisted:true, operation:{id:"op1",state:"saved"}, scratchpad:{session_id:"s1",committed_thought_id:"thought-1",archive_operation:{id:"op1",state:"saved"}}, preview: { title: "Archive title", body: "final body", strategy: "new" } },
           }),
         };
       }
@@ -2803,8 +2807,7 @@ test("opened committed capture history auto-archives llm intent after follow-up 
   assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
     "GET /api/capture/sessions/history-1",
     "POST /api/capture/sessions/history-1/intent",
-    "GET /api/capture/sessions/history-1/archive/preview?strategy=new",
-    "POST /api/capture/sessions/history-1/archive",
+    "POST /api/capture/sessions/history-1/archive/preview?strategy=new",
     "GET /api/thoughts/thought-1",
   ]);
 });
@@ -3644,4 +3647,75 @@ test("snapshot search summaries do not inherit thought actions", () => {
  const app = loadAppFunctions();
  const html = app.renderSearchResultItem({snapshot_id:"snapshot-1",source:"search_result",source_id:"snapshot-1",title:"Frozen copy",actions:[]});
  assert.doesNotMatch(html,/data-compose-source-id|data-open-id|data-preview-id/);
+});
+
+test("capture displays the per-turn answer while archive metadata stays backstage", () => {
+ const app=loadAppFunctionsWith({exposeState:true});
+ app._state.capture.sessionId="research";
+ app._state.capture.messages=[{role:"user",text:"为我调研isa95模型"}];
+ app._state.capture.activeScratchpad={session_id:"research",session_context:{
+  assistant_reply:"ISA-95 划分企业业务和制造运营的职责。例如 ERP 下达订单，MES 反馈实际产量。",
+  candidate_summary:"ARCHIVE_METADATA_ONLY",
+  candidate_body:"## BACKSTAGE_WORKING_MATERIAL",
+ }};
+ const first=app.upsertCaptureContextMessage();
+ const firstHTML=app.renderCaptureBubbleBody(first);
+ assert.match(firstHTML,/ERP 下达订单/);
+ assert.doesNotMatch(firstHTML,/ARCHIVE_METADATA_ONLY|BACKSTAGE_WORKING_MATERIAL/);
+ app._state.capture.messages.push({role:"user",text:"还有什么内容吗"});
+ app._state.capture.activeScratchpad.session_context={assistant_reply:"进一步区分资源能力和生产计划：能力说明能够完成什么，计划安排何时执行。",candidate_summary:"UPDATED_ARCHIVE_METADATA"};
+ const next=app.upsertCaptureContextMessage();
+ assert.match(app.renderCaptureBubbleBody(next),/计划安排何时执行/);
+ assert.equal(app.renderCaptureBubbleBody(first),firstHTML,"new replies must not overwrite earlier bubbles");
+ // Reload/SSE returns persisted messages: do not create another synthetic reply.
+ app._state.capture.messages=[{role:"user",text:"为我调研isa95模型"},{role:"ai",text:app._state.capture.activeScratchpad.session_context.assistant_reply}];
+ assert.equal(app.upsertCaptureContextMessage(),null);
+ assert.equal(app._state.capture.messages.length,2);
+});
+
+test("archive preview never delegates a second commit to the browser", async () => {
+ for (const result of [
+  {persisted:true,preview:{body:"invalid",validation:{status:"invalid"}}},
+  {persisted:false,preview:{body:"unpersisted",validation:{status:"valid"}}},
+  {persisted:true,preview:{body:"unknown"}},
+  {persisted:true,preview:{body:"valid",validation:{status:"valid"}}},
+ ]) {
+  const requests=[];
+  const app=loadAppFunctionsWith({exposeState:true,fetch:async(url,options={})=>{requests.push({url,...options});return {ok:true,json:async()=>({data:url.endsWith("/intent")?{}:result})};}});
+  app._state.capture.sessionId="s";
+  await app.previewArchive({commitAfterPreview:true});
+  assert.equal(requests.filter(r=>r.url.endsWith("/archive")).length,0);
+  const command=requests.find(r=>r.url.endsWith("/archive/preview"));
+  assert.equal(command.method,"POST");
+  assert.equal(JSON.parse(command.body).commit_after_preview,true);
+  assert.equal(app._state.capture.activeThoughtId,"");
+ }
+});
+
+test("capture parameter form submits the generation it rendered and preserves structured errors", async () => {
+ let request;
+ const app=loadAppFunctionsWith({exposeState:true,fetch:async(url,options={})=>{request={url,...options};return {ok:false,status:409,json:async()=>({error:{code:"thoughtflow.archive.preview_stale",message:"changed",details:{generation:9}}})};}});
+ app._state.capture.sessionId="s";
+ app._state.capture.activeScratchpad={session_id:"s",session_generation:9};
+ const node={captureGeneration:7,querySelectorAll:selector=>selector.includes("parameter")?[{dataset:{captureParameter:"audience"},value:"engineers"}]:[],querySelector:()=>({value:"https://example.org/evidence"})};
+ await assert.rejects(app.saveCaptureParameters(node),error=>error.code==="thoughtflow.archive.preview_stale"&&error.details.generation===9);
+ assert.equal(request.headers["If-Match"],"7");
+ assert.deepEqual(JSON.parse(request.body),{values:{audience:"engineers"},resolutions:{},source_links:["https://example.org/evidence"]});
+});
+
+test("saving private capture draft uses draft identity without a committed marker", async () => {
+ const sp={session_id:"s",draft_thought_id:"draft-1",messages:[{role:"user",text:"unfinished"}],archive_operation:{state:"draft_saved"}};
+ const app=loadAppFunctionsWith({exposeState:true,fetch:async(url)=>({ok:true,json:async()=>({data:url.endsWith("/archive/draft")?{draft_thought_id:"draft-1",scratchpad:sp}:{thought:{id:"draft-1",capture_draft:true}}})})});
+ app._state.capture.sessionId="s";
+ await app.saveCaptureDraft();
+ assert.equal(app._state.capture.activeThoughtId,"draft-1");
+ assert.equal(app._state.capture.activeScratchpad.committed_thought_id,undefined);
+ assert.equal(app._state.capture.activeScratchpad.messages[0].text,"unfinished");
+ assert.match(app.renderCaptureArchiveControls(),/draft-1/);
+});
+
+test("archive validation appears before the rendered document body",()=>{
+ const app=loadAppFunctionsWith({exposeState:true});
+ const html=app.renderArchivePreviewBody({title:"Report",body:"LONG_BODY_MARKER",validation:{status:"invalid",issues:[{code:"input_required",section:"audience"}]}});
+ assert.ok(html.indexOf("tf-validation-issues")<html.indexOf("LONG_BODY_MARKER"));
 });

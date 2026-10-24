@@ -137,3 +137,15 @@ type DocumentSnapshot struct {
 	Finalization     *FinalizationRecord    `json:"finalization,omitempty"`
 	SourceFreshness  string                 `json:"source_freshness"`
 }
+
+// CaptureIssue separates document contradictions from limitations and transport diagnostics.
+type CaptureIssue struct {
+	SourceMessage string   `json:"source_message,omitempty"`
+	Fields        []string `json:"fields,omitempty"`
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Status        string   `json:"status"`
+	Blocking      bool     `json:"blocking"`
+	Message       string   `json:"message"`
+	Resolution    string   `json:"resolution,omitempty"`
+}

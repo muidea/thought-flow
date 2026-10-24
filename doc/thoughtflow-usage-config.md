@@ -234,7 +234,12 @@ base_url = "https://api.openai.com"
 api_key = "..."
 chat_model = "gpt-4o-mini"
 timeout_seconds = 30
+allow_json_fallback = false
 ```
+
+结构化流程默认发送 `response_format: {"type":"json_object"}`，需要所选模型与 Provider 支持；纯文本流程不发送此参数。上游返回 `conversion_unsupported` 时，保留 `feature` / `unsupported_features` 诊断，并停止原样重试。这属于能力或参数错误，不是账号失效或临时故障。
+
+如上游可能动态切换模型，可显式设置 `[llm] allow_json_fallback = true`，重启服务后生效。只有该错误明确且仅涉及 `response_format`（含其子功能）时，才允许移除该参数补发一次；未指明功能、普通 400 或涉及其他功能均不降级。补发不做 SDK 自动重试，返回内容仍须通过相同的 JSON 解析及业务校验；无效结果终止本次操作，不写入生成内容，也不会由外层重试再次协商。日志会记录降级发生。此模式不能提供与原生 JSON 输出同等的格式保证；严格场景应保留默认值并使用支持该能力的模型与 Provider。
 
 Capture 多轮对话的 system prompt 可以按文件加载，用于覆盖 Profile 匹配与上下文抽取协议。未配置时使用内置 prompt（源码位置：`assets/prompts/capture_context_system.md`）；相对路径会按配置目录解析：
 
@@ -242,6 +247,8 @@ Capture 多轮对话的 system prompt 可以按文件加载，用于覆盖 Profi
 [llm.prompts]
 capture_context_system_path = "prompts/capture-context-research.md"
 ```
+
+自定义 prompt 必须返回非空 `assistant_reply`，作为当前轮完整的对话回答；缺失或空白按协议解析错误处理，容错补发后的无效结果直接终止。`candidate_summary` 仅用于归档摘要，`candidate_body` 保存累计工作材料，不能用这两个字段替代本轮回答。研究、解释和追问应直接提供实质内容；本次上下文生成调用没有联网检索工具，不能据此声称已检索或核验标准原文。未配置对话模型时，本地规则仅整理输入并明确提示能力限制。
 
 该 prompt 不是扩充文档类型的正式入口。新增调研报告、设计文档或团队模板时，应在 `document-formats/drafts` 编写 YAML front matter + 受限 Markdown 模板，经 validate/publish 后写入 `document-formats/published/<profile-id>/vN.md`。发布版本不可覆盖，Capture 和 Compose 会通过同一 Registry、Renderer 和 Validator 使用它。
 

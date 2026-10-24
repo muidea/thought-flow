@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -307,6 +308,17 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	writeURLFollowups(&buf, "url_followups", thought.URLFollowups)
 	writeBlockScalar(&buf, "expansion_plan", thought.ExpansionPlan)
 	writeDocumentProfile(&buf, thought.DocumentProfile)
+	if thought.Document == nil {
+		if thought.DocumentParameters != nil {
+			raw, _ := json.Marshal(thought.DocumentParameters)
+			writeScalar(&buf, "document_parameters", string(raw))
+		}
+		if thought.DocumentSources != nil {
+			raw, _ := json.Marshal(thought.DocumentSources)
+			writeScalar(&buf, "document_sources", string(raw))
+		}
+	}
+	writeScalar(&buf, "capture_draft", strconv.FormatBool(thought.CaptureDraft))
 	writeScalar(&buf, "capture_status", thought.CaptureStatus)
 	writeScalar(&buf, "refine_status", thought.RefineStatus)
 	writeScalar(&buf, "index_status", thought.IndexStatus)
@@ -563,6 +575,9 @@ func knownThoughtFrontMatterKey(key string) bool {
 		"url_followups",
 		"expansion_plan",
 		"document_profile",
+		"capture_draft",
+		"document_parameters",
+		"document_sources",
 		"capture_status",
 		"refine_status",
 		"index_status",
@@ -648,6 +663,12 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 			thought.ExpansionPlan = parseBlockScalar(lines, &idx)
 		case "document_profile":
 			thought.DocumentProfile = parseDocumentProfile(lines, &idx)
+		case "document_parameters":
+			_ = json.Unmarshal([]byte(value), &thought.DocumentParameters)
+		case "document_sources":
+			_ = json.Unmarshal([]byte(value), &thought.DocumentSources)
+		case "capture_draft":
+			thought.CaptureDraft = value == "true"
 		case "capture_status":
 			thought.CaptureStatus = value
 		case "refine_status":

@@ -22,7 +22,6 @@ package scratchpad
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -65,31 +64,43 @@ type Draft struct {
 // permissive — an empty value means "not yet known" rather than
 // "absent" — so the JSON contract has zero-value defaults the
 // service can rely on.
+type ParameterValue struct {
+	Value     string `json:"value"`
+	Source    string `json:"source"`
+	Message   string `json:"message,omitempty"`
+	Confirmed bool   `json:"confirmed"`
+}
+type ContextIssue = models.CaptureIssue
+
 type SessionContext struct {
-	FrozenProfile           string            `json:"frozen_profile,omitempty"`
-	Topic                   string            `json:"topic"`
-	Goal                    string            `json:"goal"`
-	ConfirmedFacts          []string          `json:"confirmed_facts"`
-	OpenQuestions           []string          `json:"open_questions"`
-	Conflicts               []string          `json:"conflicts"`
-	CandidateTitle          string            `json:"candidate_title"`
-	CandidateTags           []string          `json:"candidate_tags"`
-	CandidateSummary        string            `json:"candidate_summary"`
-	CandidateBody           string            `json:"candidate_body"`
-	SourceLinks             []string          `json:"source_links"`
-	RelatedThoughtIDs       []string          `json:"related_thought_ids"`
-	SuggestedTopicIDs       []string          `json:"suggested_topic_ids"`
-	ArchiveIntent           ArchiveIntent     `json:"archive_intent"`
-	ArchiveStrategy         ArchiveStrategy   `json:"archive_strategy"`
-	CandidateDocumentFamily string            `json:"candidate_document_family"`
-	CandidateProfileID      string            `json:"candidate_profile_id"`
-	CandidateProfileVersion int               `json:"candidate_profile_version"`
-	ProfileConfidence       int               `json:"profile_confidence"`
-	ProfileMatchReason      string            `json:"profile_match_reason"`
-	ProfileExplicit         bool              `json:"profile_explicit"`
-	DocumentParameters      map[string]string `json:"document_parameters"`
-	MissingProfileInputs    []string          `json:"missing_profile_inputs"`
-	ArchiveReadiness        string            `json:"archive_readiness"`
+	SourceLinksConfirmed    bool                      `json:"source_links_confirmed,omitempty"`
+	ParameterValues         map[string]ParameterValue `json:"parameter_values,omitempty"`
+	Issues                  []ContextIssue            `json:"issues,omitempty"`
+	AssistantReply          string                    `json:"assistant_reply,omitempty"`
+	FrozenProfile           string                    `json:"frozen_profile,omitempty"`
+	Topic                   string                    `json:"topic"`
+	Goal                    string                    `json:"goal"`
+	ConfirmedFacts          []string                  `json:"confirmed_facts"`
+	OpenQuestions           []string                  `json:"open_questions"`
+	Conflicts               []string                  `json:"conflicts"`
+	CandidateTitle          string                    `json:"candidate_title"`
+	CandidateTags           []string                  `json:"candidate_tags"`
+	CandidateSummary        string                    `json:"candidate_summary"`
+	CandidateBody           string                    `json:"candidate_body"`
+	SourceLinks             []string                  `json:"source_links"`
+	RelatedThoughtIDs       []string                  `json:"related_thought_ids"`
+	SuggestedTopicIDs       []string                  `json:"suggested_topic_ids"`
+	ArchiveIntent           ArchiveIntent             `json:"archive_intent"`
+	ArchiveStrategy         ArchiveStrategy           `json:"archive_strategy"`
+	CandidateDocumentFamily string                    `json:"candidate_document_family"`
+	CandidateProfileID      string                    `json:"candidate_profile_id"`
+	CandidateProfileVersion int                       `json:"candidate_profile_version"`
+	ProfileConfidence       int                       `json:"profile_confidence"`
+	ProfileMatchReason      string                    `json:"profile_match_reason"`
+	ProfileExplicit         bool                      `json:"profile_explicit"`
+	DocumentParameters      map[string]string         `json:"document_parameters"`
+	MissingProfileInputs    []string                  `json:"missing_profile_inputs"`
+	ArchiveReadiness        string                    `json:"archive_readiness"`
 }
 
 // ArchiveIntent captures WHO is driving the archive — the user via a
@@ -134,6 +145,9 @@ type ThoughtDiff struct {
 // confirmed is what the commit path enforces — there is no "I
 // thought I was archiving X but got Y" drift.
 type ArchivePreview struct {
+	OperationID       string                    `json:"operation_id,omitempty"`
+	InputGeneration   uint64                    `json:"input_generation"`
+	Sources           *models.SourceManifest    `json:"source_manifest,omitempty"`
 	SourceGeneration  uint64                    `json:"source_generation,omitempty"`
 	ProfileSnapshot   string                    `json:"profile_snapshot,omitempty"`
 	Document          *models.DocumentSnapshot  `json:"document,omitempty"`
@@ -162,25 +176,52 @@ type ArchivePreview struct {
 // ArchiveStrategy, ArchivePreview, SourceThoughtID per PRD §3.1 /
 // §3.1.1. The v1 → v2 migration is implemented in loadFromDisk —
 // old files are read as-is and the new fields are zero-valued.
+type ArchiveOperation struct {
+	ID              string `json:"id"`
+	State           string `json:"state"`
+	InputGeneration uint64 `json:"input_generation"`
+	Error           string `json:"error,omitempty"`
+	AutoCommit      bool   `json:"auto_commit"`
+}
+type SaveCommand struct {
+	ExpectedTargetHash string                `json:"expected_target_hash,omitempty"`
+	Update             bool                  `json:"update"`
+	OperationID        string                `json:"operation_id"`
+	ThoughtID          string                `json:"thought_id"`
+	InputGeneration    uint64                `json:"input_generation"`
+	Mode               string                `json:"mode"`
+	Strategy           ArchiveStrategy       `json:"strategy"`
+	SourceThoughtID    string                `json:"source_thought_id,omitempty"`
+	Preview            ArchivePreview        `json:"preview"`
+	Command            models.CaptureCommand `json:"command"`
+	ProfileSnapshot    string                `json:"profile_snapshot,omitempty"`
+	State              string                `json:"state"`
+}
 type Scratchpad struct {
-	SessionID          string          `json:"session_id"`
-	WorkspaceID        string          `json:"workspace_id"`
-	Title              string          `json:"title"`
-	Tags               []string        `json:"tags"`
-	TopicHints         []string        `json:"topic_hints"`
-	URL                string          `json:"url,omitempty"`
-	Content            string          `json:"content"`
-	Messages           []Message       `json:"messages"`
-	Draft              Draft           `json:"draft"`
-	SessionContext     SessionContext  `json:"session_context"`
-	ArchiveIntent      ArchiveIntent   `json:"archive_intent"`
-	ArchiveStrategy    ArchiveStrategy `json:"archive_strategy"`
-	ArchivePreview     *ArchivePreview `json:"archive_preview,omitempty"`
-	SourceThoughtID    string          `json:"source_thought_id,omitempty"`
-	CommittedThoughtID string          `json:"committed_thought_id,omitempty"`
-	CommittedAt        *time.Time      `json:"committed_at,omitempty"`
-	CreatedAt          time.Time       `json:"created_at"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	SessionGeneration  uint64            `json:"session_generation"`
+	InputGeneration    uint64            `json:"input_generation"`
+	ObjectID           string            `json:"object_id,omitempty"`
+	DraftThoughtID     string            `json:"draft_thought_id,omitempty"`
+	Operation          *ArchiveOperation `json:"archive_operation,omitempty"`
+	SaveCommand        *SaveCommand      `json:"save_command,omitempty"`
+	SessionID          string            `json:"session_id"`
+	WorkspaceID        string            `json:"workspace_id"`
+	Title              string            `json:"title"`
+	Tags               []string          `json:"tags"`
+	TopicHints         []string          `json:"topic_hints"`
+	URL                string            `json:"url,omitempty"`
+	Content            string            `json:"content"`
+	Messages           []Message         `json:"messages"`
+	Draft              Draft             `json:"draft"`
+	SessionContext     SessionContext    `json:"session_context"`
+	ArchiveIntent      ArchiveIntent     `json:"archive_intent"`
+	ArchiveStrategy    ArchiveStrategy   `json:"archive_strategy"`
+	ArchivePreview     *ArchivePreview   `json:"archive_preview,omitempty"`
+	SourceThoughtID    string            `json:"source_thought_id,omitempty"`
+	CommittedThoughtID string            `json:"committed_thought_id,omitempty"`
+	CommittedAt        *time.Time        `json:"committed_at,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // Summary is the diagnostic / drawer view: it strips Messages and
@@ -210,7 +251,8 @@ type Summary struct {
 //	    ArchivePreview, SourceThoughtID (PRD §3.1 / §3.1.1).
 //
 // v3 adds document profile matching and validated archive preview fields.
-const formatVersion = 3
+// v4 adds transactional generations, confirmed inputs and durable archive/save commands.
+const formatVersion = 4
 
 // persistedFile is the disk layout. We wrap Scratchpad with a
 // version field so future migrations have a hook.
@@ -273,22 +315,9 @@ func (s *Store) Get(sessionID string) (Scratchpad, error) {
 // happens while the lock is held so a concurrent Get cannot read a
 // map entry that has not been persisted yet.
 func (s *Store) Save(sp Scratchpad) (Scratchpad, error) {
-	sp.SessionID = strings.TrimSpace(sp.SessionID)
-	if sp.SessionID == "" {
-		return Scratchpad{}, errors.New("scratchpad: session id is required")
-	}
-	sp.UpdatedAt = s.now()
-	if sp.CreatedAt.IsZero() {
-		sp.CreatedAt = sp.UpdatedAt
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.writeFile(sp); err != nil {
-		return Scratchpad{}, err
-	}
-	cp := cloneScratchpad(sp)
-	s.items[sp.SessionID] = &cp
-	return cloneScratchpad(sp), nil
+	return s.saveLocked(sp)
 }
 
 // Delete removes a scratchpad from both the in-memory map and disk.
@@ -302,14 +331,18 @@ func (s *Store) Delete(sessionID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.items, sessionID)
+	if sp := s.items[sessionID]; sp != nil && sp.SaveCommand != nil && sp.SaveCommand.State != "completed" {
+		return ErrConflict
+	}
 	if s.rootPath == "" {
+		delete(s.items, sessionID)
 		return nil
 	}
 	path := s.filePath(sessionID)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	delete(s.items, sessionID)
 	return nil
 }
 
@@ -318,55 +351,21 @@ func (s *Store) Delete(sessionID string) error {
 // thought has been written to disk. Like Save, it persists
 // immediately.
 func (s *Store) MarkCommitted(sessionID, thoughtID string) (Scratchpad, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	thoughtID = strings.TrimSpace(thoughtID)
-	if sessionID == "" {
-		return Scratchpad{}, errors.New("scratchpad: session id is required")
-	}
-	if thoughtID == "" {
+	if strings.TrimSpace(thoughtID) == "" {
 		return Scratchpad{}, errors.New("scratchpad: thought id is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.items[sessionID]
-	if !ok {
-		return Scratchpad{}, fmt.Errorf("scratchpad: session %q not found", sessionID)
-	}
-	now := s.now()
-	existing.CommittedThoughtID = thoughtID
-	existing.CommittedAt = &now
-	existing.UpdatedAt = now
-	if err := s.writeFile(*existing); err != nil {
-		return Scratchpad{}, err
-	}
-	return cloneScratchpad(*existing), nil
+	return s.Update(sessionID, func(sp *Scratchpad) error {
+		if sp.SessionGeneration == 0 {
+			return os.ErrNotExist
+		}
+		now := s.now()
+		sp.CommittedThoughtID = thoughtID
+		sp.CommittedAt = &now
+		return nil
+	})
 }
-
-// Reset clears the volatile fields of a scratchpad (Content,
-// Messages, Draft) while keeping the session identity AND the
-// committed link (CommittedThoughtID + CommittedAt). It is used by
-// the repeated-commit path: after the incremental patch is applied,
-// the user is back in a "fresh state" for the same session but the
-// UI can still show "this session is still anchored to thought-X".
 func (s *Store) Reset(sessionID string) (Scratchpad, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return Scratchpad{}, errors.New("scratchpad: session id is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.items[sessionID]
-	if !ok {
-		return Scratchpad{}, fmt.Errorf("scratchpad: session %q not found", sessionID)
-	}
-	existing.Content = ""
-	existing.Messages = nil
-	existing.Draft = Draft{}
-	existing.UpdatedAt = s.now()
-	if err := s.writeFile(*existing); err != nil {
-		return Scratchpad{}, err
-	}
-	return cloneScratchpad(*existing), nil
+	return s.Update(sessionID, func(sp *Scratchpad) error { sp.Content = ""; sp.Messages = nil; sp.Draft = Draft{}; return nil })
 }
 
 // List returns a Summary for every scratchpad in the store, sorted
@@ -453,19 +452,8 @@ func compactSummaryTitle(value string) string {
 	return ""
 }
 
-// LastActive returns the most recently updated uncommitted
-// scratchpad, if any. A scratchpad is considered "uncommitted"
-// when CommittedThoughtID is empty — once the user archives the
-// session into a real thought, the entry stays on disk for
-// history/audit but is not a candidate for the page-restore hook
-// (it has no content to chat against). Returns (zero, false) when
-// no candidate exists.
-//
-// The intent: the front-end boot path asks "which scratchpad, if
-// any, should the user land on when the capture page opens?"
-// Server answers with the most recent unfinished draft so a tab
-// refresh, a server restart, or a cross-device open all land in
-// the same conversation without losing input.
+// LastActive returns the newest unfinished session. An archived session remains
+// eligible when later input or an unfinished operation needs to be restored.
 func (s *Store) LastActive() (Scratchpad, bool) {
 	if s == nil {
 		return Scratchpad{}, false
@@ -477,7 +465,7 @@ func (s *Store) LastActive() (Scratchpad, bool) {
 		if sp == nil {
 			continue
 		}
-		if strings.TrimSpace(sp.CommittedThoughtID) != "" {
+		if strings.TrimSpace(sp.CommittedThoughtID) != "" && strings.TrimSpace(sp.Content) == "" && (sp.Operation == nil || sp.Operation.State == "saved") {
 			continue
 		}
 		if best == nil || sp.UpdatedAt.After(best.UpdatedAt) {
@@ -551,7 +539,32 @@ func (s *Store) writeFile(sp Scratchpad) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath(sp.SessionID), raw, 0o644)
+	file, err := os.CreateTemp(s.rootPath, ".session-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if _, err = file.Write(raw); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temporary, s.filePath(sp.SessionID)); err != nil {
+		return err
+	}
+	directory, err := os.Open(s.rootPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 // loadFromDisk walks the rootPath at startup and re-hydrates the
@@ -620,131 +633,10 @@ func (s *Store) loadFromDisk() error {
 }
 
 func cloneScratchpad(sp Scratchpad) Scratchpad {
-	out := sp
-	if sp.Tags != nil {
-		tags := make([]string, len(sp.Tags))
-		copy(tags, sp.Tags)
-		out.Tags = tags
-	}
-	if sp.TopicHints != nil {
-		hints := make([]string, len(sp.TopicHints))
-		copy(hints, sp.TopicHints)
-		out.TopicHints = hints
-	}
-	if sp.Messages != nil {
-		msgs := make([]Message, len(sp.Messages))
-		copy(msgs, sp.Messages)
-		out.Messages = msgs
-	}
-	if sp.Draft.TagsAdded != nil {
-		added := make([]string, len(sp.Draft.TagsAdded))
-		copy(added, sp.Draft.TagsAdded)
-		out.Draft.TagsAdded = added
-	}
-	if sp.Draft.TagsRemoved != nil {
-		removed := make([]string, len(sp.Draft.TagsRemoved))
-		copy(removed, sp.Draft.TagsRemoved)
-		out.Draft.TagsRemoved = removed
-	}
-	if sp.Draft.NotesAppended != nil {
-		notes := make([]string, len(sp.Draft.NotesAppended))
-		copy(notes, sp.Draft.NotesAppended)
-		out.Draft.NotesAppended = notes
-	}
-	if sp.Draft.TopicIDs != nil {
-		topics := make([]string, len(sp.Draft.TopicIDs))
-		copy(topics, sp.Draft.TopicIDs)
-		out.Draft.TopicIDs = topics
-	}
-	if sp.CommittedAt != nil {
-		t := *sp.CommittedAt
-		out.CommittedAt = &t
-	}
-	if sp.SessionContext.ConfirmedFacts != nil {
-		facts := make([]string, len(sp.SessionContext.ConfirmedFacts))
-		copy(facts, sp.SessionContext.ConfirmedFacts)
-		out.SessionContext.ConfirmedFacts = facts
-	}
-	if sp.SessionContext.OpenQuestions != nil {
-		questions := make([]string, len(sp.SessionContext.OpenQuestions))
-		copy(questions, sp.SessionContext.OpenQuestions)
-		out.SessionContext.OpenQuestions = questions
-	}
-	if sp.SessionContext.Conflicts != nil {
-		conflicts := make([]string, len(sp.SessionContext.Conflicts))
-		copy(conflicts, sp.SessionContext.Conflicts)
-		out.SessionContext.Conflicts = conflicts
-	}
-	if sp.SessionContext.CandidateTags != nil {
-		tags := make([]string, len(sp.SessionContext.CandidateTags))
-		copy(tags, sp.SessionContext.CandidateTags)
-		out.SessionContext.CandidateTags = tags
-	}
-	if sp.SessionContext.SourceLinks != nil {
-		links := make([]string, len(sp.SessionContext.SourceLinks))
-		copy(links, sp.SessionContext.SourceLinks)
-		out.SessionContext.SourceLinks = links
-	}
-	if sp.SessionContext.RelatedThoughtIDs != nil {
-		ids := make([]string, len(sp.SessionContext.RelatedThoughtIDs))
-		copy(ids, sp.SessionContext.RelatedThoughtIDs)
-		out.SessionContext.RelatedThoughtIDs = ids
-	}
-	if sp.SessionContext.SuggestedTopicIDs != nil {
-		ids := make([]string, len(sp.SessionContext.SuggestedTopicIDs))
-		copy(ids, sp.SessionContext.SuggestedTopicIDs)
-		out.SessionContext.SuggestedTopicIDs = ids
-	}
-	if sp.SessionContext.DocumentParameters != nil {
-		out.SessionContext.DocumentParameters = make(map[string]string, len(sp.SessionContext.DocumentParameters))
-		for key, value := range sp.SessionContext.DocumentParameters {
-			out.SessionContext.DocumentParameters[key] = value
-		}
-	}
-	if sp.SessionContext.MissingProfileInputs != nil {
-		out.SessionContext.MissingProfileInputs = append([]string(nil), sp.SessionContext.MissingProfileInputs...)
-	}
-	if sp.ArchivePreview != nil {
-		preview := *sp.ArchivePreview
-		if sp.ArchivePreview.Tags != nil {
-			tags := make([]string, len(sp.ArchivePreview.Tags))
-			copy(tags, sp.ArchivePreview.Tags)
-			preview.Tags = tags
-		}
-		if sp.ArchivePreview.SourceLinks != nil {
-			links := make([]string, len(sp.ArchivePreview.SourceLinks))
-			copy(links, sp.ArchivePreview.SourceLinks)
-			preview.SourceLinks = links
-		}
-		if sp.ArchivePreview.RelatedThoughtIDs != nil {
-			ids := make([]string, len(sp.ArchivePreview.RelatedThoughtIDs))
-			copy(ids, sp.ArchivePreview.RelatedThoughtIDs)
-			preview.RelatedThoughtIDs = ids
-		}
-		if sp.ArchivePreview.RelatedTopics != nil {
-			topics := make([]string, len(sp.ArchivePreview.RelatedTopics))
-			copy(topics, sp.ArchivePreview.RelatedTopics)
-			preview.RelatedTopics = topics
-		}
-		if sp.ArchivePreview.Diff != nil {
-			diff := *sp.ArchivePreview.Diff
-			if sp.ArchivePreview.Diff.ChangedFields != nil {
-				fields := make([]string, len(sp.ArchivePreview.Diff.ChangedFields))
-				copy(fields, sp.ArchivePreview.Diff.ChangedFields)
-				diff.ChangedFields = fields
-			}
-			preview.Diff = &diff
-		}
-		if sp.ArchivePreview.Parameters != nil {
-			preview.Parameters = make(map[string]string, len(sp.ArchivePreview.Parameters))
-			for key, value := range sp.ArchivePreview.Parameters {
-				preview.Parameters[key] = value
-			}
-		}
-		if sp.ArchivePreview.Validation.Issues != nil {
-			preview.Validation.Issues = append([]models.ValidationIssue(nil), sp.ArchivePreview.Validation.Issues...)
-		}
-		out.ArchivePreview = &preview
-	}
-	return out
+	// All wire fields are JSON values. Keep nested reports, manifests and save
+	// commands detached as well as message slices.
+	raw, _ := json.Marshal(sp)
+	var cp Scratchpad
+	_ = json.Unmarshal(raw, &cp)
+	return cp
 }

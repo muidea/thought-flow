@@ -82,15 +82,18 @@ type DocumentProfile struct {
 }
 
 type DocumentProfileDescriptor struct {
-	ID               string   `json:"id"`
-	Version          int      `json:"version"`
-	Family           string   `json:"family"`
-	Name             string   `json:"name"`
-	Description      string   `json:"description"`
-	UseWhen          []string `json:"use_when,omitempty"`
-	PositiveExamples []string `json:"positive_examples,omitempty"`
-	NegativeExamples []string `json:"negative_examples,omitempty"`
-	Priority         int      `json:"priority"`
+	Inputs           []ProfileInput `json:"inputs"`
+	Rules            []string       `json:"rules,omitempty"`
+	ContractHash     string         `json:"contract_hash"`
+	ID               string         `json:"id"`
+	Version          int            `json:"version"`
+	Family           string         `json:"family"`
+	Name             string         `json:"name"`
+	Description      string         `json:"description"`
+	UseWhen          []string       `json:"use_when,omitempty"`
+	PositiveExamples []string       `json:"positive_examples,omitempty"`
+	NegativeExamples []string       `json:"negative_examples,omitempty"`
+	Priority         int            `json:"priority"`
 }
 
 type FormatValidationResult struct {
@@ -192,6 +195,7 @@ func Validate(raw []byte, limits Limits) FormatValidationResult {
 
 func (p DocumentProfile) Descriptor() DocumentProfileDescriptor {
 	return DocumentProfileDescriptor{
+		Inputs: append([]ProfileInput(nil), p.Inputs...), Rules: append([]string(nil), p.Validation.Rules...), ContractHash: p.Ref.ContentHash,
 		ID:               p.Ref.ProfileID,
 		Version:          p.Ref.Version,
 		Family:           p.Ref.Family,

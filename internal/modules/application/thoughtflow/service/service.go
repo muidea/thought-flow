@@ -46,6 +46,10 @@ import (
 )
 
 type Service struct {
+	archiveMu        sync.Mutex
+	archiveWG        sync.WaitGroup
+	archiveClosing   bool
+	archiveRunning   map[string]bool
 	registry         engine.RouteRegistry
 	captureService   *capturebiz.Service
 	scratchpadSvc    *capturebiz.ScratchpadService
@@ -156,6 +160,7 @@ type jobQueryReader interface {
 // handlers actually call. Tests can substitute a fake that records
 // what was called without spinning up a real on-disk store.
 type scratchpadStore interface {
+	Update(string, func(*scratchpad.Scratchpad) error) (scratchpad.Scratchpad, error)
 	Get(sessionID string) (scratchpad.Scratchpad, error)
 	Save(sp scratchpad.Scratchpad) (scratchpad.Scratchpad, error)
 	Delete(sessionID string) error
@@ -184,7 +189,7 @@ func decodeJSONBody(req *http.Request, target any) error {
 
 func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scratchpadService *capturebiz.ScratchpadService, refinerService *refinerbiz.Service, composeService *composebiz.Service, searchService *searchbiz.Service, topicService *topicbiz.Service, scratchpadStore scratchpadStore, gitQueries gitQueryReader, jobs jobQueryReader, events eventPublisher, background backgroundTaskAcceptor, stream *eventstream.Stream, workspace *models.Workspace, cfg appconfig.Config) *Service {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	return &Service{
+	svc := &Service{
 		registry:         registry,
 		captureService:   captureService,
 		scratchpadSvc:    scratchpadService,
@@ -204,9 +209,20 @@ func New(registry engine.RouteRegistry, captureService *capturebiz.Service, scra
 		shutdownCtx:      shutdownCtx,
 		shutdownCancel:   shutdownCancel,
 	}
+	if scratchpadService != nil {
+		scratchpadService.SetArchiveScheduler(svc.startCaptureArchive)
+	}
+	return svc
 }
 
 func (s *Service) Close() {
+	s.archiveMu.Lock()
+	s.archiveClosing = true
+	s.archiveMu.Unlock()
+	if s.shutdownCancel != nil {
+		s.shutdownCancel()
+	}
+	s.archiveWG.Wait()
 	if s.documents != nil {
 		s.documents.Close()
 	}
@@ -260,6 +276,9 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/api/capture/sessions/:id/strategy", engine.POST, s.handleSessionStrategy)
 	s.registry.AddHandler("/api/capture/sessions/:id/profile", engine.POST, s.handleSessionProfile)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.GET, s.handleArchivePreview)
+	s.registry.AddHandler("/api/capture/sessions/:id/archive/preview", engine.POST, s.handleArchivePreview)
+	s.registry.AddHandler("/api/capture/sessions/:id/parameters", "PATCH", s.handleCaptureParameters)
+	s.registry.AddHandler("/api/capture/sessions/:id/archive/draft", engine.POST, s.handleCaptureDraft)
 	s.registry.AddHandler("/api/capture/sessions/:id/archive", engine.POST, s.handleSessionArchive)
 	s.registry.AddHandler("/api/search", engine.GET, s.handleSearch)
 	s.registry.AddHandler("/api/compose/sources", engine.GET, s.handleGetComposeBasket)
@@ -295,6 +314,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/metrics", engine.GET, s.handlePrometheusMetrics)
 	s.registry.AddHandler("/health/live", engine.GET, s.handleLive)
 	s.registry.AddHandler("/health/ready", engine.GET, s.handleReady)
+	s.resumeCaptureArchives()
 }
 
 func (s *Service) handleWeb(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -500,6 +520,10 @@ func (s *Service) handlePublicThought(ctx context.Context, res http.ResponseWrit
 			status = http.StatusNotFound
 		}
 		writeError(res, req, status, "thoughtflow.capture.not_found", err.Error())
+		return
+	}
+	if snapshot.Thought.CaptureDraft {
+		writeError(res, req, 404, "thoughtflow.document.not_final", "capture draft is private")
 		return
 	}
 	raw, err := markdown.ReadThoughtRaw(s.workspace.RootPath, thoughtID)
@@ -2222,8 +2246,12 @@ func (s *Service) handleCreateSession(ctx context.Context, res http.ResponseWrit
 			return
 		}
 		if st := strings.TrimSpace(body.SourceThought); st != "" && sp.SourceThoughtID == "" {
-			sp.SourceThoughtID = st
-			sp, err = s.scratchpad.Save(sp)
+			sp, err = s.scratchpad.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
+				if current.SourceThoughtID == "" {
+					current.SourceThoughtID = st
+				}
+				return nil
+			})
 			if err != nil {
 				writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
 				return
@@ -2329,6 +2357,10 @@ func (s *Service) handleDeleteSession(ctx context.Context, res http.ResponseWrit
 		return
 	}
 	if err := s.scratchpad.Delete(sessionID); err != nil {
+		if errors.Is(err, scratchpad.ErrConflict) {
+			captureArchiveError(res, req, err)
+			return
+		}
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
 		return
 	}
@@ -2551,74 +2583,56 @@ func (s *Service) handleSessionProfile(ctx context.Context, res http.ResponseWri
 //
 //	GET /api/capture/sessions/{id}/archive/preview[?strategy=...]
 func (s *Service) handleArchivePreview(ctx context.Context, res http.ResponseWriter, req *http.Request) {
-	_ = ctx
-	if s.scratchpad == nil || s.scratchpadSvc == nil {
-		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.scratchpad.unavailable", "scratchpad service is not ready")
+	if s.scratchpad == nil || s.scratchpadSvc == nil || s.captureService == nil {
+		writeError(res, req, 503, "thoughtflow.capture.unavailable", "capture service unavailable")
 		return
 	}
-	if s.captureService == nil {
-		writeError(res, req, http.StatusServiceUnavailable, "thoughtflow.capture.unavailable", "capture service is not ready")
+	id := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/api/capture/sessions/"), "/archive/preview")
+	if req.Method == http.MethodGet {
+		sp, err := s.scratchpad.Get(id)
+		if err != nil {
+			captureArchiveError(res, req, err)
+			return
+		}
+		writeJSON(res, req, 200, map[string]any{"preview": sp.ArchivePreview, "operation": sp.Operation, "persisted": sp.ArchivePreview != nil, "scratchpad": sp})
 		return
 	}
-	sessionID := strings.TrimSpace(pathID(req.URL.Path, "/api/capture/sessions/"))
-	sessionID = strings.TrimSuffix(sessionID, "/archive/preview")
-	if sessionID == "" {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", "session_id is required")
-		return
+	var body struct {
+		AutoCommit bool `json:"commit_after_preview"`
 	}
-	sp, err := s.scratchpad.Get(sessionID)
+	if req.Body != nil && req.ContentLength != 0 {
+		if err := decodeJSONBody(req, &body); err != nil {
+			writeError(res, req, 400, "thoughtflow.capture.invalid_request", err.Error())
+			return
+		}
+	}
+	if strategy := req.URL.Query().Get("strategy"); strategy != "" {
+		if _, err := s.scratchpadSvc.SetArchiveStrategy(id, scratchpad.ArchiveStrategy(strategy), ""); err != nil {
+			captureArchiveError(res, req, err)
+			return
+		}
+	}
+	sp, err := s.scratchpadSvc.BeginPreview(id, body.AutoCommit)
 	if err != nil {
-		writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.scratchpad.invalid_session", err.Error())
+		captureArchiveError(res, req, err)
 		return
 	}
-	// Optional ?strategy= override lets the UI try a different
-	// routing before the user has clicked the menu item.
-	if q := strings.TrimSpace(req.URL.Query().Get("strategy")); q != "" {
-		sp.ArchiveStrategy = scratchpad.ArchiveStrategy(q)
-	}
-	if sp.ArchiveStrategy == "" {
-		sp.ArchiveStrategy = scratchpad.ArchiveStrategyNew
-	}
-	var current *models.ThoughtSnapshot
-	if sp.ArchiveStrategy == scratchpad.ArchiveStrategyUpdate || sp.ArchiveStrategy == scratchpad.ArchiveStrategySupplement {
-		thoughtID := strings.TrimSpace(sp.SourceThoughtID)
-		if thoughtID == "" {
-			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", "source_thought_id is required for update_thought / supplement strategy")
+	if sp.Operation.State == "preparing" || sp.Operation.State == "saving" || (sp.Operation.State == "ready" && sp.Operation.AutoCommit) {
+		if err = s.startCaptureArchive(sp); err != nil {
+			captureArchiveError(res, req, err)
 			return
 		}
-		snapshot, gerr := s.captureService.GetThought(ctx, thoughtID)
-		if gerr != nil {
-			writeError(res, req, http.StatusNotFound, "thoughtflow.capture.thought_not_found", gerr.Error())
-			return
-		}
-		current = &snapshot
 	}
-	preview, err := s.scratchpadSvc.PrepareArchive(ctx, sp, current)
+	sp, err = s.scratchpad.Get(id)
 	if err != nil {
-		if errors.Is(err, capturebiz.ErrDiffRequired) {
-			writeError(res, req, http.StatusBadRequest, "thoughtflow.capture.diff_required", err.Error())
-			return
-		}
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.preview_failed", err.Error())
+		captureArchiveError(res, req, err)
 		return
 	}
-	// Persist the preview back so re-entry shows the same view.
-	sp.ArchivePreview = &preview
-	if _, serr := s.scratchpad.Save(sp); serr != nil {
-		// Preview render is the source of truth; persistence is
-		// best-effort — log via the response error code but still
-		// return the preview so the UI can show it.
-		writeJSON(res, req, http.StatusOK, map[string]any{
-			"preview":   preview,
-			"persisted": false,
-			"warning":   serr.Error(),
-		})
-		return
+	status := http.StatusOK
+	if sp.Operation != nil && (sp.Operation.State == "preparing" || sp.Operation.State == "saving") {
+		status = http.StatusAccepted
 	}
-	writeJSON(res, req, http.StatusOK, map[string]any{
-		"preview":   preview,
-		"persisted": true,
-	})
+	writeJSON(res, req, status, map[string]any{"preview": sp.ArchivePreview, "operation": sp.Operation, "persisted": sp.ArchivePreview != nil, "scratchpad": sp})
 }
 
 // handleSessionArchive lands a scratchpad as a real thought. The
@@ -2676,21 +2690,12 @@ func (s *Service) handleSessionArchive(ctx context.Context, res http.ResponseWri
 		writeError(res, req, http.StatusConflict, "thoughtflow.archive.preview_required", "archive preview is required")
 		return
 	}
-	// Apply the request body's overrides onto the scratchpad so
-	// the underlying Commit can stay strategy-agnostic. The two
-	// side effects (stamp strategy, stamp source_thought_id) are
-	// both safe to do on a "menu" path; for a re-commit the
-	// scratchpad already carries the right values and the body
-	// is allowed to leave them alone.
-	if body.Strategy != "" {
-		thoughtID := body.ThoughtID
-		if _, err := s.scratchpadSvc.SetArchiveStrategy(sessionID, body.Strategy, thoughtID); err != nil {
-			writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
-			return
-		}
+	if body.Strategy != "" && body.Strategy != staged.ArchivePreview.Strategy {
+		captureArchiveError(res, req, capturebiz.ErrArchivePreviewStale)
+		return
 	}
-	if _, err := s.scratchpadSvc.SetArchiveIntent(sessionID, scratchpad.ArchiveIntentMenu); err != nil {
-		writeError(res, req, http.StatusInternalServerError, "thoughtflow.capture.scratchpad.write_failed", err.Error())
+	if body.ThoughtID != "" && body.ThoughtID != staged.ArchivePreview.ThoughtID && body.ThoughtID != staged.SourceThoughtID {
+		captureArchiveError(res, req, capturebiz.ErrArchivePreviewStale)
 		return
 	}
 	result, err := s.scratchpadSvc.Commit(ctx, sessionID)

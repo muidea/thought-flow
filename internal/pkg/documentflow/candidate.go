@@ -9,6 +9,21 @@ import (
 	"thoughtflow/internal/pkg/models"
 )
 
+// CheckCandidate validates exact rendered bytes without changing a document
+// HEAD. Slow preview generation may be superseded before publication.
+func CheckCandidate(body, title string, profile documentprofile.DocumentProfile, parameters map[string]string, sources models.SourceManifest, contextHash string) (models.DocumentSnapshot, error) {
+	contract := models.DocumentContract{SchemaVersion: 1, ProfileRef: profile.Ref, Title: title, Parameters: clone(parameters), Language: "zh-CN", Purpose: parameters["purpose"], Audience: parameters["audience"], ContextHash: contextHash, ReviewPolicy: models.DocumentReviewPolicy{Version: documentvalidation.ReviewPolicyVersion}}
+	if contract.Purpose == "" {
+		contract.Purpose = parameters["problem"]
+	}
+	d := documentstore.RevisionData{Body: body, Profile: profile.Snapshot, Contract: contract, Sources: sources}
+	if e := safeInputs(d); e != nil {
+		return models.DocumentSnapshot{}, e
+	}
+	r := documentvalidation.Validate(d)
+	return models.DocumentSnapshot{Body: body, Contract: contract, Sources: sources, Report: &r}, nil
+}
+
 // Candidate freezes a generated preview without publishing it as a Thought or final.
 // It executes deterministic validation only, so preview never incurs an extra model call.
 func (s *Service) Candidate(ctx context.Context, id, body, title string, profile documentprofile.DocumentProfile, parameters map[string]string, sources models.SourceManifest, contextHash string) (models.DocumentSnapshot, error) {

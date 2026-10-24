@@ -996,6 +996,9 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
     });
     // default locale is zh-CN
     await page.navigate(`${baseURL}/`);
+    // The dashboard is active in static HTML, before asynchronous boot binds
+    // the settings button. Wait for the existing application-ready signal.
+    await page.waitForExpression(() => window.__thoughtflowReady === true);
     await page.waitForExpression(() => document.querySelector("#page-dashboard")?.classList.contains("active"));
     const zhSnapshot = await page.evaluate(() => ({
       lang: document.documentElement.lang,
@@ -1224,7 +1227,7 @@ test("SSE context response arriving after A-B-A preserves the latest conversatio
       for (const id of ["A", "B"]) {
         await window.fixtureAPI("/api/capture/sessions", { method: "POST", headers: { "X-Session-Id": id }, body: JSON.stringify({ content: `Original ${id}` }) });
       }
-      await window.fixtureAPI("/api/capture/sessions/A/archive/preview");
+      await window.fixtureAPI("/api/capture/sessions/A/archive/preview", {method:"POST"});
       document.querySelector("#capture-sessions-toggle").click();
     });
     await page.waitForExpression(() => !!document.querySelector('.tf-sessions-open[data-session-id="A"]'));
@@ -1255,7 +1258,7 @@ test("SSE context response arriving after A-B-A preserves the latest conversatio
     await page.waitForExpression(() => document.querySelector("#capture-conversation").textContent.includes("Original B"));
     await page.evaluate(async () => {
       await window.fixtureAPI("/api/capture/sessions/A/messages", { method: "POST", body: JSON.stringify({ role: "user", text: "Latest A follow-up" }) });
-      await window.fixtureAPI("/api/capture/sessions/A/archive/preview");
+      await window.fixtureAPI("/api/capture/sessions/A/archive/preview", {method:"POST"});
       document.querySelector("#capture-sessions-toggle").click();
       document.querySelector('.tf-sessions-open[data-session-id="A"]').click();
     });
@@ -1574,6 +1577,8 @@ function startFixtureServer(options = {}) {
     updated_at: "2026-06-13T00:00:00Z",
   };
   const makeScratchpad = (id, text = "Captured from browser smoke") => ({
+    session_generation: 1,
+    input_generation: 1,
     session_id: id,
     workspace_id: "browser",
     title: "",
@@ -1583,6 +1588,7 @@ function startFixtureServer(options = {}) {
     messages: text ? [{ role: "user", text, at: "2026-06-13T00:00:00Z" }] : [],
     draft: {},
     session_context: {
+      ...(options.captureNeedsInputs ? {candidate_profile_id:"builtin.note",candidate_profile_version:1,document_parameters:{}} : {}),
       topic: text,
       goal: "Keep collecting this topic",
       confirmed_facts: [text],
@@ -1636,6 +1642,14 @@ function startFixtureServer(options = {}) {
           "LLM-enriched point 2",
         ],
       };
+      if (options.answerFirst) {
+        const reply = text.includes("还有什么")
+          ? "还要区分资源能力与生产计划：能力说明能够完成什么，计划安排何时执行。统一设备标识减少系统间映射歧义。"
+          : "ISA-95 用于企业业务与制造运营的集成。ERP 下达生产订单，MES 反馈实际产量和物料消耗。";
+        live.session_context.assistant_reply = reply;
+        live.session_context.candidate_summary = "ARCHIVE_METADATA_ONLY";
+        live.messages.push({role:"ai",text:reply,at:new Date().toISOString()});
+      }
       captureSessions.set(sessionID, live);
       eventBus.emit("event", "scratchpad.context_updated", {
         resource_type: "session",
@@ -1721,8 +1735,26 @@ function startFixtureServer(options = {}) {
         captureSessions.set(sessionID, sp);
         return json(res, api(sp));
       }
+      if (suffix === `${sessionID}/parameters` && req.method === "PATCH") {
+        const body=await readJson(req);
+        if (Number(req.headers["if-match"])!==sp.session_generation) {res.statusCode=409;return json(res,api(null));}
+        sp.session_context.document_parameters=body.values;
+        sp.session_context.source_links=body.source_links || [];
+        sp.session_generation++;sp.input_generation++;
+        sp.archive_preview=null;
+        return json(res,api(sp));
+      }
+      if (suffix === `${sessionID}/archive/draft` && req.method === "POST") {
+        sp.draft_thought_id="thought-capture";sp.archive_operation={id:"draft-op",state:"draft_saved",input_generation:sp.input_generation};
+        sp.session_generation++;
+        return json(res,api({draft_thought_id:sp.draft_thought_id,scratchpad:sp}));
+      }
       if (suffix === `${sessionID}/archive/preview` && req.method === "GET") {
+        return json(res, api({preview:sp.archive_preview || null, persisted:!!sp.archive_preview, scratchpad:sp}));
+      }
+      if (suffix === `${sessionID}/archive/preview` && req.method === "POST") {
         sp.archive_preview = {
+          validation: {status:"valid", issues:[]},
           title: sp.session_context.candidate_title || "Browser capture",
           body: sp.session_context.candidate_body || sp.content,
           tags: sp.session_context.candidate_tags || ["browser"],
@@ -1731,8 +1763,13 @@ function startFixtureServer(options = {}) {
           strategy: sp.archive_strategy || "new",
           generated_at: "2026-06-13T00:00:00Z",
         };
+        if(options.captureNeedsInputs){
+          const valid=!!sp.session_context.document_parameters?.audience;
+          sp.archive_preview.validation={status:valid?"valid":"invalid",issues:valid?[]:[{code:"input_required",section:"audience",severity:"error"}]};
+          sp.archive_operation={id:"preview-op",state:valid?"ready":"needs_input",input_generation:sp.input_generation};
+        }
         captureSessions.set(sessionID, sp);
-        return json(res, api({ preview: sp.archive_preview, persisted: true }));
+        return json(res, api({ preview: sp.archive_preview, operation:sp.archive_operation, persisted: true, scratchpad:sp }));
       }
       if (suffix === `${sessionID}/archive` && req.method === "POST") {
         const body = (await readJson(req)) || {};
@@ -1930,6 +1967,7 @@ function startFixtureServer(options = {}) {
             {
               ref: { family: "note", profile_id: "builtin.note", version: 1 },
               name: "Note",
+              inputs: options.captureNeedsInputs ? [{key:"audience",label:"Audience",required:true}] : [],
               description: "Flexible note",
               enabled: true,
               auto_match: { enabled: true, priority: 0 },
@@ -2774,4 +2812,66 @@ test("collection continuous reading keeps filters, deep links and mobile focus",
   }finally{await browser.close();}
  });
  }
+});
+
+
+test("capture research replies answer both turns and survive a browser reload", async (t) => {
+ if (!chromePath) {t.skip("Chrome executable not found");return;}
+ const server=await startFixtureServer({enrichEnabled:true,enrichDelayMs:100,answerFirst:true});
+ t.after(()=>server.close());
+ const baseURL=`http://127.0.0.1:${server.address().port}`;
+ const browser=await browserTargets.find(item=>item.name==="chrome").launch(viewports()[0]);
+ try {
+  const page=await connectPage(browser);
+  await page.send("Page.enable");
+  await page.navigate(`${baseURL}/?lang=zh-CN#/capture`);
+  await page.waitForExpression(()=>document.querySelector("#page-capture")?.classList.contains("active"));
+  await waitForFixtureEventClient(baseURL);
+  await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="为我调研isa95模型";document.querySelector("#capture-composer").requestSubmit();});
+  await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("ERP 下达生产订单"));
+  await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="还有什么内容吗";document.querySelector("#capture-composer").requestSubmit();});
+  await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("能力说明能够完成什么"));
+  const before=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);
+  assert.match(before,/ERP 下达生产订单/);
+  assert.doesNotMatch(before,/ARCHIVE_METADATA_ONLY/);
+  assert.equal(before.split("能力说明能够完成什么").length-1,1);
+  await page.send("Page.reload");
+  await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("能力说明能够完成什么"));
+  const after=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);
+  assert.match(after,/ERP 下达生产订单/);
+  assert.doesNotMatch(after,/ARCHIVE_METADATA_ONLY/);
+  assert.equal(after.split("能力说明能够完成什么").length-1,1);
+ } finally {await browser.close();}
+});
+
+test("capture archive form saves an incomplete private draft and confirms inputs after reload", async(t)=>{
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ const server=await startFixtureServer({captureNeedsInputs:true});t.after(()=>server.close());
+ const baseURL=`http://127.0.0.1:${server.address().port}`;
+ const browser=await browserTargets.find(target=>target.name==="chrome").launch(viewports()[0]);
+ try{
+  const page=await connectPage(browser);const errors=[];
+  page.onEvent("Runtime.exceptionThrown",e=>errors.push(e.exceptionDetails?.exception?.description||e.exceptionDetails?.text));
+  await page.send("Runtime.enable");await page.send("Page.enable");
+  await page.navigate(`${baseURL}/?lang=en-US#/capture`);
+  await page.waitForExpression(()=>document.querySelector("#page-capture")?.classList.contains("active"));
+  await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="Unfinished private research";document.querySelector("#capture-composer").requestSubmit();});
+  await page.waitForExpression(()=>document.querySelector("#capture-refresh-preview")?.disabled===false);
+  await page.evaluate(()=>document.querySelector("#capture-refresh-preview").click());
+  await page.waitForExpression(()=>document.querySelector('[data-capture-save-draft]')?.disabled===false && !!document.querySelector('[data-capture-parameter="audience"]'));
+  assert.equal(await page.evaluate(()=>document.querySelector("#capture-archive-commit").disabled),true);
+  await page.evaluate(()=>document.querySelector('[data-capture-save-draft]').click());
+  await page.waitForExpression(()=>document.querySelector("#capture-archive-preview")?.textContent.includes("Private draft saved"));
+  await page.send("Page.reload");
+  await page.waitForExpression(()=>document.querySelector("#capture-archive-preview")?.textContent.includes("Private draft saved"));
+  await page.evaluate(()=>{const input=document.querySelector('[data-capture-parameter="audience"]');input.value="Manufacturing engineers";input.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector('[data-capture-save-parameters]').click();});
+  await page.waitForExpression(()=>document.querySelector("#capture-archive-commit")?.disabled===false);
+  const confirmed=await page.evaluate(async()=>{const list=await(await fetch("/api/capture/sessions")).json();const id=list.data.last_active_session_id;return (await(await fetch(`/api/capture/sessions/${id}`)).json()).data;});
+  assert.equal(confirmed.session_context.document_parameters.audience,"Manufacturing engineers");
+  assert.equal(confirmed.draft_thought_id,"thought-capture");
+  assert.ok(!confirmed.committed_thought_id);
+  await page.evaluate(()=>document.querySelector("#capture-archive-commit").click());
+  await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-thought-id="thought-capture"]'));
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
 });

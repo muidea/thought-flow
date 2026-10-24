@@ -209,8 +209,13 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 		if equal && d.Contract.Parameters["_links_hash"] != documentstore.Hash([]byte(c.Links)) {
 			equal = false
 		}
-		if equal {
+		draftChanged := d.Projection != nil && d.Projection.Thought.CaptureDraft != t.CaptureDraft
+		if equal && (!draftChanged || observe) {
 			t.Document = &models.DocumentLink{DocumentID: id, RevisionID: h.WorkingRevisionID, Generation: h.Generation}
+			if draftChanged {
+				t.CaptureDraft = d.Projection.Thought.CaptureDraft
+				return true, nil
+			}
 			return false, nil
 		}
 		if !observe && (h.PendingProjection || t.Document == nil || t.Document.RevisionID != h.WorkingRevisionID) {
@@ -560,6 +565,9 @@ func (s *Service) Finalize(id string, expected uint64, req FinalizeRequest) (mod
 	if e != nil {
 		return models.FinalizationRecord{}, e
 	}
+	if e := s.checkCaptureDraft(h, id); e != nil {
+		return models.FinalizationRecord{}, e
+	}
 	existing, e := s.Store.Finalization(id, key)
 	if e == nil {
 		if existing.RequestHash != requestHash {
@@ -684,6 +692,11 @@ func (s *Service) Export(id, rev, mode string) (string, error) {
 		return "", e
 	}
 	if mode == "final" {
+		if h, e := s.Store.ActiveHead(id); e != nil {
+			return "", e
+		} else if e = s.checkCaptureDraft(h, id); e != nil {
+			return "", e
+		}
 		if d.ResourceError != "" {
 			return "", ErrRules
 		}
@@ -890,4 +903,17 @@ func (s *Service) DeleteLocked(id string) error {
 func (s *Service) ValidationRunning(id, revision string) bool {
 	value, ok := activeValidations.Load(s.Store.Root + "/" + id)
 	return ok && value == revision
+}
+
+// A private Capture materialization has not passed the archive gate. Historical
+// finals do not grant delivery permission to the current private object.
+func (s *Service) checkCaptureDraft(h models.DocumentHead, id string) error {
+	d, e := s.Store.Revision(id, h.WorkingRevisionID)
+	if e != nil {
+		return e
+	}
+	if d.Projection != nil && d.Projection.Thought.CaptureDraft {
+		return ErrRules
+	}
+	return nil
 }

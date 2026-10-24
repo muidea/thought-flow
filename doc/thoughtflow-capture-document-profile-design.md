@@ -532,11 +532,12 @@ Profile 数量较多时，Registry 先通过 family、关键词或本地搜索�
 
 Capture context prompt 继续返回 topic、facts、questions、candidate title/body 等字段，同时增加 Profile 字段。其职责调整为：
 
-1. `candidate_summary`：面向用户的当前会话回应。
-2. `candidate_body`：无寒暄、可供生成器使用的工作素材，不是 typed Thought 最终正文。
-3. `document_parameters`：当前 Profile 已确认的输入。
-4. `missing_profile_inputs`：最多 3 个真正影响输出的缺口。
-5. `archive_intent`：只判断是否触发归档。
+1. `assistant_reply`：必填，面向用户的当前轮完整回答，研究与继续追问应提供实质内容。
+2. `candidate_summary`：累计内容的归档摘要，与聊天回答分开保存。
+3. `candidate_body`：无寒暄、可供生成器使用的累计工作素材，不是 typed Thought 最终正文。
+4. `document_parameters`：当前 Profile 已确认的输入。
+5. `missing_profile_inputs`：最多 3 个真正影响输出的缺口。
+6. `archive_intent`：只判断是否触发归档。
 
 现有 `llm.prompts.capture_context_system_path` 保留为高级系统 prompt 覆盖能力，但不再作为扩充文档格式的推荐方式。自定义文档类型必须通过 DocumentFormat。自定义 prompt 必须满足新 JSON Contract，否则 Provider 返回 schema 错误。
 

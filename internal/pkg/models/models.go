@@ -123,6 +123,7 @@ type Workspace struct {
 }
 
 type Thought struct {
+	CaptureDraft               bool                `json:"capture_draft,omitempty"`
 	OwnerTopicID               string              `json:"owner_topic_id,omitempty"`
 	GlobalSearch               string              `json:"global_search,omitempty"`
 	Document                   *DocumentLink       `json:"document,omitempty"`
@@ -258,6 +259,8 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
+	CaptureDraft            bool              `json:"-"`
+	SaveOperationID         string            `json:"-"`
 	OwnerTopicID            string            `json:"owner_topic_id,omitempty"`
 	DocumentParameters      map[string]string `json:"document_parameters,omitempty" yaml:"document_parameters,omitempty"`
 	DocumentSources         *SourceManifest   `json:"document_sources,omitempty" yaml:"document_sources,omitempty"`
@@ -283,6 +286,11 @@ type CaptureCommand struct {
 // "field present with empty value" (clear the value). PatchThought
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
+	DocumentProfileSnapshot    string              `json:"-"`
+	SaveOperationID            string              `json:"-"`
+	ExpectedCaptureHash        string              `json:"-"`
+	CaptureDraft               *bool               `json:"-"`
+	DocumentSources            *SourceManifest     `json:"document_sources,omitempty"`
 	ExpectedDocumentGeneration *uint64             `json:"expected_document_generation,omitempty"`
 	DocumentParameters         *map[string]string  `json:"document_parameters,omitempty"`
 	Title                      *string             `json:"title,omitempty"`

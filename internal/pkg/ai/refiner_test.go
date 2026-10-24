@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -408,7 +409,7 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 			"choices": []map[string]any{
 				{
 					"message": map[string]string{
-						"content": `{"topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
+						"content": `{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
 					},
 				},
 			},
@@ -462,7 +463,7 @@ func TestBuildCaptureContextParsesFirstBalancedJSONObject(t *testing.T) {
 				{
 					"message": map[string]string{
 						"content": "```json\n" +
-							`{"topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary with {braces}","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}` +
+							`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary with {braces}","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}` +
 							"\n```\nSure, here is an explanation with another {not_json:true} block.",
 					},
 				},
@@ -498,7 +499,7 @@ func TestBuildCaptureContextSkipsMalformedJSONObjectCandidate(t *testing.T) {
 				{
 					"message": map[string]string{
 						"content": `{"topic":"broken"æ}` + "\n" +
-							`{"topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"recovered","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
+							`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"recovered","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
 					},
 				},
 			},
@@ -532,6 +533,12 @@ func TestDefaultCaptureContextPromptRequiresProfileMatchingContract(t *testing.T
 		t.Fatalf("captureContextSystemPrompt: %v", err)
 	}
 	for _, want := range []string{
+		"assistant_reply is required",
+		"Missing optional information must not block useful output",
+		"actual knowledge, reasoning, distinctions and concrete examples",
+		"no browsing or retrieval tools",
+		"还有什么内容吗",
+		"If the user explicitly requests a research plan or outline",
 		"Everyday conversation style",
 		"archive_intent is \"none\"",
 		"thoughtful, conversational professional response",
@@ -633,5 +640,75 @@ func TestOpenAICompatibleProviderExpandRejectsEmpty(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error for empty plan")
+	}
+}
+
+func TestCaptureContextRejectsSummaryWithoutAnswer(t *testing.T) {
+	for _, reply := range []string{"", " \n "} {
+		t.Run(fmt.Sprintf("reply-%q", reply), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				payload, _ := json.Marshal(map[string]string{"assistant_reply": reply, "candidate_summary": "建议先确定调研范围", "candidate_body": "## 计划\n\n待研究"})
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(payload)}}}})
+			}))
+			defer server.Close()
+			p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
+			if _, err := p.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "为我调研 ISA-95"}); err == nil || !strings.Contains(err.Error(), "assistant_reply is required") {
+				t.Fatal("accepted a summary in place of a chat answer", err)
+			}
+		})
+	}
+}
+
+func TestCaptureContextPayloadCarriesActualInputContracts(t *testing.T) {
+	registry, e := documentprofile.NewRegistry("", "", documentprofile.Limits{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	profiles := registry.ListEnabled()
+	var payload string
+	selected := "builtin.research-report"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if e := json.NewDecoder(r.Body).Decode(&body); e != nil {
+			t.Error(e)
+		}
+		for _, msg := range body.Messages {
+			if msg.Role == "user" {
+				payload = msg.Content
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		response, _ := json.Marshal(map[string]any{"assistant_reply": "Substantive response", "candidate_profile_id": selected, "candidate_profile_version": 2, "profile_contract_hash": "untrusted-model-hash"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(response)}}}})
+	}))
+	defer server.Close()
+	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
+	for _, id := range []string{"builtin.research-report", "builtin.design-doc"} {
+		selected = id
+		out, e := provider.BuildCaptureContext(context.Background(), CaptureContextRequest{Content: "Prepare the selected document", AvailableProfiles: profiles})
+		if e != nil {
+			t.Fatal(e)
+		}
+		profile, e := registry.Resolve(models.DocumentProfileRef{ProfileID: id, Version: 2})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if out.ProfileContractHash != profile.Ref.ContentHash {
+			t.Fatal("returned hash must bind the offered contract")
+		}
+		for _, input := range profile.Inputs {
+			if !strings.Contains(payload, `"key":"`+input.Key+`"`) {
+				t.Fatalf("real payload omitted input %s", input.Key)
+			}
+		}
+		if !strings.Contains(payload, `"required":true`) || !strings.Contains(payload, `"contract_hash":"`+profile.Ref.ContentHash+`"`) {
+			t.Fatal("required/hash omitted from provider payload")
+		}
 	}
 }

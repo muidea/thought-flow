@@ -724,6 +724,7 @@ async function api(path, options = {}) {
     error.code = payload.error?.code || "";
     error.status = response.status;
     error.requestID = payload.request_id || "";
+    error.details = payload.error?.details || payload.error || {};
     throw error;
   }
   return payload.data;
@@ -2284,6 +2285,7 @@ function upsertArchivePreviewMessage() {
 function hasCaptureSessionContext(ctx) {
   if (!ctx || typeof ctx !== "object") return false;
   return Boolean(
+    ctx.assistant_reply ||
     ctx.topic ||
     ctx.goal ||
     ctx.candidate_title ||
@@ -2345,6 +2347,7 @@ function scratchpadHasPendingArchiveMaterial(sp = {}) {
 function shouldAutoPreviewArchive(sp = {}) {
   if (!sp || !sp.session_id) return false;
   if (state.capture.autoArchiveInFlight) return false;
+  if (sp.archive_operation && sp.archive_operation.input_generation === sp.input_generation) return false;
   if (state.capture.archivePreview || sp.archive_preview) return false;
   if (!scratchpadHasPendingArchiveMaterial(sp)) return false;
   return scratchpadArchiveIntent(sp) === "llm";
@@ -2385,6 +2388,7 @@ function cloneSessionContext(ctx) {
     conflicts: Array.isArray(ctx.conflicts) ? ctx.conflicts.slice() : [],
     candidate_title: ctx.candidate_title || "",
     candidate_tags: Array.isArray(ctx.candidate_tags) ? ctx.candidate_tags.slice() : [],
+    assistant_reply: ctx.assistant_reply || "",
     candidate_summary: ctx.candidate_summary || "",
     candidate_body: ctx.candidate_body || "",
     source_links: Array.isArray(ctx.source_links) ? ctx.source_links.slice() : [],
@@ -2448,6 +2452,7 @@ function captureContextPlainText(message = {}) {
   if (message.pending) return t("capture.context.pending");
   const sp = state.capture.activeScratchpad || {};
   const ctx = message.sessionContext || sp.session_context || sp.SessionContext || {};
+  if (stringsTrim(ctx.assistant_reply)) return stringsTrim(ctx.assistant_reply);
   const rawBodyText = compactPlainTextParts([ctx.candidate_body]).join("\n\n");
   const summaryReferences = rawBodyText && !isStructuredCaptureContextBody(rawBodyText, "") ? [rawBodyText] : [];
   const summaryBuilder = createConversationTextBuilder(summaryReferences);
@@ -2681,7 +2686,7 @@ function renderCaptureConversation() {
   if (previewButton) previewButton.disabled = !state.capture.sessionId;
   const archiveButton = $("#capture-archive-commit");
   if (archiveButton) {
-    archiveButton.disabled = !state.capture.sessionId || !state.capture.archivePreview || state.capture.archivePreview?.validation?.status === "invalid";
+    archiveButton.disabled = !state.capture.sessionId || !state.capture.archivePreview || state.capture.archivePreview?.validation?.status !== "valid";
   }
   renderCaptureContextPanel();
   renderArchivePreviewPanel();
@@ -2798,7 +2803,7 @@ function renderArchivePreviewBody(preview) {
     ? `<div class="tf-profile-summary"><span class="tf-chip">${escapeHTML(ref.profile_id)} · v${escapeHTML(ref.version || 1)}</span><span class="${validationClass}">${escapeHTML(validation.status === "valid" ? t("document_profile.validation_valid") : t("document_profile.validation_invalid"))}</span></div>`
     : "";
   const validationIssues = issues.length
-    ? `<div class="tf-validation-issues"><strong>${escapeHTML(t("document_profile.validation_issues"))}</strong><ul>${issues.map((issue) => `<li>${escapeHTML(issue.message || issue.code || "")}</li>`).join("")}</ul></div>`
+    ? `<div class="tf-validation-issues"><strong>${escapeHTML(t("document_profile.validation_issues"))}</strong><ul>${issues.map((issue) => `<li>${escapeHTML(captureValidationMessage(issue))}</li>`).join("")}</ul></div>`
     : "";
   return `<div class="tf-capture-preview-body">
     <strong>${escapeHTML(preview.title || t("capture.archive.untitled"))}</strong>
@@ -2807,10 +2812,10 @@ function renderArchivePreviewBody(preview) {
       ${target ? ` · ${escapeHTML(t("capture.archive.target"))}: ${escapeHTML(target)}` : ""}
     </div>
     ${profileMeta}
+    ${validationIssues}
     ${tags}
     <div class="markdown-rendered">${renderMarkdown(preview.body || "")}</div>
     ${links ? `<div class="tf-capture-section"><div class="tf-capture-section-title">${escapeHTML(t("capture.archive.source_links"))}</div>${links}</div>` : ""}
-    ${validationIssues}
     ${diff}
   </div>`;
 }
@@ -2826,7 +2831,97 @@ function renderArchivePreviewCard(msg) {
 function renderArchivePreviewPanel() {
   const node = $("#capture-archive-preview");
   if (!node) return;
-  node.innerHTML = renderArchivePreviewBody(state.capture.archivePreview);
+  const sessionID = state.capture.sessionId;
+  if (node.captureDirty && node.captureSessionID === sessionID) return;
+  node.captureDirty = false;
+  node.captureSessionID = sessionID;
+  node.captureGeneration = state.capture.activeScratchpad?.session_generation;
+  node.innerHTML = renderCaptureArchiveControls() + renderArchivePreviewBody(state.capture.archivePreview);
+  node.querySelectorAll?.("[data-capture-parameter], [data-capture-resolution], [data-capture-source-links]").forEach((input) => input.addEventListener("input", () => { node.captureDirty = true; }));
+  node.querySelector?.("[data-capture-save-parameters]")?.addEventListener("click", () => saveCaptureParameters(node).catch((e) => toast(e.message)));
+  node.querySelector?.("[data-capture-save-draft]")?.addEventListener("click", () => saveCaptureDraft().catch((e) => toast(e.message)));
+  node.querySelector?.("[data-capture-retry-archive]")?.addEventListener("click", () => previewArchive({ intent:"menu" }).catch((e) => toast(e.message)));
+}
+
+function captureValidationMessage(issue) {
+  const profile = profileByID(state.capture.archivePreview?.document_profile?.profile_id, state.capture.archivePreview?.document_profile?.version);
+  const label = (profile?.inputs || []).find((input) => input.key === issue.section)?.label || issue.section || "";
+  if (issue.code === "input_required") return t("capture.archive.missing_input", { name: label });
+  if (issue.code === "research_evidence_missing") return t("capture.archive.sources_required");
+  if (issue.code === "thoughtflow.archive.conflicts_unresolved") return t("capture.archive.resolve_issues");
+  return `${t("capture.archive.check_failed")} (${issue.code || ""}): ${issue.message || ""}`;
+}
+
+function renderCaptureArchiveControls() {
+  const sp = state.capture.activeScratchpad;
+  if (!sp?.session_id) return "";
+  const ctx = sp.session_context || {};
+  const profile = profileByID(ctx.candidate_profile_id, ctx.candidate_profile_version);
+  const inputs = (profile?.inputs || []).map((input) => `<label>${escapeHTML(input.label || input.key)}${input.required ? " *" : ""}<input data-capture-parameter="${escapeHTML(input.key)}" value="${escapeHTML(ctx.document_parameters?.[input.key] || "")}" /></label>`).join("");
+  const issues = (ctx.issues || []).filter((issue) => issue.blocking && issue.status !== "resolved").map((issue) => `<label>${escapeHTML(issue.message)}<input data-capture-resolution="${escapeHTML(issue.id)}" placeholder="${escapeHTML(t("capture.archive.resolution_reason"))}" /></label>`).join("");
+  const status = sp.archive_operation?.state || "idle";
+  const busy = ["preparing", "saving"].includes(status);
+  const savedID = sp.draft_thought_id || sp.committed_thought_id || "";
+  return `<section class="tf-capture-archive-status" aria-live="polite">
+    <strong>${escapeHTML(t(`capture.archive.state.${status}`))}</strong>${savedID ? `<p><a href="${escapeHTML(buildRouteHash("thoughts", {thoughtId:savedID}, {id:savedID}))}">${escapeHTML(savedID)}</a></p>` : ""}
+    ${sp.archive_operation?.error ? `<p>${escapeHTML(sp.archive_operation.error)}</p>` : ""}
+    ${inputs || issues ? `<div class="tf-capture-parameter-form">${inputs}${issues}<label>${escapeHTML(t("capture.archive.source_links"))}<textarea data-capture-source-links>${escapeHTML((ctx.source_links || []).join("\n"))}</textarea></label><button type="button" data-capture-save-parameters>${escapeHTML(t("capture.archive.confirm_inputs"))}</button></div>` : ""}
+    <button type="button" data-capture-save-draft ${busy || !state.capture.archivePreview ? "disabled" : ""}>${escapeHTML(t("capture.archive.save_draft"))}</button>
+    <button type="button" data-capture-retry-archive ${busy ? "disabled" : ""}>${escapeHTML(t("capture.archive.recheck"))}</button>
+  </section>`;
+}
+
+async function saveCaptureParameters(node) {
+  const scope = captureRequestScope();
+  const sp = state.capture.activeScratchpad;
+  const values = {}, resolutions = {};
+  node.querySelectorAll("[data-capture-parameter]").forEach((input) => { values[input.dataset.captureParameter] = input.value; });
+  node.querySelectorAll("[data-capture-resolution]").forEach((input) => { if (input.value.trim()) resolutions[input.dataset.captureResolution] = input.value.trim(); });
+  const saved = await captureAPI(scope, `/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/parameters`, { method: "PATCH", headers: { "If-Match": String(node.captureGeneration ?? sp.session_generation) }, body: JSON.stringify({ values, resolutions, source_links: (node.querySelector("[data-capture-source-links]")?.value || "").split("\n").map((s) => s.trim()).filter(Boolean) }) });
+  if (!scope.isCurrent()) return;
+  node.captureDirty = false;
+  state.capture.activeScratchpad = saved;
+  state.capture.archivePreview = null;
+  renderCaptureConversation();
+  await previewArchive({ intent: "menu" });
+}
+
+async function saveCaptureDraft() {
+  const scope = captureRequestScope();
+  const result = await captureAPI(scope, `/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/archive/draft`, { method: "POST" });
+  if (!scope.isCurrent()) return;
+  if (!result.draft_thought_id) throw new Error(t("capture.archive.not_saved"));
+  state.capture.activeScratchpad = result.scratchpad;
+  state.capture.archivePreview = result.scratchpad?.archive_preview || null;
+  state.capture.activeThoughtId = result.draft_thought_id;
+  appendCaptureMessage({ role: "system", text: t("capture.archive.draft_saved", { id: result.draft_thought_id }) });
+  renderCaptureConversation();
+  refreshActiveCaptureThought();
+}
+
+let captureArchivePollKey = "";
+function resumeCaptureArchivePolling() {
+  const sp = state.capture.activeScratchpad;
+  if (!sp?.archive_operation || !["preparing", "saving"].includes(sp.archive_operation.state)) return;
+  const scope = captureRequestScope();
+  const key = `${scope.sessionId}:${sp.archive_operation.id}:${captureSelectionEpoch}`;
+  if (captureArchivePollKey === key) return;
+  captureArchivePollKey = key;
+  const poll = async () => {
+    if (!scope.isCurrent() || captureArchivePollKey !== key) return;
+    try {
+      const detail = await captureAPI(scope, `/api/capture/sessions/${encodeURIComponent(scope.sessionId)}`);
+      if (!scope.isCurrent() || captureArchivePollKey !== key) return;
+      state.capture.activeScratchpad = detail;
+      state.capture.archivePreview = detail.archive_preview || null;
+      if (detail.committed_thought_id) state.capture.activeThoughtId = detail.committed_thought_id;
+      renderCaptureConversation();
+      if (["preparing", "saving"].includes(detail.archive_operation?.state)) { window.setTimeout(poll, 1000); return; }
+      captureArchivePollKey = "";
+      if (detail.committed_thought_id) refreshActiveCaptureThought();
+    } catch (_) { if (scope.isCurrent()) window.setTimeout(poll, 2000); }
+  };
+  window.setTimeout(poll, 1000);
 }
 
 function renderCaptureLockIndicator() {
@@ -3005,10 +3100,12 @@ async function rehydrateActiveScratchpad() {
   // Server may have marked the scratchpad committed in the gap
   // between list and get — drop it instead of opening an empty
   // bubble the user can't chat into.
-  if ((detail.committed_thought_id || "").trim() !== "") return;
+  if (detail.committed_thought_id && !detail.content?.trim() && (!detail.archive_operation || detail.archive_operation.state === "saved")) return;
   state.capture.activeScratchpad = detail;
   state.capture.archivePreview = detail.archive_preview || null;
   state.capture.sessionId = detail.session_id;
+  state.capture.activeThoughtId = detail.draft_thought_id || detail.committed_thought_id || "";
+  resumeCaptureArchivePolling();
   // Restore the chat history verbatim so the user sees the same
   // composer state they had when they refreshed.
   state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : [];
@@ -3074,6 +3171,7 @@ function switchCaptureSession(sessionId) {
       if (!scope.isCurrent()) return;
       state.capture.activeScratchpad = detail;
       state.capture.archivePreview = detail.archive_preview || null;
+  resumeCaptureArchivePolling();
       state.capture.messages = Array.isArray(detail.messages) ? detail.messages.slice() : state.capture.messages;
       upsertCaptureContextMessage();
       upsertArchivePreviewMessage();
@@ -3168,6 +3266,7 @@ async function refreshActiveScratchpadContext({ attempts = 3, delayMs = 650, ses
     if (expectedMessageCount > 0 && messageCount > 0 && messageCount < expectedMessageCount) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
+  resumeCaptureArchivePolling();
     if (expectedMessageCount === 0 || messageCount > expectedMessageCount) {
       replaceCaptureMessagesFromScratchpad(detail);
     }
@@ -3676,6 +3775,7 @@ function mergeSessionContextDraft(ctx, draft, sp) {
     conflicts: Array.isArray(ctx.conflicts) ? ctx.conflicts.slice() : [],
     candidate_title: ctx.candidate_title || sp.title || "",
     candidate_tags: Array.isArray(ctx.candidate_tags) ? ctx.candidate_tags.slice() : [],
+    assistant_reply: ctx.assistant_reply || "",
     candidate_summary: ctx.candidate_summary || "",
     candidate_body: ctx.candidate_body || sp.content || "",
     source_links: Array.isArray(ctx.source_links) ? ctx.source_links.slice() : [],
@@ -3755,20 +3855,31 @@ async function previewArchive({ intent = "menu", strategy = "", commitAfterPrevi
     }
     const suffix = strategy ? `?strategy=${encodeURIComponent(strategy)}` : "";
     const result = await captureAPI(scope,`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}/archive/preview${suffix}`, {
-      method: "GET",
+      method: "POST", body: JSON.stringify({ commit_after_preview: commitAfterPreview }),
     });
     if (!scope.isCurrent()) return;
+    if (result.scratchpad) state.capture.activeScratchpad = result.scratchpad;
     state.capture.archivePreview = result.preview || null;
     if (state.capture.activeScratchpad) {
       state.capture.activeScratchpad.archive_preview = state.capture.archivePreview;
     }
-    appendCaptureMessage({ role: "system", text: t("capture.archive.preview_ready") });
+    const operation = result.operation || result.scratchpad?.archive_operation;
+    const savedID = result.scratchpad?.committed_thought_id;
+    if (operation?.state === "saved" && savedID) {
+      state.capture.activeThoughtId = savedID;
+      appendCaptureMessage({ role: "system", text: t("capture.archive.state.saved") });
+      await refreshActiveCaptureThought();
+      if (!scope.isCurrent()) return;
+    } else {
+      const messageKey = ["preparing", "saving"].includes(operation?.state)
+        ? `capture.archive.state.${operation.state}`
+        : state.capture.archivePreview?.validation?.status === "valid" && result.persisted === true
+          ? "capture.archive.preview_ready" : "capture.archive.not_saved";
+      appendCaptureMessage({ role: "system", text: t(messageKey) });
+    }
     upsertArchivePreviewMessage();
     renderCaptureConversation();
-    if (commitAfterPreview && state.capture.archivePreview?.validation?.status !== "invalid") {
-      await commitScratchpad();
-    if (!scope.isCurrent()) return;
-    }
+    resumeCaptureArchivePolling();
   } catch (error) {
     if (!scope.isCurrent()) return;
     appendCaptureMessage({ role: "system", text: error.message || t("toast.request_failed") });
@@ -5094,6 +5205,7 @@ async function handleCaptureEvent(type, rawData) {
     if (!scope.isCurrent() || !detail || detail.session_id !== scope.sessionId) return;
     state.capture.activeScratchpad = detail;
     state.capture.archivePreview = detail.archive_preview || null;
+  resumeCaptureArchivePolling();
     replaceCaptureMessagesFromScratchpad(detail);
     upsertCaptureContextMessage();
     upsertArchivePreviewMessage();

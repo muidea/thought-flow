@@ -20,6 +20,9 @@ func TestLoadUsesDefaultsWhenLocalConfigIsMissing(t *testing.T) {
 	if cfg.Server.PublicThoughtsEnabled {
 		t.Fatalf("public thoughts must be disabled by default: %#v", cfg.Server)
 	}
+	if cfg.LLM.AllowJSONFallback {
+		t.Fatal("JSON fallback must require explicit opt-in")
+	}
 	if cfg.Workspace.ContentDir != "./thoughtflow-workspace" || cfg.Runtime.StateDir != "./thoughtflow-runtime" || !cfg.Workspace.AutoInitGit {
 		t.Fatalf("workspace config = %#v", cfg.Workspace)
 	}
@@ -180,6 +183,7 @@ sse_heartbeat_seconds = 33
 base_url = "https://llm.example.test"
 api_key = "local-llm-key"
 chat_model = "local-chat"
+allow_json_fallback = true
 timeout_seconds = 17
 
 [llm.prompts]
@@ -221,6 +225,7 @@ timeout_seconds = 19
 	if cfg.LLM.BaseURL != "https://llm.example.test" ||
 		cfg.LLM.APIKey != "local-llm-key" ||
 		cfg.LLM.ChatModel != "local-chat" ||
+		!cfg.LLM.AllowJSONFallback ||
 		cfg.LLM.Timeout != 17*time.Second ||
 		cfg.LLM.Prompts.CaptureContextSystemPath != filepath.Join(configDir, "prompts", "capture-context.md") {
 		t.Fatalf("llm config = %#v", cfg.LLM)

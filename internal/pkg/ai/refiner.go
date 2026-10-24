@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"regexp"
@@ -82,6 +84,9 @@ type CaptureContextRequest struct {
 }
 
 type CaptureContextResult struct {
+	Issues                  []models.CaptureIssue
+	ProfileContractHash     string
+	AssistantReply          string
 	Topic                   string
 	Goal                    string
 	ConfirmedFacts          []string
@@ -168,17 +173,26 @@ type Provider interface {
 // passthrough, and Retryable semantics identical so the public
 // surface is preserved.
 type ProviderError struct {
-	Code       string
-	StatusCode int
-	Message    string
-	Retryable  bool
+	Code                string
+	StatusCode          int
+	Message             string
+	Retryable           bool
+	Feature             string
+	UnsupportedFeatures []string
 }
 
 func (e ProviderError) Error() string {
-	if e.StatusCode > 0 {
-		return fmt.Sprintf("%s: status %d: %s", e.Code, e.StatusCode, e.Message)
+	message := e.Message
+	if e.Feature != "" {
+		message += "; feature=" + e.Feature
 	}
-	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+	if len(e.UnsupportedFeatures) > 0 {
+		message += "; unsupported_features=" + strings.Join(e.UnsupportedFeatures, ", ")
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("%s: status %d: %s", e.Code, e.StatusCode, message)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, message)
 }
 
 type LocalRefineProvider struct{}
@@ -434,6 +448,7 @@ func (p *LocalRefineProvider) BuildCaptureContext(ctx context.Context, req Captu
 		Conflicts:               normalizeList(append(req.Existing.Conflicts, localConflicts(text)...)),
 		CandidateTitle:          firstNonEmpty(req.Existing.CandidateTitle, title),
 		CandidateTags:           normalizeList(append(req.Existing.CandidateTags, inferTags(text)...)),
+		AssistantReply:          "当前未配置对话模型；以下仅整理你提供的内容，不代表完成调研。\n\n" + buildLocalCaptureSummary(text),
 		CandidateSummary:        buildLocalCaptureSummary(text),
 		CandidateBody:           text,
 		SourceLinks:             normalizeList(append(req.Existing.SourceLinks, localURLs(text)...)),
@@ -695,6 +710,7 @@ type OpenAICompatibleProvider struct {
 	chatModel         string
 	embeddingProvider EmbeddingProvider
 	prompts           promptFiles
+	allowJSONFallback bool
 }
 
 type OpenAICompatibleEmbeddingProvider struct {
@@ -745,6 +761,22 @@ func (t *limitsBodyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}{
 		Reader: io.LimitReader(resp.Body, t.maxBytes),
 		Closer: resp.Body,
+	}
+	if resp.StatusCode >= 400 {
+		// Inspect deterministic conversion failures before the SDK's retry loop,
+		// including providers that incorrectly return 5xx or request a retry.
+		raw, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(raw))
+		var envelope struct {
+			Error conversionErrorDetails `json:"error"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Error.unsupported() {
+			resp.Header.Set("X-Should-Retry", "false")
+		}
 	}
 	return resp, nil
 }
@@ -804,6 +836,7 @@ func NewOpenAICompatibleProvider(cfg appconfig.LLMConfig, embeddingCfg appconfig
 	return &OpenAICompatibleProvider{
 		client:            newOpenAIClient(cfg),
 		chatModel:         chatModel,
+		allowJSONFallback: cfg.AllowJSONFallback,
 		embeddingProvider: embeddingProvider,
 		prompts: promptFiles{
 			captureContextSystemPath: cfg.Prompts.CaptureContextSystemPath,
@@ -828,19 +861,29 @@ func (p *OpenAICompatibleProvider) chatCompletion(ctx context.Context, systemPro
 	return p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
 }
 
-func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
+func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, bool, error) {
+	// Strict by default. Only explicit opt-in and an unambiguous response_format
+	// capability error permit a single request without the format parameter.
 	content, err := p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, true)
-	if err == nil {
-		return content, nil
+	var failure ProviderError
+	if err == nil || !p.allowJSONFallback || !errors.As(err, &failure) || !failure.onlyResponseFormatUnsupported() {
+		return content, false, err
 	}
-	var providerErr ProviderError
-	if errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusBadRequest {
-		return p.chatCompletion(ctx, systemPrompt, userPrompt, temperature)
+	slog.Warn("JSON response format unsupported; using explicitly enabled fallback", "model", p.chatModel)
+	content, err = p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false, option.WithMaxRetries(0))
+	if err != nil && ctxError(err) == nil {
+		var fallbackFailure ProviderError
+		if errors.As(err, &fallbackFailure) && !fallbackFailure.Retryable {
+			// Keep parameter/authentication diagnostics from the fallback request,
+			// including any other unsupported features reported by the provider.
+			return "", true, fallbackFailure
+		}
+		return "", true, ProviderError{Code: "thoughtflow.ai.json_fallback_failed", StatusCode: fallbackFailure.StatusCode, Message: err.Error(), Retryable: false}
 	}
-	return "", err
+	return content, true, err
 }
 
-func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool) (string, error) {
+func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool, opts ...option.RequestOption) (string, error) {
 	params := openai.ChatCompletionNewParams{
 		Model: p.chatModel,
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -853,7 +896,7 @@ func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context,
 		format := shared.NewResponseFormatJSONObjectParam()
 		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{OfJSONObject: &format}
 	}
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+	resp, err := p.client.Chat.Completions.New(ctx, params, opts...)
 	if err != nil {
 		return "", wrapSDKError(err)
 	}
@@ -891,6 +934,18 @@ func wrapSDKError(err error) error {
 		if message == "" {
 			message = http.StatusText(apiErr.StatusCode)
 		}
+		var conversion conversionErrorDetails
+		_ = json.Unmarshal([]byte(apiErr.RawJSON()), &conversion)
+		if conversion.unsupported() {
+			return ProviderError{
+				Code:                "thoughtflow.ai.conversion_unsupported",
+				StatusCode:          apiErr.StatusCode,
+				Message:             message,
+				Retryable:           false,
+				Feature:             strings.TrimSpace(conversion.Feature),
+				UnsupportedFeatures: normalizeList(conversion.UnsupportedFeatures),
+			}
+		}
 		return ProviderError{
 			Code:       code,
 			StatusCode: apiErr.StatusCode,
@@ -923,7 +978,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
-	content, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.chatCompletionJSON(ctx,
 		refinementSystemPrompt(),
 		"Refine this note without changing the original content.\n\nTitle: "+
 			firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)+
@@ -935,10 +990,10 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	}
 	var parsed refineJSON
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
-		return models.ThoughtRefinement{}, fmt.Errorf("parse refinement json: %w", err)
+		return models.ThoughtRefinement{}, jsonResponseError(fmt.Errorf("parse refinement json: %w", err), usedFallback)
 	}
 	if strings.TrimSpace(parsed.Title) == "" {
-		return models.ThoughtRefinement{}, ProviderError{Code: "thoughtflow.ai.invalid_refinement_metadata", Message: "generated title must not be empty", Retryable: true}
+		return models.ThoughtRefinement{}, jsonResponseError(ProviderError{Code: "thoughtflow.ai.invalid_refinement_metadata", Message: "generated title must not be empty", Retryable: true}, usedFallback)
 	}
 	refinement := models.ThoughtRefinement{
 		ThoughtID:      req.Thought.ID,
@@ -952,7 +1007,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 		GeneratedAt:    time.Now().UTC(),
 	}
 	if err := ValidateRefinementMetadata(refinement); err != nil {
-		return models.ThoughtRefinement{}, err
+		return models.ThoughtRefinement{}, jsonResponseError(err, usedFallback)
 	}
 	return refinement, nil
 }
@@ -966,7 +1021,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 	if err != nil {
 		return CaptureContextResult{}, err
 	}
-	content, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.chatCompletionJSON(ctx,
 		systemPrompt,
 		"Session ID: "+req.SessionID+
 			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
@@ -982,13 +1037,19 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 	}
 	var parsed captureContextJSON
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
-		return CaptureContextResult{}, fmt.Errorf("parse capture context json: %w", err)
+		return CaptureContextResult{}, jsonResponseError(fmt.Errorf("parse capture context json: %w", err), usedFallback)
+	}
+	if strings.TrimSpace(parsed.AssistantReply) == "" {
+		return CaptureContextResult{}, jsonResponseError(fmt.Errorf("parse capture context json: assistant_reply is required"), usedFallback)
 	}
 	descriptor := validProfileDescriptor(req.AvailableProfiles, parsed.CandidateProfileID, parsed.CandidateProfileVersion)
 	if descriptor.ID == "" {
 		descriptor, _, _, _ = selectLocalProfile(req, text)
 	}
 	return CaptureContextResult{
+		Issues:                  parsed.Issues,
+		ProfileContractHash:     descriptor.ContractHash,
+		AssistantReply:          strings.TrimSpace(parsed.AssistantReply),
 		Topic:                   strings.TrimSpace(parsed.Topic),
 		Goal:                    strings.TrimSpace(parsed.Goal),
 		ConfirmedFacts:          normalizeList(parsed.ConfirmedFacts),
@@ -1034,13 +1095,13 @@ func (p *OpenAICompatibleProvider) GenerateDocument(ctx context.Context, req Doc
 		"\n\nSource context JSON:\n" + mustJSON(req.Context) +
 		"\n\nPrevious draft JSON:\n" + mustJSON(req.PreviousDraft) +
 		"\n\nValidation issues to repair JSON:\n" + mustJSON(req.RepairIssues)
-	content, err := p.chatCompletionJSON(ctx, system, user, 0.2)
+	content, usedFallback, err := p.chatCompletionJSON(ctx, system, user, 0.2)
 	if err != nil {
 		return models.DocumentDraft{}, err
 	}
 	draft := models.DocumentDraft{}
 	if err := unmarshalFirstJSONObject(content, &draft); err != nil {
-		return models.DocumentDraft{}, fmt.Errorf("parse document draft json: %w", err)
+		return models.DocumentDraft{}, jsonResponseError(fmt.Errorf("parse document draft json: %w", err), usedFallback)
 	}
 	draft = completeDocumentDraft(req, draft)
 	return draft, nil
@@ -1111,7 +1172,7 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 		req.CurrentDocument = localInitialTopicDocument(req.Topic)
 	}
 	section := localThoughtSection(req, "")
-	content, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.chatCompletionJSON(ctx,
 		"You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
 		"Topic name: "+req.Topic.Name+
 			"\nTopic description: "+req.Topic.Description+
@@ -1126,14 +1187,14 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 	}
 	var parsed topicWeaveJSON
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
-		return models.TopicWeaveResult{}, fmt.Errorf("parse topic weave json: %w", err)
+		return models.TopicWeaveResult{}, jsonResponseError(fmt.Errorf("parse topic weave json: %w", err), usedFallback)
 	}
 	document := strings.TrimSpace(parsed.Document)
 	if document == "" {
-		return models.TopicWeaveResult{}, errors.New("topic weave document is empty")
+		return models.TopicWeaveResult{}, jsonResponseError(errors.New("topic weave document is empty"), usedFallback)
 	}
 	if !strings.Contains(document, req.SourceLink) {
-		return models.TopicWeaveResult{}, errors.New("topic weave document missing required source link")
+		return models.TopicWeaveResult{}, jsonResponseError(errors.New("topic weave document missing required source link"), usedFallback)
 	}
 	return models.TopicWeaveResult{Document: document + "\n", Model: p.chatModel, Strategy: "llm-document-merge"}, nil
 }
@@ -1144,7 +1205,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}
 	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
 	format := firstNonEmpty(req.Format, "summary")
-	content, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.chatCompletionJSON(ctx,
 		"You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
 		"Goal: "+goal+
 			"\nFormat: "+format+
@@ -1157,11 +1218,11 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}
 	var parsed synthesisJSON
 	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
-		return models.SynthesisDraft{}, fmt.Errorf("parse synthesis json: %w", err)
+		return models.SynthesisDraft{}, jsonResponseError(fmt.Errorf("parse synthesis json: %w", err), usedFallback)
 	}
 	synthContent := strings.TrimSpace(parsed.Content)
 	if synthContent == "" {
-		return models.SynthesisDraft{}, errors.New("synthesis content is empty")
+		return models.SynthesisDraft{}, jsonResponseError(errors.New("synthesis content is empty"), usedFallback)
 	}
 	now := time.Now().UTC()
 	return models.SynthesisDraft{
@@ -1395,29 +1456,32 @@ type synthesisJSON struct {
 }
 
 type captureContextJSON struct {
-	Topic                   string            `json:"topic"`
-	Goal                    string            `json:"goal"`
-	ConfirmedFacts          []string          `json:"confirmed_facts"`
-	OpenQuestions           []string          `json:"open_questions"`
-	Conflicts               []string          `json:"conflicts"`
-	CandidateTitle          string            `json:"candidate_title"`
-	CandidateTags           []string          `json:"candidate_tags"`
-	CandidateSummary        string            `json:"candidate_summary"`
-	CandidateBody           string            `json:"candidate_body"`
-	SourceLinks             []string          `json:"source_links"`
-	RelatedThoughtIDs       []string          `json:"related_thought_ids"`
-	SuggestedTopicIDs       []string          `json:"suggested_topic_ids"`
-	ArchiveIntent           string            `json:"archive_intent"`
-	ArchiveStrategy         string            `json:"archive_strategy"`
-	CandidateDocumentFamily string            `json:"candidate_document_family"`
-	CandidateProfileID      string            `json:"candidate_profile_id"`
-	CandidateProfileVersion int               `json:"candidate_profile_version"`
-	ProfileConfidence       int               `json:"profile_confidence"`
-	ProfileMatchReason      string            `json:"profile_match_reason"`
-	ProfileExplicit         bool              `json:"profile_explicit"`
-	DocumentParameters      map[string]string `json:"document_parameters"`
-	MissingProfileInputs    []string          `json:"missing_profile_inputs"`
-	ArchiveReadiness        string            `json:"archive_readiness"`
+	Issues                  []models.CaptureIssue `json:"issues"`
+	ProfileContractHash     string                `json:"profile_contract_hash"`
+	AssistantReply          string                `json:"assistant_reply"`
+	Topic                   string                `json:"topic"`
+	Goal                    string                `json:"goal"`
+	ConfirmedFacts          []string              `json:"confirmed_facts"`
+	OpenQuestions           []string              `json:"open_questions"`
+	Conflicts               []string              `json:"conflicts"`
+	CandidateTitle          string                `json:"candidate_title"`
+	CandidateTags           []string              `json:"candidate_tags"`
+	CandidateSummary        string                `json:"candidate_summary"`
+	CandidateBody           string                `json:"candidate_body"`
+	SourceLinks             []string              `json:"source_links"`
+	RelatedThoughtIDs       []string              `json:"related_thought_ids"`
+	SuggestedTopicIDs       []string              `json:"suggested_topic_ids"`
+	ArchiveIntent           string                `json:"archive_intent"`
+	ArchiveStrategy         string                `json:"archive_strategy"`
+	CandidateDocumentFamily string                `json:"candidate_document_family"`
+	CandidateProfileID      string                `json:"candidate_profile_id"`
+	CandidateProfileVersion int                   `json:"candidate_profile_version"`
+	ProfileConfidence       int                   `json:"profile_confidence"`
+	ProfileMatchReason      string                `json:"profile_match_reason"`
+	ProfileExplicit         bool                  `json:"profile_explicit"`
+	DocumentParameters      map[string]string     `json:"document_parameters"`
+	MissingProfileInputs    []string              `json:"missing_profile_inputs"`
+	ArchiveReadiness        string                `json:"archive_readiness"`
 }
 
 func extractJSONObject(value string) string {

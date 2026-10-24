@@ -2648,3 +2648,8 @@ textarea:focus-visible {
 .collection-catalog[hidden]{display:none!important}
 .collection-reader:has(.collection-catalog[hidden]){grid-template-columns:1fr}
 @media(max-width:760px){.collection-catalog[role=dialog]{position:fixed;inset:1rem;z-index:20;max-height:calc(100dvh - 2rem);padding:1rem;background:var(--surface,#20242c);box-shadow:0 0 0 100vmax #0009}.collection-close{display:block}}
+
+.tf-capture-archive-status { padding: 1rem; border: 1px solid var(--border-color, #b6bbc4); border-radius: .5rem; margin-bottom: 1rem; }
+.tf-capture-parameter-form { display: grid; gap: .75rem; margin: 1rem 0; }
+.tf-capture-parameter-form label { display: grid; gap: .25rem; }
+.tf-capture-parameter-form input, .tf-capture-parameter-form textarea { width: 100%; box-sizing: border-box; padding: .5rem; }
