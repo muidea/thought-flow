@@ -2553,6 +2553,7 @@ function captureValidationMessage(issue) {
   if (issue.code === "input_required") return t("capture.archive.missing_input", { name: label });
   if (issue.code === "research_evidence_missing") return t("capture.archive.sources_required");
   if (issue.code === "thoughtflow.archive.conflicts_unresolved") return t("capture.archive.resolve_issues");
+  if (issue.code === "thoughtflow.profile.source_content_missing") return t("capture.archive.source_content_missing");
   return `${t("capture.archive.check_failed")} (${issue.code || ""}): ${issue.message || ""}`;
 }
 

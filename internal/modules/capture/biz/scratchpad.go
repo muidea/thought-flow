@@ -1393,6 +1393,14 @@ func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Sc
 		foldArchiveAssumptions(&draft, profile)
 		discloseUnverifiedResearch(&draft, profile, preview.Sources)
 		rendered = documentprofile.Render(profile, draft, parameters)
+		if archiveSourceCoverageIssue(request.Context.Body, rendered.Content) != nil {
+			// Reorganized prose need not repeat complete source lines. Preserve
+			// the actual material locally instead of asking the model to mimic
+			// its wording or treating a generated-output issue as missing input.
+			if preserveArchiveSource(request, &draft) {
+				rendered = documentprofile.Render(profile, draft, parameters)
+			}
+		}
 		if issue := archiveSourceCoverageIssue(request.Context.Body, rendered.Content); issue != nil {
 			rendered.Validation.Issues = append(rendered.Validation.Issues, *issue)
 			rendered.Validation.Status = models.ArchiveValidationInvalid
@@ -1476,6 +1484,32 @@ func archiveSourceCoverageIssue(source, rendered string) *models.ValidationIssue
 		Severity: models.ValidationSeverityError,
 		Message:  "rendered document does not preserve enough of the structured source content",
 	}
+}
+
+// Preserve a single, clearly attributed copy inside a declared profile section.
+// It remains subject to the same size, Markdown, link and document validation as
+// generated content. Never clip source text or invent an undeclared appendix.
+func preserveArchiveSource(request ai.DocumentGenerationRequest, draft *models.DocumentDraft) bool {
+	material := normalizeEmbeddedDocumentSection(request.Context.Body)
+	for _, section := range draft.Sections {
+		if strings.Contains(compactText(section.Content), compactText(material)) {
+			return false
+		}
+	}
+	declared := make(map[string]bool, len(request.Profile.Sections))
+	for _, section := range request.Profile.Sections {
+		declared[section.Key] = true
+	}
+	for _, key := range preferredArchiveSectionKeys(request, *draft) {
+		if !declared[key] {
+			continue
+		}
+		section := draft.Sections[key]
+		section.Content = strings.TrimSpace(section.Content) + "\n\n### 会话素材摘录\n\n以下保留用于本次归档的会话材料，便于核对生成结果；不表示已取得外部证据或完成独立核验。\n\n" + material
+		draft.Sections[key] = section
+		return true
+	}
+	return false
 }
 
 func compactArchiveDraft(request ai.DocumentGenerationRequest, draft models.DocumentDraft) models.DocumentDraft {

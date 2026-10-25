@@ -9,6 +9,7 @@ export const Key = Object.freeze({
   CaptureArchiveSourcesRequired: "capture.archive.sources_required",
   CaptureArchiveResolveIssues: "capture.archive.resolve_issues",
   CaptureArchiveCheckFailed: "capture.archive.check_failed",
+  CaptureArchiveSourceContentMissing: "capture.archive.source_content_missing",
   CaptureArchiveResolutionReason: "capture.archive.resolution_reason",
   CaptureArchiveConfirmInputs: "capture.archive.confirm_inputs",
   CaptureArchiveSaveDraft: "capture.archive.save_draft",

@@ -496,6 +496,9 @@ func captureTargetHash(t models.Thought, c models.ThoughtContent) string {
 
 func archiveNeedsInput(v models.ArchiveValidation) bool {
 	for _, issue := range v.Issues {
+		if issue.Severity == "warning" {
+			continue
+		}
 		if issue.Code == "input_required" || issue.Code == "research_evidence_missing" {
 			return true
 		}

@@ -110,6 +110,58 @@ func TestCaptureReplyDoesNotReplayPreviousTurnOrArchiveBody(t *testing.T) {
 	}
 }
 
+func TestCaptureCompatibleResponseAfterAuxiliaryJSONPersistsCurrentAnswer(t *testing.T) {
+	var formatted, plain atomic.Int32
+	const reply = "本轮范围限定为多门店预订和订单，不包含收付款。"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, ok := request["response_format"]; ok {
+			formatted.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
+			return
+		}
+		answer := "范围包含多门店预订和订单。"
+		if plain.Add(1) > 1 {
+			answer = reply
+		}
+		content := `{"candidate_summary":"discard this fragment","archive_intent":"llm"}` + "\n" +
+			`{"assistant_reply":"` + answer + `","candidate_summary":"范围已收敛","candidate_body":"多门店平台只处理预订和订单，不处理收付款。","archive_intent":"none"}`
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+	}))
+	defer server.Close()
+	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
+	root := t.TempDir()
+	store := scratchpad.New(root)
+	svc := NewScratchpadService(store, WithCaptureContextProvider(provider), WithEventHub(newRecordingEventHub(true)))
+	for i, input := range []string{"面向多家门店，只提供预订和订单", "不用处理收付款"} {
+		if _, err := svc.AppendMessage("booking", "user", input); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, func() bool {
+			sp, err := store.Get("booking")
+			return err == nil && len(sp.Messages) == (i+1)*2
+		})
+	}
+	sp, err := scratchpad.New(root).Get("booking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.Messages[2].Text != "不用处理收付款" || sp.Messages[3].Text != reply || sp.SessionContext.AssistantReply != reply {
+		t.Fatalf("current input/answer did not survive reload: %+v", sp.Messages)
+	}
+	if sp.ArchiveIntent != scratchpad.ArchiveIntentNone || sp.SessionContext.CandidateSummary != "范围已收敛" || sp.Operation != nil {
+		t.Fatalf("discarded JSON fragment changed context or requested archive: %+v", sp)
+	}
+	if formatted.Load() != 1 || plain.Load() != 2 {
+		t.Fatalf("repeated negotiation or generation: formatted=%d plain=%d", formatted.Load(), plain.Load())
+	}
+}
+
 func TestCaptureReportsUnsupportedCapabilitiesWithoutRetry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

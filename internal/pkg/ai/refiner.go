@@ -84,34 +84,34 @@ type CaptureContextRequest struct {
 }
 
 type CaptureContextResult struct {
-	Issues                  []models.CaptureIssue
-	ProfileContractHash     string
-	AssistantReply          string
-	Topic                   string
-	Goal                    string
-	ConfirmedFacts          []string
-	OpenQuestions           []string
-	Conflicts               []string
-	CandidateTitle          string
-	CandidateTags           []string
-	CandidateSummary        string
-	CandidateBody           string
-	SourceLinks             []string
-	RelatedThoughtIDs       []string
-	SuggestedTopicIDs       []string
-	ArchiveIntent           string
-	ArchiveStrategy         string
-	CandidateDocumentFamily string
-	CandidateProfileID      string
-	CandidateProfileVersion int
-	ProfileConfidence       int
-	ProfileMatchReason      string
-	ProfileExplicit         bool
-	DocumentParameters      map[string]string
-	MissingProfileInputs    []string
-	ArchiveReadiness        string
-	Model                   string
-	GeneratedAt             time.Time
+	Issues                  []models.CaptureIssue `json:"issues"`
+	ProfileContractHash     string                `json:"profile_contract_hash"`
+	AssistantReply          string                `json:"assistant_reply"`
+	Topic                   string                `json:"topic"`
+	Goal                    string                `json:"goal"`
+	ConfirmedFacts          []string              `json:"confirmed_facts"`
+	OpenQuestions           []string              `json:"open_questions"`
+	Conflicts               []string              `json:"conflicts"`
+	CandidateTitle          string                `json:"candidate_title"`
+	CandidateTags           []string              `json:"candidate_tags"`
+	CandidateSummary        string                `json:"candidate_summary"`
+	CandidateBody           string                `json:"candidate_body"`
+	SourceLinks             []string              `json:"source_links"`
+	RelatedThoughtIDs       []string              `json:"related_thought_ids"`
+	SuggestedTopicIDs       []string              `json:"suggested_topic_ids"`
+	ArchiveIntent           string                `json:"archive_intent"`
+	ArchiveStrategy         string                `json:"archive_strategy"`
+	CandidateDocumentFamily string                `json:"candidate_document_family"`
+	CandidateProfileID      string                `json:"candidate_profile_id"`
+	CandidateProfileVersion int                   `json:"candidate_profile_version"`
+	ProfileConfidence       int                   `json:"profile_confidence"`
+	ProfileMatchReason      string                `json:"profile_match_reason"`
+	ProfileExplicit         bool                  `json:"profile_explicit"`
+	DocumentParameters      map[string]string     `json:"document_parameters"`
+	MissingProfileInputs    []string              `json:"missing_profile_inputs"`
+	ArchiveReadiness        string                `json:"archive_readiness"`
+	Model                   string                `json:"model,omitempty"`
+	GeneratedAt             time.Time             `json:"generated_at"`
 }
 
 type RefineProvider interface {
@@ -1059,23 +1059,21 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 		systemPrompt,
 		"Session ID: "+req.SessionID+
 			"\n\nMaterial organization time (not a claim of current source verification): "+time.Now().UTC().Format(time.RFC3339)+
-			"\n\nExisting context JSON:\n"+mustJSON(req.Existing)+
+			"\n\nExisting context JSON (historical state, not the response schema):\n"+mustJSON(req.Existing)+
 			"\n\nExisting thought profile JSON:\n"+mustJSON(req.ExistingProfile)+
 			"\n\nAvailable document profiles JSON:\n"+mustJSON(req.AvailableProfiles)+
 			"\n\nLatest user turns that must be preserved or reconciled:\n"+renderLatestCaptureUserTurns(req.Messages)+
 			"\n\nConversation:\n"+renderCaptureContextMessages(req.Messages)+
-			"\n\nAccumulated user content:\n"+text,
+			"\n\nAccumulated user content:\n"+text+
+			"\n\nReturn the capture response JSON now. Include a non-empty assistant_reply string answering the latest user turn; candidate_summary and candidate_body are separate archive fields.",
 		0.2,
 	)
 	if err != nil {
 		return CaptureContextResult{}, err
 	}
-	var parsed captureContextJSON
-	if err := unmarshalFirstJSONObject(content, &parsed); err != nil {
+	parsed, err := parseCaptureContextResponse(content)
+	if err != nil {
 		return CaptureContextResult{}, jsonResponseError(fmt.Errorf("parse capture context json: %w", err), usedFallback)
-	}
-	if strings.TrimSpace(parsed.AssistantReply) == "" {
-		return CaptureContextResult{}, jsonResponseError(fmt.Errorf("parse capture context json: %w", requiredJSONFieldError{field: "assistant_reply"}), usedFallback)
 	}
 	descriptor := validProfileDescriptor(req.AvailableProfiles, parsed.CandidateProfileID, parsed.CandidateProfileVersion)
 	if descriptor.ID == "" {

@@ -2546,6 +2546,22 @@ test("context events only observe backend archive state, including repeated noti
   }
 });
 
+test("source coverage failure distinguishes generated output from missing user input", () => {
+  const dom=makeDomStub();
+  const app=loadAppFunctionsWith({dom,exposeState:true});
+  app._state.capture.sessionId="s";
+  app._state.capture.activeScratchpad={session_id:"s",archive_operation:{id:"op",state:"blocked"},
+    archive_preview:{validation:{issues:[
+      {code:"thoughtflow.profile.source_content_missing",severity:"error",message:"INTERNAL_ENGLISH_DETAIL"},
+      {code:"research_evidence_missing",severity:"warning",message:"Unverified working material"}
+    ]}}};
+  app.renderCaptureConversation();
+  const html=dom.nodes["capture-conversation"].innerHTML;
+  assert.match(html,/capture.archive.state.blocked/);
+  assert.match(html,/capture.archive.source_content_missing/);
+  assert.doesNotMatch(html,/capture.archive.state.needs_input|capture.archive.missing_input|sources_required|INTERNAL_ENGLISH_DETAIL/);
+});
+
 test("archive feedback survives state restoration and hides internal preview content", () => {
   const dom=makeDomStub();
   const app=loadAppFunctionsWith({dom,exposeState:true});

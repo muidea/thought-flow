@@ -116,7 +116,7 @@ func TestPrepareArchiveFallsBackAfterRepeatedMalformedDocumentJSON(t *testing.T)
 	}
 }
 
-func TestPrepareArchiveFallsBackWhenRemoteDocumentRemainsTooLong(t *testing.T) {
+func TestPrepareArchiveCompactsDuplicateOutputAndPreservesSourceLocally(t *testing.T) {
 	registry, err := documentprofile.NewRegistry(t.TempDir(), models.DocumentProfileBuiltinNote, documentprofile.Limits{MaxFormatBytes: 1 << 20, MaxSections: 32})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
@@ -135,8 +135,8 @@ func TestPrepareArchiveFallsBackWhenRemoteDocumentRemainsTooLong(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareArchive oversized fallback: %v", err)
 	}
-	if generator.calls != 2 {
-		t.Fatalf("generator calls = %d, want 2 before local fallback", generator.calls)
+	if generator.calls != 1 {
+		t.Fatalf("generator calls = %d, want one generation plus local preservation", generator.calls)
 	}
 	if preview.Validation.Status != models.ArchiveValidationValid {
 		t.Fatalf("preview validation = %+v", preview.Validation)
