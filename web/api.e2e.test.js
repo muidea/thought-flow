@@ -327,6 +327,38 @@ test("API e2e", async (t) => {
     assert.ok([200, 204, 404].includes(suggest.status), `unexpected suggest status=${suggest.status}`);
   });
 
+  await t.test("Markdown import preserves all bytes and never adopts source identity", async () => {
+    const original = "\ufeff---\r\ntitle: Imported e2e\r\nid: malicious-source-id\r\npath: ../../escape.md\r\ncustom: [preserve, everything]\r\n---\r\n# Source\r\n\r\n## AI Notes\r\n\r\n```md\r\n## Original\r\n```\r\n![local](./image.png)\r\n\r\n";
+    const boundary = "thoughtflow-e2e-import-boundary";
+    const raw = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="import.md"\r\nContent-Type: text/markdown\r\n\r\n${original}\r\n--${boundary}--\r\n`;
+    const result = await request(server.baseURL, "/api/thoughts/import", "POST", { body: raw, headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` } });
+    assert.equal(result.status, 201, result.text);
+    const thought = envelope(result).data.thought;
+    assert.notEqual(thought.id, "malicious-source-id");
+    assert.equal(thought.user_title, "Imported e2e");
+    assert.ok(thought.path.startsWith("thoughts/"));
+    const saved = await request(server.baseURL, `/api/thoughts/${thought.id}`, "GET");
+    assert.equal(envelope(saved).data.content.original, original);
+    const source = await request(server.baseURL, `/api/thoughts/${thought.id}/import-source`, "GET");
+    assert.equal(source.status, 200, source.text);
+    assert.equal(source.text, original);
+    const document = await request(server.baseURL, `/api/thoughts/${thought.id}/markdown`, "GET");
+    assert.equal(document.status, 200, document.text);
+    assert.ok(document.text.includes(original));
+    assert.ok(fs.readFileSync(path.join(server.contentDir, thought.path), "utf8").includes(original));
+    // Keep the list-order fixture below independent of this import.
+    const deleteDeadline = Date.now() + 5000;
+    let removed;
+    do {
+      removed = await request(server.baseURL, `/api/thoughts/${thought.id}`, "DELETE", { headers: { "X-Session-Id": "import-cleanup" } });
+      if (removed.status !== 409) break;
+      await sleep(100);
+    } while (Date.now() < deleteDeadline);
+    assert.ok([200, 204].includes(removed.status), removed.text);
+    const missing = await request(server.baseURL, `/api/thoughts/${thought.id}/import-source`, "GET");
+    assert.equal(missing.status, 404);
+  });
+
   await t.test("thoughts list returns workspace notes in recent-first order", async () => {
     const first = await request(server.baseURL, "/api/thoughts", "POST", {
       body: { type: "text", title: "list-first", content: "first list note" },

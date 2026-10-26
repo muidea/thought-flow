@@ -412,6 +412,7 @@ function loadAppFunctionsWith(opts = {}) {
       localStorage: storage,
     },
     URLSearchParams,
+    FormData: opts.FormData,
     fetch: opts.fetch || (async () => ({ ok: true, json: async () => ({ data: null }) })),
     EventSource: opts.EventSource || function EventSource() {},
     BroadcastChannel: opts.BroadcastChannel,
@@ -448,6 +449,9 @@ function loadAppFunctionsWith(opts = {}) {
       statusBadge,
       renderSearchResultItem,
       renderThoughtListItem,
+      thoughtReadingMarkdown,
+      renderThoughtDetailPanel,
+      renderThoughtPanels,
       renderComposeSourcesItem,
       renderThoughtsList,
       renderDashboardCaptureSessionItem,
@@ -2560,6 +2564,34 @@ test("source coverage failure distinguishes generated output from missing user i
   assert.match(html,/capture.archive.state.blocked/);
   assert.match(html,/capture.archive.source_content_missing/);
   assert.doesNotMatch(html,/capture.archive.state.needs_input|capture.archive.missing_input|sources_required|INTERNAL_ENGLISH_DETAIL/);
+});
+
+test("full Thought reading includes working body, original, extracted content and links without truncation", () => {
+  const app = loadAppFunctionsWith();
+  const longBody = "# Working body\n\n" + "Keep this paragraph.\n".repeat(3000) + "LAST_BODY_LINE";
+  const snapshot = { thought: { id: "read-1", user_title: "A complete note", summary: "SUMMARY", key_points: ["POINT"], expansion_plan: "FULL_PLAN" },
+    content: { ai_notes: longBody, original: "ORIGINAL\n\n## AI Notes\n\nSOURCE_SECTION", extracted_content: "EXTRACTED", links: "LINKS\nTopics:\n- topic-binding" } };
+  const markdown = app.thoughtReadingMarkdown(snapshot);
+  for (const value of [longBody, "ORIGINAL", "SOURCE_SECTION", "EXTRACTED", "topic-binding", "SUMMARY", "POINT", "FULL_PLAN"]) assert.ok(markdown.includes(value), value);
+  const html = app.renderThoughtDetailPanel(snapshot);
+  assert.match(html, /LAST_BODY_LINE/);
+  assert.match(html, /tf-thought-content/);
+  assert.match(html, /data-read-thought="read-1"/);
+  assert.match(html, /\/api\/thoughts\/read-1\/markdown/);
+});
+
+test("multipart imports let the browser set a boundary and preserve the File body", async () => {
+  class UploadBody {}
+  const requests = [];
+  const app = loadAppFunctionsWith({ FormData: UploadBody, fetch: async (_url, options) => {
+    requests.push(options); return { ok: true, json: async () => ({ data: {} }) };
+  }});
+  const body = new UploadBody();
+  await app.api("/api/thoughts/import", { method: "POST", body });
+  assert.equal(requests[0].body, body);
+  assert.equal(requests[0].headers["Content-Type"], undefined);
+  await app.api("/api/thoughts", { method: "POST", body: "{}" });
+  assert.equal(requests[1].headers["Content-Type"], "application/json");
 });
 
 test("archive feedback survives state restoration and hides internal preview content", () => {

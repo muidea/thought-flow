@@ -1532,6 +1532,8 @@ function startFixtureServer(options = {}) {
   // Per-thought PATCH state. The GET response reflects the most recent
   // PATCH so thought detail tests stay deterministic.
   const thoughtState = new Map();
+  const importedThoughts = new Map();
+  const importRequests = [];
   const captureSessions = new Map();
   let composeSourcesState = {
     sources: composeSources,
@@ -1635,6 +1637,26 @@ function startFixtureServer(options = {}) {
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    if (options.markdownImport) {
+      if (url.pathname === "/api/thoughts/import") {
+        const chunks = []; for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        importRequests.push({ contentType: req.headers["content-type"], raw });
+        const id = `imported-${importedThoughts.size + 1}`;
+        const snapshot = { thought: { id, user_title: "Imported full document", path: `thoughts/${id}.md`, source: "markdown-import", markdown_import: { filename: "source.md", size: Buffer.byteLength(options.importSource), sha256: "fixture-hash" } }, content: { original: options.importSource, ai_notes: options.importSource }, jobs: [], git_commits: [] };
+        importedThoughts.set(id, snapshot);
+        return json(res, api({ thought: snapshot.thought, jobs: [] }), 201);
+      }
+      if (url.pathname === "/api/thoughts" && req.method === "GET") return json(res, api(Array.from(importedThoughts.values(), snapshot => snapshot.thought)));
+      const match = url.pathname.match(/^\/api\/thoughts\/(imported-\d+)(?:\/(markdown|import-source))?$/);
+      if (match && importedThoughts.has(match[1])) {
+        const snapshot = importedThoughts.get(match[1]);
+        if (!match[2]) return json(res, api(snapshot));
+        res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+        if (match[2] === "markdown") return setTimeout(() => res.end(`---\nid: ${match[1]}\n---\n\n${snapshot.content.original}`), 250);
+        return res.end(snapshot.content.original);
+      }
+    }
     if (url.pathname === "/api/system/privacy") {
       return json(res, api({
         llm: { kind: "llm", enabled: false },
@@ -2252,6 +2274,7 @@ function startFixtureServer(options = {}) {
         res.end("not found");
     }
   });
+  server.importRequests = importRequests;
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
@@ -2838,6 +2861,65 @@ async function clickVisibleCaptureControl(page, selector) {
  await page.send("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,...point});
  await page.send("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,...point});
 }
+
+test("Markdown files import intact and open in a complete desktop and mobile reader", async (t) => {
+  if (!chromePath) { t.skip("Chrome executable not found"); return; }
+  for (const viewport of viewports()) await t.test(viewport.name, async (t) => {
+    const original = "\ufeff---\r\ntitle: Original metadata\r\ncustom: keep-all\r\n---\r\n# Imported heading\r\n\r\n" +
+      "A complete preserved paragraph.\r\n\r\n".repeat(150) + "## LAST_SECTION\r\n\r\nTAIL_CONTENT\r\n<script>window.importExecuted=true</script>\r\n[attachment](./file.pdf)\r\n";
+    const server = await startFixtureServer({ markdownImport: true, importSource: original });
+    t.after(() => server.close());
+    const browser = await launchChrome(viewport);
+    try {
+      const page = await connectPage(browser);
+      await page.send("Page.enable");
+      await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/notes`);
+      await page.waitForExpression(() => window.__thoughtflowReady === true, 30000);
+      await clickVisibleCaptureControl(page, ".tf-import-panel summary");
+      await page.evaluate((source) => {
+        const files = new DataTransfer();
+        files.items.add(new File([source], "source.md", { type: "text/markdown" }));
+        files.items.add(new File(["wrong file type"], "skip.txt", { type: "text/plain" }));
+        const input = document.querySelector("#thought-import-files");
+        input.files = files.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }, original);
+      await clickVisibleCaptureControl(page, "#thought-import-start");
+      await page.waitForExpression(() => document.querySelector("#thought-import-results")?.textContent.includes("Processed 2 of 2 files"));
+      assert.equal(server.importRequests.length, 1);
+      assert.match(server.importRequests[0].contentType, /^multipart\/form-data; boundary=/);
+      assert.ok(server.importRequests[0].raw.includes(Buffer.from(original)), "browser changed original bytes");
+      assert.match(await page.evaluate(() => document.querySelector("#thought-import-results").textContent), /skip.txt/);
+      await clickVisibleCaptureControl(page, '#thought-list [data-read-thought="imported-1"]');
+      await page.waitForExpression(() => document.querySelector("#thought-reader-content")?.textContent.includes("TAIL_CONTENT"));
+      assert.equal(await page.evaluate(() => window.importExecuted), undefined);
+      assert.equal(await page.evaluate(() => document.querySelector("#thought-reader-original").hidden), false);
+      assert.match(await page.evaluate(() => document.querySelector("#thought-reader-notice").textContent), /not imported/);
+      const tocIndex = await page.evaluate(() => Array.from(document.querySelectorAll(".tf-reader-toc-item")).findIndex(button => button.textContent === "LAST_SECTION"));
+      assert.ok(tocIndex >= 0);
+      await clickVisibleCaptureControl(page, `.tf-reader-toc-item:nth-child(${tocIndex + 1})`);
+      assert.equal(await page.evaluate(() => {
+        const body = document.querySelector("#thought-reader-content").getBoundingClientRect();
+        const heading = Array.from(document.querySelectorAll("#thought-reader-content h2")).find(node => node.textContent === "LAST_SECTION").getBoundingClientRect();
+        return heading.top >= body.top - 2 && heading.top < body.bottom;
+      }), true);
+      await clickVisibleCaptureControl(page, '[data-reader-view="information"]');
+      assert.match(await page.evaluate(() => document.querySelector("#thought-reader-content").textContent), /markdown_import/);
+      await clickVisibleCaptureControl(page, '[data-reader-view="source"]');
+      await page.waitForExpression(() => document.querySelector("#thought-reader-content pre")?.textContent.includes("id: imported-1"));
+      assert.match(await page.evaluate(() => document.querySelector("#thought-reader-content").textContent), /custom: keep-all/);
+      // A late source response cannot replace the reading mode selected after it.
+      await clickVisibleCaptureControl(page, '[data-reader-view="source"]');
+      await clickVisibleCaptureControl(page, '[data-reader-view="reading"]');
+      await new Promise(resolve => setTimeout(resolve, 350));
+      assert.equal(await page.evaluate(() => !!document.querySelector("#thought-reader-content h1")), true);
+      await clickVisibleCaptureControl(page, "#thought-reader-expand");
+      assert.equal(await page.evaluate(() => Math.abs(document.querySelector("#thought-reader").getBoundingClientRect().width - window.innerWidth) < 3), true);
+      await clickVisibleCaptureControl(page, "#thought-reader-close");
+      assert.equal(await page.evaluate(() => document.querySelector("#thought-reader").open), false);
+    } finally { await browser.close(); }
+  });
+});
 
 test("capture archives through chat and restores its result without context or preview panels", async (t) => {
  if (!chromePath) { t.skip("Chrome executable not found"); return; }

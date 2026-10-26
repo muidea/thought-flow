@@ -212,6 +212,14 @@
                 <div class="tf-page-actions">
                   <button class="tf-btn" id="refresh-thoughts" type="button" data-i18n="common.refresh">Refresh</button>
                 </div>
+                <details class="tf-import-panel">
+                  <summary data-i18n="notes.import.title">Import Markdown</summary>
+                  <p data-i18n="notes.import.help">Import Markdown without rewriting its content. Original files are preserved. Linked local attachments are not uploaded.</p>
+                  <label for="thought-import-files" data-i18n="notes.import.files">Markdown files</label>
+                  <input id="thought-import-files" type="file" accept=".md,.markdown,text/markdown" multiple>
+                  <button class="tf-btn primary" id="thought-import-start" type="button" data-i18n="notes.import.start">Import selected files</button>
+                  <div id="thought-import-results" role="status" aria-live="polite"></div>
+                </details>
                 <div class="tf-notes-pane">
                   <div class="panel-header">
                     <h3 data-i18n="notes.list_title">Recent notes</h3>
@@ -758,6 +766,26 @@ generation:
       </div>
     </aside>
 
+    <dialog id="thought-reader" class="tf-thought-reader" aria-labelledby="thought-reader-title">
+      <header class="tf-reader-header">
+        <h2 id="thought-reader-title"></h2>
+        <button class="tf-btn" id="thought-reader-expand" type="button" aria-pressed="false" data-i18n="notes.reader.expand">Expand</button>
+        <button class="tf-btn" id="thought-reader-close" type="button" data-i18n="common.close">Close</button>
+      </header>
+      <div class="tf-reader-toolbar">
+        <button class="tf-btn" data-reader-view="reading" type="button" aria-pressed="true" data-i18n="notes.reader.reading">Read</button>
+        <button class="tf-btn" data-reader-view="source" type="button" aria-pressed="false" data-i18n="notes.reader.source">Thought source</button>
+        <button class="tf-btn" data-reader-view="information" type="button" aria-pressed="false" data-i18n="notes.reader.information">All information</button>
+        <a class="tf-btn" id="thought-reader-download" data-i18n="notes.reader.download">Download Thought</a>
+        <a class="tf-btn" id="thought-reader-original" hidden data-i18n="notes.reader.original">Download original file</a>
+      </div>
+      <p id="thought-reader-notice" class="tf-text-secondary" hidden data-i18n="notes.import.attachments">The original Markdown and links are preserved. Local images and attachments were not imported.</p>
+      <div class="tf-reader-layout">
+        <nav id="thought-reader-toc" aria-label="Contents" data-i18n-attr="notes.reader.contents" data-i18n-attr-target="aria-label"></nav>
+        <article id="thought-reader-content" class="markdown-rendered" tabindex="0"></article>
+      </div>
+    </dialog>
+
     <aside class="tf-drawer" id="thought-drawer" aria-hidden="true">
       <div class="tf-drawer-panel">
         <div class="tf-drawer-header">
@@ -766,6 +794,7 @@ generation:
         </div>
         <div id="thought-drawer-content" class="preview-box markdown-rendered" data-i18n="empty.no_thought">No thought selected.</div>
         <div class="tf-drawer-footer">
+          <button class="tf-btn" id="drawer-read-full" type="button" disabled data-i18n="notes.reader.open">Read in full</button>
           <button class="tf-btn" id="drawer-add-compose" type="button" disabled data-i18n="thoughts.drawer_add_compose">Add to compose</button>
           <button class="tf-btn" id="retry-refine" type="button" disabled data-i18n="thoughts.drawer_retry_refine">Retry refine</button>
         </div>

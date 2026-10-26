@@ -713,7 +713,7 @@ async function api(path, options = {}) {
   const { headers: requestHeaders, ...requestOptions } = options;
   const response = await fetch(path, {
     ...requestOptions,
-    headers: { "Content-Type": "application/json", "Accept-Language": locale, ...(requestHeaders || {}) },
+    headers: { ...(typeof FormData !== "undefined" && requestOptions.body instanceof FormData ? {} : { "Content-Type": "application/json" }), "Accept-Language": locale, ...(requestHeaders || {}) },
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.error) {
@@ -1533,6 +1533,7 @@ function renderThoughtListItem(thought) {
         ${summary ? `<div class="result-meta">${escapeHTML(summary)}</div>` : ""}
         ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
         <div class="tf-action-row">
+          <button class="mini-button" data-read-thought="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("notes.reader.open"))}</button>
           <button class="mini-button" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
           <button class="mini-button" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_source"))}</button>
           ${(publicThoughtSharingEnabled() && thought.id) ? `<button class="mini-button" data-copy-thought-id="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("search.result.copy_share_link"))}</button>` : ""}
@@ -1589,6 +1590,7 @@ function renderThoughtsList() {
     button.addEventListener("click", () => addToComposeSources([button.dataset.noteCompose]));
   });
   bindThoughtReopenButtons(list);
+  bindThoughtReadButtons(list);
   list.querySelectorAll("[data-copy-thought-id]").forEach((button) => {
     button.addEventListener("click", () => {
       copyThoughtLink(button.dataset.copyThoughtId || "");
@@ -1610,6 +1612,8 @@ function renderEmptyThoughtPanels() {
   if (addCompose) addCompose.disabled = true;
   const retry = $("#retry-refine");
   if (retry) retry.disabled = true;
+  const reader = $("#drawer-read-full");
+  if (reader) reader.disabled = true;
 }
 
 function renderThoughtDetailPanel(snapshot) {
@@ -1638,11 +1642,14 @@ function renderThoughtDetailPanel(snapshot) {
   return `<div class="tf-result">
     <div class="tf-description-list">${renderDescription(metaRows)}</div>
     <div class="tf-action-row">
+      <button class="tf-btn" data-read-thought="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("notes.reader.open"))}</button>
+      <a class="tf-btn" href="/api/thoughts/${encodeURIComponent(thought.id || "")}/markdown">${escapeHTML(t("notes.reader.download"))}</a>
+      ${thought.markdown_import ? `<a class="tf-btn" href="/api/thoughts/${encodeURIComponent(thought.id)}/import-source">${escapeHTML(t("notes.reader.original"))}</a><p class="tf-text-secondary">${escapeHTML(t("notes.import.attachments"))}</p>` : ""}
       <button class="tf-btn" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
       ${thought.document_profile && thought.document_profile.family !== "note" ? `<button class="tf-btn" data-document-open="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("document.open"))}</button>` : ""}
       <button class="tf-btn tf-thought-delete" data-delete-thought="${escapeHTML(thought.id || "")}" data-delete-title="${escapeHTML(title)}" type="button">${escapeHTML(t("thoughts.action.delete"))}</button>
     </div>
-    <div class="preview-box markdown-rendered">${renderObjectMarkdown(sections.join("\n\n"),thought.id,snapshot.resource_bindings)}</div>
+    <div class="preview-box tf-thought-content markdown-rendered">${renderObjectMarkdown(sections.join("\n\n"),thought.id,snapshot.resource_bindings)}</div>
   </div>`;
 }
 
@@ -1711,6 +1718,7 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
     "",
     `## ${t("thoughts.preview_summary")}`,
     thought.summary || t("compose.empty"),
+    content.ai_notes ? `## ${t("notes.detail.ai_notes")}\n${content.ai_notes}` : "",
     "",
     `## ${t("thoughts.preview_original")}`,
     content.original || "",
@@ -1730,12 +1738,15 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   const status = $("#thought-status-detail");
   if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
   bindThoughtReopenButtons(document);
+  bindThoughtReadButtons(document);
   bindThoughtDeleteButtons(document);
  bindDocumentButtons(document);
   const addCompose = $("#drawer-add-compose");
   if (addCompose) addCompose.disabled = false;
   const retry = $("#retry-refine");
   if (retry) retry.disabled = false;
+  const reader = $("#drawer-read-full");
+  if (reader) reader.disabled = false;
   renderThoughtsList();
 }
 
@@ -4076,6 +4087,142 @@ function bindThoughtReopenButtons(root = document) {
   });
 }
 
+let thoughtImportBusy = false;
+let thoughtReaderEpoch = 0;
+let thoughtReaderSnapshot = null;
+
+async function importThoughtFiles() {
+  if (thoughtImportBusy) return;
+  const input = $("#thought-import-files");
+  const files = Array.from(input?.files || []);
+  const output = $("#thought-import-results");
+  if (!files.length) { output.textContent = t("notes.import.select_files"); return; }
+  thoughtImportBusy = true;
+  const button = $("#thought-import-start");
+  button.disabled = true;
+  input.disabled = true;
+  const results = [];
+  const render = () => { output.innerHTML = results.join("") + `<p>${escapeHTML(t("notes.import.progress", { n: results.length, total: files.length }))}</p>`; };
+  render();
+  try {
+    for (const file of files) {
+      try {
+        if (!/\.(md|markdown)$/i.test(file.name) || !file.size || file.size > 32 * 1024 * 1024) throw new Error(t("notes.import.invalid"));
+        const body = new FormData();
+        body.append("file", file, file.name);
+        // Keep the File bytes intact; decoding via File.text() would strip BOM.
+        const result = await api("/api/thoughts/import", { method: "POST", body });
+        const thought = result.thought;
+        upsertThoughtRecord(thought);
+        const href = buildRouteHash("thoughts", { thoughtId: thought.id }, { id: thought.id, tab: "notes-detail" });
+        results.push(`<p><a href="${escapeHTML(href)}">${escapeHTML(file.name)}</a> — ${escapeHTML(t("notes.import.saved"))}</p>`);
+      } catch (error) {
+        const message = error.code === "thoughtflow.capture.import_invalid" || error.code === "thoughtflow.capture.import_too_large"
+          ? t("notes.import.invalid") : error.status ? error.message : `${error.message} ${t("notes.import.check_before_retry")}`;
+        results.push(`<p class="tf-import-error">${escapeHTML(file.name)} — ${escapeHTML(message)}</p>`);
+      }
+      render();
+    }
+  } finally {
+    input.value = "";
+    input.disabled = false;
+    button.disabled = false;
+    thoughtImportBusy = false;
+  }
+}
+
+function thoughtReadingMarkdown(snapshot) {
+  const thought = snapshot.thought || {};
+  const content = snapshot.content || {};
+  const sections = [`# ${thoughtDisplayTitle(thought) || thought.id || ""}`];
+  if (thought.summary) sections.push(`## ${t("thoughts.preview_summary")}\n\n${thought.summary}`);
+  if (thought.key_points?.length) sections.push(`## ${t("notes.detail.key_points")}\n\n${thought.key_points.map(value => `- ${value}`).join("\n")}`);
+  const seen = new Set();
+  for (const [key, label] of [["ai_notes", "notes.detail.ai_notes"], ["original", "thoughts.preview_original"], ["extracted_content", "thoughts.preview_extracted"], ["links", "thoughts.preview_links"]]) {
+    const value = content[key];
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    sections.push(`## ${t(label)}\n\n${value}`);
+  }
+  sections.push(appendExpansionSections(thought));
+  return sections.filter(Boolean).join("\n\n");
+}
+
+function bindThoughtReadButtons(root = document) {
+  root.querySelectorAll("[data-read-thought]").forEach(button => {
+    if (button.dataset.readerBound === "1") return;
+    button.dataset.readerBound = "1";
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      openThoughtReader(button.dataset.readThought).catch(error => toast(error.message));
+    });
+  });
+}
+
+async function openThoughtReader(id) {
+  const epoch = ++thoughtReaderEpoch;
+  const dialog = $("#thought-reader");
+  thoughtReaderSnapshot = null;
+  $("#thought-reader-title").textContent = t("notes.reader.loading");
+  $("#thought-reader-content").textContent = t("notes.reader.loading");
+  $("#thought-reader-toc").innerHTML = "";
+  $("#thought-reader-original").hidden = true;
+  $("#thought-reader-notice").hidden = true;
+  $("#thought-reader-download").removeAttribute("href");
+  if (!dialog.open) dialog.showModal();
+  try {
+    const snapshot = await api(`/api/thoughts/${encodeURIComponent(id)}`);
+    if (epoch !== thoughtReaderEpoch || !dialog.open) return;
+    thoughtReaderSnapshot = snapshot;
+    $("#thought-reader-title").textContent = thoughtDisplayTitle(snapshot.thought) || id;
+    $("#thought-reader-download").href = `/api/thoughts/${encodeURIComponent(id)}/markdown`;
+    $("#thought-reader-original").hidden = !snapshot.thought.markdown_import;
+    $("#thought-reader-original").href = `/api/thoughts/${encodeURIComponent(id)}/import-source`;
+    $("#thought-reader-notice").hidden = !snapshot.thought.markdown_import;
+    await renderThoughtReaderView("reading");
+  } catch (error) {
+    if (epoch === thoughtReaderEpoch && dialog.open) $("#thought-reader-content").textContent = error.message;
+  }
+}
+
+async function renderThoughtReaderView(mode) {
+  if (!thoughtReaderSnapshot) return;
+  const epoch = ++thoughtReaderEpoch;
+  const snapshot = thoughtReaderSnapshot;
+  const content = $("#thought-reader-content");
+  const toc = $("#thought-reader-toc");
+  document.querySelectorAll("[data-reader-view]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.readerView === mode)));
+  toc.innerHTML = "";
+  toc.hidden = mode !== "reading";
+  content.parentElement.classList.toggle("no-toc", mode !== "reading");
+  if (mode === "information") {
+    content.innerHTML = `<pre class="tf-reader-source">${escapeHTML(JSON.stringify({ thought: snapshot.thought, resource_bindings: snapshot.resource_bindings || [], jobs: snapshot.jobs || [], git_commits: snapshot.git_commits || [] }, null, 2))}</pre>`;
+  } else if (mode === "source") {
+    content.textContent = t("notes.reader.loading");
+    try {
+      const response = await fetch(`/api/thoughts/${encodeURIComponent(snapshot.thought.id)}/markdown`);
+      if (!response.ok) throw new Error(t("notes.reader.load_failed"));
+      const raw = await response.text();
+      if (epoch !== thoughtReaderEpoch || !$("#thought-reader").open) return;
+      content.innerHTML = `<pre class="tf-reader-source">${escapeHTML(raw)}</pre>`;
+    } catch (error) {
+      if (epoch === thoughtReaderEpoch) content.textContent = error.message;
+    }
+  } else {
+    content.innerHTML = renderObjectMarkdown(thoughtReadingMarkdown(snapshot), snapshot.thought.id, snapshot.resource_bindings);
+    content.querySelectorAll("h1,h2,h3").forEach((heading, index) => {
+      heading.id = `thought-reader-section-${index}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = heading.textContent;
+      button.className = "tf-reader-toc-item";
+      button.addEventListener("click", () => heading.scrollIntoView({ block: "start" }));
+      toc.appendChild(button);
+    });
+  }
+  if (epoch === thoughtReaderEpoch) content.scrollTop = 0;
+}
+
 function bindThoughtDeleteButtons(root = document) {
   root.querySelectorAll("[data-delete-thought]").forEach((button) => {
     if (button.dataset.deleteBound === "1") return;
@@ -5010,6 +5157,16 @@ async function applyRoute(hash = window.location.hash, options = {}) {
 }
 
 function bind() {
+  $("#thought-import-start")?.addEventListener("click", () => importThoughtFiles());
+  $("#thought-reader-close")?.addEventListener("click", () => $("#thought-reader")?.close());
+  $("#thought-reader")?.addEventListener("close", () => { thoughtReaderEpoch++; thoughtReaderSnapshot = null; });
+  $("#thought-reader-expand")?.addEventListener("click", (event) => {
+    const dialog = $("#thought-reader");
+    const expanded = !dialog.classList.contains("is-expanded");
+    dialog.classList.toggle("is-expanded", expanded);
+    event.currentTarget.setAttribute("aria-pressed", String(expanded));
+  });
+  document.querySelectorAll("[data-reader-view]").forEach(button => button.addEventListener("click", () => renderThoughtReaderView(button.dataset.readerView).catch(error => toast(error.message))));
   document.querySelectorAll("[data-nav]").forEach((item) => {
     item.addEventListener("click", handleNavClick);
   });
@@ -5076,6 +5233,7 @@ function bind() {
   $("#clear-selected").addEventListener("click", clearSearchSelection);
   $("#clear-compose-sources-tab").addEventListener("click", clearComposeSources);
   $("#drawer-add-compose").addEventListener("click", () => addToComposeSources([state.activeThoughtId]));
+  $("#drawer-read-full")?.addEventListener("click", () => openThoughtReader(state.activeThoughtId).catch(error => toast(error.message)));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));
   $("#confirm-ok").addEventListener("click", () => closeConfirm(true));

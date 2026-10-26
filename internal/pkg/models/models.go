@@ -7,6 +7,7 @@ const (
 	ThoughtTypeURL  = "url"
 
 	ThoughtSourceManual               = "manual"
+	ThoughtSourceImport               = "markdown-import"
 	ThoughtSourceAPI                  = "api"
 	ThoughtSourceCompose              = "compose"
 	ThoughtSourceScratchpadCommit     = "scratchpad-commit"
@@ -123,6 +124,7 @@ type Workspace struct {
 }
 
 type Thought struct {
+	MarkdownImport             *MarkdownImport     `json:"markdown_import,omitempty"`
 	CaptureDraft               bool                `json:"capture_draft,omitempty"`
 	OwnerTopicID               string              `json:"owner_topic_id,omitempty"`
 	GlobalSearch               string              `json:"global_search,omitempty"`
@@ -158,6 +160,14 @@ type Thought struct {
 	URLFollowups               []URLFollowup       `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
 	ExpansionPlan              string              `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
 	DocumentProfile            *DocumentProfileRef `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+}
+
+// MarkdownImport describes the immutable source held in ThoughtContent.Original.
+// Source identities and paths are data, never authority over the new Thought.
+type MarkdownImport struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Size     int    `json:"size"`
 }
 
 type DocumentProfileRef struct {
@@ -259,6 +269,7 @@ type EmbeddingRecord struct {
 }
 
 type CaptureCommand struct {
+	MarkdownImport          *MarkdownImport   `json:"-"`
 	CaptureDraft            bool              `json:"-"`
 	SaveOperationID         string            `json:"-"`
 	OwnerTopicID            string            `json:"owner_topic_id,omitempty"`

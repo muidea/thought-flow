@@ -165,6 +165,9 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 	// Match the sections-v2 codec before freezing auxiliary content/links.
 	// This also prevents its EOF newline from looking like an external edit.
 	for _, section := range []*string{&c.Original, &c.ExtractedContent, &c.AINotes, &c.Links} {
+		if section == &c.Original && t.MarkdownImport != nil {
+			continue // Imported source bytes remain immutable across typed edits.
+		}
 		if strings.TrimSpace(*section) == "" {
 			*section = ""
 		} else {

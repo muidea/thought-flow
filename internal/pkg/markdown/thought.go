@@ -283,9 +283,15 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 		writeScalar(&buf, "document_revision_id", thought.Document.RevisionID)
 	}
 	boundary := ""
-	if thought.DocumentProfile != nil || thought.Document != nil {
+	encoding := "sections-v2"
+	if thought.MarkdownImport != nil {
+		encoding = "sections-v3"
+		raw, _ := json.Marshal(thought.MarkdownImport)
+		writeScalar(&buf, "markdown_import", string(raw))
+	}
+	if thought.DocumentProfile != nil || thought.Document != nil || thought.MarkdownImport != nil {
 		boundary = documentstore.HashJSON(content)
-		writeScalar(&buf, "body_encoding", "sections-v2")
+		writeScalar(&buf, "body_encoding", encoding)
 		writeScalar(&buf, "body_boundary", boundary)
 	}
 	writeScalar(&buf, "type", thought.Type)
@@ -328,7 +334,13 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	buf.WriteString("---\n\n")
 	if boundary != "" {
 		for _, section := range []struct{ name, value string }{{"Original", content.Original}, {"Extracted Content", content.ExtractedContent}, {"AI Notes", content.AINotes}, {"Links", content.Links}} {
-			fmt.Fprintf(&buf, "<!-- thoughtflow:%s:%s:start -->\n## %s\n\n%s<!-- thoughtflow:%s:%s:end -->\n\n", boundary, section.name, section.name, documentstore.Normalize(section.value), boundary, section.name)
+			value := documentstore.Normalize(section.value)
+			if encoding == "sections-v3" {
+				// The extra LF belongs to the envelope, not the source. Preserve
+				// BOM, CRLF, indentation and trailing whitespace byte for byte.
+				value = section.value + "\n"
+			}
+			fmt.Fprintf(&buf, "<!-- thoughtflow:%s:%s:start -->\n## %s\n\n%s<!-- thoughtflow:%s:%s:end -->\n\n", boundary, section.name, section.name, value, boundary, section.name)
 		}
 	} else {
 		writeSection(&buf, "Original", content.Original)
@@ -355,11 +367,19 @@ func ParseThought(raw []byte) (models.Thought, models.ThoughtContent) {
 	thought := models.Thought{}
 	if frontMatter, ok := frontMatterText(raw); ok {
 		parseFrontMatter(frontMatter, &thought)
-		normalized := strings.ReplaceAll(text, "\r\n", "\n")
-		if strings.HasPrefix(normalized, "---\n") {
-			if end := strings.Index(normalized[4:], "\n---"); end >= 0 {
-				text = strings.TrimPrefix(normalized[4+end+len("\n---"):], "\n")
+		// Strip only the envelope; normalizing the entire file would also
+		// modify an imported document embedded in a lossless section.
+		for offset := strings.IndexByte(text, '\n') + 1; offset > 0 && offset < len(text); {
+			end := strings.IndexByte(text[offset:], '\n')
+			if end < 0 {
+				break
 			}
+			end += offset
+			if strings.TrimSuffix(text[offset:end], "\r") == "---" {
+				text = text[end+1:]
+				break
+			}
+			offset = end + 1
 		}
 	}
 	content := models.ThoughtContent{
@@ -379,18 +399,21 @@ func ParseThought(raw []byte) (models.Thought, models.ThoughtContent) {
 				encoding = parseScalar(strings.TrimSpace(strings.TrimPrefix(line, "body_encoding:")))
 			}
 		}
-		if encoding == "sections-v2" && boundary != "" {
+		if (encoding == "sections-v2" || encoding == "sections-v3") && boundary != "" {
 			values := []*string{&content.Original, &content.ExtractedContent, &content.AINotes, &content.Links}
 			for i, name := range []string{"Original", "Extracted Content", "AI Notes", "Links"} {
 				start := "<!-- thoughtflow:" + boundary + ":" + name + ":start -->\n## " + name + "\n\n"
 				end := "<!-- thoughtflow:" + boundary + ":" + name + ":end -->"
+				if encoding == "sections-v3" {
+					end = "\n" + end
+				}
 				a := strings.Index(text, start)
 				if a >= 0 {
 					tail := text[a+len(start):]
 					b := strings.Index(tail, end)
 					if b >= 0 {
 						*values[i] = tail[:b]
-						if strings.TrimSpace(*values[i]) == "" {
+						if encoding != "sections-v3" && strings.TrimSpace(*values[i]) == "" {
 							*values[i] = ""
 						}
 					}
@@ -554,7 +577,7 @@ func frontMatterKey(line string) (string, bool) {
 
 func knownThoughtFrontMatterKey(key string) bool {
 	switch key {
-	case "document_id", "document_revision_id", "body_encoding", "body_boundary", "id",
+	case "markdown_import", "document_id", "document_revision_id", "body_encoding", "body_boundary", "id",
 		"type",
 		"source",
 		"user_title",
@@ -611,6 +634,8 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 		key := strings.TrimSpace(parts[0])
 		value := parseScalar(parts[1])
 		switch key {
+		case "markdown_import":
+			_ = json.Unmarshal([]byte(value), &thought.MarkdownImport)
 		case "document_id":
 			if thought.Document == nil {
 				thought.Document = &models.DocumentLink{}
@@ -1040,14 +1065,20 @@ func validateThoughtEncoding(raw []byte) error {
 	if encoding == "" {
 		return nil
 	}
-	if encoding != "sections-v2" || boundary == "" {
+	if (encoding != "sections-v2" && encoding != "sections-v3") || boundary == "" {
 		return documentstore.ErrInvalid
 	}
-	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	text := string(raw)
+	if encoding == "sections-v2" {
+		text = strings.ReplaceAll(text, "\r\n", "\n")
+	}
 	last := 0
 	for _, name := range []string{"Original", "Extracted Content", "AI Notes", "Links"} {
 		start := "<!-- thoughtflow:" + boundary + ":" + name + ":start -->\n## " + name + "\n\n"
 		end := "<!-- thoughtflow:" + boundary + ":" + name + ":end -->"
+		if encoding == "sections-v3" {
+			end = "\n" + end
+		}
 		a, b := strings.Index(text, start), strings.Index(text, end)
 		if strings.Count(text, start) != 1 || strings.Count(text, end) != 1 || a < last || b < a+len(start) {
 			return documentstore.ErrInvalid

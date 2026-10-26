@@ -117,7 +117,7 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 		source = models.ThoughtSourceManual
 	}
 	original := originalContent(cmd)
-	if cmd.DocumentProfile != nil {
+	if cmd.DocumentProfile != nil || cmd.MarkdownImport != nil {
 		original = cmd.Content
 	}
 	contentHash := models.ContentHash(original)
@@ -145,6 +145,7 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	}
 	relPath := location.Placement.ThoughtPath
 	thought := models.Thought{
+		MarkdownImport:          cmd.MarkdownImport,
 		CaptureDraft:            cmd.CaptureDraft,
 		OwnerTopicID:            cmd.OwnerTopicID,
 		ID:                      thoughtID,
@@ -174,6 +175,9 @@ func (s *Service) Capture(ctx context.Context, cmd models.CaptureCommand) (model
 	content := models.ThoughtContent{
 		AINotes: original,
 		Links:   renderLinks(cmd.Links),
+	}
+	if cmd.MarkdownImport != nil {
+		content.Original = cmd.Content
 	}
 
 	if cmd.SaveOperationID != "" {
@@ -401,7 +405,9 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 			return models.ThoughtSnapshot{}, errors.New("body must not be empty")
 		}
 		content.AINotes = body
-		content.Original = ""
+		if thought.MarkdownImport == nil {
+			content.Original = ""
+		}
 		thought.ContentHash = models.ContentHash(body)
 	}
 	if request.AINotes != nil {
@@ -413,7 +419,9 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 			return models.ThoughtSnapshot{}, errors.New("ai_notes must not be empty")
 		}
 		content.AINotes = notes
-		content.Original = ""
+		if thought.MarkdownImport == nil {
+			content.Original = ""
+		}
 		thought.ContentHash = models.ContentHash(notes)
 	}
 	if request.Tags != nil {

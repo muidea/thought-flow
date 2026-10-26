@@ -1423,6 +1423,38 @@ p {
   min-height: 220px;
 }
 
+.preview-box.tf-thought-content {
+  max-height: none;
+  min-height: 0;
+}
+
+.tf-import-panel { margin: 12px 0 20px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.tf-import-panel summary { cursor: pointer; font-weight: 600; }
+.tf-import-panel input { max-width: 100%; margin: 12px 0; }
+.tf-import-error { color: #b42318; }
+.tf-thought-reader { width: min(1280px, calc(100vw - 40px)); height: 90dvh; max-width: none; max-height: 100dvh; padding: 0; border: 1px solid var(--line); border-radius: 12px; color: var(--text); background: white; }
+.tf-thought-reader[open] { display: flex; flex-direction: column; }
+.tf-thought-reader::backdrop { background: rgb(15 23 42 / 55%); }
+.tf-thought-reader.is-expanded { width: 100vw; height: 100dvh; margin: 0; border-radius: 0; }
+.tf-reader-header { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.tf-reader-header h2 { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 18px; margin: 0; }
+.tf-reader-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 18px; }
+.tf-reader-toolbar [aria-pressed="true"] { color: var(--accent-strong); border-color: var(--accent); }
+#thought-reader-notice { padding: 0 18px; margin: 0 0 8px; }
+.tf-reader-layout { display: grid; grid-template-columns: minmax(150px, 230px) minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.tf-reader-layout.no-toc { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+#thought-reader-toc { overflow: auto; padding: 12px; border-right: 1px solid var(--line); }
+.tf-reader-toc-item { display: block; width: 100%; text-align: start; border: none; background: transparent; color: var(--text); padding: 7px; overflow-wrap: anywhere; cursor: pointer; }
+.tf-reader-toc-item:hover, .tf-reader-toc-item:focus-visible { background: #e6f4ff; }
+#thought-reader-content { overflow: auto; padding: 18px max(20px, calc((100% - 82ch) / 2)); min-width: 0; overflow-wrap: anywhere; line-height: 1.8; }
+.tf-reader-source { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+@media (max-width: 700px) {
+  .tf-thought-reader { width: 100vw; height: 100dvh; margin: 0; border-radius: 0; }
+  .tf-reader-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, auto) minmax(0, 1fr); }
+  #thought-reader-toc { max-height: 20dvh; border-right: none; border-bottom: 1px solid var(--line); }
+  #thought-reader-content { padding: 12px 16px; }
+}
+
 textarea.markdown-preview {
   resize: vertical;
   font: inherit;
