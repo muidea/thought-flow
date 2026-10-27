@@ -124,6 +124,12 @@ func (s *Service) startCaptureArchive(sp scratchpad.Scratchpad) error {
 		ctx = ai.WithGenerationScope(ctx, sp.Operation.ID)
 		defer cancel()
 		var err error
+		if sp.DocumentSetID != "" && sp.DocumentSetPlanID != "" {
+			if err = s.archiveDocumentSet(ctx, sp); err != nil {
+				s.scratchpadSvc.FailOperation(sp.SessionID, sp.Operation.ID, err)
+			}
+			return
+		}
 		if sp.SaveCommand != nil && sp.SaveCommand.State != "completed" {
 			if sp.SaveCommand.Mode == "draft" {
 				_, err = s.scratchpadSvc.SaveDraft(ctx, sp.SessionID)

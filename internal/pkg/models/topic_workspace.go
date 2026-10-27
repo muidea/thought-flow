@@ -19,6 +19,8 @@ type ObjectPlacement struct {
 }
 
 type ObjectLocation struct {
+	ManagedSetID        string          `json:"managed_set_id,omitempty"`
+	ManagedMemberKey    string          `json:"managed_member_key,omitempty"`
 	ImportOperationID   string          `json:"import_operation_id,omitempty"`
 	SchemaVersion       int             `json:"schema_version"`
 	ObjectID            string          `json:"object_id"`

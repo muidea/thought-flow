@@ -134,6 +134,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		"git.commit_succeeded",
 		"git.commit_failed",
 		"job.updated",
+		"document_set.progress", "document_set.awaiting_review", "document_set.committed", "document_set.failed", "document_set.finalized",
 		"document.revision_created",
 		"document.validation_completed",
 		"document.finalized", "document.deleted",

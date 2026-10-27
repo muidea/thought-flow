@@ -2578,3 +2578,12 @@ textarea:focus-visible {
 .collection-catalog[hidden]{display:none!important}
 .collection-reader:has(.collection-catalog[hidden]){grid-template-columns:1fr}
 @media(max-width:760px){.collection-catalog[role=dialog]{position:fixed;inset:1rem;z-index:20;max-height:calc(100dvh - 2rem);padding:1rem;background:var(--surface,#20242c);box-shadow:0 0 0 100vmax #0009}.collection-close{display:block}}
+.tf-set-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin:.75rem 0}
+.tf-document-set .collection-reader{display:grid;grid-template-columns:minmax(12rem,22%) minmax(0,1fr);gap:1rem}
+.tf-document-set article{min-width:0;overflow-wrap:anywhere}
+.tf-document-set pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.tf-document-set nav{position:sticky;top:1rem;align-self:start;max-height:70vh;overflow:auto}
+.tf-document-set-review details{margin-block:1rem}
+.tf-document-dialog fieldset{margin-block:1rem;padding:1rem}
+.tf-document-dialog fieldset label{display:block;margin-block:.5rem}
+@media(max-width:760px){.tf-document-set .collection-reader{grid-template-columns:1fr}.tf-document-set nav{position:static;max-height:35vh}.tf-document-set article{width:100%}}

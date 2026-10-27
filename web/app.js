@@ -689,6 +689,9 @@ let topicRequestEpoch = 0;
 let collectionReadEpoch = 0;
 let collectionSearchEpoch = 0;
 let collectionWorkspace = null;
+let captureDocumentSet = null;
+let captureSetEpoch = 0;
+let setSearchEpoch = 0;
 let markdownResourceContext = null;
 let thoughtRequestEpoch = 0;
 let composeRequestEpoch = 0;
@@ -703,6 +706,7 @@ async function captureAPI(scope,path,options) {
 }
 function beginCaptureSelection() {
   captureSelectionEpoch++;
+ captureSetEpoch++;
   if (state.capture.activeThoughtId && window.tflowSessionLock) {
     window.tflowSessionLock.release(state.capture.activeThoughtId, state.capture.sessionId);
   }
@@ -960,7 +964,17 @@ function renderInlineMarkdown(value) {
   return text;
 }
 
+let documentSetRenderContext = null;
 function cleanMarkdownHref(value) {
+ const logical=String(value || "").trim();
+ if (/^(docset|thought|topic):\/\//.test(logical)) {
+  try { const link=new URL(logical); if(link.username||link.password||link.search) return "";
+   if(link.protocol==="thought:" && /^[a-zA-Z0-9_.-]+$/.test(link.hostname))return buildRouteHash("thoughts",{thoughtId:link.hostname},{id:link.hostname});
+   if(link.protocol==="topic:" && /^[a-zA-Z0-9_.-]+$/.test(link.hostname))return buildRouteHash("topics",{topicId:link.hostname},{tab:"documents"});
+   if(link.protocol==="docset:" && documentSetRenderContext?.id===link.hostname){const key=decodeURIComponent(link.pathname.slice(1));if(documentSetRenderContext.keys.has(key))return setRoute(link.hostname,documentSetRenderContext.revision,key,decodeURIComponent(link.hash.slice(1)));}
+  }catch(_){} return "";
+ }
+
  if(String(value||"").startsWith("resource://"))return resourceContentHref(value);
  const mapped=markdownResourceContext?.links?.[String(value||"")];if(mapped)return resourceContentHref(`resource://${mapped}`);
   const href = String(value || "").trim();
@@ -1004,7 +1018,7 @@ function installSafeLinkRenderers(parser) {
     } else {
       token.attrSet("href", href);
     }
-    token.attrSet("target", "_blank");
+    token.attrSet("target",href.startsWith("#")?"_self":"_blank");
     token.attrSet("rel", "noreferrer");
     return defaultLinkOpen(tokens, index, options, env, self);
   };
@@ -2535,12 +2549,14 @@ function renderCaptureConversation() {
   if (!list) return;
   // Backend context and generated previews are internal state, never chat content.
   const status = captureArchiveStatusMessage();
+ const setMessage = captureDocumentSetMessage();
   const messages = (state.capture.messages || []).filter((msg) =>
     msg.kind !== "archive_preview" &&
     (msg.kind !== "context" || msg.pending || stringsTrim(msg.sessionContext?.assistant_reply)) &&
     !(status?.thoughtId && msg.thoughtId === status.thoughtId)
   );
   if (status) messages.push(status);
+ if (setMessage) messages.push(setMessage);
   if (messages.length === 0) {
     list.innerHTML = `<li class="tf-msg tf-msg-system tf-msg-empty">${escapeHTML(t("capture.session.idle"))}</li>`;
   } else {
@@ -2556,6 +2572,7 @@ function renderCaptureConversation() {
   }
   list.scrollTop = list.scrollHeight;
   renderCaptureLockIndicator();
+ bindSetReviewButtons();
 }
 
 function captureValidationMessage(issue) {
@@ -2711,13 +2728,7 @@ function renderCaptureSessionsDrawer() {
   // Capture history is server-owned. The browser keeps only the
   // in-memory list used by the currently open drawer; no historical
   // session content or summaries are written to localStorage.
-  const local = state.capture.sessions || [];
-  if (local.length === 0) {
-    list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
-  } else {
-    list.innerHTML = local.map(renderCaptureSessionItem).join("");
-    bindCaptureSessionListActions(list);
-  }
+  redrawCaptureSessionsList();
   refreshCaptureSessionsFromServer();
 }
 
@@ -2804,11 +2815,14 @@ function redrawCaptureSessionsList() {
   const list = $("#capture-sessions-list");
   if (!list) return;
   const sessions = state.capture.sessions || [];
-  if (sessions.length === 0) {
-    list.innerHTML = `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`;
-    return;
-  }
-  list.innerHTML = sessions.map(renderCaptureSessionItem).join("");
+  const markup = sessions.length === 0
+    ? `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`
+    : sessions.map(renderCaptureSessionItem).join("");
+  // Preserve focus and an in-progress pointer click when a background refresh
+  // confirms the same list. Replacing buttons between down/up drops the click.
+  if (list.__captureSessionsMarkup === markup) return;
+  list.__captureSessionsMarkup = markup;
+  list.innerHTML = markup;
   bindCaptureSessionListActions(list);
 }
 
@@ -2881,6 +2895,7 @@ async function deleteCaptureSession(sessionId) {
   saveCaptureSessions();
   if (state.capture.sessionId === id) {
     captureSelectionEpoch++;
+ captureSetEpoch++;
     if (state.capture.activeThoughtId && window.tflowSessionLock) {
       window.tflowSessionLock.release(state.capture.activeThoughtId, id);
     }
@@ -3018,6 +3033,7 @@ async function stageScratchpadTurn(text) {
 
 async function appendSessionMessage(text) {
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   const turnMessageKey = latestCaptureUserTurnKey();
   let scratchpad;
@@ -3423,6 +3439,7 @@ async function dispatchThoughtCommand(parsed) {
 // endpoint in the current PRD flow.
 async function patchScratchpad(draft) {
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   const sp = state.capture.activeScratchpad;
   if (!sp) {
@@ -3504,6 +3521,7 @@ async function resolveScratchpadTopic(topicRef) {
 
 async function requestCaptureArchive({ intent = "llm", strategy = "" } = {}) {
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   if (!state.capture.sessionId) {
     appendCaptureMessage({ role: "system", text: t("toast.request_failed") });
@@ -3569,6 +3587,7 @@ async function requestCaptureArchive({ intent = "llm", strategy = "" } = {}) {
 async function openNewCaptureSession() {
   beginCaptureSelection();
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   let next;
   try {
@@ -3595,6 +3614,7 @@ async function openNewCaptureSession() {
 
 async function patchActiveThought(patch) {
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   const thoughtId = state.capture.activeThoughtId;
   if (!thoughtId) return;
@@ -4287,11 +4307,13 @@ function applyScratchpadToCaptureState(sp, options = {}) {
   }
   renderCaptureConversation();
   refreshActiveCaptureThought();
+ if(sp.document_set_run_id)pollCaptureDocumentSet(sp.session_id,sp.document_set_run_id).catch(error=>toast(error.message));
 }
 
 async function reopenThoughtInCapture(thoughtId) {
   beginCaptureSelection();
   captureSelectionEpoch++;
+ captureSetEpoch++;
   const scope = captureRequestScope();
   const id = String(thoughtId || "").trim();
   if (!id) return;
@@ -4790,6 +4812,7 @@ async function refreshTopic() {
 
 const DOMAIN_EVENT_TYPES = [
  "object.placement_changed","topic.migration_completed","topic.migration_failed","thought.restored","topic.catalog_updated","topic.search_policy_updated","thought.search_policy_updated","thought.ownership_changed","topic.resource_updated","topic.snapshot_created","topic.mode_changed","topic.deleted",
+ "document_set.progress", "document_set.awaiting_review", "document_set.committed", "document_set.failed", "document_set.finalized",
  "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted",
   "thought.captured",
   "thought.deleted",
@@ -4865,7 +4888,7 @@ function connectEvents() {
       // 1.95 s refreshActiveScratchpadContext poll is a best-effort
       // fast path that loses gracefully when LLM round-trips take
       // 30-90 s.
-      if (CAPTURE_EVENT_TYPES.has(type)) {
+      if (CAPTURE_EVENT_TYPES.has(type) || type.startsWith("document_set.")) {
         handleCaptureEvent(type, event.data);
       }
     });
@@ -4950,6 +4973,13 @@ function handleComposeEvent(type, rawData) {
 // for the same thought collapse to the latest snapshot, and re-renders
 // are full re-renders so we accept a small re-render churn cost.
 async function handleCaptureEvent(type, rawData) {
+ if(type.startsWith("document_set.")){
+  let event;try{event=typeof rawData==="string"?JSON.parse(rawData):rawData;}catch{return;}
+  const scope=captureRequestScope();const id=event.payload?.run_id||event.run_id;if(!id||!scope.sessionId)return;
+  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(!scope.isCurrent()||run.plan.capture.session_id!==scope.sessionId)return;
+  captureDocumentSet={session:scope.sessionId,run};renderCaptureConversation();return;
+ }
+
   let payload = null;
   try { payload = JSON.parse(rawData); } catch (_) { return; }
   if (!payload) return;
@@ -5132,6 +5162,8 @@ function renderRoute(route = state.route) {
 }
 
 async function applyRoute(hash = window.location.hash, options = {}) {
+ if(documentEditor?.dirty && documentEditor.routeHash!==hash && !options.keepEditor && !window.confirm(t("docset.unsaved"))){history.replaceState(null,"",documentEditor.routeHash||"#/notes");return;}
+
   const serial = ++routeApplySerial;
   const route = parseRoute(hash);
   state.route = route;
@@ -5332,6 +5364,7 @@ function rerenderForLocale() {
 }
 
 async function boot() {
+ window.addEventListener("beforeunload",event=>{if(documentEditor?.dirty){event.preventDefault();event.returnValue="";}});
   if (typeof tInit === "function") tInit();
   // Apply static translations to data-i18n elements BEFORE the async loaders
   // run, so the initial paint shows the chosen locale. Dynamic elements
@@ -5369,6 +5402,7 @@ async function boot() {
     try { window.tflowSessionLock.sweepStaleLocks(); } catch (_error) { /* ignore */ }
   }
   bind();
+ $("#capture-generate-set")?.addEventListener("click",()=>openCaptureDocumentSet().catch(error=>toast(error.message)));
   // Render the source counter once the page is reachable. Done here so the
   // rehydrated count shows even before the user opens the compose page.
   if (typeof renderComposeSources === "function") {
@@ -5427,8 +5461,17 @@ function documentCanFinalize(editor) {
  return !editor.dirty && !editor.busy && !editor.serverChanged && snapshot.freshness === "current" && snapshot.report && !["failed", "running", "not_run"].includes(snapshot.report.status)
    && !(snapshot.report.issues || []).some(issue => issue.severity === "error" && !issue.human_confirmation);
 }
+let documentOpenEpoch=0;
 async function openDocumentEditor(id) {
+ if(documentEditor?.busy)return;
+ if(documentEditor?.dirty&&!window.confirm(t("docset.unsaved")))return;
+ const openEpoch=++documentOpenEpoch;
+ const thought = await api(`/api/thoughts/${encodeURIComponent(id)}`);
+ if(openEpoch!==documentOpenEpoch)return;
+ if(!thought.thought?.document){return openPlainThoughtEditor(thought);}
  const snapshot = await api(`/api/documents/${encodeURIComponent(id)}`);
+ if(openEpoch!==documentOpenEpoch)return;
+ if(documentEditor?.dirty && !window.confirm(t("docset.unsaved")))return;
  documentEditor?.dialog?.remove();
  const dialog = document.createElement("dialog");
  dialog.className = "tf-document-dialog";
@@ -5448,7 +5491,7 @@ async function openDocumentEditor(id) {
  <a class="tf-btn" data-document-final-export>${escapeHTML(t("document.export_final"))}</a></div>`;
  document.body.appendChild(dialog);
  const editor = { id, snapshot, dialog, dirty:false, busy:false, epoch:0, serverChanged:false };
- documentEditor = editor;
+ editor.routeHash=window.location.hash;documentEditor = editor;
  for(const source of snapshot.source_manifest.sources || [])appendDocumentSource(editor,source);
  dialog.querySelector("[data-document-add-source]").addEventListener("click",()=>{appendDocumentSource(editor,{source_id:`S${dialog.querySelectorAll("[data-document-source]").length+1}`,type:"external",verification_status:"unverified"});editor.dirty=true;editor.epoch++;renderDocumentStatus(editor);});
  dialog.querySelector("[data-document-body]").value = snapshot.body;
@@ -5461,6 +5504,9 @@ async function openDocumentEditor(id) {
   if (!event.target.matches("[data-document-body],[data-document-input],[data-document-source] input,[data-document-source] textarea")) return;
   editor.epoch++; editor.dirty=true; renderDocumentStatus(editor);
  });
+ dialog.addEventListener("keydown",event=>{if(event.key!=="Escape")return;event.preventDefault();event.stopPropagation();if(!editor.busy&&(!editor.dirty||window.confirm(t("docset.unsaved"))))dialog.close();});
+ dialog.addEventListener("cancel", event=>{if(editor.busy || (editor.dirty&&!window.confirm(t("docset.unsaved"))))event.preventDefault();});
+ dialog.querySelector('form[method="dialog"]').addEventListener("submit",event=>{if(editor.busy || (editor.dirty&&!window.confirm(t("docset.unsaved"))))event.preventDefault();});
  dialog.addEventListener("close", () => { if (documentEditor === editor) documentEditor=null;dialog.remove(); });
  const action = (selector,fn) => dialog.querySelector(selector).addEventListener("click", () => documentEditorAction(editor,fn).catch(error => toast(error.message)));
  action("[data-document-save]", () => saveDocumentEditor(editor));
@@ -5579,7 +5625,12 @@ function resourceContentHref(value) {
   )
     return "";
   const { links, ...context } = markdownResourceContext;
-  const query = new URLSearchParams(context);
+  if (documentSetRenderContext?.member) {
+ context.set_id=documentSetRenderContext.id;
+ context.set_revision=documentSetRenderContext.revision;
+ context.member_key=documentSetRenderContext.member;
+ }
+ const query = new URLSearchParams(context);
   return `/api/resources/${encodeURIComponent(id)}/content?${query}`;
 }
 function collectionLocalKey(topic) {
@@ -5615,6 +5666,13 @@ function collectionRoute(entry, view = "final", revision = "", section = "") {
   );
 }
 async function openCollectionWorkspace(topic, topicEpoch) {
+ if (state.route?.query?.references !== "1") {
+  try { const set = await api(`/api/document-sets/${encodeURIComponent(topic)}`);
+   if(topicEpoch !== topicRequestEpoch || state.route?.params?.topicId !== topic)return;
+   if(set?.head?.working_set_revision){await renderDocumentSetWorkspace(topic,set,topicEpoch);return;}
+  } catch(error) { if(error.status && error.status !== 404) throw error; }
+ }
+
   const data = await api(`/api/topics/${encodeURIComponent(topic)}/catalog`);
   if (
     topicEpoch !== topicRequestEpoch ||
@@ -5972,7 +6030,7 @@ function renderCollectionEditor() {
    )
    .join(
      "",
-   )}</select></label><label>${escapeHTML(t("workspace.profile"))}<select name="profile"><option value="builtin.design-doc">Design</option><option value="builtin.research-report">Research</option><option value="builtin.blog-post">Article</option></select></label><label>${escapeHTML(t("workspace.initial_body"))}<textarea name="content" required></textarea></label><button class="tf-btn">${escapeHTML(t("workspace.create_draft"))}</button></form>
+   )}</select></label><label>${escapeHTML(t("workspace.profile"))}<select name="profile">${renderDocumentProfileOptions()}</select></label><div data-role-inputs></div><label>${escapeHTML(t("workspace.initial_body"))}<textarea name="content" required></textarea></label><button class="tf-btn">${escapeHTML(t("workspace.create_draft"))}</button></form>
  <h4>${escapeHTML(t("workspace.uncatalogued"))}</h4><div>${data.uncatalogued.map((l) => `<p>${escapeHTML(l.object_id)} · ${escapeHTML(l.placement.thought_path)}<button class="tf-btn" data-bind-owned="${escapeHTML(l.object_id)}">${escapeHTML(t("workspace.bind"))}</button></p>`).join("") || escapeHTML(t("workspace.none"))}</div>
  <h4>${escapeHTML(t("workspace.deleted"))}</h4><p>${escapeHTML(t("workspace.restore_notice"))}</p>${(data.deleted||[]).map(l=>`<p>${escapeHTML(l.object_id)} <button class="tf-btn" data-restore-thought="${escapeHTML(l.object_id)}" data-generation="${l.generation}">${escapeHTML(t("workspace.restore"))}</button></p>`).join("")}
  <form id="collection-placement"><label>${escapeHTML(t("workspace.thought_id"))}<input name="thought_id" required></label><label>${escapeHTML(t("workspace.search_policy"))}<select name="global_search">${["inherit", "include", "exclude"].map((k) => `<option value="${k}">${escapeHTML(t(`workspace.${k}`))}</option>`).join("")}</select></label><button class="tf-btn">${escapeHTML(t("workspace.save_policy"))}</button></form>
@@ -6331,14 +6389,15 @@ function renderCollectionEditor() {
     if (!current()) return;
     await loadTopics();
   });
-  $("#collection-draft").onsubmit = action(async (e, api, current) => {
+  const roleForm=$("#collection-draft");const updateRoleInputs=()=>{const selected=roleForm.elements.profile.selectedOptions[0];const p=profileByID(roleForm.elements.profile.value,Number(selected?.dataset.version));const root=roleForm.querySelector("[data-role-inputs]");if(root)root.innerHTML=(p?.inputs||[]).map(input=>`<label>${escapeHTML(input.label||input.key)}<textarea data-role-input="${escapeHTML(input.key)}" ${input.required?"required":""}></textarea></label>`).join("");};if(roleForm?.elements?.profile){roleForm.elements.profile.onchange=updateRoleInputs;updateRoleInputs();}
+ $("#collection-draft").onsubmit = action(async (e, api, current) => {
     const f = e.target;
     const profiles = await api("/api/document-profiles");
     const list = Array.isArray(profiles)
       ? profiles
       : profiles.items || profiles.profiles || [];
     const profile = list.find(
-      (p) => (p.ref || p).profile_id === f.elements.profile.value,
+      (p) => (p.ref || p).profile_id === f.elements.profile.value && Number((p.ref||p).version)===Number(f.elements.profile.selectedOptions[0]?.dataset.version),
     );
     if (!profile) throw new Error(t("workspace.profile_missing"));
     await api(
@@ -6349,7 +6408,7 @@ function renderCollectionEditor() {
           operation_id: workspaceOperationID(),
           expected_generation: data.catalog.generation,
           profile: profile.ref || profile,
-          parameters: {},
+          parameters: Object.fromEntries([...f.querySelectorAll("[data-role-input]")].map(input=>[input.dataset.roleInput,input.value])),
           content: f.elements.content.value,
         }),
       },
@@ -6377,4 +6436,139 @@ async function saveCollectionCatalog(catalog, topic = state.activeTopicId, reque
     throw new Error(`${t("workspace.conflict_preserve")} ${error.message}`);
   }
 }
+
+
+// A set route always carries the exact immutable set revision. Async actions
+// additionally bind to topic epoch and the particular installed DOM root.
+
+function setRoute(id,revision,member="",section="") {
+ return buildRouteHash("topics",{topicId:id},{tab:"documents",set_revision:revision,...(member?{member}:{}),...(section?{section}:{})});
+}
+function captureDocumentSetMessage(){
+ const session=currentCaptureSession();
+ const data=captureDocumentSet;
+ if(!data || data.session!==session)return null;
+ const run=data.run;const plan=run?.plan||data.plan;
+ const status=run?.state||"planning";
+ let html=`<div class="tf-msg-body"><strong>${escapeHTML(t("docset.title"))}</strong><p>${escapeHTML(t(`docset.state.${status}`))}</p>`;
+ if(plan){html+=`<p>${escapeHTML(plan.profile?.name||"")} · ${plan.members?.length||0} ${escapeHTML(t("docset.files"))}</p><details><summary>${escapeHTML(t("docset.plan"))}</summary><ul>${(plan.members||[]).map(m=>`<li>${escapeHTML(m.title)} — ${escapeHTML(m.role)}</li>`).join("")}</ul></details>`;}
+ if(run){html+=`<ul>${(run.members||[]).map(m=>`<li>${escapeHTML(m.member_key)}: ${escapeHTML(m.state)}${m.error?` — ${escapeHTML(m.error)}`:""}</li>`).join("")}</ul>`;if(run.state==="committed"){html+=`<a href="${escapeHTML(setRoute(run.plan.set_id,run.candidate.set_revision_id))}">${escapeHTML(t("docset.open"))}</a>`;}else if(run.state==="awaiting_review"){html+=`<button class="tf-btn" data-set-review-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.review"))}</button>`;}}
+ if(run){if(run.state==="committed"&&run.error)html+=`<button class="tf-btn" data-set-recover-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.recover"))}</button>`;if(["queued","planning","generating","checking","committing","ready"].includes(run.state))html+=`<button class="tf-btn" data-set-cancel-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.cancel"))}</button>`;if(["failed_retryable","failed_terminal","cancelled","awaiting_review"].includes(run.state))html+=`<button class="tf-btn" data-set-retry-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.retry"))}</button>`;if(run.reconciliations?.length)html+=`<details><summary>${escapeHTML(t("docset.diff"))}</summary>${run.reconciliations.map(c=>`<h4>${escapeHTML(c.member_key)}</h4><div class="tf-set-diff"><pre>${escapeHTML(c.base)}</pre><pre>${escapeHTML(c.generated)}</pre><pre>${escapeHTML(c.manual)}</pre></div>`).join("")}</details>`;}
+ if(data.error||run?.error)html+=`<p role="alert">${escapeHTML(data.error||run.error)}</p>`;
+ const questions=plan?.shared_design?.open_questions||[];if(questions.some(q=>q.blocking))html+=`<ul>${questions.filter(q=>q.blocking).map(q=>`<li>${escapeHTML(q.message)}</li>`).join("")}</ul>`;
+ return {role:"system",kind:"document_set",html:html+"</div>"};
+}
+function currentCaptureSession(){return state.capture.activeScratchpad?.session_id||state.capture.activeSessionId||state.capture.sessionId;}
+async function openCaptureDocumentSet(){
+ const session=currentCaptureSession();if(!session){toast(t("docset.need_session"));return;}
+ const epoch=++captureSetEpoch;const profiles=await api("/api/document-set-profiles");if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;
+ const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";
+ dialog.innerHTML=`<form><h2>${escapeHTML(t("docset.generate"))}</h2><label>${escapeHTML(t("workspace.profile"))}<select name="profile">${profiles.map((p,i)=>`<option value="${i}">${escapeHTML(p.name)}</option>`).join("")}</select></label><p data-budget></p><p>${escapeHTML(t("docset.generation_notice"))}</p><label>${escapeHTML(t("docset.markdown_import"))}<input data-set-files type="file" accept=".md,text/markdown" multiple></label><button class="tf-btn tf-btn-primary" type="submit">${escapeHTML(t("docset.generate"))}</button><button class="tf-btn" data-cancel type="button">${escapeHTML(t("common.close"))}</button></form>`;
+ document.body.appendChild(dialog);const select=dialog.querySelector("select");const budget=()=>{const p=profiles[Number(select.value)];dialog.querySelector("[data-budget]").textContent=`${t("docset.budget")}: ${p.limits.max_members} ${t("docset.files")}, ${p.limits.max_calls} ${t("docset.calls")}`;};select.onchange=budget;budget();dialog.querySelector("[data-cancel]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();
+ dialog.querySelector("form").onsubmit=async event=>{
+  event.preventDefault();const p=profiles[Number(select.value)];const files=[...(dialog.querySelector("[data-set-files]")?.files||[])];dialog.close();captureDocumentSet={session};renderCaptureConversation();
+  try{
+   const sp=await api(`/api/capture/sessions/${encodeURIComponent(session)}`);if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;
+   const existing=sp.document_set_id;let base=0;if(existing){try{base=(await api(`/api/document-sets/${encodeURIComponent(existing)}`)).head.generation;}catch(error){if(error.status&&error.status!==404)throw error;}}
+   const plan=await api(`/api/capture/sessions/${encodeURIComponent(session)}/document-set-plans`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),...(existing?{set_id:existing}:{}),name:p.name,expected_generation:base,capture_generation:sp.input_generation,profile_id:p.profile_id,profile_version:p.version,profile_hash:p.content_hash})});
+   if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;captureDocumentSet={session,plan};renderCaptureConversation();if(plan.shared_design.open_questions?.some(q=>q.blocking))return;
+   let markdownPreview="";if(files.length){markdownPreview=await previewSetMarkdown(session,plan,files,epoch);if(!markdownPreview)return;}
+   const run=await api(`/api/capture/sessions/${encodeURIComponent(session)}/document-set-runs`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),set_id:plan.set_id,plan_id:plan.plan_id,plan_hash:plan.plan_hash,...(markdownPreview?{markdown_preview_id:markdownPreview}:{}),expected_generation:base,capture_generation:plan.capture.generation})});
+   if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;await pollCaptureDocumentSet(session,run.run_id,epoch);
+  }catch(error){if(epoch===captureSetEpoch&&currentCaptureSession()===session){captureDocumentSet={session,error:error.message};renderCaptureConversation();}}
+ };
+ dialog.showModal();
+}
+async function pollCaptureDocumentSet(session,id,epoch=++captureSetEpoch){
+ const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;
+ captureDocumentSet={session,run};renderCaptureConversation();bindSetReviewButtons();
+ if(["queued","planning","generating","checking","committing","ready"].includes(run.state))setTimeout(()=>{if(epoch===captureSetEpoch&&currentCaptureSession()===session)pollCaptureDocumentSet(session,id,epoch).catch(error=>toast(error.message));},1200);
+}
+function bindSetReviewButtons(){
+ document.querySelectorAll("[data-set-cancel-run],[data-set-retry-run],[data-set-recover-run]").forEach(button=>{button.onclick=async()=>{const session=currentCaptureSession(),epoch=captureSetEpoch;const id=button.dataset.setCancelRun||button.dataset.setRetryRun||button.dataset.setRecoverRun;button.disabled=true;try{let run;if(button.dataset.setRecoverRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/recover`,{method:"POST",body:"{}"});}else if(button.dataset.setCancelRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/cancel`,{method:"POST",body:"{}"});}else{const old=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);const uncertain=old.calls.some(c=>["running","uncertain"].includes(c.state));if(uncertain&&!window.confirm(t("docset.uncertain")))return;run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/retry`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:old.plan.base_generation,acknowledge_uncertain:uncertain})});}if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;await pollCaptureDocumentSet(session,run.run_id);}catch(error){if(epoch===captureSetEpoch&&currentCaptureSession()===session)toast(error.message);}finally{if(button.isConnected)button.disabled=false;}};});
+ document.querySelectorAll("[data-set-review-run]").forEach(button=>{button.onclick=()=>openSetReview(button.dataset.setReviewRun).catch(error=>toast(error.message));});
+}
+async function openSetReview(id){
+ const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(!run.candidate)return;
+ const r=run.candidate;const report=r.validation;
+ const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";
+ dialog.innerHTML=`<form><h2>${escapeHTML(t("docset.review"))}</h2><p>${escapeHTML(t("docset.manual_notice"))}</p><ul>${report.issues.map(i=>`<li>${escapeHTML(i.code)}: ${escapeHTML(i.message)}</li>`).join("")}</ul><div class="tf-document-set-review">${r.members.map(a=>`<details><summary>${escapeHTML(a.member_key)}</summary><div class="markdown-rendered">${renderMarkdown(a.body)}</div></details>`).join("")}</div>${report.checklist.map((item,index)=>`<fieldset data-review-item="${index}"><legend>${escapeHTML(item.id)}</legend><label>${escapeHTML(t("docset.reason"))}<textarea name="reason" required></textarea></label>${item.members.map(key=>`<label>${escapeHTML(key)} · ${escapeHTML(t("docset.section"))}<input data-member="${escapeHTML(key)}" name="section" required></label><label>${escapeHTML(t("docset.evidence"))}<textarea name="evidence" required></textarea></label>`).join("")}</fieldset>`).join("")}${report.issues.filter(i=>i.confirmable).map(i=>`<label>${escapeHTML(i.message)} · ${escapeHTML(t("docset.reason"))}<textarea data-risk="${escapeHTML(i.id)}" required></textarea></label>`).join("")}<button class="tf-btn" type="submit" ${report.structural_status!=="passed"||report.issues.some(i=>i.severity==="error")?"disabled":""}>${escapeHTML(t("docset.submit_review"))}</button><button class="tf-btn" type="button" data-close>${escapeHTML(t("common.close"))}</button><p data-error role="alert"></p></form>`;
+ document.body.appendChild(dialog);let reviewDirty=false;dialog.addEventListener("input",()=>reviewDirty=true);const closeReview=()=>!reviewDirty||window.confirm(t("docset.unsaved"));dialog.querySelector("[data-close]").onclick=()=>{if(closeReview())dialog.close();};dialog.oncancel=event=>{if(!closeReview())event.preventDefault();};dialog.onclose=()=>dialog.remove();
+ dialog.querySelector("form").onsubmit=async event=>{event.preventDefault();const evidence=[...dialog.querySelectorAll("[data-review-item]")].map(field=>{const item=report.checklist[Number(field.dataset.reviewItem)];return{check_id:item.id,verdict:"passed",reason:field.querySelector('[name="reason"]').value,locations:[...field.querySelectorAll('[name="section"]')].map((input,index)=>({member_key:input.dataset.member,section:input.value,evidence:field.querySelectorAll('[name="evidence"]')[index].value}))};});
+  try{await api(`/api/document-sets/${encodeURIComponent(run.plan.set_id)}/reviews`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:run.plan.base_generation,candidate_manifest_hash:report.candidate_manifest_hash,run_id:id,reviewer:"workspace user",evidence,decisions:report.issues.filter(i=>i.confirmable).map(i=>({issue_id:i.id,reason:dialog.querySelector(`[data-risk="${CSS.escape(i.id)}"]`).value,locations:i.locations}))})});dialog.close();if(currentCaptureSession()===run.plan.capture.session_id)pollCaptureDocumentSet(currentCaptureSession(),id).catch(error=>toast(error.message));}catch(error){dialog.querySelector("[data-error]").textContent=error.message;}
+ };dialog.showModal();
+}
+async function renderDocumentSetWorkspace(id,data,topicEpoch){
+ const root=$("#topic-document");if(!root)return;const h=data.head;const rev=state.route?.query?.set_revision || h.finalized_set_revision || h.working_set_revision;
+ const r=data.revisions.find(v=>v.set_revision_id===rev);if(!r)throw new Error(t("docset.version_missing"));
+ const token=()=>topicEpoch===topicRequestEpoch&&state.route?.params?.topicId===id&&$("#topic-document")===root&&root.dataset.setRevision===rev;
+ root.dataset.setRevision=rev;
+ let savedPosition=null;try{savedPosition=JSON.parse(localStorage.getItem(`thoughtflow.documentset-reading.${id}`)||"null");}catch{}
+ let key=state.route?.query?.member || (savedPosition?.revision===rev?savedPosition.member:"") || r.members[0]?.member_key;const selected=r.members.find(a=>a.member_key===key);if(!selected)throw new Error(t("workspace.entry_missing"));
+ root.innerHTML=`<section class="tf-document-set"><div class="collection-toolbar"><h2>${escapeHTML(r.plan.profile.name)}</h2><label>${escapeHTML(t("docset.version"))}<select data-set-version>${data.revisions.map(v=>`<option value="${escapeHTML(v.set_revision_id)}" ${v.set_revision_id===rev?"selected":""}>${escapeHTML(v.set_revision_id)}${v.set_revision_id===h.finalized_set_revision?` · ${escapeHTML(t("docset.final"))}`:v.set_revision_id===h.working_set_revision?` · ${escapeHTML(t("docset.working"))}`:""}</option>`).join("")}</select></label></div><p>${escapeHTML(t("docset.level"))}: ${escapeHTML(h.finalized_set_revision===rev?h.finalization?.delivery_level:"working")} · ${escapeHTML(r.validation.semantic_status)}</p><div class="tf-set-actions"><button class="tf-btn" data-set-menu>${escapeHTML(t("workspace.catalog"))}</button><button class="tf-btn" data-set-finalize ${h.working_set_revision!==rev?"disabled":""}>${escapeHTML(t("docset.finalize"))}</button>${["delivery","diagnostic","backup"].map(kind=>`<button class="tf-btn" data-set-export="${kind}">${escapeHTML(t(`docset.export.${kind}`))}</button>`).join("")}<a class="tf-btn" href="${escapeHTML(buildRouteHash("topics",{topicId:id},{tab:"documents",references:"1"}))}">${escapeHTML(t("docset.references"))}</a></div><div class="collection-reader"><nav data-set-nav><ul>${r.members.map(a=>`<li><a href="${escapeHTML(setRoute(id,rev,a.member_key))}" ${a.member_key===key?'aria-current="page"':""}>${escapeHTML(a.contract.title)}</a></li>`).join("")}</ul></nav><article><div class="tf-set-actions"><button class="tf-btn" data-set-prev>${escapeHTML(t("workspace.previous"))}</button><button class="tf-btn" data-set-next>${escapeHTML(t("workspace.next"))}</button><button class="tf-btn" data-set-copy>${escapeHTML(t("workspace.copy_link"))}</button><button class="tf-btn" data-set-edit>${escapeHTML(t("document.open"))}</button></div><div class="markdown-rendered" data-set-body data-member="${escapeHTML(key)}" data-section="${escapeHTML(state.route?.query?.section||"")}"></div></article></div><details><summary>${escapeHTML(t("docset.shared"))}</summary><pre>${escapeHTML(JSON.stringify(r.plan.shared_design,null,2))}</pre></details><details><summary>${escapeHTML(t("docset.report"))}</summary><ul>${(r.validation.issues||[]).map(issue=>`<li>${escapeHTML(issue.message)} ${(issue.locations||[]).map(location=>`<a href="${escapeHTML(setRoute(id,rev,location.member_key,location.section))}">${escapeHTML(location.member_key)} · ${escapeHTML(location.section)}</a><blockquote>${escapeHTML(location.evidence||"")}</blockquote>`).join("")}</li>`).join("")}</ul><pre>${escapeHTML(JSON.stringify(r.validation,null,2))}</pre></details><form data-set-search><input type="search" name="q" required aria-label="${escapeHTML(t("workspace.search"))}"><button class="tf-btn">${escapeHTML(t("workspace.search"))}</button></form><div data-set-results></div></section>`;
+ const previous=documentSetRenderContext;documentSetRenderContext={id,revision:rev,member:key,keys:new Set(r.members.map(a=>a.member_key))};try{root.querySelector("[data-set-body]").innerHTML=renderObjectMarkdown(selected.body,selected.document_id,selected.resource_bindings?.bindings||[]);}finally{documentSetRenderContext=previous;}
+ const setBody=root.querySelector("[data-set-body]");const headingIDs=new Map();setBody.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach(heading=>{const base=heading.textContent.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu,"").trim().replace(/[\s_]+/g,"-")||"section";const n=headingIDs.get(base)||0;headingIDs.set(base,n+1);heading.id=n?`${base}-${n}`:base;});
+ const headings=[...setBody.querySelectorAll("h1,h2,h3,h4,h5,h6")];if(headings.length){const toc=document.createElement("details");toc.className="collection-toc";toc.innerHTML=`<summary>${escapeHTML(t("workspace.sections"))}</summary>${headings.map(heading=>`<p><a href="${escapeHTML(setRoute(id,rev,key,heading.id))}">${escapeHTML(heading.textContent)}</a></p>`).join("")}`;setBody.prepend(toc);}
+ setBody.querySelectorAll('a[href^="#"]').forEach(link=>link.onclick=event=>{const href=link.getAttribute("href");if(!token()||href.startsWith("#/"))return;event.preventDefault();let section=href.slice(1);try{section=decodeURIComponent(section);}catch{}navigateHash(setRoute(id,rev,key,section));});
+ const section=state.route?.query?.section || (!state.route?.query?.member&&savedPosition?.revision===rev?savedPosition.section:"");try{localStorage.setItem(`thoughtflow.documentset-reading.${id}`,JSON.stringify({revision:rev,member:key,section:section||""}));}catch{}
+ if(section){requestAnimationFrame(()=>{if(token())root.querySelector(`[id="${CSS.escape(section)}"]`)?.scrollIntoView({block:"start"});});}
+ root.querySelector("[data-set-version]").onchange=event=>token()&&navigateHash(setRoute(id,event.target.value,key),{force:true});
+ const index=r.members.findIndex(a=>a.member_key===key);for(const [name,offset]of [["prev",-1],["next",1]]){const button=root.querySelector(`[data-set-${name}]`);button.disabled=!r.members[index+offset];button.onclick=()=>token()&&navigateHash(setRoute(id,rev,r.members[index+offset].member_key),{force:true});}
+ root.querySelector("[data-set-menu]").onclick=()=>{const nav=root.querySelector("[data-set-nav]");nav.hidden=!nav.hidden;};
+ root.querySelector("[data-set-copy]").onclick=()=>token()&&copyText(`${window.location.origin}${window.location.pathname||"/"}${setRoute(id,rev,key,section||"")}`);
+ root.querySelector("[data-set-edit]").onclick=()=>token()&&openDocumentEditor(selected.document_id).catch(error=>toast(error.message));
+ root.querySelector("[data-set-finalize]").onclick=async()=>{if(!token())return;try{await api(`/api/document-sets/${encodeURIComponent(id)}/finalizations`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:h.generation,set_revision_id:rev,set_revision_hash:r.set_revision_hash,approved_by:"workspace user",delivery_level:"ready_for_use"})});if(token())navigateHash(setRoute(id,rev,key),{force:true});}catch(error){toast(error.message);}};
+ root.querySelectorAll("[data-set-export]").forEach(button=>{button.onclick=async()=>{if(!token())return;button.disabled=true;try{const response=await fetch(`/api/document-sets/${encodeURIComponent(id)}/exports`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:h.generation,set_revision_id:rev,kind:button.dataset.setExport})});if(!response.ok)throw new Error(`${response.status}: ${await response.text()}`);const blob=await response.blob();if(!token())return;const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`${id}-${button.dataset.setExport}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(error){if(token())toast(error.message);}finally{if(token())button.disabled=false;}};});
+ root.querySelector("[data-set-search]").onsubmit=async event=>{event.preventDefault();const epoch=++setSearchEpoch;try{const results=await api(`/api/document-sets/${encodeURIComponent(id)}/search?${new URLSearchParams({set_revision:rev,q:event.target.q.value})}`);if(!token()||epoch!==setSearchEpoch)return;root.querySelector("[data-set-results]").innerHTML=results.map(a=>`<p><a href="${escapeHTML(setRoute(id,rev,a.member_key))}">${escapeHTML(a.contract.title)}</a></p>`).join("");}catch(error){if(token()&&epoch===setSearchEpoch)toast(error.message);}};
+}
+async function openPlainThoughtEditor(snapshot){
+ if(documentEditor?.busy)return;
+ if(documentEditor?.dirty&&!window.confirm(t("docset.unsaved")))return;
+ documentEditor?.dialog?.remove();const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";const id=snapshot.thought.id;
+ const original=snapshot.content.ai_notes||snapshot.content.original||snapshot.content.extracted_content||"";
+ dialog.innerHTML=`<form><h2>${escapeHTML(snapshot.thought.display_title||id)}</h2><textarea rows="26" name="body"></textarea><button class="tf-btn" type="submit">${escapeHTML(t("document.save"))}</button><button class="tf-btn" type="button" data-convert>${escapeHTML(t("docset.convert"))}</button><button class="tf-btn" type="button" data-close>${escapeHTML(t("common.close"))}</button><p role="alert"></p></form>`;document.body.appendChild(dialog);const textarea=dialog.querySelector("textarea");textarea.value=original;
+ const editor={id,dialog,session:crypto.randomUUID(),dirty:false,busy:false,contentHash:snapshot.content_hash};editor.routeHash=window.location.hash;documentEditor=editor;dialog.querySelector("[data-convert]").onclick=()=>{if(editor.dirty){toast(t("docset.save_first"));return;}openThoughtConversion(id,editor).catch(error=>{dialog.querySelector("p").textContent=error.message;});};textarea.oninput=()=>{editor.dirty=true;};const canClose=()=>!editor.busy&&(!editor.dirty||window.confirm(t("docset.unsaved")));dialog.querySelector("[data-close]").onclick=()=>{if(canClose())dialog.close();};dialog.addEventListener("keydown",event=>{if(event.key!=="Escape")return;event.preventDefault();event.stopPropagation();if(canClose())dialog.close();});dialog.oncancel=event=>{if(!canClose())event.preventDefault();};dialog.onclose=()=>{if(documentEditor===editor)documentEditor=null;dialog.remove();};
+ dialog.querySelector("form").onsubmit=async event=>{event.preventDefault();if(editor.busy)return;editor.busy=true;const body=textarea.value;try{const saved=await api(`/api/thoughts/${encodeURIComponent(id)}`,{method:"PATCH",headers:{"X-Session-ID":editor.session},body:JSON.stringify({body,expected_content_hash:editor.contentHash})});editor.contentHash=saved.content_hash;if(textarea.value===body)editor.dirty=false;}catch(error){dialog.querySelector("p").textContent=error.message;}finally{editor.busy=false;}};dialog.showModal();
+}
+
+async function previewSetMarkdown(session, plan, files, epoch) {
+  const contents = await Promise.all(files.map(async file => ({path:file.webkitRelativePath || file.name, content:await file.text()})));
+  if (epoch !== captureSetEpoch || currentCaptureSession() !== session) return "";
+  const dialog = document.createElement("dialog"); dialog.className = "tf-document-dialog";
+  dialog.innerHTML = `<form><h2>${escapeHTML(t("docset.markdown_import"))}</h2><p>${escapeHTML(t("docset.original_notice"))}</p>${contents.map((file,index)=>`<label>${escapeHTML(file.path)} → <select data-file="${index}">${plan.members.map(member=>`<option value="${escapeHTML(member.key)}" ${file.path.replace(/\.md$/i,"").replaceAll("/","-")===member.filename.replace(/\.md$/i,"")?"selected":""}>${escapeHTML(member.title)} · ${escapeHTML(member.document_id)}</option>`).join("")}</select></label>`).join("")}<pre data-result></pre><button class="tf-btn" type="submit">${escapeHTML(t("docset.preview"))}</button><button class="tf-btn" type="button" data-accept disabled>${escapeHTML(t("docset.generate"))}</button><button class="tf-btn" type="button" data-close>${escapeHTML(t("common.close"))}</button><p data-error role="alert"></p></form>`;
+  document.body.appendChild(dialog);
+  return new Promise(resolve => {
+    let preview = null, settled = false;
+    const finish = value => {if(settled)return;settled=true;resolve(value);dialog.close();};
+    dialog.onclose=()=>{if(!settled)resolve("");dialog.remove();};
+    dialog.querySelector("[data-close]").onclick=()=>finish("");
+    dialog.addEventListener("change",()=>{preview=null;dialog.querySelector("[data-accept]").disabled=true;});
+    dialog.querySelector("form").onsubmit=async event=>{
+      event.preventDefault(); const submit=dialog.querySelector('[type="submit"]');submit.disabled=true;
+      try {
+        const mappings=contents.map((file,index)=>({...file,member_key:dialog.querySelector(`[data-file="${index}"]`).value}));
+        preview=await api(`/api/capture/sessions/${encodeURIComponent(session)}/document-set-markdown-previews`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),set_id:plan.set_id,plan_id:plan.plan_id,plan_hash:plan.plan_hash,files:mappings})});
+        if(epoch!==captureSetEpoch||currentCaptureSession()!==session){finish("");return;}
+        dialog.querySelector("[data-result]").textContent=preview.mappings.map(m=>`${m.path} → ${m.member_key} → ${m.document_id}\n${m.original_hash}`).join("\n\n")+"\n"+preview.warnings.join("\n");
+        dialog.querySelector("[data-accept]").disabled=false;
+      } catch(error){dialog.querySelector("[data-error]").textContent=error.message;}
+      finally{submit.disabled=false;}
+    };
+    dialog.querySelector("[data-accept]").onclick=()=>{if(preview&&epoch===captureSetEpoch&&currentCaptureSession()===session)finish(preview.preview_id);else finish("");};
+    dialog.showModal();
+  });
+}
+async function openThoughtConversion(id, editor) {
+  const data=await api(`/api/thoughts/${encodeURIComponent(id)}/document-conversions`);
+  if(documentEditor!==editor||editor.dirty)return;
+  const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";
+  dialog.innerHTML=`<form><h2>${escapeHTML(t("docset.convert"))}</h2><p>${escapeHTML(t("docset.conversion_notice"))}</p><select name="profile">${data.profiles.map((p,i)=>`<option value="${i}">${escapeHTML(profileLabel(p))}</option>`).join("")}</select><div data-inputs></div><button class="tf-btn" type="submit">${escapeHTML(t("docset.convert"))}</button><button class="tf-btn" type="button" data-close>${escapeHTML(t("common.close"))}</button><p data-error role="alert"></p></form>`;
+  document.body.appendChild(dialog);
+  const select=dialog.querySelector("select");
+  const inputs=()=>{const p=data.profiles[Number(select.value)];dialog.querySelector("[data-inputs]").innerHTML=(p?.inputs||[]).map(input=>`<label>${escapeHTML(input.label||input.key)}<textarea data-param="${escapeHTML(input.key)}" ${input.required?"required":""}></textarea></label>`).join("");};select.onchange=inputs;inputs();
+  dialog.querySelector("[data-close]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();
+  dialog.querySelector("form").onsubmit=async event=>{event.preventDefault();if(documentEditor!==editor||editor.dirty)return;const button=dialog.querySelector('[type="submit"]');button.disabled=true;try{const profile=data.profiles[Number(select.value)];const parameters=Object.fromEntries([...dialog.querySelectorAll("[data-param]")].map(input=>[input.dataset.param,input.value]));await api(`/api/thoughts/${encodeURIComponent(id)}/document-conversions`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_content_hash:data.expected_content_hash,profile_ref:profileRef(profile),parameters})});dialog.close();editor.dialog.close();await openDocumentEditor(id);}catch(error){dialog.querySelector("[data-error]").textContent=error.message;}finally{button.disabled=false;}};
+  dialog.showModal();
+}
+
 boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));

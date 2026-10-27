@@ -44,6 +44,15 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 	unlock := flow.Store.Lock(thought.ID)
 	err := func() error {
 		defer unlock()
+		if thought.ContentExpectedHash != "" {
+			_, current, err := readThoughtLocked(rootPath, thought.ID)
+			if err != nil {
+				return err
+			}
+			if documentstore.HashJSON(current) != thought.ContentExpectedHash {
+				return documentstore.ErrConflict
+			}
+		}
 		if _, err := flow.SyncProjectionLocked(&thought, &content, false); err != nil {
 			return err
 		}

@@ -125,6 +125,9 @@ func (r *Registry) NamespaceRead(ctx context.Context) (context.Context, func()) 
 }
 
 func (r *Registry) ContentAvailable(l models.ObjectLocation) bool {
+	if r.CheckManaged(l) != nil {
+		return false
+	}
 	var h models.DocumentHead
 	e := ReadJSON(r.Root, l.Placement.DocumentRoot+"/head.json", &h)
 	if e == nil && h.DeletedAt != nil {
@@ -147,6 +150,21 @@ func (r *Registry) ContentAvailable(l models.ObjectLocation) bool {
 func (r *Registry) CheckTopicActive(id string) error {
 	if !ValidID(id) {
 		return ErrInvalid
+	}
+	activation, e := SafePath(r.Root, ".content-registry/private/document-set-activations/"+id+".json")
+	if e != nil {
+		return e
+	}
+	if _, e = os.Stat(activation); e == nil {
+		head, err := SafePath(r.Root, "topics/"+id+"/document-set/head.json")
+		if err != nil {
+			return err
+		}
+		if _, err = os.Stat(head); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(e) {
+		return e
 	}
 	path, e := SafePath(r.Root, ".content-registry/topic-deletions/"+id+".json")
 	if e != nil {

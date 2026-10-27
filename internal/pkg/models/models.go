@@ -124,6 +124,7 @@ type Workspace struct {
 }
 
 type Thought struct {
+	ContentExpectedHash        string              `json:"-"`
 	MarkdownImport             *MarkdownImport     `json:"markdown_import,omitempty"`
 	CaptureDraft               bool                `json:"capture_draft,omitempty"`
 	OwnerTopicID               string              `json:"owner_topic_id,omitempty"`
@@ -237,6 +238,7 @@ type ThoughtContent struct {
 }
 
 type ThoughtSnapshot struct {
+	ContentHash      string            `json:"content_hash,omitempty"`
 	ResourceBindings []ResourceBinding `json:"resource_bindings,omitempty"`
 	Thought          Thought           `json:"thought"`
 	Content          ThoughtContent    `json:"content,omitempty"`
@@ -297,6 +299,7 @@ type CaptureCommand struct {
 // "field present with empty value" (clear the value). PatchThought
 // rejects unknown fields with a 400; see service.PatchThought.
 type ThoughtPatchRequest struct {
+	ExpectedContentHash        string              `json:"expected_content_hash,omitempty"`
 	DocumentProfileSnapshot    string              `json:"-"`
 	SaveOperationID            string              `json:"-"`
 	ExpectedCaptureHash        string              `json:"-"`

@@ -241,6 +241,48 @@ func (r *Registry) BoundResourcePath(object string, frozen models.ResourceBindin
 	return "", os.ErrNotExist
 }
 
+// FrozenResourcePath authorizes a retained immutable binding independently of
+// later uploads/detaches. Public registration and the original digest remain
+// required; a revoked/private resource is never resurrected by a set revision.
+func (r *Registry) FrozenResourcePath(object string, frozen models.ResourceBinding) (string, error) {
+	if !ValidBinding(frozen) {
+		return "", ErrUnsafe
+	}
+	l, e := r.Lookup(object)
+	if e != nil {
+		return "", e
+	}
+	if l.DeletedAt != nil || l.Lifecycle == "deleted" {
+		return "", os.ErrNotExist
+	}
+	var resource models.TopicResource
+	if e = ReadJSON(r.Root, resourcePath(frozen.ResourceID), &resource); e != nil {
+		return "", e
+	}
+	if resource.ID != frozen.ResourceID || resource.Hash != frozen.Hash || !resource.Shareable {
+		return "", ErrUnsafe
+	}
+	if p, e := r.BoundResourcePath(object, frozen); e == nil {
+		return p, nil
+	}
+	// Fallback is only the original controlled attachment root for this owner.
+	if frozen.Path != resourceMigrationPath(l.OwnerTopicID, frozen) {
+		return "", ErrUnsafe
+	}
+	p, e := SafePath(r.Root, frozen.Path)
+	if e != nil {
+		return "", e
+	}
+	hash, _, e := FileHash(p)
+	if e != nil {
+		return "", e
+	}
+	if hash != frozen.Hash {
+		return "", ErrRecovery
+	}
+	return p, nil
+}
+
 func ValidateResource(name string, raw []byte) (string, error) { return sniffResource(name, raw) }
 
 // ValidBinding excludes all private namespaces even if a record is tampered

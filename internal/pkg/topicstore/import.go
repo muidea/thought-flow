@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	documentset "thoughtflow/internal/pkg/documentset"
+	"thoughtflow/internal/pkg/documentsetstore"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -26,6 +28,16 @@ func importBase(id string) string { return ".content-registry/private/imports/" 
 func allowedImportPath(path, topic string, objects map[string]models.ObjectLocation) bool {
 	if !validPackagePath(path) {
 		return false
+	}
+	if strings.HasPrefix(path, "topics/"+topic+"/document-set/") {
+		parts := strings.Split(strings.TrimPrefix(path, "topics/"+topic+"/document-set/"), "/")
+		if len(parts) == 1 {
+			return parts[0] == "head.json"
+		}
+		if len(parts) == 2 && parts[0] == "finalizations" && objectlocation.ValidID(strings.TrimSuffix(parts[1], ".json")) && strings.HasSuffix(parts[1], ".json") {
+			return true
+		}
+		return len(parts) == 3 && parts[0] == "revisions" && objectlocation.ValidID(parts[1]) && (parts[2] == "manifest.json" || parts[2] == "plan.json" || parts[2] == "shared-design.json" || parts[2] == "validation.json")
 	}
 	if path == "topics/"+topic+"/topic.yaml" || path == catalogPath(topic) || path == "topics/"+topic+"/catalog.md" || path == "topics/"+topic+"/index.md" || path == "topics/"+topic+"/storage.snapshot.json" {
 		return true
@@ -172,6 +184,23 @@ func (s *Store) ImportPackage(ctx context.Context, operation string, raw []byte)
 		return result, objectlocation.ErrInvalid
 	}
 	// Body identity is independent of the JSON record identity.
+	setStore := documentsetstore.New(stageRoot)
+	if _, err := setStore.Head(manifest.TopicID); err == nil {
+		revisions, err := setStore.Revisions(manifest.TopicID)
+		if err != nil {
+			return result, err
+		}
+		for _, revision := range revisions {
+			if err = documentset.Ready(revision); err != nil {
+				return result, err
+			}
+		}
+		if err = r.RequireSetWriter(); err != nil {
+			return result, err
+		}
+	} else if !os.IsNotExist(err) {
+		return result, err
+	}
 	for id, l := range objects {
 		note, _ := markdown.ParseThought(files[l.Placement.ThoughtPath])
 		if note.ID != id {

@@ -196,7 +196,13 @@ func (s *Service) handleTopicWorkspace(ctx context.Context, w http.ResponseWrite
 		}
 		var resource models.TopicResource
 		var raw []byte
-		if snapshot := r.URL.Query().Get("snapshot_id"); snapshot != "" {
+		if set := r.URL.Query().Get("set_id"); set != "" {
+			if s.documentSets == nil {
+				err = objectlocation.ErrInvalid
+			} else {
+				raw, resource.MIME, err = s.documentSets.Store.Resource(set, r.URL.Query().Get("set_revision"), r.URL.Query().Get("member_key"), id)
+			}
+		} else if snapshot := r.URL.Query().Get("snapshot_id"); snapshot != "" {
 			var path string
 			raw, path, err = store.ReadSnapshotResource(ctx, r.URL.Query().Get("topic_id"), snapshot, id)
 			resource.MIME = mime.TypeByExtension(filepath.Ext(path))

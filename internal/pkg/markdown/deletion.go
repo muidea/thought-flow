@@ -26,6 +26,9 @@ func deleteThought(rootPath, thoughtID string) error {
 	if e != nil {
 		return e
 	}
+	if l.ManagedSetID != "" {
+		return objectlocation.ErrConflict
+	}
 	path := filepath.Join(rootPath, filepath.FromSlash(l.Placement.ThoughtPath))
 	if e := workspace.EnsureNoSymlinks(rootPath, path); e != nil {
 		return e

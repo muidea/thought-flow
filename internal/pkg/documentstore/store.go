@@ -145,6 +145,9 @@ func (s *Store) checkLocationActive(id string) error {
 	if e != nil {
 		return e
 	}
+	if e := r.CheckManaged(l); e != nil {
+		return e
+	}
 	if l.DeletedAt != nil || l.Lifecycle == "deleted" || l.Lifecycle == "import_pending" {
 		return os.ErrNotExist
 	}
@@ -180,6 +183,15 @@ func (s *Store) DeleteLocked(id string) (models.DocumentHead, error) {
 	return h, e
 }
 func (s *Store) Revision(id, rev string) (RevisionData, error) {
+	return s.revision(id, rev, true)
+}
+
+// FrozenRevision reads only the immutable resource snapshot. Set manifests must
+// never absorb resources uploaded after their selected member revision.
+func (s *Store) FrozenRevision(id, rev string) (RevisionData, error) {
+	return s.revision(id, rev, false)
+}
+func (s *Store) revision(id, rev string, includeCurrent bool) (RevisionData, error) {
 	var d RevisionData
 	if !ValidID(rev) {
 		return d, ErrInvalid
@@ -207,9 +219,13 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 		return d, e
 	}
 	d.Profile = string(b)
-	currentBindings, bindErr := objectlocation.For(filepath.Dir(s.Root)).Bindings(id)
-	if bindErr != nil {
-		return d, bindErr
+	var currentBindings models.ResourceBindings
+	if includeCurrent {
+		var bindErr error
+		currentBindings, bindErr = objectlocation.For(filepath.Dir(s.Root)).Bindings(id)
+		if bindErr != nil {
+			return d, bindErr
+		}
 	}
 	r := d.Revision
 	if r.ResourceBindingsHash != "" {
@@ -220,7 +236,11 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 			return d, ErrInvalid
 		}
 		for _, b := range d.Resources.Bindings {
-			resource, e := objectlocation.For(filepath.Dir(s.Root)).BoundResourcePath(id, b)
+			resourcePath := objectlocation.For(filepath.Dir(s.Root)).BoundResourcePath
+			if !includeCurrent {
+				resourcePath = objectlocation.For(filepath.Dir(s.Root)).FrozenResourcePath
+			}
+			resource, e := resourcePath(id, b)
 			if e != nil {
 				d.ResourceError = e.Error()
 				continue
@@ -272,6 +292,19 @@ func (s *Store) Revision(id, rev string) (RevisionData, error) {
 // Publish must be called while holding Lock(id). Unreferenced revision directories
 // after a crash are harmless: readers only discover versions through HEAD.
 func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.DocumentHead, error) {
+	return s.publish(id, expected, d, true)
+}
+
+// Prepare writes an immutable revision without changing the personal HEAD.
+// The caller owns the object lease and publishes visibility at the set HEAD.
+func (s *Store) Prepare(id string, expected uint64, d RevisionData) (RevisionData, error) {
+	h, e := s.publish(id, expected, d, false)
+	if e != nil {
+		return RevisionData{}, e
+	}
+	return s.Revision(id, h.WorkingRevisionID)
+}
+func (s *Store) publish(id string, expected uint64, d RevisionData, publishHead bool) (models.DocumentHead, error) {
 	if _, e := objectlocation.For(filepath.Dir(s.Root)).Reserve(id, "", "document-create"); e != nil {
 		return models.DocumentHead{}, e
 	}
@@ -368,6 +401,9 @@ func (s *Store) Publish(id string, expected uint64, d RevisionData) (models.Docu
 	h.Generation++
 	h.WorkingRevisionID = r.RevisionID
 	h.PendingProjection = true
+	if !publishHead {
+		return h, nil
+	}
 	if e = s.SaveHead(id, h); e != nil {
 		return h, e
 	}

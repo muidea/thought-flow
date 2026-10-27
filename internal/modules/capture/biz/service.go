@@ -246,7 +246,7 @@ func (s *Service) GetThought(ctx context.Context, thoughtID string) (models.Thou
 	if e != nil {
 		return models.ThoughtSnapshot{}, e
 	}
-	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings}, nil
+	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings, ContentHash: documentstore.HashJSON(content)}, nil
 }
 
 func (s *Service) DeleteThought(ctx context.Context, thoughtID, sessionID string) error {
@@ -375,6 +375,7 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 			return models.ThoughtSnapshot{}, documentstore.ErrConflict
 		}
 	}
+	thought.ContentExpectedHash = request.ExpectedContentHash
 	thought.DocumentExpectedGeneration = request.ExpectedDocumentGeneration
 	if request.DocumentProfileSnapshot != "" {
 		thought.DocumentProfileSnapshot = request.DocumentProfileSnapshot
@@ -483,7 +484,7 @@ func (s *Service) applyPatchLocked(thoughtID, sessionID string, request models.T
 	if e != nil {
 		return models.ThoughtSnapshot{}, e
 	}
-	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings}, nil
+	return models.ThoughtSnapshot{Thought: thought, Content: content, ResourceBindings: bindings.Bindings, ContentHash: documentstore.HashJSON(content)}, nil
 }
 
 // unknownPatchFields returns the JSON keys in rawBody that are not

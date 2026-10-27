@@ -28,7 +28,7 @@ var (
 )
 
 const LayoutVersion = 1
-const WriterVersion = 1
+const WriterVersion = 2
 
 type Registry struct {
 	Root         string
@@ -169,6 +169,9 @@ func (r *Registry) Resolve(_ context.Context, id string) (models.ObjectLocation,
 		if err != nil || op.State != "completed" {
 			return l, os.ErrNotExist
 		}
+	}
+	if e == nil {
+		e = r.CheckManaged(l)
 	}
 	if e == nil && (l.Lifecycle != "active" || l.DeletedAt != nil) {
 		e = os.ErrNotExist
@@ -411,6 +414,9 @@ func ValidLocation(l models.ObjectLocation) bool {
 	if l.GlobalSearch != "inherit" && l.GlobalSearch != "include" && l.GlobalSearch != "exclude" {
 		return false
 	}
+	if l.ManagedSetID != "" && (l.ManagedSetID != l.OwnerTopicID || l.ManagedMemberKey == "") {
+		return false
+	}
 	expected := proposed(l.ObjectID, l.OwnerTopicID)
 	if l.Placement.DocumentRoot != expected.Placement.DocumentRoot || l.Placement.EvidenceRoot != expected.Placement.EvidenceRoot {
 		return false
@@ -426,7 +432,7 @@ func ValidLocation(l models.ObjectLocation) bool {
 		}
 	}
 	switch l.Lifecycle {
-	case "reserved", "active", "deleted", "import_pending", "ambiguous", "recovery_required":
+	case "reserved", "active", "deleted", "import_pending", "set_pending", "ambiguous", "recovery_required":
 	default:
 		return false
 	}

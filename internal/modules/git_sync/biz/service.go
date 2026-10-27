@@ -321,6 +321,14 @@ func businessCommitPath(value string) bool {
 			return len(p) == 4 && strings.HasSuffix(value, ".md")
 		case "memberships", "approvals":
 			return len(p) == 4 && strings.HasSuffix(value, ".yaml")
+		case "document-set":
+			if len(p) == 4 {
+				return p[3] == "head.json"
+			}
+			if len(p) == 5 && p[3] == "finalizations" && strings.HasSuffix(p[4], ".json") {
+				return true
+			}
+			return len(p) == 6 && p[3] == "revisions" && (p[5] == "manifest.json" || p[5] == "plan.json" || p[5] == "shared-design.json" || p[5] == "validation.json")
 		case "documents":
 			return len(p) > 4 && documentCommitSuffix(p[4:])
 		case "attachments":

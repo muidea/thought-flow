@@ -455,6 +455,10 @@ func slug(s string) string {
 	return b.String()
 }
 func validLocator(s string) bool {
+	if strings.HasPrefix(s, "docset://") {
+		u, e := url.Parse(s)
+		return e == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Path != "" && !strings.Contains(u.Path, "..")
+	}
 	if strings.HasPrefix(s, "thought://") || strings.HasPrefix(s, "topic://") {
 		return len(strings.SplitN(s, "://", 2)[1]) > 0
 	}

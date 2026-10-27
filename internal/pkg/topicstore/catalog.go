@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"thoughtflow/internal/pkg/documentflow"
+	"thoughtflow/internal/pkg/documentsetstore"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/documentvalidation"
 	"thoughtflow/internal/pkg/markdown"
@@ -164,6 +165,26 @@ func (s *Store) WriteCatalog(ctx context.Context, id string, req models.CatalogW
 			level = old.RequiredDeliveryLevel
 		}
 		c := models.TopicCatalog{SchemaVersion: 1, TopicID: id, Generation: old.Generation + 1, Groups: req.Groups, Entries: req.Entries, RequiredDeliveryLevel: level, LastOperationID: req.OperationID}
+		// Ordinary references remain editable, managed members come from SetHead.
+		oldManaged := map[string]models.CatalogEntry{}
+		for _, entry := range old.Entries {
+			if l, err := r.Lookup(entry.Binding.ThoughtID); err == nil && l.ManagedSetID == id {
+				oldManaged[entry.ID] = entry
+			}
+		}
+		for _, entry := range c.Entries {
+			if previous, ok := oldManaged[entry.ID]; ok {
+				if objectlocation.HashJSON(previous) != objectlocation.HashJSON(entry) {
+					return objectlocation.ErrConflict
+				}
+				delete(oldManaged, entry.ID)
+			} else if l, err := r.Lookup(entry.Binding.ThoughtID); err == nil && l.ManagedSetID == id {
+				return objectlocation.ErrConflict
+			}
+		}
+		if len(oldManaged) > 0 {
+			return objectlocation.ErrConflict
+		}
 		if e = s.validateCatalogUpdateLocked(ctx, c, old); e != nil {
 			return e
 		}
@@ -251,6 +272,14 @@ func (s *Store) finalization(id, rev, key string) (models.FinalizationRecord, er
 	return models.FinalizationRecord{}, ErrRevisionUnavailable
 }
 func (s *Store) CatalogView(ctx context.Context, id string) (models.CatalogView, error) {
+	setStore := documentsetstore.New(s.rootPath)
+	setHead, setErr := setStore.Head(id)
+	if setErr != nil && !os.IsNotExist(setErr) {
+		return models.CatalogView{}, setErr
+	}
+	if setErr == nil && setHead.ProjectedWorking != setHead.Working {
+		return models.CatalogView{}, objectlocation.ErrRecovery
+	}
 	t, e := s.Get(ctx, id)
 	if e != nil {
 		return models.CatalogView{}, e
@@ -298,9 +327,30 @@ func (s *Store) CatalogView(ctx context.Context, id string) (models.CatalogView,
 	if e != nil || objectlocation.Hash(data) != view.ProjectionHash {
 		view.ProjectionStatus = "reconciling"
 	}
+	latestSet, latestErr := setStore.Head(id)
+	if setErr == nil {
+		if latestErr != nil {
+			return view, latestErr
+		}
+		if latestSet.Generation != setHead.Generation || latestSet.ProjectedWorking != setHead.Working {
+			return view, objectlocation.ErrConflict
+		}
+		latestCatalog, err := s.Catalog(ctx, id)
+		if err != nil {
+			return view, err
+		}
+		if latestCatalog.Generation != c.Generation {
+			return view, objectlocation.ErrConflict
+		}
+	} else if latestErr == nil {
+		return view, objectlocation.ErrConflict
+	}
 	return view, nil
 }
 func (s *Store) entryView(ctx context.Context, topic string, entry models.CatalogEntry) models.CatalogEntryView {
+	if v, ok := s.setEntry(ctx, topic, entry); ok {
+		return v
+	}
 	v := models.CatalogEntryView{Entry: entry, BindingStatus: entry.Binding.Kind, DeliveryStatus: "not_finalized", WorkStatus: "no_new_draft", VersionStatus: entry.Binding.VersionPolicy, ValidationStatus: "unavailable", Availability: "unavailable"}
 	if entry.Binding.Kind == "planned" {
 		return v
@@ -560,6 +610,9 @@ func (s *Store) EntryContent(ctx context.Context, id, entryID, view, revision st
 		return models.DocumentSnapshot{}, ErrRevisionUnavailable
 	}
 	thoughtID := entry.Binding.ThoughtID
+	if snap, ok, err := s.setContent(id, thoughtID, view, revision); ok {
+		return snap, err
+	}
 	if _, e = objectlocation.For(s.rootPath).Resolve(ctx, thoughtID); e != nil {
 		return models.DocumentSnapshot{}, e
 	}

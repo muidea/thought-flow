@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"thoughtflow/internal/pkg/documentsetstore"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
@@ -80,6 +81,12 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 	}
 	if !objectlocation.ValidID(req.OperationID) {
 		return result, objectlocation.ErrInvalid
+	}
+	setStore := documentsetstore.New(s.rootPath)
+	if _, e := setStore.Head(id); e == nil && req.Kind == "delivery" {
+		return result, fmt.Errorf("%w: a managed set requires a fixed set revision and joint delivery gate; use document-set exports", objectlocation.ErrInvalid)
+	} else if e != nil && !os.IsNotExist(e) {
+		return result, e
 	}
 	r := objectlocation.For(s.rootPath)
 	// Resolve the dynamic view before the write lease (it acquires object leases),
@@ -162,6 +169,19 @@ func (s *Store) ExportPackage(ctx context.Context, id string, req ExportRequest)
 	if req.Kind == "backup" {
 		paths, e := s.TopicPaths(ctx, id)
 		if e != nil {
+			return result, e
+		}
+		if _, e := setStore.Head(id); e == nil {
+			closure, err := setStore.ContentPaths(id)
+			if err != nil {
+				return result, err
+			}
+			for _, p := range closure {
+				if p != ".content-registry/schema.json" {
+					paths = append(paths, p)
+				}
+			}
+		} else if !os.IsNotExist(e) {
 			return result, e
 		}
 		for _, path := range paths {

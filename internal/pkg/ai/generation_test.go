@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/documentstore"
@@ -97,29 +101,32 @@ func TestFallbackFailureNeverReplaysAndPreservesDiagnostics(t *testing.T) {
 }
 
 func TestGenerationSharesNegotiationDeadline(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := calls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		if n == 1 {
-			time.Sleep(45 * time.Millisecond)
-			w.WriteHeader(400)
-			_, _ = w.Write([]byte(formatUnsupportedResponse))
-			return
+	// Compare the actual transport deadlines instead of relying on millisecond
+	// scheduling windows that fail under concurrent CI builds.
+	var calls int
+	var deadline time.Time
+	p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: "http://" + documentstore.ID("deadline-") + ".invalid", Timeout: time.Minute}, appconfig.EmbeddingConfig{})
+	opts := append([]option.RequestOption{}, p.client.Options...)
+	opts = append(opts, option.WithMiddleware(func(r *http.Request, _ option.MiddlewareNext) (*http.Response, error) {
+		calls++
+		current, ok := r.Context().Deadline()
+		if !ok {
+			t.Fatal("generation transport has no deadline")
 		}
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(200 * time.Millisecond):
+		if calls == 1 {
+			deadline = current
+			return &http.Response{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(formatUnsupportedResponse)), Request: r}, nil
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+		if !current.Equal(deadline) {
+			t.Errorf("fallback reset deadline: first=%s fallback=%s", deadline, current)
+		}
+		return nil, context.DeadlineExceeded
 	}))
-	defer server.Close()
-	p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: 100 * time.Millisecond}, appconfig.EmbeddingConfig{})
-	start := time.Now()
+	client := openai.NewClient(opts...)
+	p.client = &client
 	_, _, err := p.chatCompletionJSON(context.Background(), "system", "user", 0.2)
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 180*time.Millisecond || calls.Load() != 2 {
-		t.Fatalf("elapsed=%v calls=%d err=%v", time.Since(start), calls.Load(), err)
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
 	}
 }
 

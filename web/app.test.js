@@ -412,6 +412,7 @@ function loadAppFunctionsWith(opts = {}) {
       localStorage: storage,
     },
     URLSearchParams,
+    URL,
     FormData: opts.FormData,
     fetch: opts.fetch || (async () => ({ ok: true, json: async () => ({ data: null }) })),
     EventSource: opts.EventSource || function EventSource() {},
@@ -506,6 +507,7 @@ function loadAppFunctionsWith(opts = {}) {
       openCaptureSessionsDrawer,
       closeCaptureSessionsDrawer,
       renderCaptureSessionItem,
+      redrawCaptureSessionsList,
       switchCaptureSession,
       openNewCaptureSession,
       requestCaptureArchive,
@@ -538,6 +540,13 @@ function loadAppFunctionsWith(opts = {}) {
       renderCollectionEditor,
       searchCollection,
       cleanMarkdownHref,
+      setRoute,
+      beginCaptureSelection,
+      captureDocumentSetMessage,
+      handleCaptureEvent,
+      setSetRenderContext(value){documentSetRenderContext=value;},
+      setCaptureDocumentSet(value){captureDocumentSet=value;},
+      getCaptureDocumentSet(){return captureDocumentSet;},
       resourceContentHref,
       setCollectionWorkspace(value){collectionWorkspace=value;},
       setMarkdownResourceContext(value){markdownResourceContext=value;},
@@ -3363,4 +3372,58 @@ test("late archive polling cannot replace another selected session", async () =>
   assert.equal(app._state.capture.activeScratchpad.session_id,"B");
   assert.equal(app._state.capture.activeThoughtId,"");
   assert.equal(app.captureArchiveStatusMessage(),null);
+});
+
+
+test("document set links require matching fixed context and reject unknown members", () => {
+ const app=loadAppFunctions();
+ app.setSetRenderContext({id:"set-demo",revision:"set-r-1",keys:new Set(["module:MOD-ORDER","architecture"])});
+ const html=app.renderMarkdown("[Order](docset://set-demo/module:MOD-ORDER#scope) [Unknown](docset://set-demo/missing#scope) [external](docset://another/architecture#scope)");
+ assert.match(html,/set_revision=set-r-1/);assert.match(html,/member=module%3AMOD-ORDER/);assert.match(html,/section=scope/);
+ assert.doesNotMatch(html,/href="docset:/);
+ assert.equal(app.cleanMarkdownHref("docset://set-demo/missing#scope"),"");
+ app.setSetRenderContext(null);
+ assert.equal(app.cleanMarkdownHref("docset://set-demo/architecture#scope"),"");
+ assert.match(app.cleanMarkdownHref("thought://note-id"),/notes.*note-id/);
+ assert.match(app.cleanMarkdownHref("topic://topic-id"),/topics.*topic-id/);
+});
+
+test("Capture set status distinguishes committed drafts, clarification and failures", () => {
+ const app=loadAppFunctions();app.appState.capture.sessionId="session-a";
+ const plan={set_id:"set-a",members:[{key:"architecture",title:"Architecture",role:"architecture"}],profile:{name:"Design set"},shared_design:{open_questions:[]}};
+ for(const state of ["generating","awaiting_review","committed","failed_terminal","needs_clarification"]){
+  app.setCaptureDocumentSet({session:"session-a",run:{run_id:"run-a",plan,state,members:[],candidate:{set_revision_id:"fixed-r"}}});
+  const message=app.captureDocumentSetMessage();assert.match(message.html,new RegExp(`docset.state.${state}`));
+  if(state==="committed"){assert.match(message.html,/set_revision=fixed-r/);assert.doesNotMatch(message.html,/data-set-cancel-run/);}
+  if(state==="generating")assert.match(message.html,/data-set-cancel-run/);
+  if(state==="failed_terminal")assert.match(message.html,/data-set-retry-run/);
+ }
+ app.setCaptureDocumentSet({session:"session-a",run:{run_id:"run-a",plan,state:"committed",error:"projection pending",members:[],candidate:{set_revision_id:"fixed-r"}}});
+ const pending=app.captureDocumentSetMessage().html;
+ assert.match(pending,/data-set-recover-run/);assert.doesNotMatch(pending,/data-set-retry-run/);
+ app.setCaptureDocumentSet({session:"session-b",run:{}});assert.equal(app.captureDocumentSetMessage(),null);
+});
+
+test("late set event for old Capture selection cannot overwrite a reopened conversation", async () => {
+ let finish;
+ const response=new Promise(resolve=>finish=resolve);
+ const app=loadAppFunctionsWith({fetch:async()=>{await response;return{ok:true,json:async()=>({data:{run_id:"old-run",plan:{capture:{session_id:"A"}}}})};}});
+ app.appState.capture.sessionId="A";
+ const pending=app.handleCaptureEvent("document_set.progress",JSON.stringify({payload:{run_id:"old-run"}}));
+ app.beginCaptureSelection();app.appState.capture.sessionId="B";app.beginCaptureSelection();app.appState.capture.sessionId="A";
+ finish();await pending;assert.equal(app.getCaptureDocumentSet(),null);
+});
+
+
+test("unchanged Capture history refresh preserves the button receiving a pointer click", () => {
+ const dom=makeDomStub();const list=makeElementStub("ul");let writes=0,markup="";
+ Object.defineProperty(list,"innerHTML",{get:()=>markup,set:value=>{writes++;markup=value;}});
+ const originalFind=dom.find;dom.find=selector=>selector==="#capture-sessions-list"?list:originalFind(selector);
+ const app=loadAppFunctionsWith({dom});
+ app.appState.capture.sessions=[{sessionId:"A",title:"A discussion",updatedAt:"2026-10-27"}];
+ app.redrawCaptureSessionsList();assert.equal(writes,1);
+ app.appState.capture.sessions=[{sessionId:"A",title:"A discussion",updatedAt:"2026-10-27"}];
+ app.redrawCaptureSessionsList();assert.equal(writes,1);
+ app.appState.capture.sessions[0].title="Changed discussion";
+ app.redrawCaptureSessionsList();assert.equal(writes,2);assert.match(markup,/Changed discussion/);
 });

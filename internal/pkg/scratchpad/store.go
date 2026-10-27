@@ -199,6 +199,9 @@ type SaveCommand struct {
 	State              string                `json:"state"`
 }
 type Scratchpad struct {
+	DocumentSetID      string            `json:"document_set_id,omitempty"`
+	DocumentSetPlanID  string            `json:"document_set_plan_id,omitempty"`
+	DocumentSetRunID   string            `json:"document_set_run_id,omitempty"`
 	SessionGeneration  uint64            `json:"session_generation"`
 	InputGeneration    uint64            `json:"input_generation"`
 	ObjectID           string            `json:"object_id,omitempty"`

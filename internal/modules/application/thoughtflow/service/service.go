@@ -34,6 +34,7 @@ import (
 	"thoughtflow/internal/pkg/composedraft"
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
+	"thoughtflow/internal/pkg/documentsetflow"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/eventstream"
 	"thoughtflow/internal/pkg/markdown"
@@ -75,12 +76,14 @@ type Service struct {
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
 	documentProfiles *documentprofile.Registry
+	documentSets     *documentsetflow.Service
 	documents        *documentflow.Service
 }
 
 func (s *Service) SetDocumentProfiles(registry *documentprofile.Registry) {
 	s.documentProfiles = registry
 	s.configureDocuments()
+	s.configureDocumentSets()
 }
 
 // SubscribePublicThoughtsConfig applies server-section change events from the
@@ -223,6 +226,9 @@ func (s *Service) Close() {
 		s.shutdownCancel()
 	}
 	s.archiveWG.Wait()
+	if s.documentSets != nil {
+		s.documentSets.Close()
+	}
 	if s.documents != nil {
 		s.documents.Close()
 	}
@@ -240,6 +246,7 @@ func (s *Service) Close() {
 
 func (s *Service) RegisterRoutes() {
 	s.registerDocumentRoutes()
+	s.registerDocumentSetRoutes()
 	s.registerTopicWorkspaceRoutes()
 	s.replayWorkspaceOutbox()
 	s.registry.AddHandler("/", engine.GET, s.handleWeb)

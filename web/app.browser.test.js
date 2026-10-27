@@ -1665,6 +1665,11 @@ function startFixtureServer(options = {}) {
         actions: [],
       }));
     }
+    if (options.documentSet && url.pathname === "/api/document-sets/demo") return json(res,api(options.documentSet));
+    if (options.documentSet && url.pathname === "/api/document-sets/demo/search") {
+      const q=url.searchParams.get("q");if(q==="old")await new Promise(resolve=>setTimeout(resolve,250));
+      return json(res,api([{member_key:"architecture",contract:{title:q==="old"?"OLD_RESULT":"NEW_RESULT"}}]));
+    }
     if (options.documentSnapshot && url.pathname.startsWith("/api/documents/thought-1")) {
       const snapshot=options.documentSnapshot;
       if(req.method==="GET")return json(res,api(snapshot));
@@ -2064,7 +2069,7 @@ function startFixtureServer(options = {}) {
         return json(res, api({
           thought: {
             id: "thought-1",
-            ...(options.documentSnapshot ? {document_profile:{family:"design",profile_id:"builtin.design-doc",version:2}} : {}),
+            ...(options.documentSnapshot ? {document:{document_id:"thought-1",revision_id:options.documentSnapshot.head.working_revision_id},document_profile:{family:"design",profile_id:"builtin.design-doc",version:2}} : {}),
             display_title: "Browser Thought",
             user_title: "Browser Thought",
             refine_status: "succeeded",
@@ -2469,6 +2474,14 @@ class CDPPage {
     await loaded;
   }
 
+  async reload() {
+    // The CDP command acknowledges scheduling the reload, not completion.
+    // Wait for the new document before asserting restored state or clicking.
+    const loaded = this.waitForEvent("Page.loadEventFired", 15000);
+    await this.send("Page.reload");
+    await loaded;
+  }
+
   async evaluate(fn, arg) {
     const result = await this.send("Runtime.evaluate", {
       expression: `(${fn.toString()})(${JSON.stringify(arg) ?? ""})`,
@@ -2704,6 +2717,10 @@ class PlaywrightPage {
     await this.page.goto(url, { waitUntil: "load", timeout: 15000 });
   }
 
+  async reload() {
+    await this.page.reload({ waitUntil: "load", timeout: 15000 });
+  }
+
   async evaluate(fn, arg) {
     return await this.page.evaluate(fn, arg);
   }
@@ -2735,6 +2752,16 @@ test("typed document editor separates draft, review, confirmation and pinned exp
   await page.evaluate(()=>{const body=document.querySelector("[data-document-body]");body.value+="\nNewer unsaved edit";body.dispatchEvent(new Event("input",{bubbles:true}));});
   assert.equal(await page.evaluate(()=>document.querySelector("[data-document-finalize]").disabled),true);
   assert.equal(await page.evaluate(()=>document.querySelector("[data-document-final-export]").getAttribute("href")),finalHref);
+  await page.evaluate(()=>{window.confirm=()=>false;document.querySelector('.tf-document-dialog form[method="dialog"] button').click();});
+  assert.equal(await page.evaluate(()=>document.querySelector(".tf-document-dialog")?.open),true);
+  await page.send("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  await page.send("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  assert.equal(await page.evaluate(()=>document.querySelector(".tf-document-dialog")?.open),true);
+  await page.evaluate(()=>document.querySelector("[data-document-open=thought-1]").click());
+  assert.match(await page.evaluate(()=>document.querySelector("[data-document-body]").value),/Newer unsaved edit/);
+  await page.evaluate(()=>{const original=window.fetch;window.fetch=(url,options)=>String(url).endsWith("/revisions")?Promise.resolve(new Response(JSON.stringify({error:{code:"conflict",message:"Concurrent edit retained"}}),{status:409,headers:{"Content-Type":"application/json"}})):original(url,options);document.querySelector("[data-document-save]").click();});
+  await page.waitForExpression(()=>document.querySelector("#toast")?.textContent.includes("Concurrent edit retained"));
+  assert.match(await page.evaluate(()=>document.querySelector("[data-document-body]").value),/Newer unsaved edit/);
  } finally {await browser.close();}
 });
 
@@ -2804,7 +2831,7 @@ test("collection continuous reading keeps filters, deep links and mobile focus",
    await page.waitForExpression(()=>document.querySelector("#collection-search-results")?.textContent.includes("Result new")&&performance.getEntriesByType("resource").some(e=>e.name.includes("q=old")&&e.responseEnd>0));
    assert.doesNotMatch(await page.evaluate(()=>document.querySelector("#collection-search-results").textContent),/Result old/);
    await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");
-   await page.send("Page.reload");
+   await page.reload();
    await page.waitForExpression(()=>document.querySelector("#details")?.textContent==="Details");
    assert.match(await page.evaluate(()=>window.location.hash),/entry=A.*revision=rev-A.*section=details/);
    assert.deepEqual(errors,[]);
@@ -2834,7 +2861,7 @@ test("capture research replies answer both turns and survive a browser reload", 
   assert.match(before,/ERP 下达生产订单/);
   assert.doesNotMatch(before,/ARCHIVE_METADATA_ONLY/);
   assert.equal(before.split("能力说明能够完成什么").length-1,1);
-  await page.send("Page.reload");
+  await page.reload();
   await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("能力说明能够完成什么"));
   const after=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);
   assert.match(after,/ERP 下达生产订单/);
@@ -2948,7 +2975,7 @@ test("capture archives through chat and restores its result without context or p
     assert.equal(ui.panels,0); assert.match(ui.status,/Archived/); assert.equal(ui.href,"#/notes?id=thought-capture");
    };
    await assertChatOnly();
-   await page.send("Page.reload"); await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   await page.reload(); await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
    await clickVisibleCaptureControl(page,"#capture-sessions-toggle");
    await page.waitForExpression(()=>!!document.querySelector('.tf-sessions-open[data-session-id="browser-session"]'));
    await clickVisibleCaptureControl(page,'.tf-sessions-open[data-session-id="browser-session"]');
@@ -2980,9 +3007,43 @@ test("backend archive events report saved or missing information through bubbles
    assert.match(ui.text,status==="saved"?/Archived/:/Essential information is missing/);
    assert.equal(writes.filter(url=>/\/(archive|parameters|intent)(?:[/?]|$)/.test(url)).length,0);
    if(status==="needs_input") {
-    await page.send("Page.reload");
+    await page.reload();
     await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-kind="archive_status"]')?.textContent.includes("Essential information is missing"));
    }
   } finally { await browser.close(); }
+ });
+});
+
+
+test("document set reader pins version, follows logical links and restores browser history on desktop and mobile", async t => {
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ for(const viewport of viewports()) await t.test(viewport.name,async t=>{
+  const revision=id=>({set_revision_id:id,set_revision_hash:`hash-${id}`,plan:{profile:{name:"Feature design set"},shared_design:{facts:[]}},validation:{semantic_status:"model_reviewed",issues:[]},members:[
+   {member_key:"architecture",document_id:"set-architecture",contract:{title:"Architecture"},body:`# Architecture ${id}\n\n## Scope\n\nArchitecture ${id}.\n\n[Order](docset://demo/module:ORDER#scope)\n\n## Verification\n\nReview architecture.`},
+   {member_key:"module:ORDER",document_id:"set-order",contract:{title:"Order module"},body:`# Order ${id}\n\n## Scope\n\nOrder module ${id}.\n\n[Architecture](docset://demo/architecture#scope)\n\n## Verification\n\nReview order.`}
+  ]});
+  const data={head:{generation:4,working_set_revision:"set-r-2",finalized_set_revision:"set-r-1",finalization:{delivery_level:"ready_for_use"}},revisions:[revision("set-r-2"),revision("set-r-1")]};
+  const server=await startFixtureServer({collection:true,documentSet:data});t.after(()=>server.close());
+  const browser=await launchChrome(viewport);
+  try {
+   const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/topics/demo?tab=documents&set_revision=set-r-1&member=architecture`);
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"),30000);
+   await clickVisibleCaptureControl(page,"[data-set-body] .collection-toc summary");
+   await clickVisibleCaptureControl(page,'[data-set-body] .collection-toc a[href*="section=scope"]');
+   await page.waitForExpression(()=>location.hash.includes("section=scope")&&document.querySelector("[data-set-body]")?.dataset.section==="scope");
+   assert.equal(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("section")),"scope");
+   await clickVisibleCaptureControl(page,'[data-set-body] a[href*="member=module%3AORDER"]');
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Order module set-r-1"));
+   assert.match(await page.evaluate(()=>location.hash),/set_revision=set-r-1/);
+   await page.evaluate(()=>history.back());
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-2";select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"));
+   await page.evaluate(()=>{const form=document.querySelector("[data-set-search]");form.elements.q.value="old";form.requestSubmit();form.elements.q.value="new";form.requestSubmit();});
+   await page.waitForExpression(()=>document.querySelector("[data-set-results]")?.textContent.includes("NEW_RESULT"));
+   await new Promise(resolve=>setTimeout(resolve,350));assert.doesNotMatch(await page.evaluate(()=>document.querySelector("[data-set-results]").textContent),/OLD_RESULT/);
+   await page.evaluate(()=>window.__docsetBeforeReload=true);await page.reload();await page.waitForExpression(()=>window.__docsetBeforeReload===undefined&&document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"),30000);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),true);
+  }finally{await browser.close();}
  });
 });

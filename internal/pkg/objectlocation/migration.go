@@ -35,6 +35,9 @@ func migrationPath(id string) string {
 	return ".content-registry/private/migrations/" + id + "/state.json"
 }
 func (r *Registry) migrationFiles(source, target models.ObjectLocation) ([]migrationFile, error) {
+	if source.ManagedSetID != "" {
+		return nil, ErrConflict
+	}
 	files := []migrationFile{}
 	var total int64
 	appendFile := func(from, to string, private bool) error {

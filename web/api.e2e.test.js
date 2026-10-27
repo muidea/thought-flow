@@ -66,7 +66,7 @@ async function createServerFixture() {
   };
 }
 
-async function startServer(fixture = null) {
+async function startServer(fixture = null, options = {}) {
   const ownedFixture = fixture || await createServerFixture();
   const { configDir, contentDir, stateDir } = ownedFixture;
   const port = await pickFreePort();
@@ -85,7 +85,7 @@ async function startServer(fixture = null) {
     "[embedding]",
     "enabled = false",
     "[llm]",
-    "configured = false",
+    ...(options.llmBaseURL ? [`base_url = ${JSON.stringify(options.llmBaseURL)}`,'api_key = "test-only-local-gateway"','chat_model = "fixture-model"','timeout_seconds = 60'] : ["configured = false"]),
     "[search]",
     'duckdb_path = "thoughtflow.duckdb"',
     'default_mode = "hybrid"',
@@ -1382,4 +1382,53 @@ test("first startup records import conflicts and continues healthy recovery", as
     if (source) await source.stop();
     if (dest) await dest.stop();
   }
+});
+
+// Real service and filesystem, deterministic local generator/reviewer. No
+// request is sent to a real provider or to the user's running workspace.
+test("Capture document set: six files, joint gate, fixed reading, delivery, backup and restart",{timeout:240000},async(t)=>{
+ const crypto=require("node:crypto");
+ const userText="Build ordering with API and persistent storage. Modules: Order and Billing. Verify recovery.";
+ const shared={facts:[
+  {id:"REQ-ORDER",kind:"requirement",name:"Order flow",content:"Orders must be recoverable.",owner:"architecture"},
+  {id:"MOD-ORDER",kind:"module",name:"Order",content:"Own order lifecycle.",owner:"module:MOD-ORDER"},
+  {id:"MOD-BILLING",kind:"module",name:"Billing",content:"Own billing lifecycle.",owner:"module:MOD-BILLING"},
+  {id:"API-ORDER",kind:"interface",name:"Create order",content:"POST /orders requires authentication and idempotence.",owner:"interfaces",fields:[{id:"id",type:"string",nullable:false,classification:"persisted",entity_id:"ENTITY-ORDER",entity_field:"id",permission:"user",errors:["409"]}]},
+  {id:"ENTITY-ORDER",kind:"entity",name:"Order record",content:"Atomic persistence and rollback preserve consistency.",owner:"storage",fields:[{id:"id",type:"string",nullable:false,classification:"persisted"}]},
+  {id:"TEST-ORDER",kind:"verification",name:"Recovery check",content:"Exercise failure and recovery of both modules.",owner:"verification"}
+ ].map(f=>({...f,status:"confirmed",source:{message:0,quote:"Build ordering"},reason:"Explicit user scope"})),relations:[{id:"REL-REQ",kind:"verification",from:"REQ-ORDER",to:"TEST-ORDER"},{id:"REL-ORDER",kind:"verification",from:"MOD-ORDER",to:"TEST-ORDER"},{id:"REL-BILLING",kind:"verification",from:"MOD-BILLING",to:"TEST-ORDER"},{id:"REL-DATA",kind:"mapping",from:"API-ORDER",to:"ENTITY-ORDER"}],conditions:{has_interfaces:true,has_persistence:true},inputs:{goal:"Recoverable orders",scope:"Ordering and billing",constraints:"Local persistence"},open_questions:[]};
+ let calls=0;const gateway=http.createServer(async(req,res)=>{try{const chunks=[];for await(const c of req)chunks.push(c);const request=JSON.parse(Buffer.concat(chunks));const system=request.messages[0].content;const prompt=request.messages.at(-1).content;let content;
+  if(system.startsWith("Plan a coordinated"))content=shared;
+  else if(system.startsWith("Review the final document")){const input=JSON.parse(prompt);content={evidence:input.checklist.map(item=>({check_id:item.id,verdict:"passed",locations:item.members.map(key=>({member_key:key,section:"scope",evidence:input.members.find(member=>member.member_key===key).body.split("## Scope")[1].split("## Design")[0].trim().split("\n")[0]})),reason:"Final body contracts and recovery evidence were inspected."})),issues:[]};}
+  else if(system.startsWith("Generate structured")){const match=prompt.match(/Profile JSON:\n([^\n]+)/);const profile=JSON.parse(match[1]);content={title:"Generated",summary:"Role-specific design",sections:Object.fromEntries(profile.allowed_section_keys.map(key=>[key,{content:`The ${key} preserves agreed responsibilities, precise contracts and recoverable failure handling.`}])),references:[],assumptions:[]};}
+  else content={assistant_reply:"The requested scope is retained. Ready to generate a document set.",topic:"Ordering",goal:"Recoverable orders",confirmed_facts:[userText],open_questions:[],conflicts:[],candidate_title:"Ordering",candidate_tags:[],candidate_summary:"Ordering and billing",candidate_body:userText,source_links:[],related_thought_ids:[],suggested_topic_ids:[],archive_intent:"none",candidate_document_family:"note",candidate_profile_id:"builtin.note",candidate_profile_version:1,profile_confidence:100,document_parameters:{},archive_readiness:"ready"};
+  calls++;res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({id:"fixture",object:"chat.completion",created:1,model:"fixture-model",choices:[{index:0,message:{role:"assistant",content:JSON.stringify(content)},finish_reason:"stop"}]}));
+ }catch(error){res.writeHead(500);res.end(String(error));}});
+ await new Promise(resolve=>gateway.listen(0,"127.0.0.1",resolve));t.after(()=>gateway.close());const options={llmBaseURL:`http://127.0.0.1:${gateway.address().port}/v1`};
+ const original=await createServerFixture();const restored=await createServerFixture();t.after(()=>original.cleanup());t.after(()=>restored.cleanup());let server=await startServer(original,options);let target;
+ try{
+  const created=await request(server.baseURL,"/api/capture/sessions","POST",{body:{content:userText}});assert.equal(created.status,200,created.text);let sp=envelope(created).data;sp=sp.scratchpad||sp;const session=sp.session_id;assert.ok(session,created.text);
+  const deadline=Date.now()+10000;while(Date.now()<deadline){const fetched=envelope(await request(server.baseURL,`/api/capture/sessions/${session}`,"GET")).data;sp=fetched;if(sp.session_context?.assistant_reply)break;await new Promise(r=>setTimeout(r,30));}
+  const profiles=envelope(await request(server.baseURL,"/api/document-set-profiles","GET")).data;const profile=profiles.find(p=>p.profile_id==="builtin.feature-design-set");assert.ok(profile);
+  const planned=await request(server.baseURL,`/api/capture/sessions/${session}/document-set-plans`,"POST",{body:{operation_id:"e2e-set-plan",expected_generation:0,capture_generation:sp.input_generation,profile_id:profile.profile_id,profile_version:profile.version,profile_hash:profile.content_hash}});assert.equal(planned.status,200,planned.text);const plan=envelope(planned).data;assert.equal(plan.members.length,6);assert.equal(plan.capture.messages,null);assert.ok(plan.shared_design.facts.every(f=>!f.source.quote));
+  const originals=[{path:"architecture.md",member_key:"architecture",content:"\ufeff# Reference architecture\r\n\r\nPreserve this exact original source and every line. [Order](modules/order.md#scope)\r\n"},{path:"modules/order.md",member_key:"module:MOD-ORDER",content:"# Order source\n\nRetain boundaries and [Architecture](../architecture.md#scope).\n"}];
+  const previewResponse=await request(server.baseURL,`/api/capture/sessions/${session}/document-set-markdown-previews`,"POST",{body:{operation_id:"e2e-md-preview",set_id:plan.set_id,plan_id:plan.plan_id,plan_hash:plan.plan_hash,files:originals}});assert.equal(previewResponse.status,200,previewResponse.text);const preview=envelope(previewResponse).data;assert.equal(preview.mappings[0].original,originals[0].content);assert.ok(preview.cycles.length>0);
+  const body={operation_id:"e2e-set-run",set_id:plan.set_id,plan_id:plan.plan_id,plan_hash:plan.plan_hash,expected_generation:0,capture_generation:plan.capture.generation,markdown_preview_id:preview.preview_id};const started=await request(server.baseURL,`/api/capture/sessions/${session}/document-set-runs`,"POST",{body});assert.equal(started.status,202,started.text);
+  let run;const finish=Date.now()+60000;while(Date.now()<finish){const polled=await request(server.baseURL,"/api/document-set-runs/e2e-set-run","GET");assert.equal(polled.status,200,polled.text);run=envelope(polled).data;if(["committed","failed_terminal","awaiting_review","stale"].includes(run.state))break;await new Promise(r=>setTimeout(r,30));}
+  assert.equal(run.state,"committed",JSON.stringify(run));assert.equal(run.candidate.members.length,6);assert.ok(calls>=8);
+  const setPath=`/api/document-sets/${plan.set_id}`;let data=envelope(await request(server.baseURL,setPath,"GET")).data;assert.equal(data.head.finalized_set_revision,"");const rev=data.head.working_set_revision;
+  for(const member of run.candidate.members){const response=await request(server.baseURL,`${setPath}/members/${encodeURIComponent(member.member_key)}/content?set_revision=${rev}`,"GET");assert.equal(response.status,200,response.text);assert.equal(envelope(response).data.body_hash,`sha256:${crypto.createHash("sha256").update(member.body).digest("hex")}`);assert.ok(fs.existsSync(path.join(server.contentDir,"topics",plan.set_id,"thoughts",`${member.document_id}.md`)));}
+  const rejected=await request(server.baseURL,`${setPath}/exports`,"POST",{body:{operation_id:"e2e-premature",expected_generation:data.head.generation,set_revision_id:rev,kind:"delivery"}});assert.equal(rejected.status,422,rejected.text);
+  const finalized=await request(server.baseURL,`${setPath}/finalizations`,"POST",{body:{operation_id:"e2e-set-final",expected_generation:data.head.generation,set_revision_id:rev,set_revision_hash:run.candidate.set_revision_hash,approved_by:"fixture user",delivery_level:"ready_for_use"}});assert.equal(finalized.status,200,finalized.text);data.head=envelope(finalized).data;
+  async function exported(kind){const response=await fetch(`${server.baseURL}${setPath}/exports`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({operation_id:`e2e-export-${kind}`,expected_generation:data.head.generation,set_revision_id:rev,kind})});assert.equal(response.status,200,await response.clone().text());return Buffer.from(await response.arrayBuffer());}
+  const delivery=await exported("delivery");assert.equal(delivery.readUInt32LE(),0x04034b50);const backup=await exported("backup");
+  if(process.env.THOUGHTFLOW_DOCSET_ARTIFACT_DIR){const output=path.resolve(process.env.THOUGHTFLOW_DOCSET_ARTIFACT_DIR);fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,"delivery.zip"),delivery);fs.writeFileSync(path.join(output,"backup.zip"),backup);fs.writeFileSync(path.join(output,"set.json"),JSON.stringify(run.candidate,null,2));}
+
+  await server.stop();server=null;server=await startServer(original,options);const reopened=await request(server.baseURL,`${setPath}/revisions/${rev}`,"GET");assert.equal(reopened.status,200,reopened.text);assert.equal(envelope(reopened).data.set_revision_hash,run.candidate.set_revision_hash);
+  target=await startServer(restored,options);const imported=await fetch(`${target.baseURL}/api/document-set-imports?operation_id=e2e-set-import`,{method:"POST",headers:{"Content-Type":"application/zip"},body:backup});assert.equal(imported.status,201,await imported.clone().text());await target.stop();target=null;target=await startServer(restored,options);
+  const restoredSet=await request(target.baseURL,`${setPath}/revisions/${rev}`,"GET");assert.equal(restoredSet.status,200,restoredSet.text);assert.equal(envelope(restoredSet).data.set_revision_hash,run.candidate.set_revision_hash);
+  for(const original of originals){const member=envelope(restoredSet).data.members.find(member=>member.member_key===original.member_key);assert.equal(member.original,original.content);const thought=envelope(await request(target.baseURL,`/api/thoughts/${member.document_id}`,"GET")).data;assert.equal(thought.content.original,original.content);}
+
+  const duplicate=await fetch(`${target.baseURL}/api/document-set-imports?operation_id=e2e-another-import`,{method:"POST",body:backup});assert.equal(duplicate.status,409);
+ }finally{if(server)await server.stop();if(target)await target.stop();}
 });

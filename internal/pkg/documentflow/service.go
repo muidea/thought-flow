@@ -17,6 +17,7 @@ import (
 	"thoughtflow/internal/pkg/documentvalidation"
 	"thoughtflow/internal/pkg/jobstore"
 	"thoughtflow/internal/pkg/models"
+	"thoughtflow/internal/pkg/objectlocation"
 )
 
 var ErrRules = errors.New("document delivery requirements are not satisfied")
@@ -175,6 +176,11 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 		}
 	}
 	id := t.ID
+	if !observe {
+		if e := s.checkManagedContract(id, documentstore.RevisionData{Body: c.AINotes}); e != nil {
+			return false, e
+		}
+	}
 	h, e := s.Store.ActiveHead(id)
 	if e != nil && !os.IsNotExist(e) {
 		return false, e
@@ -225,7 +231,7 @@ func (s *Service) SyncProjectionLocked(t *models.Thought, c *models.ThoughtConte
 			return false, documentstore.ErrConflict
 		}
 	}
-	if !s.Options.Enabled || (t.DocumentProfile != nil && !s.enabledFamily(t.DocumentProfile.Family)) || s.ctx.Err() != nil {
+	if !s.Options.Enabled || (t.DocumentProfile != nil && !s.enabledDocument(t.ID, t.DocumentProfile.Family)) || s.ctx.Err() != nil {
 		return false, ErrUnavailable
 	}
 	if t.DocumentProfile == nil {
@@ -361,10 +367,14 @@ func (s *Service) get(id string, hasher func(models.DocumentSource) (string, err
 	return out, nil
 }
 func (s *Service) CreateRevision(id string, expected uint64, d documentstore.RevisionData) (models.DocumentSnapshot, error) {
+	if e := s.checkManagedContract(id, d); e != nil {
+		return models.DocumentSnapshot{}, e
+	}
+
 	if !s.Options.Enabled || s.ctx.Err() != nil {
 		return models.DocumentSnapshot{}, ErrUnavailable
 	}
-	if !s.enabledFamily(d.Contract.ProfileRef.Family) {
+	if !s.enabledDocument(id, d.Contract.ProfileRef.Family) {
 		return models.DocumentSnapshot{}, ErrUnavailable
 	}
 	if e := safeInputs(d); e != nil {
@@ -378,6 +388,12 @@ func (s *Service) CreateRevision(id string, expected uint64, d documentstore.Rev
 	}
 	s.emit("document.revision_created", id, h, "")
 	return s.GetUnderLease(id)
+}
+func (s *Service) enabledDocument(id, family string) bool {
+	if l, e := objectlocation.For(filepath.Dir(s.Store.Root)).Lookup(id); e == nil && l.ManagedSetID != "" {
+		return true
+	}
+	return s.enabledFamily(family)
 }
 func (s *Service) enabledFamily(f string) bool {
 	if len(s.Options.Families) == 0 {
@@ -413,7 +429,7 @@ func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64,
 	if e != nil {
 		return models.ValidationReport{}, e
 	}
-	if !s.enabledFamily(d.Contract.ProfileRef.Family) {
+	if !s.enabledDocument(id, d.Contract.ProfileRef.Family) {
 		return models.ValidationReport{}, ErrUnavailable
 	}
 	operation := ""
@@ -599,7 +615,7 @@ func (s *Service) Finalize(id string, expected uint64, req FinalizeRequest) (mod
 	if e != nil {
 		return existing, e
 	}
-	if !s.enabledFamily(d.Contract.ProfileRef.Family) {
+	if !s.enabledDocument(id, d.Contract.ProfileRef.Family) {
 		return existing, ErrUnavailable
 	}
 	r, e := s.Store.Report(id, req.ReportID)
@@ -752,7 +768,7 @@ func (s *Service) Repair(ctx context.Context, id, rev, reportID string, expected
 	if e != nil {
 		return models.DocumentSnapshot{}, e
 	}
-	if !s.enabledFamily(d.Contract.ProfileRef.Family) {
+	if !s.enabledDocument(id, d.Contract.ProfileRef.Family) {
 		return models.DocumentSnapshot{}, ErrUnavailable
 	}
 	r, e := s.Store.Report(id, reportID)

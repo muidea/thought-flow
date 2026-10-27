@@ -389,3 +389,16 @@ func TestTopicWorkspaceCommitAllowlistExcludesPrivateCanaries(t *testing.T) {
 		}
 	}
 }
+
+func TestDocumentSetGitAllowlistKeepsMetadataAndExcludesAttempts(t *testing.T) {
+	for _, path := range []string{"topics/set-a/document-set/head.json", "topics/set-a/document-set/revisions/set-r-a/manifest.json", "topics/set-a/document-set/revisions/set-r-a/validation.json", "topics/set-a/document-set/finalizations/set-f-a.json"} {
+		if _, ok := normalizedCommitPath(path); !ok {
+			t.Fatal("public set metadata rejected", path)
+		}
+	}
+	for _, path := range []string{".content-registry/private/document-set-runs/run-a.json", "topics/set-a/.private/evidence/private.txt", "topics/set-a/document-set/revisions/set-r-a/attempt.json"} {
+		if _, ok := normalizedCommitPath(path); ok {
+			t.Fatal("private set state admitted", path)
+		}
+	}
+}
