@@ -3023,6 +3023,7 @@ test("document set reader pins version, follows logical links and restores brows
    {member_key:"module:ORDER",document_id:"set-order",contract:{title:"Order module"},body:`# Order ${id}\n\n## Scope\n\nOrder module ${id}.\n\n[Architecture](docset://demo/architecture#scope)\n\n## Verification\n\nReview order.`}
   ]});
   const data={head:{generation:4,working_set_revision:"set-r-2",finalized_set_revision:"set-r-1",finalization:{delivery_level:"ready_for_use"}},revisions:[revision("set-r-2"),revision("set-r-1")]};
+  data.revisions[0].members.push({member_key:"storage",document_id:"set-storage",contract:{title:"Storage"},body:"# Storage new-only\n\n## Scope\n\nStorage introduced in set-r-2."});
   const server=await startFixtureServer({collection:true,documentSet:data});t.after(()=>server.close());
   const browser=await launchChrome(viewport);
   try {
@@ -3036,6 +3037,17 @@ test("document set reader pins version, follows logical links and restores brows
    await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Order module set-r-1"));
    assert.match(await page.evaluate(()=>location.hash),/set_revision=set-r-1/);
    await page.evaluate(()=>history.back());
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-2";select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"));
+   await clickVisibleCaptureControl(page,'[data-set-nav] a[href*="member=storage"]');
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Storage new-only"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-1";select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
+   assert.doesNotMatch(await page.evaluate(()=>location.hash),/member=storage/);
+   await page.evaluate(()=>history.back());
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Storage new-only"));
+   await page.evaluate(()=>history.forward());
    await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
    await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-2";select.dispatchEvent(new Event("change",{bubbles:true}));});
    await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"));

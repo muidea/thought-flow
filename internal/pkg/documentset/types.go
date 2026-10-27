@@ -9,12 +9,14 @@ import (
 )
 
 var (
-	ErrInvalid      = errors.New("invalid document set contract")
-	ErrConflict     = errors.New("document set generation or operation conflict")
-	ErrPrecondition = errors.New("document set precondition required")
-	ErrRules        = errors.New("document set validation blocked")
-	ErrBudget       = errors.New("document set budget exceeded")
-	ErrUnavailable  = errors.New("document set generation unavailable")
+	ErrCaptureMissing = errors.New("capture session unavailable")
+	ErrSourceMissing  = errors.New("document set source unavailable")
+	ErrInvalid        = errors.New("invalid document set contract")
+	ErrConflict       = errors.New("document set generation or operation conflict")
+	ErrPrecondition   = errors.New("document set precondition required")
+	ErrRules          = errors.New("document set validation blocked")
+	ErrBudget         = errors.New("document set budget exceeded")
+	ErrUnavailable    = errors.New("document set generation unavailable")
 )
 
 const SchemaVersion = 1
@@ -92,14 +94,30 @@ type Question struct {
 	Blocking bool     `json:"blocking"`
 	Members  []string `json:"members,omitempty"`
 }
+type Condition struct {
+	Value  *bool  `json:"value"`
+	Status string `json:"status"`
+	Source Source `json:"source"`
+	Reason string `json:"reason"`
+}
+type ScopeChange struct {
+	FactID   string   `json:"fact_id"`
+	Action   string   `json:"action"`
+	Status   string   `json:"status"`
+	Source   Source   `json:"source"`
+	Reason   string   `json:"reason"`
+	Affected []string `json:"affected_members"`
+	Coverage string   `json:"replacement_coverage"`
+}
 type SharedDesign struct {
-	RevisionID string            `json:"revision_id"`
-	Hash       string            `json:"hash"`
-	Facts      []Fact            `json:"facts"`
-	Relations  []Relation        `json:"relations"`
-	Questions  []Question        `json:"open_questions"`
-	Conditions map[string]*bool  `json:"conditions"`
-	Inputs     map[string]string `json:"inputs"`
+	ScopeChanges []ScopeChange        `json:"scope_changes,omitempty"`
+	RevisionID   string               `json:"revision_id"`
+	Hash         string               `json:"hash"`
+	Facts        []Fact               `json:"facts"`
+	Relations    []Relation           `json:"relations"`
+	Questions    []Question           `json:"open_questions"`
+	Conditions   map[string]Condition `json:"conditions"`
+	Inputs       map[string]string    `json:"inputs"`
 }
 type Message struct {
 	Role string `json:"role"`
@@ -259,6 +277,7 @@ type Call struct {
 	Error           string `json:"error,omitempty"`
 }
 type Run struct {
+	StateVersion      uint64             `json:"state_version"`
 	ID                string             `json:"run_id"`
 	OperationID       string             `json:"operation_id"`
 	RequestHash       string             `json:"request_hash"`

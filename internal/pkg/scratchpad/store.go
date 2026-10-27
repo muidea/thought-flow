@@ -314,6 +314,21 @@ func (s *Store) Get(sessionID string) (Scratchpad, error) {
 	return Scratchpad{SessionID: sessionID, CreatedAt: s.now(), UpdatedAt: s.now()}, nil
 }
 
+// GetExisting reads only a persisted session. Get intentionally synthesizes an
+// empty conversation for the chat UI; recovery/freshness gates need absence.
+func (s *Store) GetExisting(sessionID string) (Scratchpad, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return Scratchpad{}, errors.New("scratchpad: session id is required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if existing, ok := s.items[sessionID]; ok && existing != nil {
+		return cloneScratchpad(*existing), nil
+	}
+	return Scratchpad{}, os.ErrNotExist
+}
+
 // Save upserts the scratchpad and flushes to disk. The in-memory
 // copy is updated atomically under the write lock; the file write
 // happens while the lock is held so a concurrent Get cannot read a

@@ -130,3 +130,36 @@ THOUGHTFLOW_DOCSET_ARTIFACT_DIR=/tmp/thoughtflow-docset-acceptance \
 - 套搜索为固定版本的词法全文查询，不提供套级专用向量索引。普通全局搜索继续遵循原有 owner/单篇策略。
 - 没有自动清除保留套的 revision/资源；没有多租户/分布式写入、远程 Git 推送、真实模型质量承诺。历史数据兼容按用户已有豁免处理，不自动改写旧定稿或批量转换既有专题。
 - 远端 Ubuntu/macOS 同 SHA 的 CI 以及人工真实模型质量评估尚未验证，不能记为通过。正式验收应取得对应证据后更新此记录，保留每项的实际验证层级。
+
+## ce437dc 复核后 DS01–DS12 增量修复
+
+日期：2026-10-27。对照评审基线 `ce437dcbb3fb6d807a2d06a0aab7d937407961b4`；本节对应包含本节的 DS01–DS12 修复提交，不借用基线 CI 证明修复。保留上面的 A01–A56 映射，以下反例补充原有成功夹具。
+
+| 项目 | 修复和回归入口 |
+| --- | --- |
+| DS01 / A27、A34 | 个人 HEAD 保存投影前原始字节 hash 和预期输出 hash。pending 恢复只能接受这两种字节，其他输入保留并报冲突。`TestPendingProjectionChecksBothCrashWindows` 覆盖 HEAD 已写/正文未写、正文已写/pending 未清，以及两处外部编辑和无编辑恢复。 |
+| DS02 / A04、A10、A13 | 条件改为 value/status/source/reason；无用户原句证据或未确认时进入澄清，不允许作为已确认省略。条件变更不能复用旧证据。私有目录保存冻结 Capture，联合审查新增 `capture-scope`，独立对照原始消息和确认需求，不只对照 planner 事实。`TestConditionalOmissionRequiresConfirmedUserEvidence`、`TestConditionChangesCannotReuseOldScopeEvidence`、`TestIndependentScopeReviewBlocksPlannerOmittingUserRequirement`。自然语言含义仍由独立语义/完整人工审查判断，不宣称字符串匹配能够证明语义。 |
+| DS03 / 来源冻结门禁 | 会话缺失与关联来源缺失使用不同错误；严格会话读取不合成空对象。来源缺失、权限/其他错误均拒绝定稿。仅没有外部来源且冻结门禁完整的恢复成果允许缺少原会话。`TestFinalizationDistinguishesMissingCaptureFromMissingSource` 实际删除来源并核对 Finalized 不变，另覆盖缺失会话/权限错误；`TestSetSnapshotMissingRelatedThoughtIsNotMissingCapture` 验证服务层实际来源删除错误分类。 |
+| DS04 / A26 | `scope_changes` 记录明确删除、新用户证据、影响成员、剩余/替代覆盖。无授权遗漏仍阻断。`TestCaptureCanExplicitlyRemoveConfirmedModule` 通过 planner 路径验证未授权遗漏、用户删除及再确认、新五篇套提交、旧六篇套仍可读。 |
+| DS05 / §8、A15、A52 | 生成请求加入适用事实/关系闭包及固定上游正文、文档/修订身份和 hash；无更细适用声明的接口/实体契约供模块和验证角色使用。仍检查预算，超限拒绝，不截断后宣称覆盖。契约/上游版本变化使相关成员失效，不能只更换 dependency ID 后复用解释。`TestGenerationReceivesContractsAndImmutableUpstream` 捕获实际请求，核对认证/幂等、事务约束、关系和磁盘不可变上游正文/hash，并验证 scope 审查接收原始需求。 |
+| DS06 / A22、§9 | 单篇内容警告进入联合 issue 台账，附成员、真实正文位置及候选 hash；重新检查不能删掉已知风险。流程性 `manual_review` 提示由套级语义/人工审查门禁承担；来源未验证等内容风险须逐项处置。`TestSourceWarningSurvivesJointReviewAndNeedsRiskDecision` 覆盖模型通过不能抹除风险、无处置不能 ready、实际人工审阅/提交/定稿及交付 `review.json` 保留风险和理由。 |
+| DS07 / A41、A46、A47 | resource scheme 不再直接意味着 partial；按冻结绑定、共享许可、实际字节和离线依赖判定。`TestPublicFrozenAttachmentDeliveryAndGitClosure` 实际上传 PNG 和文本附件，正式交付含两个资源并改写链接；缺失、损坏、不可分享资源拒绝交付。 |
+| DS08 / A33、A38 | 普通 revision 导出检查精确可达性：个人已发布历史或保留套 manifest 选中的精确修订。准备中的同 ID 新 revision 不因旧成员 active 而获得读取资格。内部生成仍可显式读取 FrozenRevision。`TestOrdinaryExportRejectsPreparedRevisionOfExistingMember` 覆盖 active 成员准备新版本、提交前拒绝、提交后与旧历史可读。 |
+| DS09 / §19、§20 | 套级 ContentPaths 包含个人 HEAD、当前 Thought 投影、当前绑定记录/公开资源，以及套保留版本闭包；不等待搜索/embedding 追加 Git 路径。`TestPublicFrozenAttachmentDeliveryAndGitClosure` 在没有索引服务帮助的临时仓库只提交此清单，再实际 clone；普通成员和资源均可读取，私有 intent/run 不在 clone 中。`TestDefaultPublicationClosureExcludesPrivateConversationAndEvidence` 同时验证实际套级提交回调及私有 canary。 |
+| DS10 / A30、A39、P4 | 重试在启动新 attempt 前，按会话输入代次、set ID 和旧/新 run ID 前置条件持久化关联；旧请求幂等回放不能覆盖更新的会话任务。`TestSetRetryPersistsNewRunBeforeReturningAndRejectsStaleBinding` 用真实 HTTP handler 验证重试后重新 GET 会话恢复新任务，无需 SSE，并拒绝迟到旧重试。 |
+| DS11 / A39、A55 | 任务 SSE 先核对服务端持久会话关联，再使用选择/操作 epoch、请求序号和持久 state_version 保护 UI。轮询被事件超越时继续提供后备刷新；其他页面创建的权威新任务可被采用。Node 覆盖同会话旧/新 attempt、同 attempt 响应逆序、旧状态版本、事件/轮询交错和 A→B→A。 |
+| DS12 / A42、A55 | 版本选择先查目标 manifest：保留存在的 key，否则选择目标首个成员；用户手输无效固定链接仍报明确错误。Node 验证成员增减；Chrome 的 `document set reader pins version...` 在 desktop/mobile 实际点击新增 storage、切回不含 storage 的旧套，并验证前进/后退和刷新。 |
+
+本轮验证（Linux、Go 1.24.13、临时工作区和本地确定性模型网关）：
+
+| 检查 | 本轮实际结果 |
+| --- | --- |
+| 相关 Go 包与服务测试 | PASS；`/tmp/thoughtflow-ds-review-focused-final.log`；后续新增的独立 scope 对照反例已纳入最终完整 Go 检查。新增测试位于 `documentsetflow/review_regression_test.go`、服务层 `document_sets_review_test.go` 及 profile 测试。 |
+| 完整 `make ci-check` | PASS；`/tmp/thoughtflow-ds-review-ci.log`：fmt-check、全量 Go test、build、node-check、node-test、i18n-check、browser-test、e2e-test 八阶段全部通过。Node 组件 147 项、i18n 6 项。 |
+| 定向 race | PASS；`/tmp/thoughtflow-ds-review-race.log`：DS01–DS10 后端反例和独立范围审查，包含真实磁盘、并发生成、HTTP 任务绑定、资源和 Git 克隆；flow 111.262s、服务 2.517s、profile 1.390s。store 由 flow 场景执行，直接包过滤器无匹配测试；不将此记作全仓 race。 |
+| 浏览器 | PASS；完整 Chrome 矩阵以及修改后的成果集 desktop/mobile 成员增减、版本/历史导航。Firefox/Safari 可选 smoke 沿用环境跳过，不计通过。 |
+| 六篇真实进程及包验证 | PASS；`/tmp/thoughtflow-ds-review-acceptance.log`，显式选择六篇场景时其他两个顶层测试按名称过滤跳过；完整 API/SSE 另由 ci-check 通过。`/tmp/thoughtflow-ds-review-acceptance/` 含 set.json、delivery.zip（15 文件）、backup.zip（60 文件）；两包 complete，分别核对 14/59 个清单文件的字节长度和 SHA-256。 |
+| diff 空白检查 | PASS；`git diff --check`。 |
+| 当前修改的远端同 SHA CI | 未验证：须核对包含本轮修复的提交，不能沿用基线结果。 |
+
+真实外部模型调用和生产工作区迁移均未执行；不把确定性模型夹具当作真实模型质量验证。远端基线 CI [40454691693](https://github.com/muidea/thought-flow/actions/runs/40454691693) 的 Ubuntu/macOS 两项已核实成功，仅证明基线；本轮修复提交的远端 CI 尚未验证。

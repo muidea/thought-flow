@@ -112,12 +112,19 @@ func (s *Service) repair(ctx context.Context, run *ds.Run, candidate *ds.Revisio
 // A planner cannot relabel an old quote as authorization to change or delete a
 // confirmed fact. Changes need evidence from the newly added user messages;
 // otherwise retain a blocking proposal for the next conversation turn.
-func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan) {
+func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan, capture ds.CaptureSnapshot) {
 	meaning := func(f ds.Fact) string {
 		return documentstore.HashJSON(struct {
 			Kind, Name, Content, Owner string
 			Fields                     []ds.Field
 		}{f.Kind, f.Name, f.Content, f.Owner, f.Fields})
+	}
+	for key, old := range previous.Shared.Conditions {
+		value, ok := next.Conditions[key]
+		if old.Status == "confirmed" && old.Value != nil && ok && value.Value != nil && *old.Value != *value.Value && value.Source.Message < previous.Capture.MessageCount {
+			value.Status = "proposed"
+			next.Conditions[key] = value
+		}
 	}
 	for _, old := range previous.Shared.Facts {
 		if old.Status != "confirmed" {
@@ -136,6 +143,19 @@ func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan) {
 			break
 		}
 		if !found {
+			authorized := false
+			for _, change := range next.ScopeChanges {
+				if change.FactID == old.ID && change.Action == "remove" && change.Status == "confirmed" && change.Source.Message >= previous.Capture.MessageCount && ds.UserEvidence(capture, change.Source) && change.Reason != "" && change.Coverage != "" {
+					for _, key := range change.Affected {
+						if key == old.Owner {
+							authorized = true
+						}
+					}
+				}
+			}
+			if authorized {
+				continue
+			}
 			old.Status = "unresolved"
 			next.Facts = append(next.Facts, old)
 			next.Questions = append(next.Questions, ds.Question{ID: "removed-" + old.ID, Message: "Confirm removal or replacement coverage for " + old.Name, Blocking: true, Members: []string{old.Owner}})

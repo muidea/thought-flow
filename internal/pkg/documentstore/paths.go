@@ -1,6 +1,7 @@
 package documentstore
 
 import (
+	"os"
 	"path/filepath"
 	"thoughtflow/internal/pkg/objectlocation"
 )
@@ -48,4 +49,42 @@ func (s *Store) ContentPaths(id string) ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+// CheckPublishedRevision distinguishes a durable personal history/set selection
+// from an immutable file merely prepared by an unfinished attempt.
+func (s *Store) CheckPublishedRevision(id, target string) error {
+	if !ValidID(target) {
+		return ErrInvalid
+	}
+	h, e := s.ActiveHead(id)
+	if e != nil {
+		return e
+	}
+	seen := map[string]bool{}
+	for _, start := range []string{h.WorkingRevisionID, h.FinalizedRevisionID} {
+		for rev := start; rev != "" && !seen[rev]; {
+			if len(seen) > 10000 {
+				return ErrInvalid
+			}
+			seen[rev] = true
+			d, e := s.FrozenRevision(id, rev)
+			if e != nil {
+				return e
+			}
+			if rev == target {
+				return nil
+			}
+			rev = d.Revision.ParentRevisionID
+		}
+	}
+	registry := objectlocation.For(filepath.Dir(s.Root))
+	l, e := registry.Lookup(id)
+	if e != nil {
+		return e
+	}
+	if l.ManagedSetID != "" {
+		return registry.CheckManagedRevision(l, target)
+	}
+	return os.ErrNotExist
 }

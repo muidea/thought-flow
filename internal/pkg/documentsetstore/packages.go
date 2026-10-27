@@ -238,7 +238,7 @@ func (s *Store) Export(id string, req ExportRequest) ([]byte, error) {
 						replacement += "#" + u.Fragment
 					}
 					body = strings.ReplaceAll(body, link, replacement)
-				} else if u.Scheme == "resource" || u.Scheme == "thought" || u.Scheme == "topic" {
+				} else if u.Scheme == "thought" || u.Scheme == "topic" {
 					manifest.Status = "partial"
 				}
 			}

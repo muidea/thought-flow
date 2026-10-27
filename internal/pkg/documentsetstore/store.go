@@ -114,6 +114,13 @@ func (s *Store) SaveRun(r ds.Run) error {
 	if e := valid(r.ID, r.OperationID, r.Plan.SetID); e != nil {
 		return e
 	}
+	release := objectlocation.For(s.Root).LockObject("set-run-state-" + r.ID)
+	defer release()
+	previous, e := s.Run(r.ID)
+	if e != nil && !os.IsNotExist(e) {
+		return e
+	}
+	r.StateVersion = previous.StateVersion + 1
 	r.UpdatedAt = time.Now().UTC()
 	return objectlocation.WriteJSON(s.Root, ".content-registry/private/document-set-runs/"+r.ID+".json", r, true)
 }
@@ -457,19 +464,24 @@ func (s *Store) Project(id string) error {
 		if e != nil && !os.IsNotExist(e) {
 			return e
 		}
+
 		expected := r.Plan.Baselines[a.Key]
 		current := WorkingHash(s.Root, a.DocumentID)
-		if current == expected || head.WorkingRevisionID == "" || (head.PendingProjection && head.WorkingRevisionID == a.RevisionID) {
+		before, err := projectionHash(s.Root, l.Placement.ThoughtPath)
+		if err != nil {
+			return err
+		}
+		pending := head.PendingProjection && head.WorkingRevisionID == a.RevisionID
+		if pending && (head.SetProjection == nil || (before != head.SetProjection.BeforeHash && before != head.SetProjection.OutputHash)) {
+			return fmt.Errorf("%w: external edit during pending projection: %s", ds.ErrConflict, a.Key)
+		}
+		if current == expected || (head.WorkingRevisionID == "" && before == "missing") || pending {
 			if e = s.checkpoint("before_projection"); e != nil {
 				return e
 			}
-			if head.WorkingRevisionID != a.RevisionID {
+			if !pending && head.WorkingRevisionID != a.RevisionID {
 				head.Generation++
 				head.WorkingRevisionID = a.RevisionID
-				head.PendingProjection = true
-				if e = documentstore.New(s.Root).SaveHead(a.DocumentID, head); e != nil {
-					return e
-				}
 			}
 			now := r.CreatedAt
 			t := models.Thought{CaptureStatus: models.CaptureStatusCaptured, RefineStatus: models.RefineStatusRefined, IndexStatus: models.IndexStatusPending, TopicStatus: models.TopicStatusUpdated, ID: a.DocumentID, Type: models.ThoughtTypeText, UserTitle: a.Contract.Title, OwnerTopicID: id, Path: l.Placement.ThoughtPath, CreatedAt: now, UpdatedAt: now, Document: &models.DocumentLink{DocumentID: a.DocumentID, RevisionID: a.RevisionID, Generation: head.Generation}, DocumentProfile: &a.Contract.ProfileRef}
@@ -478,14 +490,44 @@ func (s *Store) Project(id string) error {
 				t.MarkdownImport = &models.MarkdownImport{SHA256: a.OriginalHash, Size: len(a.Original), Filename: a.Key + ".md"}
 			}
 			raw := markdown.RenderThought(t, content)
-			if e = objectlocation.WriteFile(s.Root, l.Placement.ThoughtPath, raw, 0644); e != nil {
+			outputHash := documentstore.Hash(raw)
+			if pending && outputHash != head.SetProjection.OutputHash {
+				return ds.ErrConflict
+			}
+			if !pending {
+				head.PendingProjection = true
+				head.SetProjection = &models.ProjectionGuard{BeforeHash: before, OutputHash: outputHash}
+				if e = documentstore.New(s.Root).SaveHead(a.DocumentID, head); e != nil {
+					return e
+				}
+			}
+			if e = s.checkpoint("projection_head_written"); e != nil {
+				return e
+			}
+			// Recheck bytes after publishing intent; pending is never permission
+			// to replace edits made outside the application.
+			latest, err := projectionHash(s.Root, l.Placement.ThoughtPath)
+			if err != nil {
+				return err
+			}
+			if latest != head.SetProjection.BeforeHash && latest != outputHash {
+				return ds.ErrConflict
+			}
+			if latest != outputHash {
+				if e = objectlocation.WriteFile(s.Root, l.Placement.ThoughtPath, raw, 0644); e != nil {
+					return e
+				}
+			}
+			if e = s.checkpoint("projection_body_written"); e != nil {
 				return e
 			}
 			head.PendingProjection = false
+			head.SetProjection = nil
 			if e = documentstore.New(s.Root).SaveHead(a.DocumentID, head); e != nil {
 				return e
 			}
 		}
+
 		entries = append(entries, models.CatalogEntry{ID: a.DocumentID, GroupID: "document-set", Title: a.Contract.Title, Role: r.Plan.Members[indexOf(r.Plan.Members, a.Key)].Role, Required: true, Binding: models.CatalogBinding{Kind: "thought", ThoughtID: a.DocumentID, VersionPolicy: "latest_finalized"}})
 	}
 	if catalog.LastOperationID != h.OperationID {
@@ -670,6 +712,7 @@ func (s *Store) ContentPaths(id string) ([]string, error) {
 		out = append(out, Base(id)+"/finalizations/"+f.ID+".json")
 	}
 	seen := map[string]bool{}
+	currentMembers := map[string]bool{}
 	for _, start := range retainedRoots(h) {
 		for rev := start; rev != "" && !seen[rev]; {
 			seen[rev] = true
@@ -684,6 +727,28 @@ func (s *Store) ContentPaths(id string) ([]string, error) {
 				l, e := objectlocation.For(s.Root).Lookup(a.DocumentID)
 				if e != nil {
 					return nil, e
+				}
+
+				if !currentMembers[a.DocumentID] {
+					currentMembers[a.DocumentID] = true
+					personal, err := documentstore.New(s.Root).ContentPaths(a.DocumentID)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, personal...)
+					out = append(out, l.Placement.ThoughtPath)
+					if l.ResourceBindingsRef != nil {
+						out = append(out, l.ResourceBindingsRef.Path)
+					}
+					bindings, err := objectlocation.For(s.Root).Bindings(a.DocumentID)
+					if err != nil {
+						return nil, err
+					}
+					for _, binding := range bindings.Bindings {
+						if !binding.Private {
+							out = append(out, binding.Path, ".content-registry/resources/"+binding.ResourceID+".json")
+						}
+					}
 				}
 				out = append(out, objectlocation.RecordPath(a.DocumentID))
 				for _, name := range []string{"manifest.json", "contract.json", "source-manifest.json", "profile.snapshot.md", "body.md"} {
@@ -747,4 +812,19 @@ func (s *Store) Resource(set, revision, member, resourceID string) ([]byte, stri
 		return raw, mime, e
 	}
 	return nil, "", os.ErrNotExist
+}
+
+func projectionHash(root, path string) (string, error) {
+	p, e := objectlocation.SafePath(root, path)
+	if e != nil {
+		return "", e
+	}
+	raw, e := objectlocation.ReadFileBounded(p, 32<<20)
+	if os.IsNotExist(e) {
+		return "missing", nil
+	}
+	if e != nil {
+		return "", e
+	}
+	return documentstore.Hash(raw), nil
 }

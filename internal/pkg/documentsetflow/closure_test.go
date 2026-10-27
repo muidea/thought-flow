@@ -262,7 +262,7 @@ func TestPlannerCannotRewriteConfirmedFactsUsingOldEvidence(t *testing.T) {
 	next.Facts = append([]ds.Fact{}, shared.Facts...)
 	next.Facts[0].Content = "Silently discard recovery"
 	next.Facts = next.Facts[:len(next.Facts)-1]
-	guardConfirmedFacts(&next, p)
+	guardConfirmedFacts(&next, p, ds.CaptureSnapshot{})
 	if next.Facts[0].Status != "proposed" || len(next.Questions) != 2 || next.Facts[len(next.Facts)-1].ID != "TEST-ORDER" {
 		t.Fatal("confirmed scope silently replaced", next)
 	}
@@ -271,7 +271,8 @@ func TestPlannerCannotRewriteConfirmedFactsUsingOldEvidence(t *testing.T) {
 func TestStatelessScopeAndModuleRenameHaveStableMembership(t *testing.T) {
 	capture, shared := fixture()
 	no := false
-	shared.Conditions["has_persistence"] = &no
+	capture.Messages = append(capture.Messages, ds.Message{Role: "user", Text: "No persistence required; compute responses only."})
+	shared.Conditions["has_persistence"] = ds.Condition{Value: &no, Status: "confirmed", Source: ds.Source{Message: 1, Quote: "No persistence required"}, Reason: "Explicitly stateless"}
 	kept := []ds.Fact{}
 	for _, f := range shared.Facts {
 		if f.Kind == "entity" {

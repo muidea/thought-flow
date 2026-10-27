@@ -205,11 +205,25 @@ func FreezeShared(s SharedDesign, capture CaptureSnapshot) (SharedDesign, error)
 			return s, ErrInvalid
 		}
 	}
-	for k := range s.Conditions {
+
+	for k, condition := range s.Conditions {
 		if k != "has_interfaces" && k != "has_persistence" {
 			return s, ErrInvalid
 		}
+		if condition.Status == "confirmed" && (!UserEvidence(capture, condition.Source) || strings.TrimSpace(condition.Reason) == "") {
+			condition.Status = "proposed"
+		}
+		if condition.Status != "confirmed" && condition.Status != "proposed" && condition.Status != "unresolved" && condition.Status != "" {
+			return s, ErrInvalid
+		}
+		s.Conditions[k] = condition
 	}
+	for _, change := range s.ScopeChanges {
+		if change.Action != "remove" || change.Status != "confirmed" || !ValidKey(change.FactID) || !UserEvidence(capture, change.Source) || strings.TrimSpace(change.Reason) == "" || len(change.Affected) == 0 || strings.TrimSpace(change.Coverage) == "" {
+			return s, ErrInvalid
+		}
+	}
+
 	s.Hash = ""
 	s.RevisionID = ""
 	s.RevisionID = "sd-" + strings.TrimPrefix(documentstore.HashJSON(s), "sha256:")[:24]
@@ -251,8 +265,9 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 	sort.Slice(modules, func(i, j int) bool { return modules[i].ID < modules[j].ID })
 	for _, role := range p.Roles {
 		if role.When != "" {
-			v, ok := shared.Conditions[role.When]
-			if !ok || v == nil {
+			condition, ok := out.Shared.Conditions[role.When]
+			v := condition.Value
+			if !ok || v == nil || condition.Status != "confirmed" {
 				out.Shared.Questions = append(out.Shared.Questions, Question{ID: "condition-" + role.When, Message: "Please confirm " + role.When, Blocking: true})
 				continue
 			}
@@ -323,6 +338,13 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 	for i := range out.Shared.Facts {
 		out.Shared.Facts[i].Source.Quote = ""
 	}
+	for k, condition := range out.Shared.Conditions {
+		condition.Source.Quote = ""
+		out.Shared.Conditions[k] = condition
+	}
+	for i := range out.Shared.ScopeChanges {
+		out.Shared.ScopeChanges[i].Source.Quote = ""
+	}
 	out.Shared.Hash = ""
 	out.Shared.Hash = documentstore.HashJSON(out.Shared)
 	return out, nil
@@ -374,8 +396,9 @@ func validateMembership(p Plan) error {
 	}
 	for _, role := range p.Profile.Roles {
 		if role.When != "" {
-			condition := p.Shared.Conditions[role.When]
-			if condition == nil {
+			scope := p.Shared.Conditions[role.When]
+			condition := scope.Value
+			if condition == nil || scope.Status != "confirmed" {
 				if !questions["condition-"+role.When] {
 					return ErrInvalid
 				}
@@ -437,4 +460,8 @@ func validateMembership(p Plan) error {
 		}
 	}
 	return nil
+}
+
+func UserEvidence(c CaptureSnapshot, source Source) bool {
+	return source.Message >= 0 && source.Message < len(c.Messages) && c.Messages[source.Message].Role == "user" && strings.TrimSpace(source.Quote) != "" && strings.Contains(c.Messages[source.Message].Text, source.Quote)
 }

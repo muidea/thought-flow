@@ -94,7 +94,11 @@ func Rehash(r *Revision) {
 	r.Hash = RevisionHash(*r)
 }
 func Checklist(p Plan) []ReviewItem {
-	out := []ReviewItem{}
+	keys := []string{}
+	for _, m := range p.Members {
+		keys = append(keys, m.Key)
+	}
+	out := []ReviewItem{{ID: "capture-scope", Members: keys}}
 	for _, m := range p.Members {
 		out = append(out, ReviewItem{ID: "member:" + m.Key, Members: []string{m.Key}, Facts: m.Covers})
 	}
@@ -178,6 +182,9 @@ func Validate(r Revision) Report {
 		for _, i := range check.Issues {
 			if i.Severity == "error" {
 				add("single:"+i.Code, i.Basis, Location{Member: a.Key, Section: i.Section, Evidence: i.Evidence})
+			}
+			if i.Severity == "warning" && i.Code != "manual_review" {
+				report.Issues = append(report.Issues, Issue{ID: "single:" + a.Key + ":" + i.Code + ":" + i.ID, Code: "single:" + i.Code, Severity: "warning", Confirmable: true, Message: i.Basis, Locations: []Location{singleWarningLocation(a, i)}})
 			}
 		}
 		for _, dep := range m.DependsOn {
@@ -440,7 +447,7 @@ func ApplyReview(r *Revision, response ReviewResponse, mode, reviewer string) er
 			r.Report.Status = "awaiting_review"
 		}
 	}
-	for _, i := range response.Issues {
+	for _, i := range r.Report.Issues {
 		if i.Severity == "error" {
 			r.Report.Status = "blocked"
 		} else {
@@ -510,6 +517,18 @@ func Ready(r Revision) error {
 	if check.StructuralStatus != "passed" || documentstore.HashJSON(check.Checklist) != documentstore.HashJSON(r.Report.Checklist) {
 		return ErrRules
 	}
+	for _, required := range check.Issues {
+		found := false
+		for _, actual := range r.Report.Issues {
+			if documentstore.HashJSON(required) == documentstore.HashJSON(actual) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrRules
+		}
+	}
 	items := map[string]ReviewItem{}
 	members := map[string]Artifact{}
 	seen := map[string]bool{}
@@ -546,4 +565,63 @@ func Ready(r Revision) error {
 		}
 	}
 	return nil
+}
+
+// ApplicableFacts includes the semantic closure and shared contracts needed to
+// explain the member. Contracts without a narrower applicability declaration
+// apply to module and verification roles; a revision ID is not context text.
+func ApplicableFacts(p Plan, m PlanMember) ([]Fact, []Relation) {
+	included := map[string]bool{}
+	for _, id := range m.Covers {
+		included[id] = true
+	}
+	for _, f := range p.Shared.Facts {
+		if f.Owner == m.Key || f.Kind == "term" || f.Kind == "constraint" || ((m.Role == "module" || m.Role == "verification") && (f.Kind == "interface" || f.Kind == "entity")) {
+			included[f.ID] = true
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, r := range p.Shared.Relations {
+			if included[r.From] || included[r.To] {
+				if !included[r.From] || !included[r.To] {
+					changed = true
+				}
+				included[r.From], included[r.To] = true, true
+			}
+		}
+	}
+	facts := []Fact{}
+	relations := []Relation{}
+	for _, f := range p.Shared.Facts {
+		if included[f.ID] {
+			facts = append(facts, f)
+		}
+	}
+	for _, r := range p.Shared.Relations {
+		if included[r.From] && included[r.To] {
+			relations = append(relations, r)
+		}
+	}
+	return facts, relations
+}
+
+func singleWarningLocation(a Artifact, i models.DocumentIssue) Location {
+	// Prefer the actual reference or issue text, preserving a real section quote.
+	headings := bodyHeadings(a.Body)
+	for _, h := range headings {
+		for _, line := range strings.Split(a.Body[h.start:], "\n") {
+			quote := strings.TrimSpace(line)
+			if quote != "" && ((i.Evidence != "" && strings.Contains(quote, i.Evidence)) || (i.Section != "" && strings.Contains(quote, "["+i.Section+"]"))) && EvidenceInSection(a.Body, h.anchor, quote) {
+				return Location{Member: a.Key, Section: h.anchor, Evidence: quote}
+			}
+		}
+	}
+	if len(headings) > 0 {
+		h := headings[0]
+		line := strings.Split(a.Body[h.start:], "\n")[0]
+		return Location{Member: a.Key, Section: h.anchor, Evidence: line}
+	}
+	return Location{Member: a.Key}
 }

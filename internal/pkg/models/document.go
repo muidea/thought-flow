@@ -64,13 +64,18 @@ type DocumentRevision struct {
 	Origin               string    `json:"origin"`
 	RepairCount          int       `json:"repair_count"`
 }
+type ProjectionGuard struct {
+	BeforeHash string `json:"before_hash"`
+	OutputHash string `json:"output_hash"`
+}
 type DocumentHead struct {
-	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
-	Generation          uint64     `json:"generation"`
-	WorkingRevisionID   string     `json:"working_revision_id"`
-	FinalizedRevisionID string     `json:"finalized_revision_id,omitempty"`
-	FinalizationID      string     `json:"finalization_id,omitempty"`
-	PendingProjection   bool       `json:"pending_projection"`
+	SetProjection       *ProjectionGuard `json:"set_projection,omitempty"`
+	DeletedAt           *time.Time       `json:"deleted_at,omitempty"`
+	Generation          uint64           `json:"generation"`
+	WorkingRevisionID   string           `json:"working_revision_id"`
+	FinalizedRevisionID string           `json:"finalized_revision_id,omitempty"`
+	FinalizationID      string           `json:"finalization_id,omitempty"`
+	PendingProjection   bool             `json:"pending_projection"`
 }
 type DocumentIssue struct {
 	ID                string `json:"id"`

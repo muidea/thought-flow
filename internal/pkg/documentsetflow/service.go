@@ -30,7 +30,7 @@ type Planner interface {
 	PlanDocumentSet(context.Context, ds.CaptureSnapshot, ds.Profile, *ds.SharedDesign) (ds.SharedDesign, error)
 }
 type Reviewer interface {
-	ReviewDocumentSet(context.Context, []ds.ReviewItem, []ds.Artifact, ds.SharedDesign) (ds.ReviewResponse, string, error)
+	ReviewDocumentSet(context.Context, []ds.ReviewItem, []ds.Artifact, ds.SharedDesign, ds.CaptureSnapshot) (ds.ReviewResponse, string, error)
 }
 type Options struct {
 	Planner            Planner
@@ -246,7 +246,7 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 			return ds.Plan{}, ds.ErrBudget
 		}
 		if previousPlan != nil {
-			guardConfirmedFacts(&value, *previousPlan)
+			guardConfirmedFacts(&value, *previousPlan, snapshot)
 		}
 		shared = &value
 	}
@@ -285,6 +285,9 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 		}
 	}
 	plan.Hash = ds.PlanHash(plan)
+	if e = objectlocation.WriteJSON(s.Store.Root, documentsetstore.Private(set)+"/captures/"+plan.ID+".json", snapshot, true); e != nil {
+		return plan, e
+	}
 	if e = s.Store.SavePlan(plan); e != nil {
 		return plan, e
 	}
@@ -616,6 +619,11 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 					changed = true
 				}
 			}
+			oldFacts, oldRelations := ds.ApplicableFacts(old.Plan, m)
+			newFacts, newRelations := ds.ApplicableFacts(run.Plan, m)
+			if documentstore.HashJSON(oldFacts) != documentstore.HashJSON(newFacts) || documentstore.HashJSON(oldRelations) != documentstore.HashJSON(newRelations) || documentstore.HashJSON(previous.Dependencies) != documentstore.HashJSON(deps) {
+				changed = true
+			}
 			if !changed && manualBody == "" && len(run.RepairIssues[m.Key]) == 0 && previous.ProfileSnapshot == m.ProfileSnapshot && reusableContract(previous.Contract, ds.Contract(run.Plan, m)) && documentstore.HashJSON(previous.Sources) == documentstore.HashJSON(run.Plan.Capture.Sources) {
 				previous.ReusedFrom = old.ID
 				previous.Dependencies = deps
@@ -627,19 +635,22 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 	if e != nil {
 		return ds.Artifact{}, e
 	}
-	facts := []ds.Fact{}
-	for _, f := range run.Plan.Shared.Facts {
-		if f.Owner == m.Key || f.Kind == "term" || f.Kind == "constraint" {
-			facts = append(facts, f)
-		} else {
-			for _, id := range m.Covers {
-				if id == f.ID {
-					facts = append(facts, f)
-				}
+
+	facts, relations := ds.ApplicableFacts(run.Plan, m)
+	upstream := map[string]any{}
+	for key, revision := range deps {
+		for _, member := range run.Plan.Members {
+			if member.Key != key {
+				continue
 			}
+			frozen, err := documentstore.New(s.Store.Root).FrozenRevision(member.DocumentID, revision)
+			if err != nil {
+				return ds.Artifact{}, err
+			}
+			upstream[key] = map[string]any{"document_id": member.DocumentID, "revision_id": revision, "body_hash": frozen.Revision.BodyHash, "body": frozen.Body}
 		}
 	}
-	contextBytes, _ := json.Marshal(map[string]any{"shared_design_hash": run.Plan.Shared.Hash, "member": m, "facts": facts, "dependencies": deps, "repair_issues": run.RepairIssues[m.Key]})
+	contextBytes, _ := json.Marshal(map[string]any{"shared_design_hash": run.Plan.Shared.Hash, "member": m, "facts": facts, "relations": relations, "dependencies": deps, "upstream": upstream, "repair_issues": run.RepairIssues[m.Key]})
 	request := ai.DocumentGenerationRequest{Profile: profile, Parameters: run.Plan.Shared.Inputs, Context: ai.DocumentSourceContext{Title: m.Title, Summary: run.Plan.Shared.Inputs["goal"], Body: string(contextBytes)}}
 	imported, e := s.markdownMember(*run, m.Key)
 	if e != nil {
@@ -753,6 +764,13 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 	return a, nil
 }
 func (s *Service) review(ctx context.Context, run *ds.Run, candidate *ds.Revision) error {
+	var capture ds.CaptureSnapshot
+	if e := objectlocation.ReadJSON(s.Store.Root, documentsetstore.Private(run.Plan.SetID)+"/captures/"+run.Plan.ID+".json", &capture); e != nil {
+		return e
+	}
+	if capture.ContextHash != run.Plan.Capture.ContextHash || capture.Generation != run.Plan.Capture.Generation {
+		return ds.ErrConflict
+	}
 	checklist := candidate.Report.Checklist
 	response := ds.ReviewResponse{Evidence: []ds.ReviewEvidence{}, Issues: []ds.Issue{}}
 	reviewer := ""
@@ -777,7 +795,7 @@ func (s *Service) review(ctx context.Context, run *ds.Run, candidate *ds.Revisio
 					members = append(members, a)
 				}
 			}
-			if lenJSON(map[string]any{"checklist": batch, "members": members, "shared_design": candidate.Plan.Shared}) <= run.Plan.Profile.Limits.MaxContextBytes {
+			if lenJSON(map[string]any{"checklist": batch, "members": members, "shared_design": candidate.Plan.Shared, "frozen_capture": capture}) <= run.Plan.Profile.Limits.MaxContextBytes {
 				break
 			}
 			if end-start == 1 {
@@ -789,13 +807,14 @@ func (s *Service) review(ctx context.Context, run *ds.Run, candidate *ds.Revisio
 			Items   []ds.ReviewItem
 			Members []ds.Artifact
 			Shared  ds.SharedDesign
-		}{batch, members, candidate.Plan.Shared}
+			Capture ds.CaptureSnapshot
+		}{batch, members, candidate.Plan.Shared, capture}
 		type reviewed struct {
 			Response ds.ReviewResponse
 			Model    string
 		}
 		value, e := boundedCall(ctx, s, run, "joint_review", "", input, func(ctx context.Context) (reviewed, error) {
-			out, model, err := s.opts.Reviewer.ReviewDocumentSet(ctx, batch, members, candidate.Plan.Shared)
+			out, model, err := s.opts.Reviewer.ReviewDocumentSet(ctx, batch, members, candidate.Plan.Shared, capture)
 			return reviewed{out, model}, err
 		})
 		if e != nil {

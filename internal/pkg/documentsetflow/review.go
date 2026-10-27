@@ -2,6 +2,7 @@ package documentsetflow
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -174,6 +175,9 @@ func (s *Service) Finalize(id string, req FinalizeRequest) (ds.Head, error) {
 	if ds.Ready(r) != nil || check.StructuralStatus != "passed" || r.Report.Status != "ready" || r.Report.CandidateHash != ds.CandidateHash(r) || (r.Report.SemanticStatus != "model_reviewed" && r.Report.SemanticStatus != "manual_reviewed") {
 		return h, ds.ErrRules
 	}
+	if s.opts.Snapshot == nil && len(r.Plan.Capture.Sources.Sources) != 0 {
+		return h, ds.ErrUnavailable
+	}
 	if s.opts.Snapshot != nil {
 		snapshotReader := s.opts.Snapshot
 		if s.opts.SnapshotUnderLease != nil {
@@ -183,8 +187,12 @@ func (s *Service) Finalize(id string, req FinalizeRequest) (ds.Head, error) {
 		if e == nil && (now.Generation != r.Plan.Capture.Generation || now.ContextHash != r.Plan.Capture.ContextHash || documentstore.HashJSON(now.Sources) != documentstore.HashJSON(r.Plan.Capture.Sources)) {
 			return h, ds.ErrConflict
 		}
-		if e != nil && !os.IsNotExist(e) {
-			return h, e
+		if e != nil {
+			// A restored, source-free set can use its authenticated frozen gate without
+			// the original conversation. Missing related evidence is never this case.
+			if !errors.Is(e, ds.ErrCaptureMissing) || len(r.Plan.Capture.Sources.Sources) != 0 {
+				return h, e
+			}
 		}
 	}
 	h.Generation++
@@ -234,6 +242,12 @@ type RetryRequest struct {
 }
 
 func (s *Service) Retry(id string, req RetryRequest) (ds.Run, error) {
+	return s.RetryWithBinding(id, req, nil)
+}
+
+// Bind the persisted Capture pointer before launching a retry. Failed CAS keeps
+// the candidate private and cannot replace a newer session attempt.
+func (s *Service) RetryWithBinding(id string, req RetryRequest, bind func(ds.Run) error) (ds.Run, error) {
 	if req.ExpectedGeneration == nil {
 		return ds.Run{}, ds.ErrPrecondition
 	}
@@ -247,6 +261,26 @@ func (s *Service) Retry(id string, req RetryRequest) (ds.Run, error) {
 	}
 	old, e := s.Store.Run(id)
 	if e != nil {
+		return old, e
+	}
+	hash := documentstore.HashJSON(struct {
+		ID  string
+		Req RetryRequest
+	}{id, req})
+	if existing, e := s.Store.Run(req.OperationID); e == nil {
+		if existing.RequestHash != hash {
+			return existing, ds.ErrConflict
+		}
+		if bind != nil {
+			if e = bind(existing); e != nil {
+				return existing, e
+			}
+		}
+		if existing.State == "queued" && s.running[existing.ID] == nil {
+			s.launch(existing.ID)
+		}
+		return existing, nil
+	} else if !os.IsNotExist(e) {
 		return old, e
 	}
 	if old.ModelHash != s.opts.ModelHash {
@@ -265,18 +299,6 @@ func (s *Service) Retry(id string, req RetryRequest) (ds.Run, error) {
 		if (c.State == "uncertain" || c.State == "running") && !req.AcknowledgeUncertain {
 			return old, ds.ErrRules
 		}
-	}
-	hash := documentstore.HashJSON(struct {
-		ID  string
-		Req RetryRequest
-	}{id, req})
-	if existing, e := s.Store.Run(req.OperationID); e == nil {
-		if existing.RequestHash != hash {
-			return existing, ds.ErrConflict
-		}
-		return existing, nil
-	} else if !os.IsNotExist(e) {
-		return old, e
 	}
 	next := old
 	next.ID = req.OperationID
@@ -298,6 +320,15 @@ func (s *Service) Retry(id string, req RetryRequest) (ds.Run, error) {
 	}
 	if e = s.Store.SaveRun(next); e != nil {
 		return next, e
+	}
+	next, e = s.Store.Run(next.ID)
+	if e != nil {
+		return next, e
+	}
+	if bind != nil {
+		if e = bind(next); e != nil {
+			return next, e
+		}
 	}
 	s.launch(next.ID)
 	return next, nil

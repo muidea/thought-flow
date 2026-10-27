@@ -691,6 +691,7 @@ let collectionSearchEpoch = 0;
 let collectionWorkspace = null;
 let captureDocumentSet = null;
 let captureSetEpoch = 0;
+let captureSetRequest = 0;
 let setSearchEpoch = 0;
 let markdownResourceContext = null;
 let thoughtRequestEpoch = 0;
@@ -2604,6 +2605,9 @@ function captureArchiveStatusMessage() {
 let captureArchivePollKey = "";
 function resumeCaptureArchivePolling() {
   const sp = state.capture.activeScratchpad;
+  if(sp?.document_set_run_id&&captureDocumentSet?.run?.run_id!==sp.document_set_run_id){
+   pollCaptureDocumentSet(sp.session_id,sp.document_set_run_id).catch(error=>toast(error.message));
+  }
   if (!sp?.archive_operation || !["preparing", "saving"].includes(sp.archive_operation.state)) return;
   const scope = captureRequestScope();
   const key = `${scope.sessionId}:${sp.archive_operation.id}:${captureSelectionEpoch}`;
@@ -4975,9 +4979,14 @@ function handleComposeEvent(type, rawData) {
 async function handleCaptureEvent(type, rawData) {
  if(type.startsWith("document_set.")){
   let event;try{event=typeof rawData==="string"?JSON.parse(rawData):rawData;}catch{return;}
-  const scope=captureRequestScope();const id=event.payload?.run_id||event.run_id;if(!id||!scope.sessionId)return;
-  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(!scope.isCurrent()||run.plan.capture.session_id!==scope.sessionId)return;
-  captureDocumentSet={session:scope.sessionId,run};renderCaptureConversation();return;
+  const scope=captureRequestScope(),epoch=captureSetEpoch,visible=captureDocumentSet;const id=event.payload?.run_id||event.run_id;if(!id||!scope.sessionId)return;
+  const sequence=++captureSetRequest;
+  const sp=await api(`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}`);
+  if(!scope.isCurrent()||epoch!==captureSetEpoch||sequence!==captureSetRequest||sp.document_set_run_id!==id)return;
+  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);
+  if(!scope.isCurrent()||epoch!==captureSetEpoch||sequence!==captureSetRequest||run.plan.capture.session_id!==scope.sessionId)return;
+  if(captureDocumentSet!==visible&&captureDocumentSet?.run?.run_id!==id)return;
+  acceptCaptureSetRun(scope.sessionId,run);return;
  }
 
   let payload = null;
@@ -6480,12 +6489,23 @@ async function openCaptureDocumentSet(){
  dialog.showModal();
 }
 async function pollCaptureDocumentSet(session,id,epoch=++captureSetEpoch){
- const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;
- captureDocumentSet={session,run};renderCaptureConversation();bindSetReviewButtons();
- if(["queued","planning","generating","checking","committing","ready"].includes(run.state))setTimeout(()=>{if(epoch===captureSetEpoch&&currentCaptureSession()===session)pollCaptureDocumentSet(session,id,epoch).catch(error=>toast(error.message));},1200);
+ const sequence=++captureSetRequest;
+ const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);
+ if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;
+ if(sequence===captureSetRequest)acceptCaptureSetRun(session,run);
+ // A newer event response may win this request; keep the polling fallback alive.
+ if(sequence!==captureSetRequest||["queued","planning","generating","checking","committing","ready"].includes(captureDocumentSet?.run?.state||run.state))window.setTimeout(()=>{if(epoch===captureSetEpoch&&currentCaptureSession()===session)pollCaptureDocumentSet(session,captureDocumentSet?.run?.run_id||id,epoch).catch(error=>toast(error.message));},1200);
+}
+function acceptCaptureSetRun(session,run){
+ const current=captureDocumentSet?.session===session?captureDocumentSet.run:null;
+ if(current?.run_id===run.run_id&&Number(run.state_version||0)<Number(current.state_version||0))return false;
+ captureDocumentSet={session,run};renderCaptureConversation();bindSetReviewButtons();return true;
+}
+function setVersionMember(revision,key){
+ return revision.members.some(member=>member.member_key===key)?key:(revision.members[0]?.member_key||"");
 }
 function bindSetReviewButtons(){
- document.querySelectorAll("[data-set-cancel-run],[data-set-retry-run],[data-set-recover-run]").forEach(button=>{button.onclick=async()=>{const session=currentCaptureSession(),epoch=captureSetEpoch;const id=button.dataset.setCancelRun||button.dataset.setRetryRun||button.dataset.setRecoverRun;button.disabled=true;try{let run;if(button.dataset.setRecoverRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/recover`,{method:"POST",body:"{}"});}else if(button.dataset.setCancelRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/cancel`,{method:"POST",body:"{}"});}else{const old=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);const uncertain=old.calls.some(c=>["running","uncertain"].includes(c.state));if(uncertain&&!window.confirm(t("docset.uncertain")))return;run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/retry`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:old.plan.base_generation,acknowledge_uncertain:uncertain})});}if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;await pollCaptureDocumentSet(session,run.run_id);}catch(error){if(epoch===captureSetEpoch&&currentCaptureSession()===session)toast(error.message);}finally{if(button.isConnected)button.disabled=false;}};});
+ document.querySelectorAll("[data-set-cancel-run],[data-set-retry-run],[data-set-recover-run]").forEach(button=>{button.onclick=async()=>{const session=currentCaptureSession(),epoch=++captureSetEpoch;const id=button.dataset.setCancelRun||button.dataset.setRetryRun||button.dataset.setRecoverRun;button.disabled=true;try{let run;if(button.dataset.setRecoverRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/recover`,{method:"POST",body:"{}"});}else if(button.dataset.setCancelRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/cancel`,{method:"POST",body:"{}"});}else{const old=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);const uncertain=old.calls.some(c=>["running","uncertain"].includes(c.state));if(uncertain&&!window.confirm(t("docset.uncertain")))return;run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/retry`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:old.plan.base_generation,acknowledge_uncertain:uncertain})});}if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;await pollCaptureDocumentSet(session,run.run_id,epoch);}catch(error){if(epoch===captureSetEpoch&&currentCaptureSession()===session)toast(error.message);}finally{if(button.isConnected)button.disabled=false;}};});
  document.querySelectorAll("[data-set-review-run]").forEach(button=>{button.onclick=()=>openSetReview(button.dataset.setReviewRun).catch(error=>toast(error.message));});
 }
 async function openSetReview(id){
@@ -6512,7 +6532,10 @@ async function renderDocumentSetWorkspace(id,data,topicEpoch){
  setBody.querySelectorAll('a[href^="#"]').forEach(link=>link.onclick=event=>{const href=link.getAttribute("href");if(!token()||href.startsWith("#/"))return;event.preventDefault();let section=href.slice(1);try{section=decodeURIComponent(section);}catch{}navigateHash(setRoute(id,rev,key,section));});
  const section=state.route?.query?.section || (!state.route?.query?.member&&savedPosition?.revision===rev?savedPosition.section:"");try{localStorage.setItem(`thoughtflow.documentset-reading.${id}`,JSON.stringify({revision:rev,member:key,section:section||""}));}catch{}
  if(section){requestAnimationFrame(()=>{if(token())root.querySelector(`[id="${CSS.escape(section)}"]`)?.scrollIntoView({block:"start"});});}
- root.querySelector("[data-set-version]").onchange=event=>token()&&navigateHash(setRoute(id,event.target.value,key),{force:true});
+ root.querySelector("[data-set-version]").onchange=event=>{
+  if(!token())return;const target=data.revisions.find(v=>v.set_revision_id===event.target.value);if(!target)return;
+  navigateHash(setRoute(id,target.set_revision_id,setVersionMember(target,key)),{force:true});
+ };
  const index=r.members.findIndex(a=>a.member_key===key);for(const [name,offset]of [["prev",-1],["next",1]]){const button=root.querySelector(`[data-set-${name}]`);button.disabled=!r.members[index+offset];button.onclick=()=>token()&&navigateHash(setRoute(id,rev,r.members[index+offset].member_key),{force:true});}
  root.querySelector("[data-set-menu]").onclick=()=>{const nav=root.querySelector("[data-set-nav]");nav.hidden=!nav.hidden;};
  root.querySelector("[data-set-copy]").onclick=()=>token()&&copyText(`${window.location.origin}${window.location.pathname||"/"}${setRoute(id,rev,key,section||"")}`);

@@ -706,6 +706,9 @@ func (s *Service) Export(id, rev, mode string) (string, error) {
 	if mode != "draft" && mode != "final" {
 		return "", documentstore.ErrInvalid
 	}
+	if e := s.Store.CheckPublishedRevision(id, rev); e != nil {
+		return "", e
+	}
 	d, e := s.Store.Revision(id, rev)
 	if e != nil {
 		return "", e

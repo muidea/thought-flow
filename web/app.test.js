@@ -543,6 +543,9 @@ function loadAppFunctionsWith(opts = {}) {
       setRoute,
       beginCaptureSelection,
       captureDocumentSetMessage,
+      pollCaptureDocumentSet,
+      acceptCaptureSetRun,
+      setVersionMember,
       handleCaptureEvent,
       setSetRenderContext(value){documentSetRenderContext=value;},
       setCaptureDocumentSet(value){captureDocumentSet=value;},
@@ -3407,9 +3410,13 @@ test("Capture set status distinguishes committed drafts, clarification and failu
 test("late set event for old Capture selection cannot overwrite a reopened conversation", async () => {
  let finish;
  const response=new Promise(resolve=>finish=resolve);
- const app=loadAppFunctionsWith({fetch:async()=>{await response;return{ok:true,json:async()=>({data:{run_id:"old-run",plan:{capture:{session_id:"A"}}}})};}});
+ const app=loadAppFunctionsWith({fetch:async url=>{
+  if(url.includes("/sessions/"))return{ok:true,json:async()=>({data:{document_set_run_id:"old-run"}})};
+  await response;return{ok:true,json:async()=>({data:{run_id:"old-run",plan:{capture:{session_id:"A"}}}})};
+ }});
  app.appState.capture.sessionId="A";
  const pending=app.handleCaptureEvent("document_set.progress",JSON.stringify({payload:{run_id:"old-run"}}));
+ await new Promise(resolve=>setImmediate(resolve));
  app.beginCaptureSelection();app.appState.capture.sessionId="B";app.beginCaptureSelection();app.appState.capture.sessionId="A";
  finish();await pending;assert.equal(app.getCaptureDocumentSet(),null);
 });
@@ -3426,4 +3433,64 @@ test("unchanged Capture history refresh preserves the button receiving a pointer
  app.redrawCaptureSessionsList();assert.equal(writes,1);
  app.appState.capture.sessions[0].title="Changed discussion";
  app.redrawCaptureSessionsList();assert.equal(writes,2);assert.match(markup,/Changed discussion/);
+});
+
+
+test("same-session old attempt event cannot replace a newer attempt", async () => {
+ let finish,started;const reached=new Promise(resolve=>started=resolve),pendingRun=new Promise(resolve=>finish=resolve);
+ const app=loadAppFunctionsWith({fetch:async url=>{
+  if(url.includes("/sessions/"))return{ok:true,json:async()=>({data:{document_set_run_id:"old-run"}})};
+  started();await pendingRun;return{ok:true,json:async()=>({data:{run_id:"old-run",state:"failed_terminal",state_version:100,plan:{capture:{session_id:"S"}}}})};
+ }});
+ app.appState.capture.sessionId="S";app.setCaptureDocumentSet({session:"S",run:{run_id:"old-run",state:"generating"}});
+ const pending=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"old-run"}});await reached;
+ app.setCaptureDocumentSet({session:"S",run:{run_id:"new-run",state:"generating",state_version:2}});
+ finish();await pending;assert.equal(app.getCaptureDocumentSet().run.run_id,"new-run");
+});
+
+test("authoritative retry from another page is adopted and same-attempt states never regress", async () => {
+ const app=loadAppFunctionsWith({fetch:async url=>({ok:true,json:async()=>({data:url.includes("/sessions/")?{document_set_run_id:"new-run"}:{run_id:"new-run",state:"failed_terminal",state_version:9,plan:{capture:{session_id:"S"}}}})})});
+ app.appState.capture.sessionId="S";app.setCaptureDocumentSet({session:"S",run:{run_id:"old-run",state:"failed_terminal"}});
+ await app.handleCaptureEvent("document_set.progress",{payload:{run_id:"new-run"}});
+ assert.equal(app.getCaptureDocumentSet().run.run_id,"new-run");
+ assert.equal(app.acceptCaptureSetRun("S",{run_id:"new-run",state:"generating",state_version:8}),false);
+ assert.equal(app.getCaptureDocumentSet().run.state,"failed_terminal");
+});
+
+test("reversed run polling responses preserve newest state and continue polling after an event", async () => {
+ const waits=[],timers=[];
+ const app=loadAppFunctionsWith({setTimeout:fn=>timers.push(fn),fetch:()=>new Promise(resolve=>waits.push(resolve))});
+ app.appState.capture.sessionId="S";
+ const first=app.pollCaptureDocumentSet("S","run");
+ // An SSE refresh supersedes the outstanding poll in the same run/selection.
+ const event=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"run"}});
+ waits[1]({ok:true,json:async()=>({data:{document_set_run_id:"run"}})});await new Promise(resolve=>setImmediate(resolve));
+ waits[2]({ok:true,json:async()=>({data:{run_id:"run",state:"generating",state_version:3,plan:{capture:{session_id:"S"}}}})});await event;
+ waits[0]({ok:true,json:async()=>({data:{run_id:"run",state:"queued",state_version:2}})});await first;
+ assert.equal(app.getCaptureDocumentSet().run.state_version,3);assert.equal(timers.length,1);
+ const poll=timers.shift()();waits[3]({ok:true,json:async()=>({data:{run_id:"run",state:"failed_terminal",state_version:4}})});await poll;await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(app.getCaptureDocumentSet().run.state_version,4);
+});
+
+test("set version selection keeps only members present in the target manifest", () => {
+ const app=loadAppFunctions();const old={members:[{member_key:"architecture"},{member_key:"module:A"}]},next={members:[{member_key:"architecture"},{member_key:"storage"}]};
+ assert.equal(app.setVersionMember(old,"storage"),"architecture");
+ assert.equal(app.setVersionMember(next,"module:A"),"architecture");
+ assert.equal(app.setVersionMember(next,"storage"),"storage");
+});
+
+
+test("same-attempt event fetches returning out of order preserve the newer response", async () => {
+ const waits=[];
+ const app=loadAppFunctionsWith({fetch:async url=>{
+  if(url.includes("/sessions/"))return{ok:true,json:async()=>({data:{document_set_run_id:"run"}})};
+  return new Promise(resolve=>waits.push(resolve));
+ }});
+ app.appState.capture.sessionId="S";
+ const old=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"run"}});await new Promise(resolve=>setImmediate(resolve));
+ const fresh=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"run"}});await new Promise(resolve=>setImmediate(resolve));
+ waits[1]({ok:true,json:async()=>({data:{run_id:"run",state:"failed_terminal",state_version:8,plan:{capture:{session_id:"S"}}}})});await fresh;
+ waits[0]({ok:true,json:async()=>({data:{run_id:"run",state:"generating",state_version:7,plan:{capture:{session_id:"S"}}}})});await old;
+ assert.equal(app.getCaptureDocumentSet().run.state_version,8);
+ assert.equal(app.getCaptureDocumentSet().run.state,"failed_terminal");
 });

@@ -395,8 +395,8 @@ func (g repairableGenerator) GenerateDocument(ctx context.Context, r ai.Document
 
 type contractReviewer struct{}
 
-func (contractReviewer) ReviewDocumentSet(ctx context.Context, items []ds.ReviewItem, members []ds.Artifact, shared ds.SharedDesign) (ds.ReviewResponse, string, error) {
-	response, model, e := (reviewer{}).ReviewDocumentSet(ctx, items, members, shared)
+func (contractReviewer) ReviewDocumentSet(ctx context.Context, items []ds.ReviewItem, members []ds.Artifact, shared ds.SharedDesign, capture ds.CaptureSnapshot) (ds.ReviewResponse, string, error) {
+	response, model, e := (reviewer{}).ReviewDocumentSet(ctx, items, members, shared, capture)
 	for _, m := range members {
 		if strings.Contains(m.Body, "WRONG CONTRACT") {
 			response.Issues = append(response.Issues, ds.Issue{Code: "repair-scope", Severity: "error", Message: "Scope explanation contradicts the confirmed contract", Locations: []ds.Location{{Member: m.Key, Section: "scope", Evidence: "WRONG CONTRACT"}}})

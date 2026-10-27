@@ -44,7 +44,7 @@ func (g *generator) GenerateDocument(ctx context.Context, r ai.DocumentGeneratio
 
 type reviewer struct{ bad bool }
 
-func (r reviewer) ReviewDocumentSet(ctx context.Context, items []ds.ReviewItem, members []ds.Artifact, shared ds.SharedDesign) (ds.ReviewResponse, string, error) {
+func (r reviewer) ReviewDocumentSet(ctx context.Context, items []ds.ReviewItem, members []ds.Artifact, shared ds.SharedDesign, capture ds.CaptureSnapshot) (ds.ReviewResponse, string, error) {
 	response := ds.ReviewResponse{Evidence: []ds.ReviewEvidence{}, Issues: []ds.Issue{}}
 	for _, item := range items {
 		entry := ds.ReviewEvidence{CheckID: item.ID, Verdict: "passed", Reason: "Reviewed final definitions, responsibility and failure handling"}
@@ -78,7 +78,7 @@ func fixture() (ds.CaptureSnapshot, ds.SharedDesign) {
 		facts[i].Source = ds.Source{Message: 0, Quote: "Build ordering"}
 		facts[i].Reason = "Captured explicit scope"
 	}
-	return c, ds.SharedDesign{Facts: facts, Relations: []ds.Relation{{ID: "REL-REQ", Kind: "verification", From: "REQ-ORDER", To: "TEST-ORDER"}, {ID: "REL-ORDER", Kind: "verification", From: "MOD-ORDER", To: "TEST-ORDER"}, {ID: "REL-BILLING", Kind: "verification", From: "MOD-BILLING", To: "TEST-ORDER"}, {ID: "REL-DATA", Kind: "mapping", From: "API-ORDER", To: "ENTITY-ORDER"}}, Conditions: map[string]*bool{"has_interfaces": &yes, "has_persistence": &yes}, Inputs: map[string]string{"goal": "Recoverable orders", "scope": "Ordering and billing", "constraints": "Local persistence"}}
+	return c, ds.SharedDesign{Facts: facts, Relations: []ds.Relation{{ID: "REL-REQ", Kind: "verification", From: "REQ-ORDER", To: "TEST-ORDER"}, {ID: "REL-ORDER", Kind: "verification", From: "MOD-ORDER", To: "TEST-ORDER"}, {ID: "REL-BILLING", Kind: "verification", From: "MOD-BILLING", To: "TEST-ORDER"}, {ID: "REL-DATA", Kind: "mapping", From: "API-ORDER", To: "ENTITY-ORDER"}}, Conditions: map[string]ds.Condition{"has_interfaces": {Value: &yes, Status: "confirmed", Source: ds.Source{Message: 0, Quote: "with API"}, Reason: "User scope"}, "has_persistence": {Value: &yes, Status: "confirmed", Source: ds.Source{Message: 0, Quote: "persistent storage"}, Reason: "User scope"}}, Inputs: map[string]string{"goal": "Recoverable orders", "scope": "Ordering and billing", "constraints": "Local persistence"}}
 }
 func setup(t *testing.T, g ai.DocumentGenerationProvider, review Reviewer) (*Service, *ds.CaptureSnapshot, ds.Plan) {
 	t.Helper()
@@ -372,7 +372,7 @@ func TestManualReviewRequiresEntireChecklistAndHardErrorsNotWaivable(t *testing.
 		t.Fatal(r.State, r.Error)
 	}
 	reviewer := reviewer{}
-	response, _, e := reviewer.ReviewDocumentSet(context.Background(), r.Candidate.Report.Checklist, r.Candidate.Members, r.Plan.Shared)
+	response, _, e := reviewer.ReviewDocumentSet(context.Background(), r.Candidate.Report.Checklist, r.Candidate.Members, r.Plan.Shared, ds.CaptureSnapshot{})
 	if e != nil {
 		t.Fatal(e)
 	}

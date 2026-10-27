@@ -65,9 +65,21 @@ func (s *Service) captureSetSnapshotUnderLease(id string, underLease bool) (ds.C
 	if s.scratchpad == nil {
 		return ds.CaptureSnapshot{}, ds.ErrUnavailable
 	}
-	sp, e := s.scratchpad.Get(id)
+	get := s.scratchpad.Get
+	if existing, ok := s.scratchpad.(interface {
+		GetExisting(string) (scratchpad.Scratchpad, error)
+	}); ok {
+		get = existing.GetExisting
+	}
+	sp, e := get(id)
 	if e != nil {
+		if os.IsNotExist(e) {
+			return ds.CaptureSnapshot{}, fmt.Errorf("%w: %v", ds.ErrCaptureMissing, e)
+		}
 		return ds.CaptureSnapshot{}, e
+	}
+	if sp.SessionID == "" {
+		return ds.CaptureSnapshot{}, ds.ErrCaptureMissing
 	}
 	c := ds.CaptureSnapshot{SessionID: id, Generation: sp.InputGeneration, ConfirmedFacts: sp.SessionContext.ConfirmedFacts, Sources: models.SourceManifest{SchemaVersion: 1}}
 	for _, m := range sp.Messages {
@@ -95,6 +107,9 @@ func (s *Service) captureSetSnapshotUnderLease(id string, underLease bool) (ds.C
 			thought, content, err = markdown.ReadThought(s.workspace.RootPath, thoughtID)
 		}
 		if err != nil {
+			if os.IsNotExist(err) {
+				return c, fmt.Errorf("%w: %s", ds.ErrSourceMissing, thoughtID)
+			}
 			return c, err
 		}
 		c.Sources.Sources = append(c.Sources.Sources, models.DocumentSource{ID: fmt.Sprintf("S%d", len(c.Sources.Sources)+1), Type: "thought", ResourceID: thoughtID, Locator: "thought://" + thoughtID, Hash: documentstore.HashJSON(content), Version: fmt.Sprint(thought.UpdatedAt.UnixNano()), VerificationStatus: "frozen"})
@@ -114,7 +129,7 @@ func setError(w http.ResponseWriter, r *http.Request, e error) {
 	switch {
 	case errors.Is(e, ds.ErrPrecondition):
 		status, code = 428, "precondition_required"
-	case errors.Is(e, ds.ErrConflict), errors.Is(e, objectlocation.ErrConflict), errors.Is(e, documentstore.ErrConflict):
+	case errors.Is(e, ds.ErrConflict), errors.Is(e, ds.ErrSourceMissing), errors.Is(e, objectlocation.ErrConflict), errors.Is(e, documentstore.ErrConflict):
 		status, code = 409, "conflict"
 	case errors.Is(e, ds.ErrInvalid), errors.Is(e, ds.ErrRules):
 		status, code = 422, "validation_blocked"
@@ -122,7 +137,7 @@ func setError(w http.ResponseWriter, r *http.Request, e error) {
 		status, code = 422, "budget_exceeded"
 	case errors.Is(e, ds.ErrUnavailable):
 		status, code = 503, "unavailable"
-	case errors.Is(e, os.ErrNotExist):
+	case errors.Is(e, os.ErrNotExist), errors.Is(e, ds.ErrCaptureMissing):
 		status, code = 404, "not_found"
 	case errors.Is(e, context.Canceled), errors.Is(e, context.DeadlineExceeded):
 		status, code = 503, "interrupted"
@@ -204,7 +219,13 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 					status = 202
 					if e == nil {
 						run := result.(ds.Run)
-						_, e = s.scratchpad.Update(session, func(sp *scratchpad.Scratchpad) error { sp.DocumentSetRunID = run.ID; return nil })
+						_, e = s.scratchpad.Update(session, func(sp *scratchpad.Scratchpad) error {
+							if sp.InputGeneration != run.Plan.Capture.Generation || sp.DocumentSetPlanID != run.Plan.ID {
+								return ds.ErrConflict
+							}
+							sp.DocumentSetRunID = run.ID
+							return nil
+						})
 					}
 				}
 			}
@@ -224,7 +245,19 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 		} else if len(parts) == 4 && parts[3] == "retry" {
 			var req documentsetflow.RetryRequest
 			if e = decodeWorkspace(r, &req); e == nil {
-				result, e = flow.Retry(id, req)
+				result, e = flow.RetryWithBinding(id, req, func(run ds.Run) error {
+					if s.scratchpad == nil {
+						return ds.ErrUnavailable
+					}
+					_, err := s.scratchpad.Update(run.Plan.Capture.SessionID, func(sp *scratchpad.Scratchpad) error {
+						if sp.InputGeneration != run.Plan.Capture.Generation || sp.DocumentSetID != run.Plan.SetID || (sp.DocumentSetRunID != id && sp.DocumentSetRunID != run.ID) {
+							return ds.ErrConflict
+						}
+						sp.DocumentSetRunID = run.ID
+						return nil
+					})
+					return err
+				})
 				status = 202
 			}
 		} else {
