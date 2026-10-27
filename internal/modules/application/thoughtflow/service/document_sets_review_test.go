@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"thoughtflow/internal/pkg/ai"
 	ds "thoughtflow/internal/pkg/documentset"
@@ -41,9 +42,10 @@ func TestSetSnapshotMissingRelatedThoughtIsNotMissingCapture(t *testing.T) {
 	}
 }
 
-type retryBlockedGenerator struct{}
+type retryBlockedGenerator struct{ entered chan struct{} }
 
-func (retryBlockedGenerator) GenerateDocument(ctx context.Context, r ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+func (g retryBlockedGenerator) GenerateDocument(ctx context.Context, r ai.DocumentGenerationRequest) (models.DocumentDraft, error) {
+	close(g.entered)
 	<-ctx.Done()
 	return models.DocumentDraft{}, ctx.Err()
 }
@@ -55,7 +57,8 @@ func TestSetRetryPersistsNewRunBeforeReturningAndRejectsStaleBinding(t *testing.
 	if e != nil {
 		t.Fatal(e)
 	}
-	s.documentSets = documentsetflow.New(s.workspace.RootPath, documentsetflow.Options{Enabled: true, ModelHash: "fixture", Snapshot: s.captureSetSnapshot, Generator: retryBlockedGenerator{}})
+	entered := make(chan struct{})
+	s.documentSets = documentsetflow.New(s.workspace.RootPath, documentsetflow.Options{Enabled: true, ModelHash: "fixture", Snapshot: s.captureSetSnapshot, Generator: retryBlockedGenerator{entered: entered}})
 	t.Cleanup(s.documentSets.Close)
 	profile := ds.Builtins()[1]
 	zero := uint64(0)
@@ -72,7 +75,11 @@ func TestSetRetryPersistsNewRunBeforeReturningAndRejectsStaleBinding(t *testing.
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = s.documentSets.Store.SaveRun(ds.Run{ID: "old-attempt", OperationID: "old-attempt", ModelHash: "fixture", State: "failed_terminal", Plan: plan}); e != nil {
+	old := ds.Run{ID: "old-attempt", OperationID: "old-attempt", ModelHash: "fixture", State: "failed_terminal", Plan: plan}
+	for _, member := range plan.Members {
+		old.Members = append(old.Members, ds.MemberProgress{Key: member.Key, State: "failed"})
+	}
+	if e = s.documentSets.Store.SaveRun(old); e != nil {
 		t.Fatal(e)
 	}
 	retry := func(op string) *httptest.ResponseRecorder {
@@ -86,6 +93,13 @@ func TestSetRetryPersistsNewRunBeforeReturningAndRejectsStaleBinding(t *testing.
 	res := retry("new-attempt")
 	if res.Code != http.StatusAccepted {
 		t.Fatal(res.Code, res.Body.String())
+	}
+	// Join actual generation rather than letting cleanup cancel the worker before
+	// it ever accesses the persisted member progress.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry never reached member generation")
 	}
 	req := httptest.NewRequest("GET", "/api/capture/sessions/"+sp.SessionID, nil)
 	get := httptest.NewRecorder()

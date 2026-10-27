@@ -3494,3 +3494,44 @@ test("same-attempt event fetches returning out of order preserve the newer respo
  assert.equal(app.getCaptureDocumentSet().run.state_version,8);
  assert.equal(app.getCaptureDocumentSet().run.state,"failed_terminal");
 });
+
+test("unrelated set events cannot invalidate a new authoritative run without polling", async () => {
+ for(const unrelated of ["old-run","another-session-run"]){
+  const waits=[],timers=[];
+  const app=loadAppFunctionsWith({setTimeout:fn=>timers.push(fn),fetch:url=>new Promise(resolve=>waits.push({url,resolve}))});
+  app.appState.capture.sessionId="S";
+  app.setCaptureDocumentSet({session:"S",run:{run_id:"old-run",state:"failed_terminal",state_version:20}});
+  const fresh=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"new-run"}});
+  waits[0].resolve({ok:true,json:async()=>({data:{document_set_run_id:"new-run"}})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(waits[1].url,/document-set-runs\/new-run$/);
+  const rejected=app.handleCaptureEvent("document_set.progress",{payload:{run_id:unrelated}});
+  waits[2].resolve({ok:true,json:async()=>({data:{document_set_run_id:"new-run"}})});await rejected;
+  assert.equal(waits.length,3,"rejected event must not query its run");
+  waits[1].resolve({ok:true,json:async()=>({data:{run_id:"new-run",state:"committed",state_version:3,candidate:{set_revision_id:"fixed-r"},plan:{capture:{session_id:"S"}}}})});
+  await fresh;
+  assert.equal(app.getCaptureDocumentSet().run.run_id,"new-run",unrelated);
+  assert.equal(app.getCaptureDocumentSet().run.state,"committed");
+  assert.equal(timers.length,0,"this path must work with no polling fallback");
+ }
+});
+
+test("late authority lookups cannot supersede a newer qualified set event", async () => {
+ for(const oldID of ["run","old-run"]){
+  const waits=[];
+  const app=loadAppFunctionsWith({fetch:url=>new Promise(resolve=>waits.push({url,resolve}))});
+  app.appState.capture.sessionId="S";
+  app.setCaptureDocumentSet({session:"S",run:{run_id:oldID,state:"failed_terminal",state_version:20}});
+  const old=app.handleCaptureEvent("document_set.progress",{payload:{run_id:oldID}});
+  const fresh=app.handleCaptureEvent("document_set.progress",{payload:{run_id:"run"}});
+  waits[1].resolve({ok:true,json:async()=>({data:{document_set_run_id:"run"}})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(waits[2].url,/document-set-runs\/run$/);
+  // This was authoritative when issued, but is older than the qualified event.
+  waits[0].resolve({ok:true,json:async()=>({data:{document_set_run_id:oldID}})});await old;
+  assert.equal(waits.length,3,"stale authority must not start a superseding GET");
+  waits[2].resolve({ok:true,json:async()=>({data:{run_id:"run",state:"committed",state_version:21,candidate:{set_revision_id:"fixed-r"},plan:{capture:{session_id:"S"}}}})});await fresh;
+  assert.equal(app.getCaptureDocumentSet().run.run_id,"run");
+  assert.equal(app.getCaptureDocumentSet().run.state_version,21);
+ }
+});

@@ -163,3 +163,30 @@ THOUGHTFLOW_DOCSET_ARTIFACT_DIR=/tmp/thoughtflow-docset-acceptance \
 | 当前修改的远端同 SHA CI | 未验证：须核对包含本轮修复的提交，不能沿用基线结果。 |
 
 真实外部模型调用和生产工作区迁移均未执行；不把确定性模型夹具当作真实模型质量验证。远端基线 CI [40454691693](https://github.com/muidea/thought-flow/actions/runs/40454691693) 的 Ubuntu/macOS 两项已核实成功，仅证明基线；本轮修复提交的远端 CI 尚未验证。
+
+## e002559 后 Ubuntu CI 任务成员越界修复
+
+本轮 CI 在 `documentsetflow.execute` 更新 `run.Members[i]` 时发生越界。已在本地通过重复运行 `TestSetRetryPersistsNewRunBeforeReturningAndRejectsStaleBinding` 复现相同堆栈（`/tmp/thoughtflow-ci-run-members-repro.log`）。该测试构造的失败任务有完整计划却没有成员进度；若后台任务先于测试清理进入生成循环，就会崩溃。此前本地一次通过没有覆盖这个调度分支，不作为该分支正确的证明。
+
+修复包含两层：测试夹具按冻结计划建立完整成员状态，并等待生成器实际启动后继续检查会话持久关联；执行器及重试/幂等重放入口校验冻结计划和成员数量、顺序、身份。损坏记录在调用模型、修改会话关联或发布成果之前拒绝，执行阶段保留 `failed_terminal` 诊断。
+
+已通过 GitHub CLI 读取精确提交 `e002559264992bfac9279020f962c978bc852af2` 的 [CI run 40463976541](https://github.com/muidea/thought-flow/actions/runs/40463976541)，确认 macOS 成功，Ubuntu 在 Go test 阶段发生上述相同 panic；完整失败日志保存于 `/tmp/thoughtflow-e002559-ci-failed.log`。这不是将 DS06/DS11 静态发现推断为远端失败原因。
+
+新增 `run_members_test.go`：`TestExecuteRejectsInvalidMemberProgress` 覆盖缺失、截断、错序、重复、多余成员进度；`TestRetryRejectsInvalidMemberProgressBeforeBinding` 覆盖损坏旧任务和 queued 重放。原 HTTP 重试回归保证真正进入成员生成，避免清理提前取消后出现虚假的通过。
+
+本轮验证：上述三个测试连续 50 次通过（`/tmp/thoughtflow-ci-run-members-fixed.log`），定向 race 连续 20 次通过（`/tmp/thoughtflow-ci-run-members-race.log`）。随后与 DS06/DS11 增量修改一起进行的十轮 race 和完整矩阵见下节。新修复的远端同 SHA CI 尚未验证。
+
+## e002559 增量复核：DS06 / DS11
+
+保留上面的 A01–A56 与 DS01–DS12 对应关系。本节仅记录两项增量防护及 CI 越界修复，不将已经关闭的其他十项重新列为缺陷。
+
+- **DS06 / A22、§9**：套级内容警告使用成员 key 与去除显示序号后的单篇问题内容生成语义 ID，并在生成报告 hash 前按 ID 排序；套级校验版本更新为 `document-set-v2`。旧审批不能直接作为新校验版本的证据，需重新校验和处置。`Ready` 对已知风险的完整重验保持严格，不以忽略差异或删除风险消除失败。
+- 原单篇校验已有 `finish()` 排序后重新赋号，因此评审所述 S1/S2 仅因 map 顺序交换而失败的路径，本轮没有复现；此次改动消除跨次审批依赖临时序号的隐患，而不把源码推演写成实际故障复现。
+- `TestSingleRiskIdentityIgnoresDisplayOrdinal` 验证显示序号变化不改变风险身份，而成员、来源、位置、证据或规则变化不能复用身份。扩展 `TestSourceWarningSurvivesJointReviewAndNeedsRiskDecision`：两条不同位置的未验证来源，50 次重验风险和 `Ready`，实际人工处置、提交、定稿、正式交付，并逐项核对 `review.json` 中身份/位置/处置映射；真实正文或冻结来源改变时旧审批失效，删除已知风险仍拒绝。
+- **DS11 / A39、A55**：SSE 事件请求序列与有效任务读取序列分离。只有持久会话绑定核验通过的事件才推进有效任务请求序号；后到但不相关的事件不能使有效读取失效。已合格事件还保留到达序号，拒绝迟到的旧会话绑定查询，不会在将计数后移后重新引入旧查询覆盖新查询。
+- 修复前后对照：新增“无关事件不能使新任务失效”的 Node 场景在加载 `e002559` 原始 `web/app.js` 时失败，实际仍为 `old-run`（`/tmp/thoughtflow-ds11-baseline-repro.log`）；修复后同场景通过。对照通过只读加载旧源码进行，没有替换正在验证的工作树文件。
+- Node 新增终态无轮询下的有效新任务读取与旧/其他会话任务事件交错，以及同/不同 attempt 的会话绑定查询逆序；保留同 attempt 任务响应逆序、状态版本、轮询交错、同会话新旧任务与 A→B→A 选择保护。此处的会话绑定校验不是多用户权限校验。
+
+定向 Go 测试已连续 3 次通过（`/tmp/thoughtflow-ds-delta-focused.log`）；Node 149/149 通过（`/tmp/thoughtflow-ds-delta-node.log`）。新增/修改的风险校验及任务成员防护、HTTP 重试回归经 `-race -count=10` 通过（`/tmp/thoughtflow-ds-delta-race.log`）：documentset 1.391s、documentsetflow 210.708s、application/service 12.125s；这不是全仓 race。完整 `make ci-check` 八阶段全部通过（`/tmp/thoughtflow-ds-delta-ci.log`）：fmt-check、全量 Go test、build、node-check、node-test、i18n-check、browser-test、e2e-test；Node 149 项、i18n 6 项。浏览器与 API/SSE 使用临时工作区及确定性本地网关；可选 Firefox/Safari 的环境跳过不计为通过。本轮未调用真实外部模型、未操作生产工作区。
+
+上述结果对应包含本节的修复提交；该提交精确 SHA 的远端 Ubuntu/macOS CI 待核实，不能沿用 e002559 的 macOS 通过结果，也不把本地全矩阵通过写成远端验证。

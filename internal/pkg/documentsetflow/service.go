@@ -459,9 +459,31 @@ func (s *Service) fail(r *ds.Run, err error) {
 	s.save(r)
 	s.emit("document_set.failed", *r, "")
 }
+
+// Execution updates member progress by the frozen plan's index. Validate both
+// cardinality and identity before starting work on a persisted attempt.
+func validateRunMembers(run ds.Run) error {
+	if e := ds.ValidatePlan(run.Plan); e != nil {
+		return fmt.Errorf("%w: invalid frozen run plan: %v", ds.ErrInvalid, e)
+	}
+	if len(run.Members) != len(run.Plan.Members) {
+		return fmt.Errorf("%w: member progress count differs from frozen plan", ds.ErrInvalid)
+	}
+	for i, member := range run.Plan.Members {
+		if run.Members[i].Key != member.Key {
+			return fmt.Errorf("%w: member progress identity differs at index %d", ds.ErrInvalid, i)
+		}
+	}
+	return nil
+}
+
 func (s *Service) execute(parent context.Context, id string) {
 	run, e := s.Store.Run(id)
 	if e != nil {
+		return
+	}
+	if e = validateRunMembers(run); e != nil {
+		s.fail(&run, e)
 		return
 	}
 	ctx, cancel := context.WithTimeout(ai.WithGenerationScope(parent, id), time.Duration(run.Plan.Profile.Limits.WallSeconds)*time.Second)

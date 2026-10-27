@@ -692,6 +692,8 @@ let collectionWorkspace = null;
 let captureDocumentSet = null;
 let captureSetEpoch = 0;
 let captureSetRequest = 0;
+let captureSetEventRequest = 0;
+let captureSetQualifiedEvent = 0;
 let setSearchEpoch = 0;
 let markdownResourceContext = null;
 let thoughtRequestEpoch = 0;
@@ -4980,9 +4982,14 @@ async function handleCaptureEvent(type, rawData) {
  if(type.startsWith("document_set.")){
   let event;try{event=typeof rawData==="string"?JSON.parse(rawData):rawData;}catch{return;}
   const scope=captureRequestScope(),epoch=captureSetEpoch,visible=captureDocumentSet;const id=event.payload?.run_id||event.run_id;if(!id||!scope.sessionId)return;
-  const sequence=++captureSetRequest;
+  const eventRequest=++captureSetEventRequest;
   const sp=await api(`/api/capture/sessions/${encodeURIComponent(scope.sessionId)}`);
-  if(!scope.isCurrent()||epoch!==captureSetEpoch||sequence!==captureSetRequest||sp.document_set_run_id!==id)return;
+  if(!scope.isCurrent()||epoch!==captureSetEpoch||sp.document_set_run_id!==id||eventRequest<captureSetQualifiedEvent)return;
+  if(captureDocumentSet!==visible&&captureDocumentSet?.run?.run_id!==id)return;
+  // Only an event qualified by the persisted session may supersede a run GET.
+  // Keep arrival ordering when authority lookups themselves return out of order.
+  captureSetQualifiedEvent=eventRequest;
+  const sequence=++captureSetRequest;
   const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);
   if(!scope.isCurrent()||epoch!==captureSetEpoch||sequence!==captureSetRequest||run.plan.capture.session_id!==scope.sessionId)return;
   if(captureDocumentSet!==visible&&captureDocumentSet?.run?.run_id!==id)return;

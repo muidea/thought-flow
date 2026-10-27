@@ -303,7 +303,7 @@ func TestSourceWarningSurvivesJointReviewAndNeedsRiskDecision(t *testing.T) {
 	if run.State != "committed" {
 		t.Fatal(run.Error)
 	}
-	r, _ := withPreparedMember(t, s, *run.Candidate, run.Candidate.Members[0].Body+"\n\nEvidence [S1].\n\n## References\n\n- [S1] Evidence: https://example.org/evidence\n")
+	r, _ := withPreparedMember(t, s, *run.Candidate, run.Candidate.Members[0].Body+"\n\nFirst evidence [S1].\n\nSecond evidence [S2].\n\n## References\n\n- [S1] First evidence: https://example.org/first\n- [S2] Second evidence: https://example.org/second\n")
 	r.Report = ds.Validate(r)
 	response, _, _ := (reviewer{}).ReviewDocumentSet(context.Background(), r.Report.Checklist, r.Members, r.Plan.Shared, ds.CaptureSnapshot{})
 	if e := ds.ApplyReview(&r, response, "model_reviewed", "test"); e != nil {
@@ -320,13 +320,39 @@ func TestSourceWarningSurvivesJointReviewAndNeedsRiskDecision(t *testing.T) {
 			r.Report.ReviewDecisions = append(r.Report.ReviewDecisions, ds.ReviewDecision{IssueID: issue.ID, Reason: "Reviewed URL availability; retain unverified support risk", Locations: issue.Locations})
 		}
 	}
-	if count != 1 {
-		t.Fatal("known source warning missing", r.Report.Issues)
+	if count != 2 {
+		t.Fatal("known source warnings missing", r.Report.Issues)
 	}
 	r.Report.Status = "ready"
 	ds.Rehash(&r)
 	if e := ds.Ready(r); e != nil {
 		t.Fatal("explicit risk disposition rejected", e, r.Report.Issues)
+	}
+	// Repeat the actual gate with two differently located sources; each decision
+	// must stay attached to the same semantic issue, not a transient ordinal.
+	issues := documentstore.HashJSON(r.Report.Issues)
+	for attempt := 0; attempt < 50; attempt++ {
+		check := ds.Validate(r)
+		if documentstore.HashJSON(check.Issues) != issues {
+			t.Fatal("risk identities or locations changed", attempt, check.Issues)
+		}
+		if e := ds.Ready(r); e != nil {
+			t.Fatal("unchanged multi-source approval rejected", attempt, e)
+		}
+	}
+	for _, change := range []string{"source", "body"} {
+		changed := cloneRevision(t, r)
+		if change == "source" {
+			changed.Members[0].Sources.Sources = append(changed.Members[0].Sources.Sources,
+				models.DocumentSource{ID: "S1", Type: "url", Locator: "https://example.org/changed", VerificationStatus: "unverified"})
+		} else {
+			changed.Members[0].Body = strings.Replace(changed.Members[0].Body, "First evidence [S1].", "Changed evidence [S1].", 1)
+			changed.Members[0].BodyHash = documentstore.Hash([]byte(changed.Members[0].Body))
+		}
+		ds.Rehash(&changed)
+		if ds.Ready(changed) == nil {
+			t.Fatal("changed frozen inputs reused old approval", change)
+		}
 	}
 	// Exercise actual manual approval/publication and final delivery evidence.
 	riskRun := ds.Run{ID: "risk-review-run", OperationID: "risk-review-run", Plan: r.Plan, Candidate: &r, State: "awaiting_review"}
@@ -357,7 +383,28 @@ func TestSourceWarningSurvivesJointReviewAndNeedsRiskDecision(t *testing.T) {
 			reader, _ := f.Open()
 			body, _ := io.ReadAll(reader)
 			reader.Close()
-			recorded = strings.Contains(string(body), "single:source_unverified") && strings.Contains(string(body), "retain unverified support risk")
+			var exported struct {
+				Report ds.Report `json:"validation"`
+			}
+			if e := json.Unmarshal(body, &exported); e != nil {
+				t.Fatal(e)
+			}
+			report := exported.Report
+			recorded = true
+			for _, expected := range r.Report.Issues {
+				foundIssue, foundDecision := false, false
+				for _, actual := range report.Issues {
+					if documentstore.HashJSON(expected) == documentstore.HashJSON(actual) {
+						foundIssue = true
+					}
+				}
+				for _, decision := range report.ReviewDecisions {
+					if decision.IssueID == expected.ID && strings.Contains(decision.Reason, "retain unverified support risk") && documentstore.HashJSON(decision.Locations) == documentstore.HashJSON(expected.Locations) {
+						foundDecision = true
+					}
+				}
+				recorded = recorded && foundIssue && foundDecision
+			}
 		}
 	}
 	if !recorded {

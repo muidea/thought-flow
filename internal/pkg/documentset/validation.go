@@ -184,7 +184,7 @@ func Validate(r Revision) Report {
 				add("single:"+i.Code, i.Basis, Location{Member: a.Key, Section: i.Section, Evidence: i.Evidence})
 			}
 			if i.Severity == "warning" && i.Code != "manual_review" {
-				report.Issues = append(report.Issues, Issue{ID: "single:" + a.Key + ":" + i.Code + ":" + i.ID, Code: "single:" + i.Code, Severity: "warning", Confirmable: true, Message: i.Basis, Locations: []Location{singleWarningLocation(a, i)}})
+				report.Issues = append(report.Issues, Issue{ID: singleIssueID(a.Key, i), Code: "single:" + i.Code, Severity: "warning", Confirmable: true, Message: i.Basis, Locations: []Location{singleWarningLocation(a, i)}})
 			}
 		}
 		for _, dep := range m.DependsOn {
@@ -284,6 +284,7 @@ func Validate(r Revision) Report {
 			}
 		}
 	}
+	sort.Slice(report.Issues, func(i, j int) bool { return report.Issues[i].ID < report.Issues[j].ID })
 	report.Hash = ReportHash(report)
 	return report
 }
@@ -605,6 +606,14 @@ func ApplicableFacts(p Plan, m PlanMember) ([]Fact, []Relation) {
 		}
 	}
 	return facts, relations
+}
+
+func singleIssueID(member string, issue models.DocumentIssue) string {
+	// A single-document report's display ordinal is not a persisted risk identity.
+	// The remaining fields identify the rule, source/section and actual evidence;
+	// candidate/report hashes separately bind every approval to the frozen bytes.
+	issue.ID = ""
+	return "single:" + member + ":" + issue.Code + ":" + strings.TrimPrefix(documentstore.HashJSON(issue), "sha256:")
 }
 
 func singleWarningLocation(a Artifact, i models.DocumentIssue) Location {

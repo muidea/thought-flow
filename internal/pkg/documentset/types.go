@@ -20,7 +20,7 @@ var (
 )
 
 const SchemaVersion = 1
-const ValidatorVersion = "document-set-v1"
+const ValidatorVersion = "document-set-v2"
 
 type Limits struct {
 	MaxMembers      int `json:"max_members" yaml:"max_members"`

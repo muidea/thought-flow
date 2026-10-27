@@ -271,6 +271,9 @@ func (s *Service) RetryWithBinding(id string, req RetryRequest, bind func(ds.Run
 		if existing.RequestHash != hash {
 			return existing, ds.ErrConflict
 		}
+		if e = validateRunMembers(existing); e != nil {
+			return existing, e
+		}
 		if bind != nil {
 			if e = bind(existing); e != nil {
 				return existing, e
@@ -281,6 +284,9 @@ func (s *Service) RetryWithBinding(id string, req RetryRequest, bind func(ds.Run
 		}
 		return existing, nil
 	} else if !os.IsNotExist(e) {
+		return old, e
+	}
+	if e = validateRunMembers(old); e != nil {
 		return old, e
 	}
 	if old.ModelHash != s.opts.ModelHash {
