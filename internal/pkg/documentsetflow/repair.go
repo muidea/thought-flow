@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 	ds "thoughtflow/internal/pkg/documentset"
-	"thoughtflow/internal/pkg/documentstore"
 )
 
 // repair only revises explanations in the frozen plan. Scope/type/identity
@@ -113,12 +112,7 @@ func (s *Service) repair(ctx context.Context, run *ds.Run, candidate *ds.Revisio
 // confirmed fact. Changes need evidence from the newly added user messages;
 // otherwise retain a blocking proposal for the next conversation turn.
 func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan, capture ds.CaptureSnapshot) {
-	meaning := func(f ds.Fact) string {
-		return documentstore.HashJSON(struct {
-			Kind, Name, Content, Owner string
-			Fields                     []ds.Field
-		}{f.Kind, f.Name, f.Content, f.Owner, f.Fields})
-	}
+	meaning := ds.FactMeaning
 	for key, old := range previous.Shared.Conditions {
 		value, ok := next.Conditions[key]
 		if old.Status == "confirmed" && old.Value != nil && ok && value.Value != nil && *old.Value != *value.Value && value.Source.Message < previous.Capture.MessageCount {
@@ -138,18 +132,28 @@ func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan, capture ds.Cap
 			found = true
 			if meaning(f) != meaning(old) && f.Source.Message < previous.Capture.MessageCount {
 				next.Facts[i].Status = "proposed"
-				next.Questions = append(next.Questions, ds.Question{ID: "changed-" + old.ID, Message: "Confirmed fact changed without new user evidence: " + old.Name, Blocking: true, Members: []string{old.Owner, f.Owner}})
+				next.Questions = append(next.Questions, ds.Question{Kind: "question", ID: "changed-" + old.ID, Message: "Confirmed fact changed without new user evidence: " + old.Name, Blocking: true, Members: []string{old.Owner, f.Owner}})
 			}
 			break
 		}
 		if !found {
 			authorized := false
 			for _, change := range next.ScopeChanges {
-				if change.FactID == old.ID && change.Action == "remove" && change.Status == "confirmed" && change.Source.Message >= previous.Capture.MessageCount && ds.UserEvidence(capture, change.Source) && change.Reason != "" && change.Coverage != "" {
+				if !ds.Engineering(previous.Profile) && change.FactID == old.ID && change.Action == "remove" && change.Status == "confirmed" && change.Source.Message >= previous.Capture.MessageCount && ds.UserEvidence(capture, change.Source) && change.Reason != "" && change.Coverage != "" {
 					for _, key := range change.Affected {
 						if key == old.Owner {
 							authorized = true
 						}
+					}
+				}
+			}
+			for _, change := range next.Changes {
+				if change.Source.Message < previous.Capture.MessageCount || !ds.UserEvidence(capture, change.Source) {
+					continue
+				}
+				for _, ref := range change.From {
+					if ref.SetID == previous.SetID && ref.FactID == old.ID && ref.Hash == old.Hash && change.Coverage != "" && change.Reason != "" {
+						authorized = true
 					}
 				}
 			}
@@ -158,7 +162,7 @@ func guardConfirmedFacts(next *ds.SharedDesign, previous ds.Plan, capture ds.Cap
 			}
 			old.Status = "unresolved"
 			next.Facts = append(next.Facts, old)
-			next.Questions = append(next.Questions, ds.Question{ID: "removed-" + old.ID, Message: "Confirm removal or replacement coverage for " + old.Name, Blocking: true, Members: []string{old.Owner}})
+			next.Questions = append(next.Questions, ds.Question{Kind: "question", ID: "removed-" + old.ID, Message: "Confirm removal or replacement coverage for " + old.Name, Blocking: true, Members: []string{old.Owner}})
 		}
 	}
 }

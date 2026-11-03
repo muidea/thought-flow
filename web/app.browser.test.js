@@ -1621,6 +1621,18 @@ function startFixtureServer(options = {}) {
           live.archive_preview.validation = {status:"invalid",issues:[{code:"input_required",section:"scope",severity:"error"}]};
         }
       }
+      if (options.captureAutomaticSet && text.includes("归档")) {
+        live.document_set_id = "demo";
+        live.document_set_plan_id = "automatic-plan";
+        live.document_set_run_id = "automatic-design-run";
+        live.archive_operation = {id:"automatic-archive",state:"document_set",input_generation:live.input_generation};
+        const revision = options.documentSet.revisions[0];
+        options.captureAutomaticSetRun = {
+          run_id:live.document_set_run_id,state:"committed",state_version:4,calls:[],
+          plan:{...revision.plan,set_id:"demo",capture:{session_id:sessionID},members:revision.members.map(m=>({member_key:m.member_key,title:m.contract.title,role:m.member_key}))},
+          members:revision.members.map(m=>({member_key:m.member_key,state:"ready"})),candidate:revision,
+        };
+      }
       captureSessions.set(sessionID, live);
       eventBus.emit("event", "scratchpad.context_updated", {
         resource_type: "session",
@@ -1665,6 +1677,11 @@ function startFixtureServer(options = {}) {
         actions: [],
       }));
     }
+    if(options.handoff && url.pathname === "/api/document-sets/demo/handoff-previews") {
+      const body=await readJson(req);options.handoff.requests.push(body);
+      return json(res,api({status:"MATERIALS_EXPORTABLE_CONSUMER_PENDING",input_confirmation_status:"UNCONFIRMED",input_confirmation_hash:"payload-exact-input",pending:["template_snapshot_not_bound","consumer_file_owner_materialization"],blockers:[],input:{goal_text:body.goal_text||"Confirmed engineering scope",acceptance_requirements:body.direct_acceptance.map(x=>x.text)},budget:{input_status:"PASS",merged_acceptance_status:"PENDING_TEMPLATE",consumer_validation_status:"NOT_RUN"},mappings:[{channel:"design_resource",source_design_fact_ref:"REQ-ORDER"}]}));
+    }
+    if (options.captureAutomaticSetRun && url.pathname === "/api/document-set-runs/automatic-design-run") return json(res,api(options.captureAutomaticSetRun));
     if (options.documentSet && url.pathname === "/api/document-sets/demo") return json(res,api(options.documentSet));
     if (options.documentSet && url.pathname === "/api/document-sets/demo/search") {
       const q=url.searchParams.get("q");if(q==="old")await new Promise(resolve=>setTimeout(resolve,250));
@@ -3057,5 +3074,55 @@ test("document set reader pins version, follows logical links and restores brows
    await page.evaluate(()=>window.__docsetBeforeReload=true);await page.reload();await page.waitForExpression(()=>window.__docsetBeforeReload===undefined&&document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"),30000);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),true);
   }finally{await browser.close();}
+ });
+});
+
+
+test("engineering handoff previews preserve source channels and invalidate stale confirmations",async t=>{
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ const handoff={requests:[]};const data={head:{generation:2,working_set_revision:"engineering-r",finalized_set_revision:"engineering-r",finalization:{delivery_level:"ready_for_use"}},revisions:[{set_revision_id:"engineering-r",plan:{profile:{name:"Engineering design",purpose:"engineering-design-v1"},shared_design:{facts:[]}},validation:{semantic_status:"model_reviewed",issues:[]},members:[{member_key:"architecture",document_id:"engineering-document",contract:{title:"Engineering architecture"},body:"# Architecture\n\n## Scope\n\nAuthenticated orders survive restart."}]}]};
+ const server=await startFixtureServer({collection:true,documentSet:data,handoff});t.after(()=>server.close());const browser=await launchChrome(viewports()[0]);
+ try{const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/topics/demo?tab=documents&set_revision=engineering-r&member=architecture`);
+ await page.waitForExpression(()=>!!document.querySelector("[data-set-handoff]"));await clickVisibleCaptureControl(page,"[data-set-handoff]");
+ await page.waitForExpression(()=>document.querySelector("dialog [data-preview]")?.textContent.includes("PENDING_TEMPLATE"));assert.equal(handoff.requests.length,1);assert.deepEqual(handoff.requests[0].direct_acceptance,[]);assert.equal(handoff.requests[0].input_revision,undefined);
+ assert.match(await page.evaluate(()=>document.querySelector("dialog [data-preview]").textContent),/design_resource/);
+ await page.evaluate(()=>{const box=document.querySelector('dialog input[name="confirmed"]');box.checked=true;box.dispatchEvent(new Event("input",{bubbles:true}));const goal=document.querySelector('dialog textarea[name="goal"]');goal.value="Changed scoped goal";goal.dispatchEvent(new Event("input",{bubbles:true}));});
+ assert.equal(await page.evaluate(()=>document.querySelector('dialog input[name="confirmed"]').checked),false);assert.equal(await page.evaluate(()=>document.querySelector('dialog [data-export]').disabled),true);
+ await page.evaluate(()=>{const direct=document.querySelector('dialog textarea[name="direct"]');direct.value="Explicit current acceptance";direct.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("dialog form").requestSubmit();});
+ await page.waitForExpression(()=>document.querySelector("dialog [data-preview]")?.textContent.includes("Explicit current acceptance"));assert.equal(handoff.requests[1].goal_text,"Changed scoped goal");assert.deepEqual(handoff.requests[1].direct_acceptance,[{text:"Explicit current acceptance"}]);
+ await clickVisibleCaptureControl(page,"dialog [data-close]");await page.waitForExpression(()=>!document.querySelector("dialog[open]"));
+ }finally{await browser.close();}
+});
+
+
+test("capture archive in conversation automatically opens an engineering set without a generation dialog", async t => {
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ for(const viewport of viewports()) await t.test(viewport.name,async t=>{
+  const revision={set_revision_id:"auto-r-1",set_revision_hash:"auto-hash",plan:{profile:{name:"Engineering design and delivery"},shared_design:{facts:[]}},validation:{semantic_status:"model_reviewed",issues:[]},members:[
+   {member_key:"architecture",document_id:"auto-architecture",contract:{title:"Order architecture"},body:"# Order architecture\n\n## Scope\n\nAuthenticate and atomically commit orders. Restart preserves committed data."},
+   {member_key:"verification",document_id:"auto-verification",contract:{title:"Order verification"},body:"# Order verification\n\n## Scope\n\nVerify HTTP failures and recovery."}
+  ]};
+  const server=await startFixtureServer({enrichEnabled:true,enrichDelayMs:300,captureAutomaticSet:true,collection:true,documentSet:{head:{generation:1,working_set_revision:revision.set_revision_id},revisions:[revision]}});t.after(()=>server.close());
+  const browser=await launchChrome(viewport);
+  try {
+   const page=await connectPage(browser),writes=[];
+   await page.send("Network.enable");await page.send("Page.enable");
+   page.onEvent("Network.requestWillBeSent",event=>{if(event.request.method!=="GET")writes.push(event.request.url);});
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/capture`);
+   await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   assert.equal(await page.evaluate(()=>document.querySelectorAll('#capture-generate-set, #page-capture [data-i18n="docset.tools"], #page-capture [data-i18n="docset.generate"]').length),0);
+   await waitForFixtureEventClient(`http://127.0.0.1:${server.address().port}`);
+   await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="完成订单管理的软件功能设计并归档";});
+   await clickVisibleCaptureControl(page,"#capture-composer-send");
+   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="set_revision=auto-r-1"]'));
+   assert.equal(await page.evaluate(()=>document.querySelectorAll("dialog[open]").length),0);
+   assert.equal(writes.filter(url=>/document-set-(plans|runs|markdown-previews)/.test(url)).length,0);
+   await page.reload();await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+   assert.equal(await page.evaluate(()=>document.querySelectorAll('#capture-generate-set, #page-capture [data-i18n="docset.tools"], #page-capture [data-i18n="docset.generate"]').length),0);
+   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="set_revision=auto-r-1"]'));
+   await clickVisibleCaptureControl(page,'#capture-conversation [data-kind="document_set"] a');
+   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Authenticate and atomically commit orders."));
+   assert.match(await page.evaluate(()=>location.hash),/set_revision=auto-r-1/);
+  } finally {await browser.close();}
  });
 });

@@ -28,6 +28,7 @@ const MaxPackageBytes = 128 << 20
 const MaxPackageFiles = 10000
 
 type ExportRequest struct {
+	PublicAuthorized   bool    `json:"public_authorized,omitempty"`
 	OperationID        string  `json:"operation_id"`
 	ExpectedGeneration *uint64 `json:"expected_generation"`
 	RevisionID         string  `json:"set_revision_id"`
@@ -47,14 +48,17 @@ type PackageMember struct {
 	Filename     string `json:"filename"`
 }
 type PackageManifest struct {
-	Schema       int             `json:"schema_version"`
-	Kind         string          `json:"kind"`
-	SetID        string          `json:"set_id"`
-	Revision     string          `json:"set_revision_id"`
-	RevisionHash string          `json:"set_revision_hash"`
-	Status       string          `json:"status"`
-	Members      []PackageMember `json:"members"`
-	Files        []PackageFile   `json:"files"`
+	PublicPayloadHash string          `json:"public_payload_hash,omitempty"`
+	PublicReviewHash  string          `json:"public_review_hash,omitempty"`
+	ProjectionVersion string          `json:"projection_version,omitempty"`
+	Schema            int             `json:"schema_version"`
+	Kind              string          `json:"kind"`
+	SetID             string          `json:"set_id"`
+	Revision          string          `json:"set_revision_id"`
+	RevisionHash      string          `json:"set_revision_hash"`
+	Status            string          `json:"status"`
+	Members           []PackageMember `json:"members"`
+	Files             []PackageFile   `json:"files"`
 }
 
 func (s *Store) Export(id string, req ExportRequest) ([]byte, error) {
@@ -80,6 +84,9 @@ func (s *Store) Export(id string, req ExportRequest) ([]byte, error) {
 	}
 	if req.Kind == "delivery" && (h.Finalized != r.ID || h.Finalization == nil || h.Finalization.DeliveryLevel != "ready_for_use" || h.Finalization.RevisionHash != r.Hash || h.Finalization.ReportHash != r.Report.Hash || ds.Ready(r) != nil) {
 		return nil, ds.ErrRules
+	}
+	if req.Kind == "delivery" && ds.Engineering(r.Plan.Profile) {
+		return s.exportEngineering(r, req.PublicAuthorized)
 	}
 	manifest := PackageManifest{Schema: 1, Kind: req.Kind, SetID: id, Revision: r.ID, RevisionHash: r.Hash, Status: "complete", Members: []PackageMember{}}
 	files := map[string][]byte{}

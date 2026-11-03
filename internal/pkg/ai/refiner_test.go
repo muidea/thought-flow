@@ -712,3 +712,36 @@ func TestCaptureContextPayloadCarriesActualInputContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestEngineeringDraftCompletionNeverSuppliesFiller(t *testing.T) {
+	req := DocumentGenerationRequest{Purpose: "engineering-design-v1", Context: DocumentSourceContext{Title: "Design", Body: "Private structured source context"}}
+	partial := models.DocumentDraft{Title: "Design", Sections: map[string]models.DocumentSection{"behavior": {Content: ""}}}
+	got := completeDocumentDraft(req, partial)
+	if len(got.Sections) != 1 || got.Sections["behavior"].Content != "" || got.Summary != "" {
+		t.Fatal("engineering missing content was disguised as completion")
+	}
+	if _, e := (&LocalRefineProvider{}).GenerateDocument(context.Background(), req); e == nil {
+		t.Fatal("local source filler accepted for engineering mode")
+	}
+}
+
+func TestCaptureCatalogChoosesEngineeringSetWithoutHijackingSingleDocuments(t *testing.T) {
+	registry, err := documentprofile.NewRegistry("", "", documentprofile.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := append([]documentprofile.DocumentProfileDescriptor{{ID: "builtin.engineering-design-set", Version: 1, OutputKind: "document_set", Family: "design", PositiveExamples: []string{"软件功能设计"}, Priority: 10}}, registry.ListEnabled()...)
+	for _, tt := range []struct{ text, id string }{
+		{"请根据对话完成软件功能设计并归档", "builtin.engineering-design-set"},
+		{"请将软件功能设计整理为单篇设计文档并归档", "builtin.design-doc"},
+		{"请整理成 ISA-95 调研报告并归档", "builtin.research-report"},
+		{"请保存为笔记并归档", "builtin.note"},
+	} {
+		t.Run(tt.id, func(t *testing.T) {
+			d, _, _, _ := selectLocalProfile(CaptureContextRequest{AvailableProfiles: catalog}, tt.text)
+			if d.ID != tt.id {
+				t.Fatalf("selected %s for %s", d.ID, tt.text)
+			}
+		})
+	}
+}

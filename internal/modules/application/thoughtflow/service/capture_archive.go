@@ -10,6 +10,7 @@ import (
 	"time"
 
 	capturebiz "thoughtflow/internal/modules/capture/biz"
+	ds "thoughtflow/internal/pkg/documentset"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/scratchpad"
 )
@@ -124,8 +125,21 @@ func (s *Service) startCaptureArchive(sp scratchpad.Scratchpad) error {
 		ctx = ai.WithGenerationScope(ctx, sp.Operation.ID)
 		defer cancel()
 		var err error
-		if sp.DocumentSetID != "" && sp.DocumentSetPlanID != "" {
+		// Classification also covers a menu archive that arrives before the
+		// asynchronous conversation response. Never fall through to a note.
+		if sp.SaveCommand == nil && sp.Operation.State != "ready" {
+			prepared, prepareErr := s.scratchpadSvc.PrepareAutomaticArchive(ctx, sp)
+			if prepareErr != nil {
+				s.scratchpadSvc.FailOperation(sp.SessionID, sp.Operation.ID, prepareErr)
+				return
+			}
+			sp = prepared
+		}
+		if sp.SessionContext.CandidateProfileKind == "document_set" || (sp.DocumentSetID != "" && sp.DocumentSetPlanID != "") {
 			if err = s.archiveDocumentSet(ctx, sp); err != nil {
+				if errors.Is(err, ds.ErrConflict) {
+					err = fmt.Errorf("%w: %v", capturebiz.ErrArchivePreviewStale, err)
+				}
 				s.scratchpadSvc.FailOperation(sp.SessionID, sp.Operation.ID, err)
 			}
 			return

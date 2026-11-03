@@ -34,9 +34,9 @@ func (s *Service) checkManagedContract(id string, d documentstore.RevisionData) 
 	if e = objectlocation.ReadJSON(root, "topics/"+l.ManagedSetID+"/document-set/revisions/"+h.Working+"/manifest.json", &revision); e != nil {
 		return e
 	}
-	changed := false
+	changed := ds.Engineering(revision.Plan.Profile) && strings.Count(d.Body, ds.ScopeBlock(revision.Plan)) != 1
 	for _, f := range revision.Plan.Shared.Facts {
-		if f.Owner == l.ManagedMemberKey || f.Kind == "term" || f.Kind == "constraint" {
+		if f.Owner == l.ManagedMemberKey || (!ds.Engineering(revision.Plan.Profile) && (f.Kind == "term" || f.Kind == "constraint")) {
 			if strings.Count(d.Body, ds.FactBlock(f)) != 1 {
 				changed = true
 			}

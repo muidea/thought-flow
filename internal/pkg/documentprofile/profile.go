@@ -82,6 +82,8 @@ type DocumentProfile struct {
 }
 
 type DocumentProfileDescriptor struct {
+	OutputKind       string         `json:"output_kind,omitempty"`
+	Purpose          string         `json:"purpose,omitempty"`
 	Inputs           []ProfileInput `json:"inputs"`
 	Rules            []string       `json:"rules,omitempty"`
 	ContractHash     string         `json:"contract_hash"`
@@ -195,7 +197,8 @@ func Validate(raw []byte, limits Limits) FormatValidationResult {
 
 func (p DocumentProfile) Descriptor() DocumentProfileDescriptor {
 	return DocumentProfileDescriptor{
-		Inputs: append([]ProfileInput(nil), p.Inputs...), Rules: append([]string(nil), p.Validation.Rules...), ContractHash: p.Ref.ContentHash,
+		OutputKind: "document",
+		Inputs:     append([]ProfileInput(nil), p.Inputs...), Rules: append([]string(nil), p.Validation.Rules...), ContractHash: p.Ref.ContentHash,
 		ID:               p.Ref.ProfileID,
 		Version:          p.Ref.Version,
 		Family:           p.Ref.Family,

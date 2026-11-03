@@ -3535,3 +3535,33 @@ test("late authority lookups cannot supersede a newer qualified set event", asyn
   assert.equal(app.getCaptureDocumentSet().run.state_version,21);
  }
 });
+
+
+test("public design JCS vectors agree with independent JavaScript UTF-16 encoding",()=>{
+ const vectors=JSON.parse(fs.readFileSync(path.join(__dirname,"../assets/publicdesign/canonical-vectors.json"),"utf8"));
+ const canonical=value=>{if(Array.isArray(value))return `[${value.map(canonical).join(",")}]`;if(value&&typeof value==="object")return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;if(typeof value==="number")assert.ok(Number.isSafeInteger(value));return JSON.stringify(value);};
+ for(const v of vectors)assert.equal(canonical(JSON.parse(v.input)),v.canonical,v.name);
+});
+
+test("Capture engineering gaps retain stable facts and resolved questions disappear",()=>{
+ const app=loadAppFunctions();app.appState.capture.sessionId="engineering";
+ app.setCaptureDocumentSet({session:"engineering",plan:{members:[],profile:{name:"Engineering"},shared_design:{open_questions:[{id:"gap",message:"Missing acceptance evidence",blocking:true,facts:["TEST-ORDER"]},{id:"resolved",message:"RESOLVED_MARKER",blocking:true,resolution:"Approved answer"}]}}});
+ const message=app.captureDocumentSetMessage();assert.match(message.html,/TEST-ORDER/);assert.match(message.html,/Missing acceptance evidence/);assert.doesNotMatch(message.html,/RESOLVED_MARKER/);
+});
+
+test("session archive polling discovers the automatic set task when initial SSE was lost", async () => {
+ const dom=makeDomStub(),timers=[],calls=[];
+ const run={run_id:"auto-set-run",state:"committed",state_version:2,plan:{set_id:"demo",capture:{session_id:"s"},profile:{name:"Engineering design"},members:[]},members:[],candidate:{set_revision_id:"r-auto"}};
+ const app=loadAppFunctionsWith({dom,exposeState:true,setTimeout:fn=>timers.push(fn),fetch:async(url,options={})=>{
+  calls.push({url,method:options.method||"GET"});
+  return {ok:true,json:async()=>({data:url.startsWith("/api/document-set-runs/")?run:{session_id:"s",document_set_run_id:run.run_id,archive_operation:{id:"op",state:"document_set"}}})};
+ }});
+ app._state.capture.sessionId="s";
+ app._state.capture.activeScratchpad={session_id:"s",archive_operation:{id:"op",state:"preparing"}};
+ app.resumeCaptureArchivePolling();await timers.shift()();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(app.getCaptureDocumentSet().run.run_id,"auto-set-run");
+ assert.match(dom.nodes["capture-conversation"].innerHTML,/set_revision=r-auto/);
+ assert.equal(timers.length,0);
+ assert.ok(calls.every(call=>call.method==="GET"));
+});

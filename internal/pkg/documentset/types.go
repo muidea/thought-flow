@@ -44,33 +44,44 @@ type Role struct {
 	DependsOn       []string                  `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
 }
 type Profile struct {
-	SchemaVersion int                            `json:"schema_version" yaml:"schema_version"`
-	Kind          string                         `json:"kind" yaml:"kind"`
-	ID            string                         `json:"profile_id" yaml:"profile_id"`
-	Version       int                            `json:"version" yaml:"version"`
-	Hash          string                         `json:"content_hash" yaml:"content_hash"`
-	Name          string                         `json:"name" yaml:"name"`
-	Enabled       bool                           `json:"enabled" yaml:"enabled"`
-	Inputs        []documentprofile.ProfileInput `json:"inputs" yaml:"inputs"`
-	Roles         []Role                         `json:"roles" yaml:"roles"`
-	Checks        []string                       `json:"set_checks" yaml:"set_checks"`
-	Limits        Limits                         `json:"limits" yaml:"limits"`
+	GenerationVersion string                         `json:"generation_policy,omitempty" yaml:"generation_policy,omitempty"`
+	Purpose           string                         `json:"purpose,omitempty" yaml:"purpose,omitempty"`
+	Obligations       []ContentObligation            `json:"content_obligations,omitempty" yaml:"content_obligations,omitempty"`
+	SchemaVersion     int                            `json:"schema_version" yaml:"schema_version"`
+	Kind              string                         `json:"kind" yaml:"kind"`
+	ID                string                         `json:"profile_id" yaml:"profile_id"`
+	Version           int                            `json:"version" yaml:"version"`
+	Hash              string                         `json:"content_hash" yaml:"content_hash"`
+	Name              string                         `json:"name" yaml:"name"`
+	Enabled           bool                           `json:"enabled" yaml:"enabled"`
+	Inputs            []documentprofile.ProfileInput `json:"inputs" yaml:"inputs"`
+	Roles             []Role                         `json:"roles" yaml:"roles"`
+	Checks            []string                       `json:"set_checks" yaml:"set_checks"`
+	Limits            Limits                         `json:"limits" yaml:"limits"`
 }
 type Source struct {
 	Message int    `json:"message"`
 	Quote   string `json:"quote"`
 }
 type Fact struct {
-	ID      string  `json:"id"`
-	Kind    string  `json:"kind"` // requirement, term, module, interface, entity, decision, constraint, verification
-	Name    string  `json:"name"`
-	Content string  `json:"content"`
-	Status  string  `json:"status"` // confirmed, proposed, unresolved
-	Source  Source  `json:"source"`
-	Hash    string  `json:"hash"`
-	Reason  string  `json:"reason"`
-	Owner   string  `json:"owner,omitempty"` // stable member key; sole structured definition
-	Fields  []Field `json:"fields,omitempty"`
+	Modality     string              `json:"modality,omitempty"`
+	Provenance   []Provenance        `json:"provenance,omitempty"`
+	ScopeRefs    []string            `json:"scope_refs,omitempty"`
+	NonNormative bool                `json:"non_normative,omitempty"`
+	Acceptance   *AcceptanceContract `json:"acceptance,omitempty"`
+	Quality      *QualityContract    `json:"quality,omitempty"`
+	StateRule    *StateContract      `json:"state_rule,omitempty"`
+	Artifact     *ArtifactContract   `json:"artifact,omitempty"`
+	ID           string              `json:"id"`
+	Kind         string              `json:"kind"` // requirement, term, module, interface, entity, decision, constraint, verification
+	Name         string              `json:"name"`
+	Content      string              `json:"content"`
+	Status       string              `json:"status"` // confirmed, proposed, unresolved
+	Source       Source              `json:"source"`
+	Hash         string              `json:"hash"`
+	Reason       string              `json:"reason"`
+	Owner        string              `json:"owner,omitempty"` // stable member key; sole structured definition
+	Fields       []Field             `json:"fields,omitempty"`
 }
 type Field struct {
 	ID             string   `json:"id"`
@@ -83,16 +94,37 @@ type Field struct {
 	Errors         []string `json:"errors,omitempty"`
 }
 type Relation struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
-	From string `json:"from"`
-	To   string `json:"to"`
+	Historical *FactReference `json:"historical,omitempty"`
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"`
+	From       string         `json:"from"`
+	To         string         `json:"to"`
+}
+type QuestionOption struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Impact      string `json:"impact"`
 }
 type Question struct {
-	ID       string   `json:"id"`
-	Message  string   `json:"message"`
-	Blocking bool     `json:"blocking"`
-	Members  []string `json:"members,omitempty"`
+	ScopeRefs          []string         `json:"scope_refs,omitempty"`
+	Obligations        []string         `json:"obligation_refs,omitempty"`
+	AcceptanceRefs     []string         `json:"acceptance_refs,omitempty"`
+	ResourceRefs       []string         `json:"resource_refs,omitempty"`
+	Severity           string           `json:"severity,omitempty"`
+	BlockingReason     string           `json:"blocking_reason,omitempty"`
+	OwnerRole          string           `json:"owner_role,omitempty"`
+	Options            []QuestionOption `json:"options,omitempty"`
+	DecisionBasis      string           `json:"decision_basis,omitempty"`
+	ResolutionCriteria []string         `json:"resolution_criteria,omitempty"`
+
+	Kind       string   `json:"kind,omitempty"`
+	Facts      []string `json:"facts,omitempty"`
+	Resolution string   `json:"resolution,omitempty"`
+	Source     *Source  `json:"resolution_source,omitempty"`
+	ID         string   `json:"id"`
+	Message    string   `json:"message"`
+	Blocking   bool     `json:"blocking"`
+	Members    []string `json:"members,omitempty"`
 }
 type Condition struct {
 	Value  *bool  `json:"value"`
@@ -110,14 +142,18 @@ type ScopeChange struct {
 	Coverage string   `json:"replacement_coverage"`
 }
 type SharedDesign struct {
-	ScopeChanges []ScopeChange        `json:"scope_changes,omitempty"`
-	RevisionID   string               `json:"revision_id"`
-	Hash         string               `json:"hash"`
-	Facts        []Fact               `json:"facts"`
-	Relations    []Relation           `json:"relations"`
-	Questions    []Question           `json:"open_questions"`
-	Conditions   map[string]Condition `json:"conditions"`
-	Inputs       map[string]string    `json:"inputs"`
+	Scope        *DesignScope           `json:"scope,omitempty"`
+	Obligations  []ObligationResolution `json:"content_obligations,omitempty"`
+	Changes      []FactChange           `json:"fact_changes,omitempty"`
+	History      []HistoricalFact       `json:"historical_facts,omitempty"`
+	ScopeChanges []ScopeChange          `json:"scope_changes,omitempty"`
+	RevisionID   string                 `json:"revision_id"`
+	Hash         string                 `json:"hash"`
+	Facts        []Fact                 `json:"facts"`
+	Relations    []Relation             `json:"relations"`
+	Questions    []Question             `json:"open_questions"`
+	Conditions   map[string]Condition   `json:"conditions"`
+	Inputs       map[string]string      `json:"inputs"`
 }
 type Message struct {
 	Role string `json:"role"`
@@ -147,6 +183,7 @@ type PlanMember struct {
 	ProfileSnapshot string                    `json:"profile_snapshot"`
 }
 type Plan struct {
+	Impact            *ImpactAnalysis   `json:"impact,omitempty"`
 	ID                string            `json:"plan_id"`
 	PlanningCall      *Call             `json:"planning_call,omitempty"`
 	Hash              string            `json:"plan_hash"`
@@ -163,6 +200,7 @@ type Plan struct {
 	CreatedAt         time.Time         `json:"created_at"`
 }
 type Artifact struct {
+	ResourceSizes   map[string]int          `json:"resource_sizes,omitempty"`
 	Key             string                  `json:"member_key"`
 	DocumentID      string                  `json:"document_id"`
 	RevisionID      string                  `json:"revision_id"`
@@ -185,6 +223,10 @@ type Location struct {
 	Evidence string `json:"evidence"`
 }
 type Issue struct {
+	Suggestion  string     `json:"suggestion,omitempty"`
+	FactID      string     `json:"fact_id,omitempty"`
+	Path        string     `json:"field_path,omitempty"`
+	Status      string     `json:"status,omitempty"`
 	ID          string     `json:"id"`
 	Code        string     `json:"code"`
 	Severity    string     `json:"severity"`
@@ -194,10 +236,12 @@ type Issue struct {
 	Locations   []Location `json:"locations"`
 }
 type ReviewItem struct {
-	ID        string   `json:"id"`
-	Members   []string `json:"members"`
-	Facts     []string `json:"facts"`
-	Relations []string `json:"relations"`
+	PublicPayload     *PublicDescriptor `json:"public_payload,omitempty"`
+	PublicPayloadHash string            `json:"public_payload_hash,omitempty"`
+	ID                string            `json:"id"`
+	Members           []string          `json:"members"`
+	Facts             []string          `json:"facts"`
+	Relations         []string          `json:"relations"`
 }
 type ReviewEvidence struct {
 	CheckID   string     `json:"check_id"`
@@ -216,17 +260,19 @@ type ReviewDecision struct {
 	Locations []Location `json:"locations"`
 }
 type Report struct {
-	CandidateHash    string           `json:"candidate_manifest_hash"`
-	Hash             string           `json:"hash"`
-	ValidatorVersion string           `json:"validator_version"`
-	StructuralStatus string           `json:"structural_status"`
-	SemanticStatus   string           `json:"semantic_status"`
-	Status           string           `json:"status"`
-	Checklist        []ReviewItem     `json:"checklist"`
-	Evidence         []ReviewEvidence `json:"evidence"`
-	Issues           []Issue          `json:"issues"`
-	ReviewedBy       string           `json:"reviewed_by,omitempty"`
-	ReviewDecisions  []ReviewDecision `json:"review_decisions,omitempty"`
+	PublicPayloadHash string           `json:"public_payload_hash,omitempty"`
+	ProjectionVersion string           `json:"projection_version,omitempty"`
+	CandidateHash     string           `json:"candidate_manifest_hash"`
+	Hash              string           `json:"hash"`
+	ValidatorVersion  string           `json:"validator_version"`
+	StructuralStatus  string           `json:"structural_status"`
+	SemanticStatus    string           `json:"semantic_status"`
+	Status            string           `json:"status"`
+	Checklist         []ReviewItem     `json:"checklist"`
+	Evidence          []ReviewEvidence `json:"evidence"`
+	Issues            []Issue          `json:"issues"`
+	ReviewedBy        string           `json:"reviewed_by,omitempty"`
+	ReviewDecisions   []ReviewDecision `json:"review_decisions,omitempty"`
 }
 type Revision struct {
 	SchemaVersion int        `json:"schema_version"`

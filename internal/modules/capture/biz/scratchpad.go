@@ -47,6 +47,8 @@ import (
 // with an in-memory fake store.
 type ScratchpadService struct {
 	archiveScheduler   func(scratchpad.Scratchpad) error
+	setProfileCatalog  func() []documentprofile.DocumentProfileDescriptor
+	setProfileResolver func(models.DocumentProfileRef) (documentprofile.DocumentProfileDescriptor, error)
 	store              ScratchpadStore
 	capture            CaptureCommitter
 	eventHub           eventHub
@@ -228,7 +230,11 @@ func (s *ScratchpadService) AppendMessage(sessionID, role, text string) (scratch
 			sp.Content += text
 			// Keep authoritative decisions while the new answer is pending.
 			old := sp.SessionContext
-			sp.SessionContext = scratchpad.SessionContext{DocumentParameters: old.DocumentParameters, ParameterValues: old.ParameterValues, SourceLinks: old.SourceLinks, SourceLinksConfirmed: old.SourceLinksConfirmed, Issues: old.Issues, FrozenProfile: old.FrozenProfile, ProfileExplicit: old.ProfileExplicit, CandidateProfileID: old.CandidateProfileID, CandidateProfileVersion: old.CandidateProfileVersion, CandidateDocumentFamily: old.CandidateDocumentFamily}
+			sp.SessionContext = scratchpad.SessionContext{DocumentParameters: old.DocumentParameters, ParameterValues: old.ParameterValues, SourceLinks: old.SourceLinks, SourceLinksConfirmed: old.SourceLinksConfirmed, Issues: old.Issues, FrozenProfile: old.FrozenProfile, FrozenSetProfile: old.FrozenSetProfile, CandidateProfileKind: old.CandidateProfileKind, ProfileExplicit: old.ProfileExplicit, CandidateProfileID: old.CandidateProfileID, CandidateProfileVersion: old.CandidateProfileVersion, CandidateDocumentFamily: old.CandidateDocumentFamily}
+			// Defaults and an accepted update/supplement target are available
+			// immediately, including with enrichment disabled or still pending.
+			sp.ArchiveStrategy = normalizeArchiveStrategy(sp.ArchiveStrategy)
+			sp.SessionContext.ArchiveStrategy = sp.ArchiveStrategy
 			sp.ArchiveIntent = scratchpad.ArchiveIntentNone
 			sp.ArchivePreview = nil
 		}
@@ -331,6 +337,8 @@ func (s *ScratchpadService) updateSessionContextAt(sessionID string, ctx scratch
 		resumeAcceptedArchive = sp.Operation != nil && sp.Operation.AutoCommit && sp.Operation.State == "preparing" && sp.Operation.InputGeneration == sp.InputGeneration
 		sp.SessionContext = scratchpad.SessionContext{
 			FrozenProfile:           ctx.FrozenProfile,
+			FrozenSetProfile:        ctx.FrozenSetProfile,
+			CandidateProfileKind:    ctx.CandidateProfileKind,
 			ParameterValues:         ctx.ParameterValues,
 			Issues:                  ctx.Issues,
 			SourceLinksConfirmed:    ctx.SourceLinksConfirmed,
@@ -511,6 +519,7 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 	ctx, cancel := context.WithTimeout(context.Background(), s.contextTimeout)
 	defer cancel()
 	request := ai.CaptureContextRequest{
+		PendingArchive:    current.Operation != nil && current.Operation.AutoCommit && current.Operation.State == "needs_input",
 		SessionID:         sessionID,
 		Content:           current.Content,
 		Messages:          captureContextMessages(current.Messages),
@@ -523,13 +532,11 @@ func (s *ScratchpadService) handleCaptureContextEnrichRequest(req captureContext
 		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err, current.InputGeneration)
 		return
 	}
-	if result.ProfileContractHash != "" && s.profiles != nil {
-		p, e := s.profiles.Resolve(models.DocumentProfileRef{ProfileID: result.CandidateProfileID, Version: result.CandidateProfileVersion})
-		if e != nil || p.Ref.ContentHash != result.ProfileContractHash {
-			s.markContextEnrichmentFailed(sessionID, contentAtSchedule, ErrArchivePreviewStale, current.InputGeneration)
-			return
-		}
+	if err := s.validateContextProfile(&result, current); err != nil {
+		s.markContextEnrichmentFailed(sessionID, contentAtSchedule, err, current.InputGeneration)
+		return
 	}
+
 	latest, err := s.store.Get(sessionID)
 	if err != nil || latest.Content != contentAtSchedule || latest.InputGeneration != current.InputGeneration {
 		return
@@ -724,6 +731,7 @@ func captureContextFromScratchpad(ctx scratchpad.SessionContext) ai.CaptureConte
 		ArchiveStrategy:         string(ctx.ArchiveStrategy),
 		CandidateDocumentFamily: ctx.CandidateDocumentFamily,
 		CandidateProfileID:      ctx.CandidateProfileID,
+		CandidateProfileKind:    ctx.CandidateProfileKind,
 		CandidateProfileVersion: ctx.CandidateProfileVersion,
 		ProfileConfidence:       ctx.ProfileConfidence,
 		ProfileMatchReason:      ctx.ProfileMatchReason,
@@ -805,12 +813,14 @@ func appendContextReplyMessage(messages []scratchpad.Message, reply string, at t
 }
 
 func captureContextToScratchpad(result ai.CaptureContextResult, current scratchpad.Scratchpad) scratchpad.SessionContext {
-	if !current.SessionContext.ProfileExplicit && result.CandidateProfileID != "" && (result.CandidateProfileID != current.SessionContext.CandidateProfileID || result.CandidateProfileVersion != current.SessionContext.CandidateProfileVersion) {
+	if current.DocumentSetID == "" && !current.SessionContext.ProfileExplicit && result.CandidateProfileID != "" && (result.CandidateProfileID != current.SessionContext.CandidateProfileID || result.CandidateProfileVersion != current.SessionContext.CandidateProfileVersion) {
 		current.SessionContext.FrozenProfile = ""
+		current.SessionContext.FrozenSetProfile = nil
 		current.SessionContext.DocumentParameters = nil
 		current.SessionContext.ParameterValues = nil
 	}
-	if current.SessionContext.ProfileExplicit {
+	if current.SessionContext.ProfileExplicit || (current.DocumentSetID != "" && current.SessionContext.FrozenSetProfile != nil) {
+		result.CandidateProfileKind = current.SessionContext.CandidateProfileKind
 		result.CandidateProfileID = current.SessionContext.CandidateProfileID
 		result.CandidateProfileVersion = current.SessionContext.CandidateProfileVersion
 		result.CandidateDocumentFamily = current.SessionContext.CandidateDocumentFamily
@@ -837,6 +847,8 @@ func captureContextToScratchpad(result ai.CaptureContextResult, current scratchp
 		ArchiveStrategy:         normalizeArchiveStrategy(scratchpad.ArchiveStrategy(firstNonEmptyString(result.ArchiveStrategy, string(current.ArchiveStrategy)))),
 		CandidateDocumentFamily: firstNonEmptyString(result.CandidateDocumentFamily, current.SessionContext.CandidateDocumentFamily),
 		CandidateProfileID:      firstNonEmptyString(result.CandidateProfileID, current.SessionContext.CandidateProfileID),
+		CandidateProfileKind:    result.CandidateProfileKind,
+		FrozenSetProfile:        current.SessionContext.FrozenSetProfile,
 		CandidateProfileVersion: firstNonZeroInt(result.CandidateProfileVersion, current.SessionContext.CandidateProfileVersion),
 		ProfileConfidence:       result.ProfileConfidence,
 		ProfileMatchReason:      firstNonEmptyString(result.ProfileMatchReason, current.SessionContext.ProfileMatchReason),
@@ -2464,21 +2476,45 @@ func normalizeArchiveStrategy(strategy scratchpad.ArchiveStrategy) scratchpad.Ar
 }
 
 func (s *ScratchpadService) availableProfileDescriptors(preferred ...scratchpad.Scratchpad) []documentprofile.DocumentProfileDescriptor {
-	if s == nil || s.profiles == nil {
+	if s == nil {
 		return nil
 	}
-	profiles := s.profiles.ListEnabled()
+	var profiles []documentprofile.DocumentProfileDescriptor
+	if s.setProfileCatalog != nil {
+		profiles = append(profiles, s.setProfileCatalog()...)
+	}
+	if s.profiles != nil {
+		profiles = append(profiles, s.profiles.ListEnabled()...)
+	}
 	if len(preferred) > 0 && preferred[0].SessionContext.CandidateProfileID != "" {
-		if p, e := s.resolveArchiveProfile(preferred[0], nil); e == nil {
-			ordered := []documentprofile.DocumentProfileDescriptor{p.Descriptor()}
-			for _, item := range profiles {
-				if item.ID != p.Ref.ProfileID || item.Version != p.Ref.Version {
-					ordered = append(ordered, item)
+		sp := preferred[0]
+		var chosen documentprofile.DocumentProfileDescriptor
+		if sp.SessionContext.FrozenSetProfile != nil && s.setProfileResolver != nil {
+			chosen, _ = s.setProfileResolver(*sp.SessionContext.FrozenSetProfile)
+		} else if sp.SessionContext.CandidateProfileKind != "document_set" && s.profiles != nil {
+			if p, err := s.resolveArchiveProfile(sp, nil); err == nil {
+				chosen = p.Descriptor()
+			}
+		}
+		if chosen.ID == "" {
+			for _, p := range profiles {
+				if p.ID == sp.SessionContext.CandidateProfileID && p.Version == sp.SessionContext.CandidateProfileVersion {
+					chosen = p
+					break
+				}
+			}
+		}
+		if chosen.ID != "" {
+			ordered := []documentprofile.DocumentProfileDescriptor{chosen}
+			for _, p := range profiles {
+				if p.ID != chosen.ID || p.Version != chosen.Version {
+					ordered = append(ordered, p)
 				}
 			}
 			profiles = ordered
 		}
 	}
+
 	if s.maxMatchCandidates > 0 && len(profiles) > s.maxMatchCandidates {
 		profiles = profiles[:s.maxMatchCandidates]
 	}
@@ -2496,6 +2532,11 @@ func (s *ScratchpadService) availableProfileDescriptors(preferred ...scratchpad.
 }
 
 func (s *ScratchpadService) existingProfile(sp scratchpad.Scratchpad) *models.DocumentProfileRef {
+	if sp.DocumentSetID != "" && sp.SessionContext.FrozenSetProfile != nil {
+		ref := *sp.SessionContext.FrozenSetProfile
+		return &ref
+	}
+
 	if sp.ArchivePreview != nil && strings.TrimSpace(sp.ArchivePreview.DocumentProfile.ProfileID) != "" {
 		ref := sp.ArchivePreview.DocumentProfile
 		return &ref
@@ -2680,3 +2721,51 @@ func (s *ScratchpadService) archiveDocuments() *documentflow.Service {
 func (s *ScratchpadService) SetArchiveScheduler(schedule func(scratchpad.Scratchpad) error) {
 	s.archiveScheduler = schedule
 }
+
+// SetDocumentSetCatalog supplies enabled immutable set contracts for the same
+// automatic classification used by ordinary archives.
+func (s *ScratchpadService) SetDocumentSetCatalog(catalog func() []documentprofile.DocumentProfileDescriptor, resolve ...func(models.DocumentProfileRef) (documentprofile.DocumentProfileDescriptor, error)) {
+	s.setProfileCatalog = catalog
+	if len(resolve) > 0 {
+		s.setProfileResolver = resolve[0]
+	}
+}
+
+func (s *ScratchpadService) validateContextProfile(result *ai.CaptureContextResult, preferred ...scratchpad.Scratchpad) error {
+	if result.CandidateProfileID == "" {
+		return nil
+	}
+	// Do not apply catalog size limits when validating a selected/frozen entry.
+	var catalog []documentprofile.DocumentProfileDescriptor
+	if s.setProfileCatalog != nil {
+		catalog = append(catalog, s.setProfileCatalog()...)
+	}
+	if s.profiles != nil {
+		catalog = append(catalog, s.profiles.ListEnabled()...)
+	}
+	if len(preferred) > 0 {
+		for _, d := range s.availableProfileDescriptors(preferred...) {
+			if d.ID == result.CandidateProfileID && d.Version == result.CandidateProfileVersion {
+				catalog = append([]documentprofile.DocumentProfileDescriptor{d}, catalog...)
+				break
+			}
+		}
+	}
+	for _, d := range catalog {
+		if d.ID != result.CandidateProfileID || d.Version != result.CandidateProfileVersion {
+			continue
+		}
+		if result.ProfileContractHash != "" && d.ContractHash != result.ProfileContractHash {
+			return ErrArchivePreviewStale
+		}
+		result.CandidateProfileKind = d.OutputKind
+		result.ProfileContractHash = d.ContractHash
+		return nil
+	}
+	if len(catalog) == 0 {
+		return nil
+	}
+	return ErrArchivePreviewStale
+}
+
+func (s *ScratchpadService) NotifyContextUpdated(id string) { s.publishContextUpdatedEvent(id) }

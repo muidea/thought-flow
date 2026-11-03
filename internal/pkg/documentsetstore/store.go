@@ -231,6 +231,12 @@ func (s *Store) WriteRevision(r ds.Revision) error {
 			return ds.ErrInvalid
 		}
 	}
+	if e := s.validateHistoricalReferences(r); e != nil {
+		return e
+	}
+	if e := s.ValidatePublicMaterial(r); e != nil {
+		return e
+	}
 	path := Base(r.Plan.SetID) + "/revisions/" + r.ID
 	// Manifest is self-contained. The adjacent files are inspectable projections;
 	// all reads and recovery authenticate them against the immutable manifest.
@@ -282,6 +288,9 @@ func (s *Store) Revision(id, rev string) (ds.Revision, error) {
 		if !artifactMatches(a, d) {
 			return r, ds.ErrInvalid
 		}
+	}
+	if e := s.validateHistoricalReferences(r); e != nil {
+		return r, e
 	}
 	return r, nil
 }

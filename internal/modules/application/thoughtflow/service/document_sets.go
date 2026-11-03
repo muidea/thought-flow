@@ -14,6 +14,7 @@ import (
 	"fmt"
 	mcevent "github.com/muidea/magicCommon/event"
 	"thoughtflow/internal/pkg/ai"
+	"thoughtflow/internal/pkg/documentprofile"
 	ds "thoughtflow/internal/pkg/documentset"
 	"thoughtflow/internal/pkg/documentsetflow"
 	"thoughtflow/internal/pkg/documentsetstore"
@@ -54,6 +55,27 @@ func (s *Service) configureDocumentSets() {
 		return nil
 	}
 	s.documentSets = documentsetflow.New(s.workspace.RootPath, opts)
+	if s.scratchpadSvc != nil {
+		s.scratchpadSvc.SetDocumentSetCatalog(func() []documentprofile.DocumentProfileDescriptor {
+			if s.documentSets == nil || !s.config.DocumentProfiles.Enabled || !s.config.Documents.Enabled {
+				return nil
+			}
+			var out []documentprofile.DocumentProfileDescriptor
+			for _, p := range s.documentSets.Profiles() {
+				if p.Enabled {
+					out = append(out, p.CaptureDescriptor())
+				}
+			}
+			return out
+		}, func(ref models.DocumentProfileRef) (documentprofile.DocumentProfileDescriptor, error) {
+			p, err := s.documentSets.ResolveProfile(ref.ProfileID, ref.Version, ref.ContentHash)
+			if err != nil {
+				return documentprofile.DocumentProfileDescriptor{}, err
+			}
+			return p.CaptureDescriptor(), nil
+		})
+	}
+
 	for _, e := range s.documentSets.Recover() {
 		slog.Warn("document set recovery needs attention", "error", e)
 	}
@@ -120,7 +142,7 @@ func (s *Service) captureSetSnapshotUnderLease(id string, underLease bool) (ds.C
 func (s *Service) registerDocumentSetRoutes() {
 	s.registry.AddHandler("/api/thoughts/:id/document-conversions", "POST", s.handleDocumentConversion)
 	s.registry.AddHandler("/api/thoughts/:id/document-conversions", "GET", s.handleDocumentConversion)
-	for _, route := range [][2]string{{"GET", "/api/document-set-profiles"}, {"POST", "/api/document-set-profiles"}, {"POST", "/api/capture/sessions/:id/document-set-plans"}, {"POST", "/api/capture/sessions/:id/document-set-markdown-previews"}, {"POST", "/api/capture/sessions/:id/document-set-runs"}, {"GET", "/api/document-set-runs"}, {"GET", "/api/document-set-runs/:id"}, {"POST", "/api/document-set-runs/:id/cancel"}, {"POST", "/api/document-set-runs/:id/retry"}, {"POST", "/api/document-set-runs/:id/recover"}, {"GET", "/api/document-sets/:id"}, {"GET", "/api/document-sets/:id/revisions/:revision"}, {"GET", "/api/document-sets/:id/members/:key/content"}, {"GET", "/api/document-sets/:id/search"}, {"POST", "/api/document-sets/:id/reviews"}, {"POST", "/api/document-sets/:id/finalizations"}, {"POST", "/api/document-sets/:id/exports"}, {"POST", "/api/document-set-imports"}} {
+	for _, route := range [][2]string{{"GET", "/api/document-set-profiles"}, {"POST", "/api/document-set-profiles"}, {"POST", "/api/capture/sessions/:id/document-set-plans"}, {"POST", "/api/capture/sessions/:id/document-set-markdown-previews"}, {"POST", "/api/capture/sessions/:id/document-set-runs"}, {"GET", "/api/document-set-runs"}, {"GET", "/api/document-set-runs/:id"}, {"POST", "/api/document-set-runs/:id/cancel"}, {"POST", "/api/document-set-runs/:id/retry"}, {"POST", "/api/document-set-runs/:id/recover"}, {"GET", "/api/document-sets/:id"}, {"GET", "/api/document-sets/:id/revisions/:revision"}, {"GET", "/api/document-sets/:id/members/:key/content"}, {"GET", "/api/document-sets/:id/search"}, {"POST", "/api/document-sets/:id/reviews"}, {"POST", "/api/document-sets/:id/finalizations"}, {"POST", "/api/document-sets/:id/exports"}, {"POST", "/api/document-sets/:id/handoff-previews"}, {"POST", "/api/document-sets/:id/handoff-exports"}, {"POST", "/api/document-set-imports"}} {
 		s.registry.AddHandler(route[1], route[0], s.handleDocumentSet)
 	}
 }
@@ -215,18 +237,17 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 				} else if plan.Capture.SessionID != session {
 					e = ds.ErrConflict
 				} else {
-					result, e = flow.Start(req)
-					status = 202
-					if e == nil {
-						run := result.(ds.Run)
-						_, e = s.scratchpad.Update(session, func(sp *scratchpad.Scratchpad) error {
+					result, e = flow.StartWithBinding(req, func(run ds.Run) error {
+						_, err := s.scratchpad.Update(session, func(sp *scratchpad.Scratchpad) error {
 							if sp.InputGeneration != run.Plan.Capture.Generation || sp.DocumentSetPlanID != run.Plan.ID {
 								return ds.ErrConflict
 							}
 							sp.DocumentSetRunID = run.ID
 							return nil
 						})
-					}
+						return err
+					})
+					status = 202
 				}
 			}
 		}
@@ -338,6 +359,23 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 			if e = decodeWorkspace(r, &req); e == nil {
 				result, e = flow.Finalize(id, req)
 			}
+		case "handoff-previews", "handoff-exports":
+			var req documentsetstore.HandoffRequest
+			if e = decodeWorkspace(r, &req); e == nil {
+				if parts[3] == "handoff-previews" {
+					result, e = flow.Store.Handoff(id, req)
+				} else {
+					var raw []byte
+					raw, e = flow.Store.ExportHandoff(id, req)
+					if e == nil {
+						w.Header().Set("Content-Type", "application/zip")
+						w.Header().Set("Content-Disposition", `attachment; filename="design-handoff.zip"`)
+						w.Header().Set("Cache-Control", "no-store")
+						w.Write(raw)
+						return
+					}
+				}
+			}
 		case "exports":
 			var req documentsetstore.ExportRequest
 			if e = decodeWorkspace(r, &req); e == nil {
@@ -373,42 +411,82 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 	writeJSON(w, r, status, result)
 }
 
-// A session already bound to a set keeps the set archive path. An archive
-// intent authorizes generation of working drafts, never automatic finalization.
+// Archive intent selects a frozen set profile automatically. Planning and all
+// generation/checking gates run on the server; only working drafts are published.
 func (s *Service) archiveDocumentSet(ctx context.Context, sp scratchpad.Scratchpad) error {
-	if s.documentSets == nil {
+	if s.documentSets == nil || sp.Operation == nil {
 		return ds.ErrUnavailable
 	}
-	old, e := s.documentSets.Store.Plan(sp.DocumentSetID, sp.DocumentSetPlanID)
-	if e != nil {
-		return e
-	}
-	head, e := s.documentSets.Store.HeadOrEmpty(sp.DocumentSetID)
-	if e != nil {
-		return e
-	}
-	plan := old
-	if old.Capture.Generation != sp.InputGeneration {
-		plan, e = s.documentSets.Plan(ctx, sp.SessionID, documentsetflow.PlanRequest{OperationID: sp.Operation.ID, SetID: sp.DocumentSetID, Name: old.Profile.Name, ExpectedGeneration: &head.Generation, CaptureGeneration: &sp.InputGeneration, ProfileID: old.Profile.ID, ProfileVersion: old.Profile.Version, ProfileHash: old.Profile.Hash})
+	var old ds.Plan
+	var e error
+	if sp.DocumentSetPlanID != "" {
+		old, e = s.documentSets.Store.Plan(sp.DocumentSetID, sp.DocumentSetPlanID)
 		if e != nil {
 			return e
 		}
 	}
-	run, e := s.documentSets.Start(documentsetflow.RunRequest{OperationID: sp.Operation.ID, SetID: plan.SetID, PlanID: plan.ID, PlanHash: plan.Hash, ExpectedGeneration: &plan.BaseGeneration, CaptureGeneration: &plan.Capture.Generation})
-	if e != nil {
-		return e
+	plan := old
+	if old.ID == "" || old.Capture.Generation != sp.InputGeneration {
+		ref := sp.SessionContext.FrozenSetProfile
+		if old.ID != "" {
+			ref = &models.DocumentProfileRef{ProfileID: old.Profile.ID, Version: old.Profile.Version, ContentHash: old.Profile.Hash}
+		}
+		if ref == nil {
+			return ds.ErrInvalid
+		}
+		profile, err := s.documentSets.ResolveProfile(ref.ProfileID, ref.Version, ref.ContentHash)
+		if err != nil {
+			return err
+		}
+		head := ds.Head{}
+		if sp.DocumentSetID != "" {
+			head, err = s.documentSets.Store.HeadOrEmpty(sp.DocumentSetID)
+		}
+		if err != nil {
+			return err
+		}
+		plan, e = s.documentSets.Plan(ctx, sp.SessionID, documentsetflow.PlanRequest{OperationID: sp.Operation.ID, SetID: sp.DocumentSetID, Name: profile.Name, ExpectedGeneration: &head.Generation, CaptureGeneration: &sp.InputGeneration, ProfileID: profile.ID, ProfileVersion: profile.Version, ProfileHash: profile.Hash})
+		if e != nil {
+			return e
+		}
 	}
 	_, e = s.scratchpad.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
-		if current.InputGeneration != sp.InputGeneration {
+		if current.InputGeneration != sp.InputGeneration || current.Operation == nil || current.Operation.ID != sp.Operation.ID {
 			return ds.ErrConflict
 		}
 		current.DocumentSetID = plan.SetID
 		current.DocumentSetPlanID = plan.ID
-		current.DocumentSetRunID = run.ID
-		if current.Operation != nil && current.Operation.ID == sp.Operation.ID {
-			current.Operation.State = "document_set"
-		}
+		current.DocumentSetRunID = ""
 		return nil
 	})
+	if e != nil {
+		return e
+	}
+	_, e = s.documentSets.StartWithBinding(documentsetflow.RunRequest{OperationID: sp.Operation.ID, SetID: plan.SetID, PlanID: plan.ID, PlanHash: plan.Hash, ExpectedGeneration: &plan.BaseGeneration, CaptureGeneration: &plan.Capture.Generation}, func(run ds.Run) error {
+		_, err := s.scratchpad.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
+			if current.InputGeneration != sp.InputGeneration || current.Operation == nil || current.Operation.ID != sp.Operation.ID || current.DocumentSetPlanID != plan.ID {
+				return ds.ErrConflict
+			}
+			current.DocumentSetRunID = run.ID
+			current.Operation.State = "document_set"
+			current.Operation.InputGeneration = sp.InputGeneration
+			if run.State == "needs_clarification" {
+				var questions []string
+				for _, q := range plan.Shared.Questions {
+					if q.Blocking && q.Resolution == "" {
+						questions = append(questions, q.Message)
+					}
+				}
+				current.Operation.State = "needs_input"
+				current.Operation.Error = strings.Join(questions, "\n")
+				current.Messages = append(current.Messages, scratchpad.Message{Role: "ai", Text: "归档需要补充以下内容：\n" + strings.Join(questions, "\n"), At: time.Now().UTC()})
+			}
+			return nil
+		})
+		return err
+	})
+	if s.scratchpadSvc != nil {
+		s.scratchpadSvc.NotifyContextUpdated(sp.SessionID)
+	}
 	return e
 }

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "UTF-16 key order",
+    "input": "{\"\\ue000\":2,\"😀\":1}",
+    "canonical": "{\"😀\":1,\"\":2}"
+  },
+  {
+    "name": "escaping and whitespace",
+    "input": "{ \"z\": 2, \"a\": \"<>&\\n\\t\" }",
+    "canonical": "{\"a\":\"<>&\\n\\t\",\"z\":2}"
+  },
+  {
+    "name": "empty and omitted distinctions",
+    "input": "{\"z\":null,\"b\":[],\"a\":{}}",
+    "canonical": "{\"a\":{},\"b\":[],\"z\":null}"
+  },
+  {
+    "name": "safe integer normalization",
+    "input": "{\"b\":1e2,\"a\":-0}",
+    "canonical": "{\"a\":0,\"b\":100}"
+  },
+  {
+    "name": "Unicode separators are literal",
+    "input": "{\"s\":\"\\u2028\\u2029\"}",
+    "canonical": "{\"s\":\"  \"}"
+  },
+  {
+    "name": "literal escape is not a separator",
+    "input": "{\"s\":\"\\\\u2028\"}",
+    "canonical": "{\"s\":\"\\\\u2028\"}"
+  }
+]

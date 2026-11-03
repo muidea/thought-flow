@@ -47,7 +47,7 @@ func (s *Service) validCaptureSave(cmd models.CaptureCommand) bool {
 
 func (s *ScratchpadService) BeginPreview(id string, auto bool) (scratchpad.Scratchpad, error) {
 	return s.store.Update(id, func(sp *scratchpad.Scratchpad) error {
-		if sp.Operation != nil && sp.Operation.InputGeneration == sp.InputGeneration && (sp.Operation.State == "preparing" || sp.Operation.State == "saving" || sp.Operation.State == "ready") {
+		if sp.Operation != nil && sp.Operation.InputGeneration == sp.InputGeneration && (sp.Operation.State == "preparing" || sp.Operation.State == "saving" || sp.Operation.State == "ready" || sp.Operation.State == "document_set") {
 			return nil
 		}
 		if sp.ObjectID == "" {
@@ -388,21 +388,12 @@ func (s *ScratchpadService) PreviewAndArchive(ctx context.Context, sp scratchpad
 	if sp.Operation == nil {
 		return fmt.Errorf("archive operation is required")
 	}
-	// Persist before any potentially generative context/document call. A crash
-	// after this point has unknown completion and needs an explicit user retry.
-	if _, err := s.store.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
-		if current.Operation == nil || current.Operation.ID != sp.Operation.ID || current.InputGeneration != sp.InputGeneration {
-			return ErrArchivePreviewStale
-		}
-		current.Operation.GenerationStarted = true
-		return nil
-	}); err != nil {
-		return err
-	}
-	var err error
-	sp, err = s.prepareAutomaticArchiveContext(ctx, sp)
+	sp, err := s.PrepareAutomaticArchive(ctx, sp)
 	if err != nil {
 		return err
+	}
+	if sp.SessionContext.CandidateProfileKind == "document_set" {
+		return fmt.Errorf("document set archive requires the set scheduler")
 	}
 	var current *models.ThoughtSnapshot
 	if id := archiveTarget(sp); id != "" {
@@ -431,6 +422,23 @@ func (s *ScratchpadService) PreviewAndArchive(ctx context.Context, sp scratchpad
 	return err
 }
 
+// PrepareAutomaticArchive freezes classification before dispatch to either archive pipeline.
+func (s *ScratchpadService) PrepareAutomaticArchive(ctx context.Context, sp scratchpad.Scratchpad) (scratchpad.Scratchpad, error) {
+	if sp.Operation == nil {
+		return sp, ErrArchivePreviewRequired
+	}
+	if _, err := s.store.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
+		if current.Operation == nil || current.Operation.ID != sp.Operation.ID || current.InputGeneration != sp.InputGeneration {
+			return ErrArchivePreviewStale
+		}
+		current.Operation.GenerationStarted = true
+		return nil
+	}); err != nil {
+		return sp, err
+	}
+	return s.prepareAutomaticArchiveContext(ctx, sp)
+}
+
 // A menu click may arrive before the asynchronous context response. Classify
 // and extract from this generation instead of silently archiving as a default
 // note. The same CAS rules prevent a late result from consuming newer input.
@@ -440,19 +448,18 @@ func (s *ScratchpadService) prepareAutomaticArchiveContext(ctx context.Context, 
 		return sp, nil
 	}
 	result, err := s.buildCaptureContextWithRetry(ctx, sp.SessionID, sp.Content, ai.CaptureContextRequest{
-		SessionID: sp.SessionID, Content: sp.Content, Messages: captureContextMessages(sp.Messages),
+		PendingArchive: sp.Operation != nil && sp.Operation.AutoCommit && sp.Operation.State == "needs_input",
+		SessionID:      sp.SessionID, Content: sp.Content, Messages: captureContextMessages(sp.Messages),
 		Existing:          captureContextFromScratchpad(enrichmentSeedContext(sp)),
 		AvailableProfiles: s.availableProfileDescriptors(sp), ExistingProfile: s.existingProfile(sp),
 	})
 	if err != nil {
 		return sp, err
 	}
-	if result.ProfileContractHash != "" {
-		profile, err := s.profiles.Resolve(models.DocumentProfileRef{ProfileID: result.CandidateProfileID, Version: result.CandidateProfileVersion})
-		if err != nil || profile.Ref.ContentHash != result.ProfileContractHash {
-			return sp, ErrArchivePreviewStale
-		}
+	if err := s.validateContextProfile(&result, sp); err != nil {
+		return sp, err
 	}
+
 	result = preserveLatestUserTurns(result, sp.Messages)
 	next := captureContextToScratchpad(result, sp)
 	// A menu's accepted target and save intent remain authoritative even when

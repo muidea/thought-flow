@@ -682,3 +682,35 @@ func TestIndependentScopeReviewBlocksPlannerOmittingUserRequirement(t *testing.T
 		t.Fatal("reduced scope became authoritative", e)
 	}
 }
+
+func TestStartBindsSessionBeforeLaunchingAndRejectedBindingDoesNotGenerate(t *testing.T) {
+	s, _, plan := setup(t, &generator{}, reviewer{})
+	req := RunRequest{OperationID: "binding-run", SetID: plan.SetID, PlanID: plan.ID, PlanHash: plan.Hash, ExpectedGeneration: &plan.BaseGeneration, CaptureGeneration: &plan.Capture.Generation}
+	rejected := errors.New("session generation changed")
+	if _, err := s.StartWithBinding(req, func(run ds.Run) error {
+		if s.running[run.ID] != nil {
+			t.Error("worker launched before session binding")
+		}
+		saved, err := s.Store.Run(run.ID)
+		if err != nil || saved.State != "queued" {
+			t.Fatal(saved.State, err)
+		}
+		return rejected
+	}); !errors.Is(err, rejected) {
+		t.Fatal(err)
+	}
+	saved, err := s.Store.Run(req.OperationID)
+	if err != nil || len(saved.Calls) != 0 || saved.Candidate != nil {
+		t.Fatal("failed binding generated output", err)
+	}
+	if s.running[req.OperationID] != nil {
+		t.Fatal("failed binding launched worker")
+	}
+	if _, err = s.StartWithBinding(req, func(ds.Run) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	run := wait(t, s, req.OperationID)
+	if run.State != "committed" {
+		t.Fatal(run.State, run.Error)
+	}
+}

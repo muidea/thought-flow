@@ -229,7 +229,7 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 		}
 		limited, cancel := context.WithTimeout(ai.WithGenerationScope(ctx, req.OperationID), time.Duration(p.Limits.WallSeconds)*time.Second)
 		defer cancel()
-		inputBytes := lenJSON(map[string]any{"capture": snapshot, "profile": p, "previous": previous})
+		inputBytes := lenJSON(map[string]any{"capture": snapshot, "profile": p, "previous": previous, "contract_schema": ds.EngineeringSchema(p)})
 		if inputBytes > p.Limits.MaxInputBytes || inputBytes > p.Limits.MaxInputTokens || inputBytes > p.Limits.MaxContextBytes {
 			return ds.Plan{}, ds.ErrBudget
 		}
@@ -245,10 +245,19 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 		if planningCall.OutputBytes > p.Limits.MaxOutputBytes || planningCall.OutputTokens > p.Limits.MaxOutputTokens {
 			return ds.Plan{}, ds.ErrBudget
 		}
-		if previousPlan != nil {
+		if previousPlan != nil && !ds.Engineering(p) {
 			guardConfirmedFacts(&value, *previousPlan, snapshot)
 		}
 		shared = &value
+	}
+	if ds.Engineering(p) {
+		if previousPlan != nil {
+			guardConfirmedFacts(shared, *previousPlan, snapshot)
+			guardEngineeringScope(shared, *previousPlan, snapshot)
+		}
+		if e = s.resolveHistory(set, head.Working, shared); e != nil {
+			return ds.Plan{}, e
+		}
 	}
 	// Existing collections are explicit targets; new sets get a server-generated
 	// name to avoid slug aliases and never adopt another collection by accident.
@@ -272,6 +281,10 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 	plan, e := ds.BuildPlan(set, p, snapshot, *shared, *req.ExpectedGeneration, catalogGen)
 	if e != nil {
 		return plan, e
+	}
+	if previousPlan != nil && ds.Engineering(p) {
+		impact := ds.AnalyzeImpact(*previousPlan, plan)
+		plan.Impact = &impact
 	}
 	plan.PlanningCall = planningCall
 	plan.ID = req.OperationID
@@ -307,7 +320,11 @@ type RunRequest struct {
 	CaptureGeneration  *uint64 `json:"capture_generation"`
 }
 
-func (s *Service) Start(req RunRequest) (ds.Run, error) {
+func (s *Service) Start(req RunRequest) (ds.Run, error) { return s.StartWithBinding(req, nil) }
+
+// StartWithBinding persists the owning session association before any worker or
+// event can expose the new run. A failed binding must not launch generation.
+func (s *Service) StartWithBinding(req RunRequest, bind func(ds.Run) error) (ds.Run, error) {
 	if !s.opts.Enabled {
 		return ds.Run{}, ds.ErrUnavailable
 	}
@@ -326,6 +343,17 @@ func (s *Service) Start(req RunRequest) (ds.Run, error) {
 	if old, e := s.Store.Run(req.OperationID); e == nil {
 		if old.RequestHash != hash {
 			return old, ds.ErrConflict
+		}
+		if e := validateRunMembers(old); e != nil {
+			return old, e
+		}
+		if bind != nil {
+			if e := bind(old); e != nil {
+				return old, e
+			}
+		}
+		if old.State == "queued" && s.running[old.ID] == nil {
+			s.launch(old.ID)
 		}
 		return old, nil
 	} else if !os.IsNotExist(e) {
@@ -352,7 +380,7 @@ func (s *Service) Start(req RunRequest) (ds.Run, error) {
 		run.Calls = append(run.Calls, *plan.PlanningCall)
 	}
 	for _, q := range plan.Shared.Questions {
-		if q.Blocking {
+		if q.Blocking && q.Resolution == "" {
 			run.State = "needs_clarification"
 		}
 	}
@@ -361,6 +389,15 @@ func (s *Service) Start(req RunRequest) (ds.Run, error) {
 	}
 	if e = s.Store.SaveRun(run); e != nil {
 		return run, e
+	}
+	run, e = s.Store.Run(run.ID)
+	if e != nil {
+		return run, e
+	}
+	if bind != nil {
+		if e = bind(run); e != nil {
+			return run, e
+		}
 	}
 	if run.State == "queued" {
 		s.launch(run.ID)
@@ -630,7 +667,7 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 			if documentstore.Normalize(content.AINotes) != previous.Body {
 				manualBase, manualBody = previous.Body, documentstore.Normalize(content.AINotes)
 			}
-			changed := false
+			changed := old.Plan.Profile.Hash != run.Plan.Profile.Hash
 			for _, id := range m.Covers {
 				if affected[id] {
 					changed = true
@@ -672,8 +709,8 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 			upstream[key] = map[string]any{"document_id": member.DocumentID, "revision_id": revision, "body_hash": frozen.Revision.BodyHash, "body": frozen.Body}
 		}
 	}
-	contextBytes, _ := json.Marshal(map[string]any{"shared_design_hash": run.Plan.Shared.Hash, "member": m, "facts": facts, "relations": relations, "dependencies": deps, "upstream": upstream, "repair_issues": run.RepairIssues[m.Key]})
-	request := ai.DocumentGenerationRequest{Profile: profile, Parameters: run.Plan.Shared.Inputs, Context: ai.DocumentSourceContext{Title: m.Title, Summary: run.Plan.Shared.Inputs["goal"], Body: string(contextBytes)}}
+	contextBytes, _ := json.Marshal(map[string]any{"generation_policy": run.Plan.Profile.GenerationVersion, "purpose": run.Plan.Profile.Purpose, "scope": run.Plan.Shared.Scope, "obligations": run.Plan.Shared.Obligations, "questions": run.Plan.Shared.Questions, "profile": run.Plan.Profile.Hash, "plan_hash": run.Plan.Hash, "model_hash": run.ModelHash, "shared_design_hash": run.Plan.Shared.Hash, "member": m, "facts": facts, "relations": relations, "dependencies": deps, "upstream": upstream, "repair_issues": run.RepairIssues[m.Key]})
+	request := ai.DocumentGenerationRequest{Purpose: run.Plan.Profile.Purpose, Profile: profile, Parameters: run.Plan.Shared.Inputs, Context: ai.DocumentSourceContext{Title: m.Title, Summary: run.Plan.Shared.Inputs["goal"], Body: string(contextBytes)}}
 	imported, e := s.markdownMember(*run, m.Key)
 	if e != nil {
 		return ds.Artifact{}, e
@@ -705,6 +742,16 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 	}
 	if section == "" {
 		section = profile.Sections[0].Key
+	}
+	if draft.Sections == nil {
+		draft.Sections = map[string]models.DocumentSection{}
+	}
+	if ds.Engineering(run.Plan.Profile) {
+		for _, spec := range profile.Sections {
+			if strings.TrimSpace(draft.Sections[spec.Key].Content) == "" {
+				return ds.Artifact{}, fmt.Errorf("%w: engineering member %s missing section %s", ds.ErrRules, m.Key, spec.Key)
+			}
+		}
 	}
 	part := draft.Sections[section]
 	if imported != nil {
@@ -782,6 +829,23 @@ func (s *Service) generate(ctx context.Context, run *ds.Run, m ds.PlanMember, de
 	}
 	a.ResourceHash = stored.Revision.ResourceBindingsHash
 	a.Resources = stored.Resources
+	if ds.Engineering(run.Plan.Profile) {
+		a.ResourceSizes = map[string]int{}
+		for _, binding := range a.Resources.Bindings {
+			path, err := registry.FrozenResourcePath(m.DocumentID, binding)
+			if err != nil {
+				return ds.Artifact{}, err
+			}
+			raw, err := objectlocation.ReadFileBounded(path, objectlocation.MaxResourceBytes)
+			if err != nil {
+				return ds.Artifact{}, err
+			}
+			if objectlocation.Hash(raw) != binding.Hash {
+				return ds.Artifact{}, ds.ErrConflict
+			}
+			a.ResourceSizes[binding.ResourceID] = len(raw)
+		}
+	}
 	a.SingleReport = documentvalidation.Validate(stored)
 	return a, nil
 }

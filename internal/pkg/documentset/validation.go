@@ -33,6 +33,9 @@ func FactBlock(f Fact) string {
 			b += fmt.Sprintf("| %s | %s | %t | %s | %s | %s | %s |\n", escapeCell(v.ID), escapeCell(v.Type), v.Nullable, escapeCell(v.Classification), escapeCell(v.EntityID+"."+v.EntityField), escapeCell(v.Permission), escapeCell(strings.Join(v.Errors, ", ")))
 		}
 	}
+	if f.Modality != "" || f.Acceptance != nil || f.Quality != nil || f.StateRule != nil || f.Artifact != nil {
+		b += MeaningBlock(f)
+	}
 	return b
 }
 func Contract(p Plan, m PlanMember) models.DocumentContract {
@@ -59,9 +62,9 @@ func Contract(p Plan, m PlanMember) models.DocumentContract {
 	return c
 }
 func CommonBlock(p Plan, m PlanMember) string {
-	out := ""
+	out := ScopeBlock(p)
 	for _, f := range p.Shared.Facts {
-		if f.Owner == m.Key || f.Kind == "term" || f.Kind == "constraint" {
+		if f.Owner == m.Key || (!Engineering(p.Profile) && (f.Kind == "term" || f.Kind == "constraint")) {
 			out += FactBlock(f)
 		}
 	}
@@ -129,6 +132,9 @@ func Checklist(p Plan) []ReviewItem {
 		}
 		out = append(out, ReviewItem{ID: "relation:" + rel.ID, Members: members, Facts: []string{rel.From, rel.To}, Relations: []string{rel.ID}})
 	}
+	if Engineering(p.Profile) {
+		out = append(out, ReviewItem{ID: "engineering-public-contract", Members: keys})
+	}
 	return out
 }
 func Validate(r Revision) Report {
@@ -142,8 +148,19 @@ func Validate(r Revision) Report {
 		add("plan_invalid", e.Error())
 	}
 	for _, q := range r.Plan.Shared.Questions {
-		if q.Blocking {
+		if q.Blocking && q.Resolution == "" {
 			add("clarification_required", q.Message)
+		}
+		if Engineering(r.Plan.Profile) && !q.Blocking && q.Resolution == "" {
+			members := q.Members
+			if len(members) == 0 && len(r.Plan.Members) > 0 {
+				members = []string{r.Plan.Members[0].Key}
+			}
+			locations := []Location{}
+			for _, key := range members {
+				locations = append(locations, Location{Member: key, Section: "scope"})
+			}
+			report.Issues = append(report.Issues, Issue{ID: "design-question:" + q.ID, Code: "design_question_open", Severity: "warning", Status: "NOT_RUN", Confirmable: true, Message: q.Message, Locations: locations})
 		}
 	}
 	planned := map[string]PlanMember{}
@@ -200,13 +217,13 @@ func Validate(r Revision) Report {
 	}
 	for _, f := range r.Plan.Shared.Facts {
 		factMap[f.ID] = f
-		if f.Status != "confirmed" {
+		if f.Status != "confirmed" && !f.NonNormative {
 			add("fact_unconfirmed", "Required fact remains proposed or unresolved: "+f.ID)
 		}
 		if len(covered[f.ID]) == 0 {
 			add("scope_uncovered", "No delivery location for "+f.ID)
 		}
-		if f.Kind == "interface" || f.Kind == "entity" {
+		if Engineering(r.Plan.Profile) || f.Kind == "interface" || f.Kind == "entity" {
 			if planned[f.Owner].Key == "" {
 				add("contract_owner", "Exactly one planned definition owner is required: "+f.ID)
 			}
@@ -214,7 +231,7 @@ func Validate(r Revision) Report {
 		for _, a := range r.Members {
 			expected := FactBlock(f)
 			count := strings.Count(a.Body, expected)
-			if a.Key == f.Owner || f.Kind == "term" || f.Kind == "constraint" {
+			if a.Key == f.Owner || (!Engineering(r.Plan.Profile) && (f.Kind == "term" || f.Kind == "constraint")) {
 				if count != 1 || !HasAnchor(a.Body, "contract-"+strings.ToLower(f.ID)) {
 					add("final_contract_mismatch", "Final body is missing or changes authoritative definition "+f.ID, Location{Member: a.Key, Section: "contract-" + f.ID})
 				}
@@ -244,7 +261,7 @@ func Validate(r Revision) Report {
 		}
 	}
 	for _, f := range r.Plan.Shared.Facts {
-		if f.Kind == "requirement" || f.Kind == "module" {
+		if !Engineering(r.Plan.Profile) && (f.Kind == "requirement" || f.Kind == "module") {
 			found := false
 			for _, rel := range r.Plan.Shared.Relations {
 				if (rel.From == f.ID && factMap[rel.To].Kind == "verification") || (rel.To == f.ID && factMap[rel.From].Kind == "verification") {
@@ -280,6 +297,49 @@ func Validate(r Revision) Report {
 			} else if u.Scheme == "thought" || u.Scheme == "topic" {
 				if u.Host == "" || u.User != nil {
 					add("link_invalid", link, Location{Member: a.Key})
+				}
+			}
+		}
+	}
+	if Engineering(r.Plan.Profile) {
+		for _, a := range r.Members {
+			if strings.Count(a.Body, ScopeBlock(r.Plan)) != 1 {
+				add("design_scope_projection", "Frozen scope is missing or changed", Location{Member: a.Key, Section: "design-scope"})
+			}
+		}
+		for _, o := range r.Plan.Shared.Obligations {
+			if o.State != "DEFINED" {
+				continue
+			}
+			a := artifacts[o.Member]
+			for _, id := range o.Facts {
+				if !EvidenceInSection(a.Body, o.Section, factMap[id].Content) {
+					add("design_obligation_location", "Content obligation has no substantive evidence in its declared section", Location{Member: o.Member, Section: o.Section})
+				}
+			}
+		}
+	}
+	for _, issue := range EngineeringIssues(r.Plan) {
+		report.Issues = append(report.Issues, issue)
+		report.StructuralStatus = "failed"
+		report.Status = "blocked"
+	}
+	if Engineering(r.Plan.Profile) && report.StructuralStatus == "passed" {
+		descriptor, _, e := PublicPayload(r)
+		publicRaw, canonicalErr := PublicJSON(descriptor)
+		if canonicalErr != nil {
+			e = canonicalErr
+		}
+		hash := documentstore.Hash(publicRaw)
+		if e != nil {
+			add("public_projection_invalid", e.Error())
+		} else {
+			report.PublicPayloadHash = hash
+			report.ProjectionVersion = PublicProjectionVersion
+			for i := range report.Checklist {
+				if report.Checklist[i].ID == "engineering-public-contract" {
+					report.Checklist[i].PublicPayload = &descriptor
+					report.Checklist[i].PublicPayloadHash = hash
 				}
 			}
 		}
@@ -475,6 +535,31 @@ func Impact(old, next SharedDesign) []string {
 	for id := range previous {
 		changed[id] = true
 	}
+	oldRelations := map[string]string{}
+	for _, r := range old.Relations {
+		oldRelations[r.ID] = documentstore.HashJSON(r)
+	}
+	for _, r := range next.Relations {
+		if oldRelations[r.ID] != documentstore.HashJSON(r) {
+			changed[r.From] = true
+			changed[r.To] = true
+		}
+		delete(oldRelations, r.ID)
+	}
+	for _, r := range old.Relations {
+		if _, ok := oldRelations[r.ID]; ok {
+			changed[r.From] = true
+			changed[r.To] = true
+		}
+	}
+	if documentstore.HashJSON(old.Scope) != documentstore.HashJSON(next.Scope) || documentstore.HashJSON(old.Obligations) != documentstore.HashJSON(next.Obligations) || documentstore.HashJSON(old.Changes) != documentstore.HashJSON(next.Changes) || documentstore.HashJSON(old.Questions) != documentstore.HashJSON(next.Questions) || documentstore.HashJSON(old.Conditions) != documentstore.HashJSON(next.Conditions) || documentstore.HashJSON(old.Inputs) != documentstore.HashJSON(next.Inputs) {
+		for _, f := range old.Facts {
+			changed[f.ID] = true
+		}
+		for _, f := range next.Facts {
+			changed[f.ID] = true
+		}
+	}
 	progress := true
 	for progress {
 		progress = false
@@ -515,6 +600,9 @@ func Ready(r Revision) error {
 		return ErrRules
 	}
 	check := Validate(r)
+	if Engineering(r.Plan.Profile) && (check.PublicPayloadHash == "" || check.PublicPayloadHash != r.Report.PublicPayloadHash || check.ProjectionVersion != r.Report.ProjectionVersion) {
+		return ErrRules
+	}
 	if check.StructuralStatus != "passed" || documentstore.HashJSON(check.Checklist) != documentstore.HashJSON(r.Report.Checklist) {
 		return ErrRules
 	}

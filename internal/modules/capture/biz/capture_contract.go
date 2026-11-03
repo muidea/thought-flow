@@ -88,9 +88,43 @@ func activeConflicts(issues []models.CaptureIssue) []string {
 }
 
 func (s *ScratchpadService) normalizeProfileContext(ctx *scratchpad.SessionContext) {
+	if s.setProfileCatalog != nil {
+		catalog := s.setProfileCatalog()
+		if ctx.FrozenSetProfile != nil && s.setProfileResolver != nil {
+			if d, err := s.setProfileResolver(*ctx.FrozenSetProfile); err == nil {
+				catalog = append([]documentprofile.DocumentProfileDescriptor{d}, catalog...)
+			}
+		}
+		for _, d := range catalog {
+			if d.ID != ctx.CandidateProfileID || d.Version != ctx.CandidateProfileVersion {
+				continue
+			}
+			ctx.CandidateProfileKind = "document_set"
+			if ctx.FrozenSetProfile != nil && (ctx.FrozenSetProfile.ProfileID != d.ID || ctx.FrozenSetProfile.Version != d.Version || ctx.FrozenSetProfile.ContentHash != d.ContractHash) {
+				ctx.ArchiveReadiness = "blocked"
+				return
+			}
+			ctx.FrozenSetProfile = &models.DocumentProfileRef{ProfileID: d.ID, Version: d.Version, Family: d.Family, ContentHash: d.ContractHash}
+			ctx.FrozenProfile = ""
+			ctx.MissingProfileInputs = nil // Set planning validates scope against the original conversation.
+			ctx.Issues = mergeIssues(ctx.Issues, nil, ctx.Conflicts)
+			ctx.Conflicts = activeConflicts(ctx.Issues)
+			ctx.ArchiveReadiness = "ready"
+			if len(ctx.Conflicts) > 0 {
+				ctx.ArchiveReadiness = "blocked"
+			}
+			return
+		}
+	}
+	if ctx.CandidateProfileKind == "document_set" || ctx.FrozenSetProfile != nil {
+		ctx.ArchiveReadiness = "blocked"
+		return
+	}
 	if s.profiles == nil {
 		return
 	}
+	ctx.CandidateProfileKind = "document"
+	ctx.FrozenSetProfile = nil
 	p, err := s.resolveArchiveProfile(scratchpad.Scratchpad{SessionContext: *ctx}, nil)
 	if err != nil {
 		ctx.ArchiveReadiness = "needs_input"

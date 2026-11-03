@@ -17,6 +17,7 @@ import (
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/documentflow"
+	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/models"
 	"thoughtflow/internal/pkg/scratchpad"
 )
@@ -395,5 +396,47 @@ func TestAutomaticArchivePreservesReopenedThoughtWithoutNewUserInput(t *testing.
 	}
 	if current.Thought.DocumentProfile != nil && current.Thought.DocumentProfile.Family != models.DocumentFamilyNote {
 		t.Fatal("reopened note was reclassified without a new request")
+	}
+}
+
+func TestAutomaticSetProfileFreezesContractAndRejectsChangedCatalog(t *testing.T) {
+	svc, _, _ := archiveFixture(t, "builtin.note", 1)
+	descriptor := documentprofile.DocumentProfileDescriptor{ID: "custom.software-set", Version: 1, OutputKind: "document_set", ContractHash: "sha256:first", Family: "design"}
+	svc.SetDocumentSetCatalog(func() []documentprofile.DocumentProfileDescriptor {
+		return []documentprofile.DocumentProfileDescriptor{descriptor}
+	})
+	result := ai.CaptureContextResult{CandidateProfileID: descriptor.ID, CandidateProfileVersion: 1, ProfileContractHash: descriptor.ContractHash}
+	if err := svc.validateContextProfile(&result); err != nil || result.CandidateProfileKind != "document_set" {
+		t.Fatal(result, err)
+	}
+	ctx := captureContextToScratchpad(result, scratchpad.Scratchpad{})
+	svc.normalizeProfileContext(&ctx)
+	if ctx.FrozenSetProfile == nil || ctx.FrozenSetProfile.ContentHash != descriptor.ContractHash || ctx.FrozenProfile != "" {
+		t.Fatal("set contract went through single renderer", ctx)
+	}
+	descriptor.ContractHash = "sha256:replacement"
+	if err := svc.validateContextProfile(&result); !errors.Is(err, ErrArchivePreviewStale) {
+		t.Fatal("replaced contract accepted", err)
+	}
+	svc.normalizeProfileContext(&ctx)
+	if ctx.ArchiveReadiness != "blocked" || ctx.FrozenSetProfile.ContentHash != "sha256:first" {
+		t.Fatal("frozen contract overwritten", ctx)
+	}
+}
+
+func TestAppendMessageReturnsArchiveStrategyBeforeEnrichment(t *testing.T) {
+	for _, strategy := range []scratchpad.ArchiveStrategy{"", scratchpad.ArchiveStrategyUpdate, scratchpad.ArchiveStrategySupplement} {
+		t.Run(string(strategy), func(t *testing.T) {
+			store := scratchpad.New(t.TempDir())
+			if _, err := store.Save(scratchpad.Scratchpad{SessionID: "s", ArchiveStrategy: strategy}); err != nil {
+				t.Fatal(err)
+			}
+			svc := NewScratchpadService(store) // No asynchronous provider is available.
+			got, err := svc.AppendMessage("s", "user", "Continue the design")
+			expected := normalizeArchiveStrategy(strategy)
+			if err != nil || got.ArchiveStrategy != expected || got.SessionContext.ArchiveStrategy != expected {
+				t.Fatal(got.ArchiveStrategy, got.SessionContext.ArchiveStrategy, err)
+			}
+		})
 	}
 }

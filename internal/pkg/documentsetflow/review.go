@@ -175,6 +175,9 @@ func (s *Service) Finalize(id string, req FinalizeRequest) (ds.Head, error) {
 	if ds.Ready(r) != nil || check.StructuralStatus != "passed" || r.Report.Status != "ready" || r.Report.CandidateHash != ds.CandidateHash(r) || (r.Report.SemanticStatus != "model_reviewed" && r.Report.SemanticStatus != "manual_reviewed") {
 		return h, ds.ErrRules
 	}
+	if e = s.Store.ValidatePublicMaterial(r); e != nil {
+		return h, e
+	}
 	if s.opts.Snapshot == nil && len(r.Plan.Capture.Sources.Sources) != 0 {
 		return h, ds.ErrUnavailable
 	}

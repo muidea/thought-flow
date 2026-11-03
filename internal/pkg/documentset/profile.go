@@ -51,6 +51,19 @@ func ValidateProfile(p Profile) error {
 	if p.SchemaVersion != 1 || p.Kind != "document_set" || !ValidKey(p.ID) || p.Version < 1 || strings.TrimSpace(p.Name) == "" || len(p.Roles) == 0 || len(p.Roles) > 20 || p.Hash != ProfileHash(p) {
 		return ErrInvalid
 	}
+	if p.Purpose != "" && p.Purpose != EngineeringPurpose {
+		return ErrInvalid
+	}
+	if Engineering(p) && (len(p.Obligations) == 0 || p.GenerationVersion != EngineeringPromptVersion) {
+		return ErrInvalid
+	}
+	obligationIDs := map[string]bool{}
+	for _, o := range p.Obligations {
+		if !ValidKey(o.ID) || obligationIDs[o.ID] || !ValidKey(o.Role) || o.Kind == "" {
+			return ErrInvalid
+		}
+		obligationIDs[o.ID] = true
+	}
 	l := p.Limits
 	if l.MaxInputTokens < 1 || l.MaxInputTokens > 8<<20 || l.MaxOutputTokens < 1 || l.MaxOutputTokens > 16<<20 || l.MaxContextBytes < 1 || l.MaxContextBytes > 1<<20 {
 		return ErrBudget
@@ -77,6 +90,17 @@ func ValidateProfile(p Profile) error {
 	if !Acyclic(graph) {
 		return fmt.Errorf("%w: generation DAG cycle or unknown dependency", ErrInvalid)
 	}
+	for _, o := range p.Obligations {
+		if !roles[o.Role] || (o.When != "" && o.When != "has_interfaces" && o.When != "has_persistence") {
+			return ErrInvalid
+		}
+		switch o.Kind {
+		case "requirement", "term", "module", "interface", "entity", "decision", "constraint", "verification", "artifact_spec":
+		default:
+			return ErrInvalid
+		}
+	}
+
 	checks := map[string]bool{}
 	for _, c := range p.Checks {
 		switch c {
@@ -152,10 +176,10 @@ func Builtins() []Profile {
 	research := Profile{SchemaVersion: 1, Kind: "document_set", ID: "builtin.research-set", Version: 1, Name: "研究成果集", Enabled: true, Inputs: []documentprofile.ProfileInput{{Key: "goal", Required: true}, {Key: "scope", Required: true}}, Limits: limits, Checks: checks, Roles: []Role{makeRole("brief", "Research brief", "one", "", nil), makeRole("analysis", "Evidence analysis", "one", "", []string{"brief"}), makeRole("recommendations", "Recommendations", "one", "", []string{"analysis"})}}
 	software.Hash = ProfileHash(software)
 	research.Hash = ProfileHash(research)
-	return []Profile{software, research}
+	return []Profile{software, research, engineeringProfile(software)}
 }
 func FreezeShared(s SharedDesign, capture CaptureSnapshot) (SharedDesign, error) {
-	if len(s.Facts) > 1000 || len(s.Relations) > 2000 || len(s.Questions) > 100 {
+	if len(s.Facts) > 1000 || len(s.Relations) > 2000 || len(s.Questions) > 100 || len(s.History) > 1000 || len(s.Changes) > 1000 || len(s.Obligations) > 1000 {
 		return s, ErrBudget
 	}
 	// Freeze must own its slices and maps. Removing quotations for the public
@@ -176,7 +200,7 @@ func FreezeShared(s SharedDesign, capture CaptureSnapshot) (SharedDesign, error)
 			return s, ErrInvalid
 		}
 		switch f.Kind {
-		case "requirement", "term", "module", "interface", "entity", "decision", "constraint", "verification":
+		case "requirement", "term", "module", "interface", "entity", "decision", "constraint", "verification", "artifact_spec":
 		default:
 			return s, ErrInvalid
 		}
@@ -201,7 +225,7 @@ func FreezeShared(s SharedDesign, capture CaptureSnapshot) (SharedDesign, error)
 		seen[f.ID] = *f
 	}
 	for _, r := range s.Relations {
-		if !ValidKey(r.ID) || seen[r.From].ID == "" || seen[r.To].ID == "" || r.Kind == "" {
+		if !ValidKey(r.ID) || seen[r.From].ID == "" || (seen[r.To].ID == "" && !(r.Kind == "supersedes" && r.Historical != nil)) || r.Kind == "" {
 			return s, ErrInvalid
 		}
 	}
@@ -246,8 +270,20 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 	if e != nil {
 		return out, e
 	}
+	if Engineering(p) {
+		if e = validateEngineeringApprovals(shared, c); e != nil {
+			return out, e
+		}
+		if e = ValidateHistory(shared); e != nil {
+			return out, e
+		}
+		if e = validateEngineeringRelations(shared); e != nil {
+			return out, e
+		}
+
+	}
 	for _, f := range shared.Facts {
-		if f.Status != "confirmed" {
+		if f.Status != "confirmed" && !f.NonNormative {
 			out.Shared.Questions = append(out.Shared.Questions, Question{ID: "fact-" + f.ID, Message: "Confirm shared fact: " + f.Name, Blocking: true, Members: []string{f.Owner}})
 		}
 	}
@@ -330,6 +366,20 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 		}
 		out.Members[i].DependsOn = deps
 	}
+	if Engineering(p) {
+		for _, issue := range EngineeringIssues(out) {
+			if issue.Code == "design_issue_open" {
+				continue
+			}
+			var factRefs []string
+			for _, f := range out.Shared.Facts {
+				if f.ID == issue.FactID {
+					factRefs = append(factRefs, f.ID)
+				}
+			}
+			out.Shared.Questions = append(out.Shared.Questions, Question{ID: "gap-" + strings.TrimPrefix(documentstore.Hash([]byte(issue.ID)), "sha256:")[:24], Message: issue.Message, Blocking: true, BlockingReason: issue.Message, Facts: factRefs})
+		}
+	}
 	// Raw conversation and exact source quotations remain private; hashes and
 	// message positions preserve provenance without including them in Git.
 	out.Capture.MessageCount = len(out.Capture.Messages)
@@ -344,6 +394,26 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 	}
 	for i := range out.Shared.ScopeChanges {
 		out.Shared.ScopeChanges[i].Source.Quote = ""
+	}
+	if out.Shared.Scope != nil {
+		out.Shared.Scope.Source.Quote = ""
+		for i := range out.Shared.Scope.Excluded {
+			out.Shared.Scope.Excluded[i].Source.Quote = ""
+		}
+	}
+	for i := range out.Shared.Obligations {
+		out.Shared.Obligations[i].Source.Quote = ""
+	}
+	for i := range out.Shared.Changes {
+		out.Shared.Changes[i].Source.Quote = ""
+	}
+	for i := range out.Shared.Questions {
+		if out.Shared.Questions[i].Source != nil {
+			out.Shared.Questions[i].Source.Quote = ""
+		}
+	}
+	for i := range out.Shared.History {
+		out.Shared.History[i].Fact.Source.Quote = ""
 	}
 	out.Shared.Hash = ""
 	out.Shared.Hash = documentstore.HashJSON(out.Shared)
@@ -368,6 +438,14 @@ func ValidatePlan(p Plan) error {
 	if !Acyclic(graph) {
 		return ErrInvalid
 	}
+	if Engineering(p.Profile) {
+		if e := validateEngineeringRelations(p.Shared); e != nil {
+			return e
+		}
+		if e := ValidateHistory(p.Shared); e != nil {
+			return e
+		}
+	}
 	return validateMembership(p)
 }
 func StrictJSON(raw []byte, v any) error {
@@ -390,7 +468,7 @@ func validateMembership(p Plan) error {
 	omitted := map[string]string{}
 	questions := map[string]bool{}
 	for _, q := range p.Shared.Questions {
-		if q.Blocking {
+		if q.Blocking && q.Resolution == "" {
 			questions[q.ID] = true
 		}
 	}
@@ -464,4 +542,25 @@ func validateMembership(p Plan) error {
 
 func UserEvidence(c CaptureSnapshot, source Source) bool {
 	return source.Message >= 0 && source.Message < len(c.Messages) && c.Messages[source.Message].Role == "user" && strings.TrimSpace(source.Quote) != "" && strings.Contains(c.Messages[source.Message].Text, source.Quote)
+}
+
+// CaptureDescriptor advertises a set alongside single-document profiles. The
+// frozen server-side profile, not model-provided paths, defines its members.
+func (p Profile) CaptureDescriptor() documentprofile.DocumentProfileDescriptor {
+	d := documentprofile.DocumentProfileDescriptor{OutputKind: "document_set", Purpose: p.Purpose, ID: p.ID, Version: p.Version, ContractHash: p.Hash, Name: p.Name, Family: "design", Description: "Generate a coordinated multi-document set from the conversation.", Priority: 10}
+	for _, r := range p.Roles {
+		d.UseWhen = append(d.UseWhen, r.Key)
+	}
+	switch p.ID {
+	case "builtin.engineering-design-set":
+		d.Description = "Software feature/system engineering design and delivery: scope, architecture, modules, interface and storage contracts, recovery, verification and delivery. Automatically plan and generate on archive."
+		d.PositiveExamples = []string{"软件功能设计", "软件设计", "功能实现设计", "工程设计", "software feature design", "engineering design"}
+		d.NegativeExamples = []string{"单篇", "单个文档", "single document", "调研报告", "博客"}
+	case "builtin.research-set":
+		d.Family = "research"
+		d.PositiveExamples = []string{"多文件调研", "调研成果集", "research document set"}
+	default:
+		d.PositiveExamples = []string{"多文件成果集", "生成整套", "document set"}
+	}
+	return d
 }
