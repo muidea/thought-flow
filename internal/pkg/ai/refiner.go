@@ -920,7 +920,7 @@ func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, syste
 		complete(err)
 		var failure ProviderError
 		if err == nil || !errors.As(err, &failure) || !failure.onlyResponseFormatUnsupported() {
-			return content, false, err
+			return unwrapJSONResponse(content), false, err
 		}
 		slog.Warn("JSON response format unsupported; remembering automatic fallback", "model", p.chatModel, "request_id", failure.RequestID)
 	}
@@ -935,7 +935,7 @@ func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, syste
 			return "", true, failure
 		}
 	}
-	return content, true, err
+	return unwrapJSONResponse(content), true, err
 }
 
 func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool, opts ...option.RequestOption) (string, error) {

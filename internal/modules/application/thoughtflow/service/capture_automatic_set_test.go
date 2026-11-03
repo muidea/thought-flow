@@ -49,7 +49,7 @@ func (p *captureArchivePlanner) PlanDocumentSet(ctx context.Context, capture ds.
 	return shared, nil
 }
 
-func automaticSetFixture(t *testing.T, planner *captureArchivePlanner) (*Service, *scratchpad.Store) {
+func automaticSetFixture(t *testing.T, planner documentsetflow.Planner) (*Service, *scratchpad.Store) {
 	t.Helper()
 	s, _ := documentHTTPFixture(t, "design")
 	s.documentSets.Close()
@@ -238,5 +238,76 @@ func TestCapturePendingArchiveDoesNotResumeWhenUserDefers(t *testing.T) {
 	})
 	if after.DocumentSetRunID != before.DocumentSetRunID || planner.calls.Load() != 1 || after.ArchiveIntent != scratchpad.ArchiveIntentNone {
 		t.Fatal("deferred archive was resumed")
+	}
+}
+
+func TestCaptureArchiveWithWrappedPlannerJSONFallback(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(fmt.Sprintf("valid=%v", valid), func(t *testing.T) {
+			var formatted, plain atomic.Int32
+			capture, shared := designfixture.Capture()
+			raw, err := json.Marshal(shared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := "<think>Check scope. An example, not the answer: {\"facts\":[]}.</think>\n```json\n" + string(raw) + "\n```"
+			if !valid {
+				content = "<html><body>Upstream unavailable. " + string(raw) + "</body></html>"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, exists := req["response_format"]; exists {
+					formatted.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
+					return
+				}
+				plain.Add(1)
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+			}))
+			defer server.Close()
+			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "wrapped-planner", Timeout: time.Minute}, appconfig.EmbeddingConfig{})
+			s, store := automaticSetFixture(t, provider)
+			sendAutomaticCapture(t, s, capture.Messages[0].Text)
+			awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool { return sp.SessionContext.FrozenSetProfile != nil })
+			sendAutomaticCapture(t, s, "请将以上讨论归档")
+			sp := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool {
+				return sp.DocumentSetRunID != "" || (sp.Operation != nil && sp.Operation.State == "failed")
+			})
+			if !strings.Contains(sp.Content, capture.Messages[0].Text) {
+				t.Fatal("archive lost user input")
+			}
+			if !valid {
+				if sp.DocumentSetRunID != "" || !strings.Contains(sp.Operation.Error, "plan document set") || !strings.Contains(sp.Operation.Error, "thoughtflow.ai.invalid_json_fallback") {
+					t.Fatal("invalid planner output was used", sp.Operation)
+				}
+			} else {
+				var run ds.Run
+				deadline := time.Now().Add(60 * time.Second)
+				for time.Now().Before(deadline) {
+					run, _ = s.documentSets.Store.Run(sp.DocumentSetRunID)
+					if run.State == "committed" || run.State == "failed_terminal" {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				if run.State != "committed" || len(run.Candidate.Members) != 6 {
+					t.Fatal("wrapped planner output did not generate the set", run.State, run.Error)
+				}
+				for _, member := range run.Candidate.Members {
+					if _, body, err := markdown.ReadThought(s.workspace.RootPath, member.DocumentID); err != nil || body.AINotes == "" {
+						t.Fatal("generated thought is unreadable", member.Key, err)
+					}
+				}
+			}
+			if formatted.Load() != 1 || plain.Load() != 1 {
+				t.Fatal("unexpected automatic planner replay", formatted.Load(), plain.Load())
+			}
+		})
 	}
 }

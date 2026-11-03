@@ -155,3 +155,15 @@ GOMAXPROCS=2 go test -p 2 -race -timeout=10m -run 'TestCapture(ChatArchive|Archi
 
 
 该界面增量验证：`make node-check node-test i18n-check`、`node --test --test-name-pattern='capture archive in conversation automatically|Markdown files import intact' web/app.browser.test.js`、`GOMAXPROCS=2 GOFLAGS=-p=2 make build`、`git diff --check` 均通过。浏览器覆盖桌面和窄屏，实际检查首次加载及刷新后无手动按钮、对话归档结果仍可打开，以及既有 Markdown 导入和完整阅读功能。日志分别位于 `/tmp/thoughtflow-capture-remove-tools-node.log`、`/tmp/thoughtflow-capture-remove-tools-browser.log` 和 `/tmp/thoughtflow-capture-remove-tools-build.log`。本次未重跑完整后端矩阵，前文完整矩阵记录对应按钮移除前的链路版本。
+
+### 2026-11-03 规划响应 JSON 包裹兼容
+
+只读核对失败会话及私有 planning 记录，确认本次 `invalid character '<' looking for beginning of value` 发生在成果集规划阶段，尚未绑定生成任务。现有记录没有保存原始模型响应，不能据此断言其一定是思考标签或 HTML 错误页。源码确认规划和套级审查直接使用严格 JSON 解码，未兼容完整的输出包裹。
+
+规划及联合审查请求现在明确要求只返回一个 JSON 对象；统一 JSON 响应入口仅在去除一个完整的前置 `<think>…</think>` 或 `<analysis>…</analysis>` 和可选 Markdown JSON／无语言代码围栏后，剩余内容确为单一完整 JSON 对象时，才去除这些包裹。JSON 对象内的正文、契约和 Unicode 字节保持原样。严格字段、来源、范围、内容及发布校验继续执行；不会从 HTML、思考内容或嵌套示例中抽取规划，不修复截断或多份候选输出，不增加模型重试。Provider／模型的 response_format fallback 记忆继续生效。规划及联合审查错误保留具体失败阶段和底层 ProviderError。
+
+新增 `TestJSONResponseWrappers`、`TestDocumentSetJSONWrappersPreserveStrictValidationAndFallbackCache`，覆盖格式支持／fallback 两条路径、重复调用、字段和必填内容校验、HTML、截断、多对象及思考中伪答案。`TestCaptureArchiveWithWrappedPlannerJSONFallback` 使用受控 HTTP 模型和真实临时工作区，验证完整包裹响应经自动归档生成 6 篇可读 Thought，HTML 响应拒绝且输入保留，两种场景均只发起一次格式探测和一次兼容规划。单篇审查也覆盖围栏和思考标签，不把缺失审查结果当成通过。未重放真实用户归档、未调用真实外部模型，也未修改运行中工作区的状态。
+
+首次完整矩阵暴露通用提示前缀影响测试网关按任务识别请求，已将新增提示限定在规划和联合审查原提示之后。归档预览 API 测试的等待预算同时改用单调时钟，保留原有超时长度和冲突断言。最终 `GOMAXPROCS=2 GOFLAGS=-p=2 make ci-check` 全部通过，包含全量 Go、构建、Node、i18n、完整浏览器和 API/SSE，日志 `/tmp/thoughtflow-json-wrapper-final-ci.log`。真实模型返回和最终提交的远端 CI 不在本地验证结论内。
+
+最终定向 race 复验通过：`GOMAXPROCS=2 CGO_LDFLAGS='-L/usr/lib/gcc/x86_64-linux-gnu/14 -L/usr/lib/gcc/x86_64-linux-gnu/13' go test -p 2 -race -count=1 -run 'Test(JSONResponseWrappers|DocumentSetJSONWrappers|DocumentReviewerUsesSeparateReadOnlyCallAndStrictIssues|CaptureArchiveWithWrappedPlannerJSONFallback)' ./internal/pkg/ai ./internal/modules/application/thoughtflow/service`；日志 `/tmp/thoughtflow-json-wrapper-final-race.log`。

@@ -17,6 +17,7 @@ const fsp = require("node:fs/promises");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const { performance } = require("node:perf_hooks");
 const { spawn } = require("node:child_process");
 const test = require("node:test");
 
@@ -197,12 +198,14 @@ function request(baseURL, path, method, { body, headers } = {}) {
 
 
 async function generateArchivePreview(baseURL, endpoint, body = {}) {
-  const deadline = Date.now() + 10000;
+  // Retry budgets measure elapsed time; clock synchronization must not expire
+  // a new preview while its asynchronous enrichment is still completing.
+  const deadline = performance.now() + 10000;
   for (;;) {
     let response = await request(baseURL, endpoint, "POST", {body});
     assert.ok([200,202].includes(response.status), response.text);
     const operationID = envelope(response).data.operation?.id;
-    while (["preparing","saving"].includes(envelope(response).data.operation?.state) && Date.now() < deadline) {
+    while (["preparing","saving"].includes(envelope(response).data.operation?.state) && performance.now() < deadline) {
       await sleep(30);
       response = await request(baseURL, endpoint, "GET");
       assert.equal(envelope(response).data.operation?.id, operationID, "polling must not start another operation");
@@ -210,7 +213,7 @@ async function generateArchivePreview(baseURL, endpoint, body = {}) {
     const data = envelope(response).data;
     assert.ok(!["preparing","saving"].includes(data.operation?.state), response.text);
     const superseded = data.operation?.input_generation !== data.scratchpad?.input_generation;
-    if (Date.now() < deadline && (superseded || data.operation?.state === "conflicted")) {
+    if (performance.now() < deadline && (superseded || data.operation?.state === "conflicted")) {
       // Background enrichment/refinement can invalidate a just-requested preview.
       // Retry the explicit generation command, while GET remains read-only.
       await sleep(50);
@@ -250,12 +253,12 @@ async function waitForSearchHit(baseURL, path, title, timeoutMs = 8000) {
 // Follow the archive contract: a missing or stale preview requires a new
 // preview; lock conflicts only require waiting. Other conflicts must surface.
 async function confirmArchive(baseURL, sessionID, body) {
-  const deadline = Date.now() + 5000;
+  const deadline = performance.now() + 5000;
   const archivePath = `/api/capture/sessions/${encodeURIComponent(sessionID)}/archive`;
   let refreshedPreview;
   for (;;) {
     const response = await request(baseURL, archivePath, "POST", { body });
-    if (response.status !== 409 || Date.now() >= deadline) return { ...response, refreshedPreview };
+    if (response.status !== 409 || performance.now() >= deadline) return { ...response, refreshedPreview };
     const code = envelope(response).error?.code;
     if (code === "thoughtflow.archive.preview_required" || code === "thoughtflow.archive.preview_stale") {
       const preview = await generateArchivePreview(baseURL, `${archivePath}/preview`);

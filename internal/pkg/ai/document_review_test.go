@@ -16,7 +16,14 @@ func TestDocumentReviewerUsesSeparateReadOnlyCallAndStrictIssues(t *testing.T) {
 	for _, result := range []struct {
 		name, body string
 		invalid    bool
-	}{{"clear", `{"issues":[]}`, false}, {"no_issues_field", `{"score":100}`, true}, {"no_location", `{"issues":[{"code":"contradiction","severity":"warning","basis":"conflict","evidence":"text","suggestion":"check"}]}`, true}, {"invalid_json", `not json`, true}} {
+	}{
+		{"clear", `{"issues":[]}`, false},
+		{"wrapped-clear", "<think>Check all sections.</think>\n```json\n{\"issues\":[]}\n```", false},
+		{"wrapped-no-issues", "```json\n{\"score\":100}\n```", true},
+		{"no_issues_field", `{"score":100}`, true},
+		{"no_location", `{"issues":[{"code":"contradiction","severity":"warning","basis":"conflict","evidence":"text","suggestion":"check"}]}`, true},
+		{"invalid_json", `not json`, true},
+	} {
 		t.Run(result.name, func(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
