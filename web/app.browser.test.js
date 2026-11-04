@@ -1575,6 +1575,10 @@ function startFixtureServer(options = {}) {
     created_at: "2026-06-13T00:00:00Z",
     updated_at: "2026-06-13T00:00:00Z",
   });
+  if (options.captureSeed) {
+    const seed = options.captureSeed;
+    captureSessions.set(seed.session_id, { ...makeScratchpad(seed.session_id), ...seed });
+  }
   // scheduleCaptureEnrichment mocks enrichSessionContextAsync: after
   // enrichDelayMs it rewrites the session_context with the same
   // fields the production code populates and publishes
@@ -3000,6 +3004,57 @@ test("capture archives through chat and restores its result without context or p
    await clickVisibleCaptureControl(page,'#capture-conversation [data-kind="archive_status"] a');
    await page.waitForExpression(()=>document.querySelector("#page-thoughts")?.classList.contains("active") && document.querySelector("#thought-detail")?.textContent.includes("thought-capture"));
    assert.deepEqual(errors,[]);
+  } finally { await browser.close(); }
+ });
+});
+
+test("capture shows current context type failure without an old archive failure after reload", async (t) => {
+ if (!chromePath) { t.skip("Chrome executable not found"); return; }
+ for (const viewport of viewports()) await t.test(viewport.name, async t => {
+  const currentError = "document_parameters values must be strings. Request ID: capture-current-request";
+  const server = await startFixtureServer({captureSeed:{session_id:"browser-session",input_generation:14,
+   messages:[{role:"user",text:"归档"},{role:"ai",text:currentError}],
+   archive_operation:{id:"old-archive",state:"failed",input_generation:12,error:"OLD_PLANNER_ERROR"}}});
+  t.after(()=>server.close());
+  const browser=await browserTargets.find(target=>target.name==="chrome").launch(viewport);
+  try {
+   const page=await connectPage(browser);await page.send("Page.enable");
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/capture`);
+   for (let round=0;round<2;round++) {
+    if(round)await page.reload();
+    await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+    await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("capture-current-request"));
+    const ui=await page.evaluate(()=>({text:document.querySelector("#capture-conversation").textContent,status:document.querySelectorAll('[data-kind="archive_status"]').length}));
+    assert.match(ui.text,/document_parameters/);assert.doesNotMatch(ui.text,/OLD_PLANNER_ERROR/);assert.equal(ui.status,0);
+   }
+   const persisted=await page.evaluate(async()=> (await (await fetch("/api/capture/sessions/browser-session")).json()).data);
+   assert.equal(persisted.archive_operation.error,"OLD_PLANNER_ERROR");
+   assert.equal(persisted.input_generation,14);
+  } finally { await browser.close(); }
+ });
+});
+
+test("capture JSON capability failures require a supporting Provider after reload", async (t) => {
+ if (!chromePath) { t.skip("Chrome executable not found"); return; }
+ for (const viewport of viewports()) await t.test(viewport.name, async (t) => {
+  const error = "plan document set: thoughtflow.ai.conversion_unsupported: status 400; request_id=archive-json-required; feature=text.format; unsupported_features=text.format";
+  const server = await startFixtureServer({captureSeed:{session_id:"browser-session",input_generation:14,
+   messages:[{role:"user",text:"Archive the discussed design."}],
+   archive_operation:{id:"archive",state:"failed",input_generation:14,error}}});
+  t.after(()=>server.close());
+  const browser=await browserTargets.find(target=>target.name==="chrome").launch(viewport);
+  try {
+   const page=await connectPage(browser);await page.send("Page.enable");
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/capture`);
+   for (let round=0;round<2;round++) {
+    if(round)await page.reload();
+    await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
+    await page.waitForExpression(()=>document.querySelector("#capture-conversation")?.textContent.includes("archive-json-required"));
+    const text=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);
+    assert.match(text,/Switch to a model and Provider that support it/);
+    assert.doesNotMatch(text,/Ask to archive again to retry/);
+    assert.match(text,/Archive the discussed design/);
+   }
   } finally { await browser.close(); }
  });
 });

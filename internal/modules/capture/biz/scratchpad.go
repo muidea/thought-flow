@@ -46,6 +46,7 @@ import (
 // not touch the real thought pipeline, so they can be unit-tested
 // with an in-memory fake store.
 type ScratchpadService struct {
+	jsonDiagnosticRoot string
 	archiveScheduler   func(scratchpad.Scratchpad) error
 	setProfileCatalog  func() []documentprofile.DocumentProfileDescriptor
 	setProfileResolver func(models.DocumentProfileRef) (documentprofile.DocumentProfileDescriptor, error)
@@ -133,6 +134,12 @@ func WithEventHub(h eventHub) ScratchpadServiceOption {
 
 func WithCaptureContextProvider(provider ai.CaptureContextProvider) ScratchpadServiceOption {
 	return func(s *ScratchpadService) { s.contextAI = provider }
+}
+
+// WithCaptureJSONDiagnostics uses the workspace private namespace, never the
+// public thought tree or the chat transcript, for failed completion evidence.
+func WithCaptureJSONDiagnostics(workspaceRoot string) ScratchpadServiceOption {
+	return func(s *ScratchpadService) { s.jsonDiagnosticRoot = strings.TrimSpace(workspaceRoot) }
 }
 
 func WithDocumentProfiles(registry ProfileRegistry, generator ai.DocumentGenerationProvider, maxMatchCandidates, maxRepairAttempts int) ScratchpadServiceOption {
@@ -613,11 +620,12 @@ func isRetryableCaptureContextError(err error) bool {
 }
 
 func (s *ScratchpadService) markContextEnrichmentFailed(sessionID, contentAtSchedule string, cause error, expected ...uint64) {
-	slog.Warn("capture context enrichment failed", "session_id", sessionID, "error", cause)
 	latest, err := s.store.Get(sessionID)
 	if err != nil || latest.Content != contentAtSchedule || (len(expected) > 0 && latest.InputGeneration != expected[0]) {
 		return
 	}
+	cause = s.persistCaptureJSONFailure(sessionID, latest.InputGeneration, cause)
+	slog.Warn("capture context enrichment failed", "session_id", sessionID, "error", cause)
 	text := captureContextFailureText(cause)
 	if text == "" {
 		return
@@ -656,10 +664,21 @@ func captureContextFailureText(cause error) string {
 				detail = "模型返回内容无法解析为 JSON"
 			case "invalid_field_type":
 				detail = "返回的 JSON 字段类型不符合请求协议"
+				if providerErr.Field == "document_parameters" {
+					detail = "document_parameters 的参数值必须是字符串，不能是对象、数组或其他类型"
+				} else if regexp.MustCompile(`^[a-z_][a-z0-9_.]{0,79}$`).MatchString(providerErr.Field) {
+					detail += "（字段 " + providerErr.Field + "）"
+				}
+			case "incomplete_json":
+				detail = "模型返回的 JSON 不完整"
 			case "missing_required_field":
 				detail = "返回的 JSON 缺少必填回答字段 assistant_reply"
 			}
-			return "LLM 兼容输出校验失败：" + detail + "。已保留用户输入，本次结果未用于更新会话；不会自动重试。"
+			message := "LLM 兼容输出校验失败：" + detail + "。已保留用户输入，本次结果未用于更新会话；不会自动重试。"
+			if regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,160}$`).MatchString(providerErr.RequestID) {
+				message += " 请求 ID：" + providerErr.RequestID
+			}
+			return message
 		}
 		if providerErr.Code == "thoughtflow.ai.json_fallback_failed" {
 			detail := "请求未能完成，请检查模型服务连接或响应"
@@ -1298,7 +1317,7 @@ func equalStringSets(left, right []string) bool {
 }
 
 func (s *ScratchpadService) PrepareArchive(ctx context.Context, sp scratchpad.Scratchpad, currentThought *models.ThoughtSnapshot) (scratchpad.ArchivePreview, error) {
-	ctx, cancel := ai.WithGenerationBudget(ctx, s.documentGenerator)
+	ctx, cancel := ai.WithGenerationBudget(ai.WithRequiredJSON(ctx), s.documentGenerator)
 	defer cancel()
 	// A persisted preview is output, not source material. Feeding it back into a
 	// fresh generation recursively nests the previous rendered document and can

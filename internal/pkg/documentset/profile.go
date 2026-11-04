@@ -208,9 +208,8 @@ func FreezeShared(s SharedDesign, capture CaptureSnapshot) (SharedDesign, error)
 			return s, ErrInvalid
 		}
 		if f.Status == "confirmed" {
-			n := f.Source.Message
-			if n < 0 || n >= len(capture.Messages) || capture.Messages[n].Role != "user" || strings.TrimSpace(f.Source.Quote) == "" || !strings.Contains(capture.Messages[n].Text, f.Source.Quote) {
-				return s, fmt.Errorf("%w: fact %s lacks user evidence", ErrInvalid, f.ID)
+			if reason := EvidenceFailureReason(capture, f.Source); reason != "" {
+				return s, FactEvidenceError{FactID: f.ID, Message: f.Source.Message, Reason: reason}
 			}
 		}
 		fieldIDs := map[string]bool{}
@@ -277,7 +276,7 @@ func BuildPlan(id string, p Profile, c CaptureSnapshot, shared SharedDesign, bas
 		if e = ValidateHistory(shared); e != nil {
 			return out, e
 		}
-		if e = validateEngineeringRelations(shared); e != nil {
+		if e = ValidateEngineeringRelations(shared); e != nil {
 			return out, e
 		}
 
@@ -439,7 +438,7 @@ func ValidatePlan(p Plan) error {
 		return ErrInvalid
 	}
 	if Engineering(p.Profile) {
-		if e := validateEngineeringRelations(p.Shared); e != nil {
+		if e := ValidateEngineeringRelations(p.Shared); e != nil {
 			return e
 		}
 		if e := ValidateHistory(p.Shared); e != nil {
@@ -541,7 +540,7 @@ func validateMembership(p Plan) error {
 }
 
 func UserEvidence(c CaptureSnapshot, source Source) bool {
-	return source.Message >= 0 && source.Message < len(c.Messages) && c.Messages[source.Message].Role == "user" && strings.TrimSpace(source.Quote) != "" && strings.Contains(c.Messages[source.Message].Text, source.Quote)
+	return EvidenceFailureReason(c, source) == ""
 }
 
 // CaptureDescriptor advertises a set alongside single-document profiles. The

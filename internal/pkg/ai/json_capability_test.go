@@ -10,12 +10,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
 )
 
-const formatUnsupportedResponse = `{"error":{"code":"conversion_unsupported","feature":"response_format"}}`
+const formatUnsupportedResponse = `{"error":{"code":"conversion_unsupported","feature":"text.format"}}`
 
 func TestJSONFallbackRememberedAcrossProvidersAndStillValidates(t *testing.T) {
 	for _, tc := range []struct {
@@ -38,7 +39,7 @@ func TestJSONFallbackRememberedAcrossProvidersAndStillValidates(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After-Ms", "1")
-				if _, exists := request["response_format"]; exists {
+				if _, exists := request["text"]; exists {
 					formatted.Add(1)
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(formatUnsupportedResponse))
@@ -46,7 +47,7 @@ func TestJSONFallbackRememberedAcrossProvidersAndStillValidates(t *testing.T) {
 				}
 				plain.Add(1)
 				w.WriteHeader(tc.status)
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": tc.content}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(tc.content))
 			}))
 			defer server.Close()
 			cfg := appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}
@@ -81,14 +82,14 @@ func TestAutomaticJSONFallbackCapabilityIdentity(t *testing.T) {
 			t.Error(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if _, exists := request["response_format"]; exists {
+		if _, exists := request["text"]; exists {
 			formatted.Add(1)
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(formatUnsupportedResponse))
 			return
 		}
 		plain.Add(1)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+		_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{}"}]}]}`))
 	}))
 	defer server.Close()
 	for _, tc := range []struct {
@@ -111,7 +112,7 @@ func TestAutomaticJSONFallbackCapabilityIdentity(t *testing.T) {
 				BaseURL: tc.base, ChatModel: tc.model, APIKey: tc.key,
 				Timeout: time.Second,
 			}, appconfig.EmbeddingConfig{})
-			_, usedFallback, err := provider.chatCompletionJSON(context.Background(), "system", "user", 0.2)
+			_, usedFallback, err := provider.responseCompletionJSON(context.Background(), "system", "user", 0.2)
 			if err != nil || !usedFallback {
 				t.Fatalf("fallback=%v err=%v", usedFallback, err)
 			}
@@ -137,7 +138,7 @@ func TestJSONCapabilityDoesNotCacheOtherErrorsOrRemoveSupportedFormat(t *testing
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
-				if _, exists := request["response_format"]; !exists {
+				if _, exists := request["text"]; !exists {
 					t.Error("unrelated failure or success removed response_format")
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -146,12 +147,12 @@ func TestJSONCapabilityDoesNotCacheOtherErrorsOrRemoveSupportedFormat(t *testing
 					_, _ = w.Write([]byte(body))
 					return
 				}
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+				_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{}"}]}]}`))
 			}))
 			defer server.Close()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
 			for i := 0; i < 3; i++ {
-				_, fallback, err := provider.chatCompletionJSON(context.Background(), "system", "user", 0.2)
+				_, fallback, err := provider.responseCompletionJSON(context.Background(), "system", "user", 0.2)
 				if fallback || (i == 0 && err == nil) || (i > 0 && err != nil) {
 					t.Fatalf("call %d fallback=%v err=%v", i, fallback, err)
 				}
@@ -171,14 +172,14 @@ func TestJSONFallbackConcurrentProvidersNegotiateOnce(t *testing.T) {
 			t.Error(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if _, exists := request["response_format"]; exists {
+		if _, exists := request["text"]; exists {
 			formatted.Add(1)
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(formatUnsupportedResponse))
 			return
 		}
 		plain.Add(1)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+		_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{}"}]}]}`))
 	}))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -192,7 +193,7 @@ func TestJSONFallbackConcurrentProvidersNegotiateOnce(t *testing.T) {
 			defer workers.Done()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: 5 * time.Second}, appconfig.EmbeddingConfig{})
 			<-start
-			_, fallback, err := provider.chatCompletionJSON(ctx, "system", "user", 0.2)
+			_, fallback, err := provider.responseCompletionJSON(ctx, "system", "user", 0.2)
 			if err != nil || !fallback {
 				t.Errorf("fallback=%v err=%v", fallback, err)
 			}
@@ -337,7 +338,7 @@ func TestJSONCapabilityProbeWaitConsumesGenerationBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer complete(context.Canceled)
-	_, _, err = p.chatCompletionJSON(context.Background(), "system", "user", 0.2)
+	_, _, err = p.responseCompletionJSON(context.Background(), "system", "user", 0.2)
 	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 0 {
 		t.Fatalf("waiting call renewed budget: calls=%d err=%v", calls.Load(), err)
 	}

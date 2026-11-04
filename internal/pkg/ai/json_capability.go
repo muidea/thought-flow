@@ -98,7 +98,7 @@ type jsonFormatCapability struct {
 }
 
 func jsonFormatKey(cfg appconfig.LLMConfig, model string) jsonFormatCapabilityKey {
-	return jsonFormatCapabilityKey{endpoint: openAICompatibleBaseURL(cfg.BaseURL), model: model,
+	return jsonFormatCapabilityKey{endpoint: openAICompatibleBaseURL(cfg.BaseURL) + "/responses", model: model,
 		credential: sha256.Sum256([]byte(strings.TrimSpace(cfg.APIKey)))}
 }
 

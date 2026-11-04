@@ -18,6 +18,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -191,6 +192,10 @@ type ProviderError struct {
 	UnsupportedFeatures []string
 	Reason              string
 	Field               string
+	ResponseShape       string
+	ResponseBytes       int
+	ResponseHash        string
+	JSONOffset          int64
 }
 
 func (e ProviderError) Error() string {
@@ -211,6 +216,12 @@ func (e ProviderError) Error() string {
 	}
 	if e.Field != "" {
 		message += "; field=" + e.Field
+	}
+	if e.ResponseShape != "" {
+		message += fmt.Sprintf("; response_shape=%s; response_bytes=%d; response_hash=%s", e.ResponseShape, e.ResponseBytes, e.ResponseHash)
+	}
+	if e.JSONOffset > 0 {
+		message += fmt.Sprintf("; json_offset=%d", e.JSONOffset)
 	}
 	if e.StatusCode > 0 {
 		return fmt.Sprintf("%s: status %d: %s", e.Code, e.StatusCode, message)
@@ -773,14 +784,11 @@ func newOpenAITransport(timeout time.Duration) http.RoundTripper {
 		tr.TLSHandshakeTimeout = 30 * time.Second
 		tr.ExpectContinueTimeout = 10 * time.Second
 	}
-	return &limitsBodyTransport{inner: tr, maxBytes: 4 << 20}
+	return &limitsBodyTransport{inner: tr, maxBytes: maxResponsesBytes}
 }
 
-// limitsBodyTransport caps the response body at maxBytes to mirror
-// the old io.LimitReader(4<<20) behaviour. A truncated body still
-// flows through to the JSON decoder; if the truncation invalidates
-// the JSON, the SDK returns an UnmarshalTypeError-equivalent which
-// wrapSDKError translates to thoughtflow.ai.invalid_json.
+// limitsBodyTransport rejects overflow instead of turning it into a successful
+// EOF: a completed SSE event followed by excess bytes must not appear complete.
 type limitsBodyTransport struct {
 	inner    http.RoundTripper
 	maxBytes int64
@@ -791,13 +799,7 @@ func (t *limitsBodyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err != nil || resp == nil || resp.Body == nil {
 		return resp, err
 	}
-	resp.Body = struct {
-		io.Reader
-		io.Closer
-	}{
-		Reader: io.LimitReader(resp.Body, t.maxBytes),
-		Closer: resp.Body,
-	}
+	resp.Body = &boundedResponseBody{ReadCloser: resp.Body, remaining: t.maxBytes}
 	if resp.StatusCode >= 400 {
 		// Authentication and parameter failures stay terminal even when an
 		// intermediary incorrectly asks the SDK to retry them.
@@ -894,18 +896,19 @@ func NewOpenAICompatibleEmbeddingProvider(cfg appconfig.EmbeddingConfig) *OpenAI
 	}
 }
 
-// chatCompletion runs a single non-streaming chat completion with
-// the standard two-message shape (system + user). It is the only
-// place that touches the SDK's Chat.Completions.New call, so any
-// future addition (response_format, tools, structured outputs)
-// only needs to flow through here.
-func (p *OpenAICompatibleProvider) chatCompletion(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
-	return p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
+// responseCompletion runs a non-streaming Responses request with explicit
+// system/user input. All generation shares executeGeneration's no-replay policy.
+func (p *OpenAICompatibleProvider) responseCompletion(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, error) {
+	return p.responseCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
 }
 
-func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, bool, error) {
+func (p *OpenAICompatibleProvider) responseCompletionJSON(ctx context.Context, systemPrompt string, userPrompt string, temperature float64) (string, bool, error) {
 	ctx, cancel := generationContext(ctx, p.requestTimeout)
 	defer cancel()
+	if required, _ := ctx.Value(requiredJSONKey{}).(bool); required {
+		content, err := p.responseCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, true)
+		return unwrapJSONResponse(content), false, err
+	}
 	state, release, err := jsonFormatCapabilities.lease(ctx, p.jsonFormat)
 	if err != nil {
 		return "", false, err
@@ -916,15 +919,16 @@ func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, syste
 		return "", false, err
 	}
 	if !skipFormat {
-		content, err := p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, true)
+		content, err := p.responseCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, true)
 		complete(err)
 		var failure ProviderError
 		if err == nil || !errors.As(err, &failure) || !failure.onlyResponseFormatUnsupported() {
 			return unwrapJSONResponse(content), false, err
 		}
-		slog.Warn("JSON response format unsupported; remembering automatic fallback", "model", p.chatModel, "request_id", failure.RequestID)
+		scope, _ := ctx.Value(generationScopeKey{}).(string)
+		slog.Warn("JSON response format unsupported; remembering automatic fallback", "model", p.chatModel, "scope_id", scope, "request_id", failure.RequestID, "json_required", false)
 	}
-	content, err := p.chatCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
+	content, err := p.responseCompletionWithFormat(ctx, systemPrompt, userPrompt, temperature, false)
 	if err != nil && ctxError(err) == nil {
 		var failure ProviderError
 		if errors.As(err, &failure) {
@@ -938,18 +942,19 @@ func (p *OpenAICompatibleProvider) chatCompletionJSON(ctx context.Context, syste
 	return unwrapJSONResponse(content), true, err
 }
 
-func (p *OpenAICompatibleProvider) chatCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool, opts ...option.RequestOption) (string, error) {
-	params := openai.ChatCompletionNewParams{
+func (p *OpenAICompatibleProvider) responseCompletionWithFormat(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, jsonMode bool, opts ...option.RequestOption) (string, error) {
+	params := responses.ResponseNewParams{
 		Model: p.chatModel,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemPrompt),
-			openai.UserMessage(userPrompt),
-		},
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: responses.ResponseInputParam{
+			responses.ResponseInputItemParamOfMessage(systemPrompt, responses.EasyInputMessageRoleSystem),
+			responses.ResponseInputItemParamOfMessage(userPrompt, responses.EasyInputMessageRoleUser),
+		}},
+		Store:       openai.Bool(false),
 		Temperature: openai.Float(temperature),
 	}
 	if jsonMode {
 		format := shared.NewResponseFormatJSONObjectParam()
-		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{OfJSONObject: &format}
+		params.Text.Format = responses.ResponseFormatTextConfigUnionParam{OfJSONObject: &format}
 	}
 	return p.executeGeneration(ctx, params, opts...)
 }
@@ -1024,7 +1029,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 	if text == "" {
 		return models.ThoughtRefinement{}, errors.New("refine text is empty")
 	}
-	content, usedFallback, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.responseCompletionJSON(ctx,
 		refinementSystemPrompt(),
 		"Refine this note without changing the original content.\n\nTitle: "+
 			firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)+
@@ -1061,6 +1066,7 @@ func (p *OpenAICompatibleProvider) Refine(ctx context.Context, req RefineRequest
 func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req CaptureContextRequest) (CaptureContextResult, error) {
 	ctx, cancel := generationContext(ctx, p.requestTimeout)
 	defer cancel()
+	ctx, trace := withJSONResponseTrace(ctx)
 	text := strings.TrimSpace(req.Content)
 	if text == "" {
 		return CaptureContextResult{}, errors.New("capture context content is empty")
@@ -1070,7 +1076,7 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 	if err != nil {
 		return CaptureContextResult{}, err
 	}
-	content, usedFallback, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.responseCompletionJSON(ctx,
 		systemPrompt,
 		"Session ID: "+req.SessionID+
 			"\n\nMaterial organization time (not a claim of current source verification): "+time.Now().UTC().Format(time.RFC3339)+
@@ -1089,12 +1095,12 @@ func (p *OpenAICompatibleProvider) BuildCaptureContext(ctx context.Context, req 
 	}
 	parsed, err := parseCaptureContextResponse(content)
 	if err != nil {
-		return CaptureContextResult{}, jsonResponseError(fmt.Errorf("parse capture context json: %w", err), usedFallback)
+		return CaptureContextResult{}, trace.validationError(fmt.Errorf("parse capture context json: %w", err), usedFallback)
 	}
 	descriptor := validProfileDescriptor(req.AvailableProfiles, parsed.CandidateProfileID, parsed.CandidateProfileVersion)
 	if descriptor.ID == "" {
 		if parsed.CandidateProfileID != "" && len(req.AvailableProfiles) > 0 {
-			return CaptureContextResult{}, jsonResponseError(errors.New("selected archive profile is unavailable"), usedFallback)
+			return CaptureContextResult{}, trace.validationError(errors.New("selected archive profile is unavailable"), usedFallback)
 		}
 		descriptor, _, _, _ = selectLocalProfile(req, text)
 	}
@@ -1155,7 +1161,7 @@ func (p *OpenAICompatibleProvider) GenerateDocument(ctx context.Context, req Doc
 		"\n\nSource context JSON:\n" + mustJSON(req.Context) +
 		"\n\nPrevious draft JSON:\n" + mustJSON(req.PreviousDraft) +
 		"\n\nValidation issues to repair JSON:\n" + mustJSON(req.RepairIssues)
-	content, usedFallback, err := p.chatCompletionJSON(ctx, system, user, 0.2)
+	content, usedFallback, err := p.responseCompletionJSON(ctx, system, user, 0.2)
 	if err != nil {
 		return models.DocumentDraft{}, err
 	}
@@ -1237,7 +1243,7 @@ func (p *OpenAICompatibleProvider) Weave(ctx context.Context, req models.TopicWe
 		req.CurrentDocument = localInitialTopicDocument(req.Topic)
 	}
 	section := localThoughtSection(req, "")
-	content, usedFallback, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.responseCompletionJSON(ctx,
 		"You are a careful Markdown editor for ThoughtFlow topic documents. Return strict JSON only with field document string. Preserve YAML front matter, existing content, and source links. Insert or merge the new thought into the most appropriate existing outline section. Never remove the required source link.",
 		"Topic name: "+req.Topic.Name+
 			"\nTopic description: "+req.Topic.Description+
@@ -1272,7 +1278,7 @@ func (p *OpenAICompatibleProvider) Synthesize(ctx context.Context, req Synthesis
 	}
 	goal := firstNonEmpty(req.Goal, "Synthesize selected thoughts")
 	format := firstNonEmpty(req.Format, "summary")
-	content, usedFallback, err := p.chatCompletionJSON(ctx,
+	content, usedFallback, err := p.responseCompletionJSON(ctx,
 		"You synthesize ThoughtFlow notes into Markdown. Return strict JSON only with field content string. Preserve every provided source link in a Sources section. Do not invent sources.",
 		"Goal: "+goal+
 			"\nFormat: "+format+
@@ -1316,7 +1322,7 @@ func (p *OpenAICompatibleProvider) Expand(ctx context.Context, req ExpandRequest
 	title := firstNonEmpty(req.Thought.UserTitle, req.Thought.ExtractedTitle, req.Thought.ID)
 	original := primaryThoughtText(req.Content)
 	summary := firstNonEmpty(req.Summary, req.Thought.Summary)
-	content, err := p.chatCompletion(ctx,
+	content, err := p.responseCompletion(ctx,
 		expandSystemPrompt(),
 		expandUserPrompt(title, summary, req.Thought.KeyPoints, req.Tags, original, req.Thought.Type, req.Thought.URL),
 		0.3,

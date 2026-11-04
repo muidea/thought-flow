@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/ai"
@@ -43,7 +44,7 @@ func TestCaptureResearchAnswersSurviveFollowupAndReload(t *testing.T) {
 		result := map[string]any{"assistant_reply": reply, "topic": "ISA95 模型调研", "candidate_title": "ISA95 模型", "candidate_summary": "ISA95 的集成边界、资源能力和生产计划。", "candidate_body": body, "archive_intent": "none", "archive_strategy": "new", "missing_profile_inputs": []string{"可选：行业背景"}, "source_links": []string{}}
 		payload, _ := json.Marshal(result)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(payload)}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response(string(payload)))
 	}))
 	defer server.Close()
 	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -119,7 +120,7 @@ func TestCaptureCompatibleResponseAfterAuxiliaryJSONPersistsCurrentAnswer(t *tes
 			t.Error(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if _, ok := request["response_format"]; ok {
+		if _, ok := request["text"]; ok {
 			formatted.Add(1)
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
@@ -131,7 +132,7 @@ func TestCaptureCompatibleResponseAfterAuxiliaryJSONPersistsCurrentAnswer(t *tes
 		}
 		content := `{"candidate_summary":"discard this fragment","archive_intent":"llm"}` + "\n" +
 			`{"assistant_reply":"` + answer + `","candidate_summary":"范围已收敛","candidate_body":"多门店平台只处理预订和订单，不处理收付款。","archive_intent":"none"}`
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response(content))
 	}))
 	defer server.Close()
 	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -232,10 +233,10 @@ func TestCaptureFallbackFailuresKeepDiagnosticsAndBoundRecovery(t *testing.T) {
 					return
 				}
 				if tc.emptyChoices {
-					_, _ = w.Write([]byte(`{"choices":[]}`))
+					_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[]}`))
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": tc.content}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(tc.content))
 			}))
 			defer server.Close()
 			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -276,7 +277,7 @@ func TestCaptureCachedFallbackRequiresExplicitRetryAfterGateway(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After-Ms", "1")
-		if _, found := request["response_format"]; found {
+		if _, found := request["text"]; found {
 			formatted.Add(1)
 			w.WriteHeader(400)
 			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
@@ -293,7 +294,7 @@ func TestCaptureCachedFallbackRequiresExplicitRetryAfterGateway(t *testing.T) {
 			reply = "ERP、MES/MOM 和控制系统承担不同职责。"
 		}
 		content, _ := json.Marshal(map[string]string{"assistant_reply": reply, "candidate_summary": reply})
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(content)}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response(string(content)))
 	}))
 	defer server.Close()
 	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -324,4 +325,47 @@ func TestCaptureCachedFallbackRequiresExplicitRetryAfterGateway(t *testing.T) {
 		t.Fatalf("explicit retry failed: %+v", sp)
 	}
 
+}
+
+func TestCaptureResponsesFramingPreservesConversationOnFailure(t *testing.T) {
+	for _, wire := range []string{"json-with-sse-header", "sse"} {
+		t.Run(wire, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				if calls.Add(1) > 1 {
+					// Complete-looking text without a terminal snapshot is never usable.
+					_, _ = io.WriteString(w, "data: [DONE]\n\n")
+					return
+				}
+				content := `{"assistant_reply":"已确认范围","candidate_summary":"原始摘要","candidate_body":"保留原始正文","document_parameters":{"goal":"保留范围"},"archive_intent":"none"}`
+				if wire == "sse" {
+					_, _ = io.WriteString(w, llmfixture.SSE(content))
+				} else {
+					_ = json.NewEncoder(w).Encode(llmfixture.Response(content))
+				}
+			}))
+			defer server.Close()
+			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}, appconfig.EmbeddingConfig{})
+			root := t.TempDir()
+			store := scratchpad.New(root)
+			svc := NewScratchpadService(store, WithCaptureContextProvider(provider), WithEventHub(newRecordingEventHub(true)), WithCaptureContextRetryDelays(0, 0))
+			if _, err := svc.AppendMessage("wire", "user", "原始需求"); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool { sp, _ := store.Get("wire"); return len(sp.Messages) == 2 })
+			before, err := store.Get("wire")
+			if err != nil || before.SessionContext.CandidateSummary != "原始摘要" || before.SessionContext.CandidateBody != "保留原始正文" {
+				t.Fatal("valid framed output did not persist", before, err)
+			}
+			if _, err := svc.AppendMessage("wire", "user", "新增需求，请保留"); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool { sp, _ := store.Get("wire"); return len(sp.Messages) == 4 })
+			sp, err := scratchpad.New(root).Get("wire")
+			if err != nil || calls.Load() != 2 || sp.Messages[1].Text != "已确认范围" || sp.Messages[2].Text != "新增需求，请保留" || sp.SessionContext.DocumentParameters["goal"] != "保留范围" || !strings.Contains(sp.Content, "原始需求") || !strings.Contains(sp.Content, "新增需求，请保留") || sp.DocumentSetRunID != "" {
+				t.Fatal("failed SSE lost inputs, changed archive material or replayed", calls.Load(), sp, err)
+			}
+		})
+	}
 }

@@ -227,16 +227,24 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 		if s.opts.Planner == nil {
 			return ds.Plan{}, ds.ErrUnavailable
 		}
-		limited, cancel := context.WithTimeout(ai.WithGenerationScope(ctx, req.OperationID), time.Duration(p.Limits.WallSeconds)*time.Second)
+		limited, cancel := context.WithTimeout(ai.WithRequiredJSON(ai.WithGenerationScope(ctx, req.OperationID)), time.Duration(p.Limits.WallSeconds)*time.Second)
 		defer cancel()
-		inputBytes := lenJSON(map[string]any{"capture": snapshot, "profile": p, "previous": previous, "contract_schema": ds.EngineeringSchema(p)})
+		inputBytes := lenJSON(ai.DocumentSetPlanningInput(snapshot, p, previous))
 		if inputBytes > p.Limits.MaxInputBytes || inputBytes > p.Limits.MaxInputTokens || inputBytes > p.Limits.MaxContextBytes {
 			return ds.Plan{}, ds.ErrBudget
 		}
 		planningCall = &ds.Call{ID: documentstore.ID("call-"), Kind: "planning", State: "running", InputBytes: inputBytes, InputTokens: inputBytes, TokensEstimated: true}
 		value, e := s.opts.Planner.PlanDocumentSet(limited, snapshot, p, previous)
 		if e != nil {
-			objectlocation.WriteJSON(s.Store.Root, documentsetstore.Private(set)+"/planning/"+req.OperationID+".json", map[string]string{"request_hash": requestHash, "state": "uncertain", "error": e.Error()}, true)
+			var diagnosticPath string
+			e, diagnosticPath = s.persistJSONFailure(set, req.OperationID, "planning", e)
+			marker := map[string]string{"request_hash": requestHash, "state": "uncertain", "error": e.Error()}
+			if diagnosticPath != "" {
+				marker["diagnostic_path"] = diagnosticPath
+			}
+			if saveErr := objectlocation.WriteJSON(s.Store.Root, documentsetstore.Private(set)+"/planning/"+req.OperationID+".json", marker, true); saveErr != nil {
+				e = errors.Join(e, fmt.Errorf("persist planning failure: %w", saveErr))
+			}
 			return ds.Plan{}, e
 		}
 		planningCall.OutputBytes = lenJSON(value)
@@ -523,7 +531,7 @@ func (s *Service) execute(parent context.Context, id string) {
 		s.fail(&run, e)
 		return
 	}
-	ctx, cancel := context.WithTimeout(ai.WithGenerationScope(parent, id), time.Duration(run.Plan.Profile.Limits.WallSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(ai.WithRequiredJSON(ai.WithGenerationScope(parent, id)), time.Duration(run.Plan.Profile.Limits.WallSeconds)*time.Second)
 	defer cancel()
 	if e = s.check(run.Plan); e != nil {
 		s.fail(&run, e)
@@ -901,6 +909,9 @@ func (s *Service) review(ctx context.Context, run *ds.Run, candidate *ds.Revisio
 		}
 		value, e := boundedCall(ctx, s, run, "joint_review", "", input, func(ctx context.Context) (reviewed, error) {
 			out, model, err := s.opts.Reviewer.ReviewDocumentSet(ctx, batch, members, candidate.Plan.Shared, capture)
+			if err != nil {
+				err, _ = s.persistJSONFailure(run.Plan.SetID, run.ID, "review", err)
+			}
 			return reviewed{out, model}, err
 		})
 		if e != nil {

@@ -50,9 +50,9 @@ func TestGenerationUnknownOutcomeNeverReplays(t *testing.T) {
 				p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}, appconfig.EmbeddingConfig{})
 				var err error
 				if formatted {
-					_, _, err = p.chatCompletionJSON(context.Background(), "system", "user", 0.2)
+					_, _, err = p.responseCompletionJSON(context.Background(), "system", "user", 0.2)
 				} else {
-					_, err = p.chatCompletion(context.Background(), "system", "user", 0.2)
+					_, err = p.responseCompletion(context.Background(), "system", "user", 0.2)
 				}
 				if err == nil || calls.Load() != 1 || CanAutomaticallyRetry(err) {
 					t.Fatalf("calls=%d err=%v", calls.Load(), err)
@@ -75,7 +75,7 @@ func TestFallbackFailureNeverReplaysAndPreservesDiagnostics(t *testing.T) {
 				_ = json.NewDecoder(r.Body).Decode(&request)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Request-ID", "gateway-attempt-123")
-				if _, ok := request["response_format"]; ok {
+				if _, ok := request["text"]; ok {
 					formatted.Add(1)
 					w.WriteHeader(400)
 					_, _ = w.Write([]byte(formatUnsupportedResponse))
@@ -124,14 +124,14 @@ func TestGenerationSharesNegotiationDeadline(t *testing.T) {
 	}))
 	client := openai.NewClient(opts...)
 	p.client = &client
-	_, _, err := p.chatCompletionJSON(context.Background(), "system", "user", 0.2)
+	_, _, err := p.responseCompletionJSON(context.Background(), "system", "user", 0.2)
 	if !errors.Is(err, context.DeadlineExceeded) || calls != 2 {
 		t.Fatalf("calls=%d err=%v", calls, err)
 	}
 }
 
 func TestGenerationRejectsTruncatedAndInvalidCompletions(t *testing.T) {
-	for _, body := range []string{`{"choices":`, `{"choices":"bad"}`, `{"choices":[]}`, `{"choices":[{"finish_reason":"length","message":{"content":"{\"type\":\"text\",\"confidence\":1}"}}]}`} {
+	for _, body := range []string{`{"choices":`, `{"object":"response","status":"completed","output":"bad"}`, `{"object":"response","status":"completed","output":[]}`, `{"object":"response","status":"incomplete","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"type\":\"text\",\"confidence\":1}"}]}],"incomplete_details":{"reason":"max_output_tokens"}}`} {
 		t.Run(body, func(t *testing.T) {
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +160,7 @@ func TestGenerationLogsGatewayCorrelationWithoutRequestSecrets(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-ID", "gateway-success-123")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"assistant_reply\":\"ok\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"assistant_reply\":\"ok\"}"}]}]}`))
 	}))
 	defer server.Close()
 	p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, APIKey: "SECRET_API_KEY", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -185,14 +185,14 @@ func TestReviewReusesCaptureFormatDecision(t *testing.T) {
 		var request map[string]json.RawMessage
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		w.Header().Set("Content-Type", "application/json")
-		if _, ok := request["response_format"]; ok {
+		if _, ok := request["text"]; ok {
 			formatted.Add(1)
 			w.WriteHeader(400)
 			_, _ = w.Write([]byte(formatUnsupportedResponse))
 			return
 		}
 		plain.Add(1)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"assistant_reply\":\"ok\",\"issues\":[]}"}}]}`))
+		_, _ = w.Write([]byte(`{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"assistant_reply\":\"ok\",\"issues\":[]}"}]}]}`))
 	}))
 	defer server.Close()
 	config := appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}
@@ -219,7 +219,7 @@ func TestGenerationKeepsHTTPStatusForMalformedGatewayErrors(t *testing.T) {
 	}))
 	defer server.Close()
 	p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, Timeout: time.Second}, appconfig.EmbeddingConfig{})
-	_, err := p.chatCompletion(context.Background(), "system", "user", 0.2)
+	_, err := p.responseCompletion(context.Background(), "system", "user", 0.2)
 	var failure ProviderError
 	if !errors.As(err, &failure) || failure.StatusCode != 502 || failure.Code != "thoughtflow.ai.transient_status" || failure.RequestID != "broken-gateway-1" || calls.Load() != 1 || CanAutomaticallyRetry(err) {
 		t.Fatalf("failure=%#v err=%v calls=%d", failure, err, calls.Load())

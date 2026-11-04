@@ -2594,11 +2594,20 @@ function captureArchiveStatusMessage() {
   const operation = sp?.archive_operation;
   const statuses = ["preparing", "saving", "saved", "draft_saved", "needs_input", "blocked", "ready", "interrupted", "conflicted", "failed"];
   if (!sp || sp.session_id !== state.capture.sessionId || !statuses.includes(operation?.state)) return null;
+  // A later turn can fail before scheduling an archive. Keep the old operation
+  // in durable history, but do not present its failure as this turn's result.
+  if (["failed", "blocked", "conflicted", "interrupted"].includes(operation.state) &&
+      Number.isSafeInteger(sp.input_generation) && sp.input_generation > 0 &&
+      Number.isSafeInteger(operation.input_generation) && operation.input_generation > 0 &&
+      operation.input_generation !== sp.input_generation) return null;
   const issues = (sp.archive_preview?.validation?.issues || []).filter((issue) => issue.severity !== "warning");
+  const requiresJSONProvider = operation.state === "failed" &&
+    String(operation.error || "").includes("thoughtflow.ai.conversion_unsupported") &&
+    /response_format|text\.format/.test(String(operation.error || ""));
   return {
     role: "system",
     kind: "archive_status",
-    text: t(`capture.archive.state.${operation.state}`),
+    text: t(requiresJSONProvider ? "capture.archive.state.json_unsupported" : `capture.archive.state.${operation.state}`),
     error: [operation.error, ...issues.map(captureValidationMessage)].filter(Boolean).join("\n"),
     thoughtId: operation.state === "saved" ? sp.committed_thought_id : operation.state === "draft_saved" ? sp.draft_thought_id : "",
   };

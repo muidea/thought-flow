@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -82,16 +83,8 @@ func TestOpenAICompatibleProviderRefineAndEmbed(t *testing.T) {
 		}
 		res.Header().Set("Content-Type", "application/json")
 		switch req.URL.Path {
-		case "/v1/chat/completions":
-			_ = json.NewEncoder(res).Encode(map[string]any{
-				"choices": []map[string]any{
-					{
-						"message": map[string]string{
-							"content": `{"summary":"Cloud summary","key_points":["Point A"],"tags":["cloud"],"title":"Cloud title"}`,
-						},
-					},
-				},
-			})
+		case "/v1/responses":
+			_ = json.NewEncoder(res).Encode(llmfixture.Response(`{"summary":"Cloud summary","key_points":["Point A"],"tags":["cloud"],"title":"Cloud title"}`))
 		case "/v1/embeddings":
 			_ = json.NewEncoder(res).Encode(map[string]any{
 				"data": []map[string]any{
@@ -235,15 +228,7 @@ func TestLocalProviderWeaveInsertsIntoMatchingOutline(t *testing.T) {
 func TestOpenAICompatibleProviderWeaveRequiresSourceLink(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": `{"document":"# Missing source"}`,
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response(`{"document":"# Missing source"}`))
 	}))
 	defer server.Close()
 
@@ -267,20 +252,12 @@ func TestOpenAICompatibleProviderWeaveRequiresSourceLink(t *testing.T) {
 
 func TestOpenAICompatibleProviderSynthesizePreservesSourceLinks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/v1/chat/completions" {
+		if req.URL.Path != "/v1/responses" {
 			http.NotFound(res, req)
 			return
 		}
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": `{"content":"# Cloud draft\n\nSynthesized by cloud model."}`,
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response(`{"content":"# Cloud draft\n\nSynthesized by cloud model."}`))
 	}))
 	defer server.Close()
 
@@ -405,15 +382,7 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 		}
 		requestBody = string(raw)
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": `{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response(`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`))
 	}))
 	defer server.Close()
 
@@ -450,7 +419,7 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 	if strings.Contains(requestBody, "You maintain ThoughtFlow capture session context") {
 		t.Fatalf("request body should not contain default prompt when a prompt file is configured:\n%s", requestBody)
 	}
-	if !strings.Contains(requestBody, `"response_format":{"type":"json_object"}`) {
+	if !strings.Contains(requestBody, `"text":{"format":{"type":"json_object"}}`) {
 		t.Fatalf("request body should request JSON object mode:\n%s", requestBody)
 	}
 }
@@ -458,17 +427,9 @@ func TestOpenAICompatibleProviderBuildCaptureContextUsesPromptFile(t *testing.T)
 func TestBuildCaptureContextParsesFirstBalancedJSONObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": "```json\n" +
-							`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary with {braces}","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}` +
-							"\n```\nSure, here is an explanation with another {not_json:true} block.",
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response("```json\n" +
+			`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"summary with {braces}","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}` +
+			"\n```\nSure, here is an explanation with another {not_json:true} block."))
 	}))
 	defer server.Close()
 
@@ -494,16 +455,8 @@ func TestBuildCaptureContextParsesFirstBalancedJSONObject(t *testing.T) {
 func TestBuildCaptureContextSkipsMalformedJSONObjectCandidate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": `{"topic":"broken"æ}` + "\n" +
-							`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"recovered","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`,
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response(`{"topic":"broken"æ}` + "\n" +
+			`{"assistant_reply":"answer","topic":"t","goal":"g","confirmed_facts":["f"],"open_questions":[],"conflicts":[],"candidate_title":"title","candidate_tags":[],"candidate_summary":"recovered","candidate_body":"body","source_links":[],"related_thought_ids":[],"suggested_topic_ids":[],"archive_intent":"none","archive_strategy":"new"}`))
 	}))
 	defer server.Close()
 
@@ -577,15 +530,7 @@ func TestDefaultCaptureContextPromptRequiresProfileMatchingContract(t *testing.T
 func TestOpenAICompatibleProviderExpandStripsFence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{
-						"content": "```markdown\n## 背景\n线下调研\n```\n",
-					},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response("```markdown\n## 背景\n线下调研\n```\n"))
 	}))
 	defer server.Close()
 
@@ -618,13 +563,7 @@ func TestOpenAICompatibleProviderExpandStripsFence(t *testing.T) {
 func TestOpenAICompatibleProviderExpandRejectsEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		res.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(res).Encode(map[string]any{
-			"choices": []map[string]any{
-				{
-					"message": map[string]string{"content": "   \n"},
-				},
-			},
-		})
+		_ = json.NewEncoder(res).Encode(llmfixture.Response("   \n"))
 	}))
 	defer server.Close()
 
@@ -649,7 +588,7 @@ func TestCaptureContextRejectsSummaryWithoutAnswer(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				payload, _ := json.Marshal(map[string]string{"assistant_reply": reply, "candidate_summary": "建议先确定调研范围", "candidate_body": "## 计划\n\n待研究"})
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(payload)}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(string(payload)))
 			}))
 			defer server.Close()
 			p := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -673,7 +612,7 @@ func TestCaptureContextPayloadCarriesActualInputContracts(t *testing.T) {
 			Messages []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
-			} `json:"messages"`
+			} `json:"input"`
 		}
 		if e := json.NewDecoder(r.Body).Decode(&body); e != nil {
 			t.Error(e)
@@ -685,7 +624,7 @@ func TestCaptureContextPayloadCarriesActualInputContracts(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		response, _ := json.Marshal(map[string]any{"assistant_reply": "Substantive response", "candidate_profile_id": selected, "candidate_profile_version": 2, "profile_contract_hash": "untrusted-model-hash"})
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(response)}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response(string(response)))
 	}))
 	defer server.Close()
 	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})

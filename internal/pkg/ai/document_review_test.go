@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -28,7 +29,7 @@ func TestDocumentReviewerUsesSeparateReadOnlyCallAndStrictIssues(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				if r.URL.Path != "/v1/chat/completions" {
+				if r.URL.Path != "/v1/responses" {
 					t.Error("unexpected network capability", r.URL.Path)
 				}
 				var request map[string]any
@@ -39,7 +40,7 @@ func TestDocumentReviewerUsesSeparateReadOnlyCallAndStrictIssues(t *testing.T) {
 					t.Error("review enabled tools")
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": result.body}, "finish_reason": "stop"}}})
+				json.NewEncoder(w).Encode(llmfixture.Response(result.body))
 			}))
 			defer server.Close()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, APIKey: "private-test-key", ChatModel: "review-model", Timeout: time.Second}, appconfig.EmbeddingConfig{})

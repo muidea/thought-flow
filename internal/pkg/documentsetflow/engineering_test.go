@@ -1,8 +1,11 @@
 package documentsetflow
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -97,10 +100,33 @@ func TestEngineeringGenerationPublicationHandoffAndRestore(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	const diagnosticCanary = "PRIVATE-FAILED-JSON-COMPLETION-CANARY"
+	if e = objectlocation.WriteFile(s.Store.Root, documentsetstore.Private(plan.SetID)+"/diagnostics/planning/failed-response.json", []byte(diagnosticCanary), 0600); e != nil {
+		t.Fatal(e)
+	}
+	checkDiagnosticIsolation := func(raw []byte) {
+		t.Helper()
+		archive, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range archive.File {
+			reader, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := io.ReadAll(reader)
+			reader.Close()
+			if err != nil || strings.Contains(file.Name, "/diagnostics/") || bytes.Contains(content, []byte(diagnosticCanary)) {
+				t.Fatal("private model diagnostic entered a package", file.Name, err)
+			}
+		}
+	}
 	delivery, e := s.Store.Export(plan.SetID, documentsetstore.ExportRequest{OperationID: "engineering-export", ExpectedGeneration: &head.Generation, RevisionID: head.Finalized, Kind: "delivery", PublicAuthorized: true})
 	if e != nil {
 		t.Fatal(e)
 	}
+	checkDiagnosticIsolation(delivery)
 	if _, e = documentsetstore.VerifyPublicPackage(delivery, run.Candidate.Report.PublicPayloadHash); e != nil {
 		t.Fatal(e)
 	}
@@ -112,6 +138,7 @@ func TestEngineeringGenerationPublicationHandoffAndRestore(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	checkDiagnosticIsolation(backup)
 	restored := documentsetstore.New(t.TempDir())
 	state, e := restored.Import(backup, "restore-engineering")
 	if e != nil {

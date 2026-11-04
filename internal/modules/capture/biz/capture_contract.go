@@ -44,7 +44,7 @@ func mergeIssues(old []models.CaptureIssue, next []models.CaptureIssue, legacy [
 	for _, text := range legacy {
 		kind := "contradiction"
 		lower := strings.ToLower(text)
-		if strings.Contains(lower, "response_format") || strings.Contains(lower, "conversion_unsupported") {
+		if strings.Contains(lower, "response_format") || strings.Contains(lower, "text.format") || strings.Contains(lower, "conversion_unsupported") {
 			kind = "diagnostic"
 		}
 		next = append(next, models.CaptureIssue{Kind: kind, Message: text})

@@ -116,6 +116,7 @@ export const messages = {
   "capture.archive.state.interrupted": "Archiving was interrupted. Ask to archive again to resume.",
   "capture.archive.state.conflicted": "The target changed; preserve the edit and review before retrying",
   "capture.archive.state.failed": "Archiving failed. Ask to archive again to retry.",
+  "capture.archive.state.json_unsupported": "Archiving could not complete: the current model or Provider route does not support JSON object. Switch to a model and Provider that support it, then archive again. Your conversation has been preserved.",
 
   "workspace.saved_navigation": "Reading list",
   "workspace.favorites": "Favorites",

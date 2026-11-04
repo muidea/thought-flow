@@ -158,6 +158,7 @@ func (m *Module) Setup(ctx context.Context, eventHub event.Hub, backgroundRoutin
 		capture.WithCapture(captureService),
 		capturebiz.WithEventHub(eventHub),
 		capturebiz.WithCaptureContextProvider(ai.NewCaptureContextProvider(cfg.LLM)),
+		capturebiz.WithCaptureJSONDiagnostics(ws.RootPath),
 		capturebiz.WithCaptureContextTimeout(cfg.LLM.Timeout),
 	}
 	if profileRegistry != nil {

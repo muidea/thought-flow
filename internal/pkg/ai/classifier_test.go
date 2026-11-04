@@ -74,7 +74,7 @@ func TestOpenAICompatibleClassify_ParsesJSONResponse(t *testing.T) {
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/v1/responses" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -82,15 +82,7 @@ func TestOpenAICompatibleClassify_ParsesJSONResponse(t *testing.T) {
 			t.Errorf("expected model in payload, got %s", string(body))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id": "x",
-			"object": "chat.completion",
-			"choices": [{
-				"index": 0,
-				"message": {"role": "assistant", "content": "{\"type\":\"url\",\"extracted_url\":\"https://example.test/post\",\"confidence\":0.92}"},
-				"finish_reason": "stop"
-			}]
-		}`))
+		_, _ = w.Write([]byte(`{"id":"x","object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"type\":\"url\",\"extracted_url\":\"https://example.test/post\",\"confidence\":0.92}"}]}]}`))
 	}))
 	defer server.Close()
 

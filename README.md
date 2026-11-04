@@ -9,7 +9,7 @@ ThoughtFlow 是一个本地优先的碎片笔记采集、加工、检索、专�
 - 文档集专题支持独立文档、分组目录、连续阅读、物理迁移，以及固定定稿交付和完整备份导入。
 - 运行态数据默认位于 `./thoughtflow-runtime/`，采集会话私有侧文件仍在内容根的 `.scratchpad/`。
 - 支持 REST API、SSE 事件流和嵌入式原生 HTML/CSS/JS UI。
-- 默认无 AI Key 也可运行；配置 OpenAI-compatible provider 后启用模型摘要、embedding、合稿和专题缝合。
+- 默认无 AI Key 也可运行；LLM 文本生成统一使用 `/v1/responses`，需配置支持 Responses 的 OpenAI-compatible provider。归档还要求支持 `text.format: {"type":"json_object"}`；embedding 使用独立配置及 `/v1/embeddings`。
 - 所有构建使用 DuckDB，需启用 CGO 及 C/C++ 链接环境；没有 fallback store 或可选 DuckDB build tag。
 
 ## 快速启动

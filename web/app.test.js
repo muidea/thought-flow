@@ -2562,6 +2562,50 @@ test("context events only observe backend archive state, including repeated noti
   }
 });
 
+test("capture context failure does not repeat a previous generation's archive failure", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.capture.sessionId = "s";
+  app._state.capture.messages = [{ role: "ai", text: "CURRENT document_parameters TYPE ERROR" }];
+  const operation = { id: "old", state: "failed", input_generation: 12, error: "OLD_PLANNER_ERROR" };
+  const sp = { session_id: "s", input_generation: 14, archive_operation: operation };
+  app._state.capture.activeScratchpad = sp;
+  assert.equal(app.captureArchiveStatusMessage(), null);
+  app.renderCaptureConversation();
+  assert.match(dom.nodes["capture-conversation"].innerHTML, /CURRENT document_parameters TYPE ERROR/);
+  assert.doesNotMatch(dom.nodes["capture-conversation"].innerHTML, /OLD_PLANNER_ERROR/);
+  // History is retained, and current failures remain visible.
+  assert.equal(sp.archive_operation, operation);
+  sp.input_generation = 12;
+  assert.equal(app.captureArchiveStatusMessage().error, "OLD_PLANNER_ERROR");
+  sp.input_generation = 14;
+  operation.state = "saved";
+  assert.ok(app.captureArchiveStatusMessage());
+});
+
+test("archive capability errors require a supporting Provider instead of an unchanged retry", () => {
+  const dom = makeDomStub();
+  const app = loadAppFunctionsWith({ dom, exposeState: true });
+  app._state.capture.sessionId = "s";
+  const error = 'plan document set: thoughtflow.ai.conversion_unsupported: status 400; request_id=archive-capability; feature=text.format; unsupported_features=text.format';
+  const operation = { id: "op", state: "failed", error };
+  app._state.capture.activeScratchpad = { session_id: "s", archive_operation: operation };
+  app.renderCaptureConversation();
+  const html = dom.nodes["capture-conversation"].innerHTML;
+  assert.match(html, /capture.archive.state.json_unsupported/);
+  assert.match(html, /archive-capability/);
+  assert.doesNotMatch(html, /capture.archive.state.failed/);
+  assert.equal(app.captureArchiveStatusMessage().error, error);
+  for (const other of [
+    "thoughtflow.ai.conversion_unsupported; feature=tools",
+    "thoughtflow.ai.transient_status; status 502",
+    "thoughtflow.ai.invalid_json_response; reason=invalid_json",
+  ]) {
+    operation.error = other;
+    assert.equal(app.captureArchiveStatusMessage().text, "capture.archive.state.failed");
+  }
+});
+
 test("source coverage failure distinguishes generated output from missing user input", () => {
   const dom=makeDomStub();
   const app=loadAppFunctionsWith({dom,exposeState:true});

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"unicode/utf8"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -41,7 +42,7 @@ func TestRefinementMetadataConstraintsAndCompleteSource(t *testing.T) {
 					Messages []struct {
 						Role    string `json:"role"`
 						Content string `json:"content"`
-					} `json:"messages"`
+					} `json:"input"`
 				}
 				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 					t.Error(err)
@@ -55,7 +56,7 @@ func TestRefinementMetadataConstraintsAndCompleteSource(t *testing.T) {
 				}
 				data, _ := json.Marshal(output)
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": string(data)}}}})
+				json.NewEncoder(w).Encode(llmfixture.Response(string(data)))
 			}))
 			defer server.Close()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, APIKey: "test", ChatModel: "test"}, appconfig.EmbeddingConfig{})

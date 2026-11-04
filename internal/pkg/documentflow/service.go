@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/documentstore"
 	"thoughtflow/internal/pkg/documentvalidation"
@@ -499,7 +500,7 @@ func (s *Service) Validate(ctx context.Context, id, rev string, expected uint64,
 		report = documentvalidation.Recompute(report)
 	}
 	if report.Status != "failed" && s.Options.Reviewer != nil && !manual {
-		issues, model, err := s.Options.Reviewer.ReviewDocument(runCtx, d)
+		issues, model, err := s.Options.Reviewer.ReviewDocument(ai.WithRequiredJSON(runCtx), d)
 		status := "passed"
 		if err == nil && len(issues) > 0 {
 			status = "needs_review"
@@ -817,7 +818,7 @@ func (s *Service) Repair(ctx context.Context, id, rev, reportID string, expected
 		return models.DocumentSnapshot{}, e
 	}
 	defer done()
-	candidate, e := s.Options.Repairer.RepairDocument(runCtx, d, selected, sections)
+	candidate, e := s.Options.Repairer.RepairDocument(ai.WithRequiredJSON(runCtx), d, selected, sections)
 	if e != nil {
 		return models.DocumentSnapshot{}, e
 	}

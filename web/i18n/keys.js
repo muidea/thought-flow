@@ -117,6 +117,7 @@ export const Key = Object.freeze({
   CaptureArchiveStateInterrupted: "capture.archive.state.interrupted",
   CaptureArchiveStateConflicted: "capture.archive.state.conflicted",
   CaptureArchiveStateFailed: "capture.archive.state.failed",
+  CaptureArchiveStateJSONUnsupported: "capture.archive.state.json_unsupported",
 
   WorkspaceChanged: "workspace.changed",
   WorkspaceSavedNavigation: "workspace.saved_navigation",

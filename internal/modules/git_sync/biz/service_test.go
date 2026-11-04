@@ -396,7 +396,7 @@ func TestDocumentSetGitAllowlistKeepsMetadataAndExcludesAttempts(t *testing.T) {
 			t.Fatal("public set metadata rejected", path)
 		}
 	}
-	for _, path := range []string{".content-registry/private/document-set-runs/run-a.json", "topics/set-a/.private/evidence/private.txt", "topics/set-a/document-set/revisions/set-r-a/attempt.json"} {
+	for _, path := range []string{".content-registry/private/capture/session-hash/diagnostics/14-response.json", ".content-registry/private/document-set-runs/run-a.json", ".content-registry/private/document-sets/set-a/diagnostics/planning/op-response.json", ".content-registry/private/document-sets/set-a/diagnostics/review/op-response.json", "topics/set-a/.private/evidence/private.txt", "topics/set-a/document-set/revisions/set-r-a/attempt.json"} {
 		if _, ok := normalizedCommitPath(path); ok {
 			t.Fatal("private set state admitted", path)
 		}

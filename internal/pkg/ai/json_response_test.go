@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -19,6 +20,10 @@ func TestJSONResponseWrappers(t *testing.T) {
 	const object = "{\"facts\":[{\"id\":\"REQ-1\",\"content\":\"Keep <tag>, ``` and 中文 unchanged\"}]}"
 	for _, content := range []string{
 		object,
+		"<escape>" + object,
+		"<escape>\n" + object + "\n</escape>",
+		"<analysis>Done</analysis>\n<escape>```json\n" + object + "\n```</escape>",
+		"<analysis>Done</analysis>\n<escape>" + object,
 		" \ufeff\n" + object,
 		"```json\n" + object + "\n```",
 		"```\r\n" + object + "\r\n```",
@@ -31,6 +36,16 @@ func TestJSONResponseWrappers(t *testing.T) {
 	}
 	for _, content := range []string{
 		`<html><body>` + object + `</body></html>`,
+		`<escape>` + object + `</escape>Explanation`,
+		`<escape>` + object + `</escape></escape>`,
+		`<escape>{"facts":[</escape>`,
+		`<escape>` + object + `{} </escape>`,
+		object + `</escape>`,
+		`<escape><html>` + object + `</html></escape>`,
+		`<escape><escape>` + object,
+		`<escape>{"facts":[{"id":"REQ-1"}],"`,
+		`<escape>` + object + `{}`,
+		`<escape>[]`,
 		`<think>` + object,
 		`<think>` + object + `</think>`, // No final answer outside reasoning.
 		`<think>unfinished <think>nested</think>` + object + `</think>`,
@@ -57,6 +72,12 @@ func TestDocumentSetJSONWrappersPreserveStrictValidationAndFallbackCache(t *test
 			invalid            bool
 		}{
 			{"wrapped", "<think>{\"facts\":[{\"id\":\"WRONG\"}]}</think>\n```json\n{\"facts\":[{\"id\":\"REQ-1\"}]}\n```", "<analysis>Review complete.</analysis>\n```json\n{\"evidence\":[],\"issues\":[]}\n```", false},
+			{"escape", `<escape>{"facts":[{"id":"REQ-1"}]}`, `<escape>{"evidence":[],"issues":[]}`, false},
+			{"escape-pair", `<escape>{"facts":[{"id":"REQ-1"}]}</escape>`, `<escape>{"evidence":[],"issues":[]}</escape>`, false},
+			{"escape-pair-incomplete", `<escape>{"facts":[{"id":"REQ-1"}],"</escape>`, `<escape>{"evidence":[</escape>`, true},
+			{"escape-pair-schema-drift", `<escape>{"facts":[{"id":"REQ-1"}],"questions":[]}</escape>`, `<escape>{"evidence":[],"questions":[]}</escape>`, true},
+			{"escape-incomplete", `<escape>{"facts":[{"id":"REQ-1"}],"`, `<escape>{"evidence":[`, true},
+			{"escape-schema-drift", `<escape>{"facts":[{"id":"REQ-1"}],"questions":[]}`, `<escape>{"evidence":[],"questions":[]}`, true},
 			{"unknown-field", "<think>Done</think>\n```json\n{\"facts\":[{\"id\":\"REQ-1\"}],\"unexpected\":true}\n```", `{"evidence":[],"unexpected":true}`, true},
 			{"no-required-content", "<think>Done</think>\n```json\n{\"facts\":[]}\n```", "```json\n{\"issues\":[]}\n```", true},
 			{"html", `<html><body>{"facts":[{"id":"REQ-1"}]}</body></html>`, `<html><body>{"evidence":[]}</body></html>`, true},
@@ -71,8 +92,8 @@ func TestDocumentSetJSONWrappersPreserveStrictValidationAndFallbackCache(t *test
 				var formatted, plain atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var req struct {
-						ResponseFormat json.RawMessage            `json:"response_format"`
-						Messages       []struct{ Content string } `json:"messages"`
+						ResponseFormat json.RawMessage            `json:"text"`
+						Messages       []struct{ Content string } `json:"input"`
 					}
 					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 						t.Error(err)
@@ -93,7 +114,7 @@ func TestDocumentSetJSONWrappersPreserveStrictValidationAndFallbackCache(t *test
 					if strings.Contains(req.Messages[0].Content, "Review the final document bytes") {
 						content = tc.review
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+					_ = json.NewEncoder(w).Encode(llmfixture.Response(content))
 				}))
 				defer server.Close()
 				provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "wrapped-json", Timeout: time.Second}, appconfig.EmbeddingConfig{})

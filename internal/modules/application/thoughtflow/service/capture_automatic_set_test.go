@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"github.com/muidea/magicCommon/event"
@@ -19,6 +21,7 @@ import (
 	ds "thoughtflow/internal/pkg/documentset"
 	"thoughtflow/internal/pkg/documentsetflow"
 	"thoughtflow/internal/pkg/markdown"
+	"thoughtflow/internal/pkg/objectlocation"
 	"thoughtflow/internal/pkg/scratchpad"
 	"thoughtflow/internal/testutil/designfixture"
 )
@@ -62,7 +65,7 @@ func automaticSetFixture(t *testing.T, planner documentsetflow.Planner) (*Servic
 		var req struct {
 			Messages []struct {
 				Content string `json:"content"`
-			} `json:"messages"`
+			} `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
@@ -82,11 +85,11 @@ func automaticSetFixture(t *testing.T, planner documentsetflow.Planner) (*Servic
 		result := map[string]any{"assistant_reply": "将按上下文匹配的格式整理设计。", "candidate_profile_id": profile.ID, "candidate_profile_version": profile.Version, "candidate_body": "Order requests require authentication and durable recovery.", "archive_intent": intent, "goal": "Recoverable orders"}
 		raw, _ := json.Marshal(result)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(raw)}}}})
+		json.NewEncoder(w).Encode(llmfixture.Response(string(raw)))
 	}))
 	t.Cleanup(server.Close)
 	provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{APIKey: "test", BaseURL: server.URL, ChatModel: "fixture", Timeout: time.Minute}, appconfig.EmbeddingConfig{})
-	s.scratchpadSvc = capturebiz.NewScratchpadService(store, capturebiz.WithEventHub(hub), capturebiz.WithCaptureContextProvider(provider), capturebiz.WithCapture(s.captureService), capturebiz.WithDocumentProfiles(s.documentProfiles, engineeringHTTPGenerator{}, 10, 0))
+	s.scratchpadSvc = capturebiz.NewScratchpadService(store, capturebiz.WithEventHub(hub), capturebiz.WithCaptureContextProvider(provider), capturebiz.WithCaptureJSONDiagnostics(s.workspace.RootPath), capturebiz.WithCapture(s.captureService), capturebiz.WithDocumentProfiles(s.documentProfiles, engineeringHTTPGenerator{}, 10, 0))
 	s.config.DocumentProfiles.Enabled = true
 	s.configureDocumentSets() // Installs the production unified catalog callback.
 	s.documentSets.Close()
@@ -241,18 +244,37 @@ func TestCapturePendingArchiveDoesNotResumeWhenUserDefers(t *testing.T) {
 	}
 }
 
-func TestCaptureArchiveWithWrappedPlannerJSONFallback(t *testing.T) {
-	for _, valid := range []bool{true, false} {
-		t.Run(fmt.Sprintf("valid=%v", valid), func(t *testing.T) {
+func TestCaptureArchiveRequiresJSONAndValidatesPlannerOutput(t *testing.T) {
+	for _, scenario := range []string{"wrapped", "escape", "escape-pair", "artifact-empty-placeholder", "html", "incomplete", "escape-pair-incomplete", "syntax-error-and-unfinished-tail", "unsupported"} {
+		t.Run(scenario, func(t *testing.T) {
+			valid := scenario == "wrapped" || scenario == "escape" || scenario == "escape-pair" || scenario == "artifact-empty-placeholder"
 			var formatted, plain atomic.Int32
+			var planningInputBytes atomic.Int64
 			capture, shared := designfixture.Capture()
 			raw, err := json.Marshal(shared)
 			if err != nil {
 				t.Fatal(err)
 			}
 			content := "<think>Check scope. An example, not the answer: {\"facts\":[]}.</think>\n```json\n" + string(raw) + "\n```"
-			if !valid {
-				content = "<html><body>Upstream unavailable. " + string(raw) + "</body></html>"
+			switch scenario {
+			case "escape":
+				content = "<escape>" + string(raw)
+			case "escape-pair":
+				content = "<escape>" + string(raw) + "</escape>"
+			case "artifact-empty-placeholder":
+				if !strings.Contains(string(raw), `"artifact":{`) {
+					t.Fatal("fixture has no artifact contract")
+				}
+				content = "<escape>" + strings.Replace(string(raw), `"artifact":{`, `"artifact":{"not_applicable":{},`, 1) + "</escape>"
+			case "incomplete", "escape-pair-incomplete":
+				content = `<escape>{"facts":[{"id":"REQ-1","content":"PRIVATE-PLANNING-RESPONSE-CANARY"}],"`
+				if scenario == "escape-pair-incomplete" {
+					content += "</escape>"
+				}
+			case "html":
+				content = "<html><body>PRIVATE-PLANNING-RESPONSE-CANARY " + string(raw) + "</body></html>"
+			case "syntax-error-and-unfinished-tail":
+				content = `<escape>{"facts":[{"acceptance":{"recovery_cases":["PRIVATE-PLANNING-RESPONSE-CANARY"}},{"id":"next"}],"open_questions":["`
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req map[string]json.RawMessage
@@ -261,14 +283,28 @@ func TestCaptureArchiveWithWrappedPlannerJSONFallback(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if _, exists := req["response_format"]; exists {
+				w.Header().Set("X-Request-ID", "archive-planner-response")
+				if _, exists := req["text"]; exists {
 					formatted.Add(1)
+				} else {
+					plain.Add(1)
+					t.Error("archive planner omitted json_object response_format")
+				}
+				if string(req["text"]) != `{"format":{"type":"json_object"}}` {
+					t.Error("incorrect response_format", string(req["text"]))
+				}
+				if scenario == "unsupported" {
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
 					return
 				}
-				plain.Add(1)
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": content}}}})
+				var messages []struct{ Content string }
+				if err := json.Unmarshal(req["input"], &messages); err != nil || len(messages) == 0 {
+					t.Error("missing planner messages", err)
+					return
+				}
+				planningInputBytes.Store(int64(len(messages[len(messages)-1].Content)))
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(content))
 			}))
 			defer server.Close()
 			provider := ai.NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "wrapped-planner", Timeout: time.Minute}, appconfig.EmbeddingConfig{})
@@ -282,9 +318,57 @@ func TestCaptureArchiveWithWrappedPlannerJSONFallback(t *testing.T) {
 			if !strings.Contains(sp.Content, capture.Messages[0].Text) {
 				t.Fatal("archive lost user input")
 			}
-			if !valid {
-				if sp.DocumentSetRunID != "" || !strings.Contains(sp.Operation.Error, "plan document set") || !strings.Contains(sp.Operation.Error, "thoughtflow.ai.invalid_json_fallback") {
+			if scenario == "unsupported" {
+				if sp.DocumentSetRunID != "" || sp.Operation == nil || sp.Operation.State != "failed" || !strings.Contains(sp.Operation.Error, "thoughtflow.ai.conversion_unsupported") {
+					t.Fatal("unsupported provider must stop archiving without starting generation", sp.Operation)
+				}
+			} else if !valid {
+				if sp.DocumentSetRunID != "" || !strings.Contains(sp.Operation.Error, "plan document set") || !strings.Contains(sp.Operation.Error, "thoughtflow.ai.invalid_json_response") {
 					t.Fatal("invalid planner output was used", sp.Operation)
+				}
+				shape := "html_document"
+				if scenario == "incomplete" || scenario == "escape-pair-incomplete" {
+					shape = "incomplete_json_object"
+					if !strings.Contains(sp.Operation.Error, "reason=incomplete_json") {
+						t.Fatal("incomplete JSON was not diagnosed", sp.Operation.Error)
+					}
+				}
+				if scenario == "syntax-error-and-unfinished-tail" {
+					shape = "invalid_json_object"
+					wantOffset := strings.Index(content, "}") + 1
+					if !strings.Contains(sp.Operation.Error, fmt.Sprintf("json_offset=%d", wantOffset)) || !strings.Contains(sp.Operation.Error, "reason=invalid_json") || strings.Contains(sp.Operation.Error, "invalid character '<'") {
+						t.Fatal("wrapper concealed the actual syntax error", sp.Operation.Error)
+					}
+				}
+				if !strings.Contains(sp.Operation.Error, "response_shape="+shape) || !strings.Contains(sp.Operation.Error, "request_id=archive-planner-response") || strings.Contains(sp.Operation.Error, "PRIVATE-PLANNING-RESPONSE-CANARY") {
+					t.Fatal("missing safe response diagnostics", sp.Operation.Error)
+				}
+				markers, err := filepath.Glob(filepath.Join(s.workspace.RootPath, ".content-registry/private/document-sets/*/planning/*.json"))
+				if err != nil || len(markers) != 1 {
+					t.Fatal("missing planning failure marker", markers, err)
+				}
+				var marker map[string]string
+				markerRelative, _ := filepath.Rel(s.workspace.RootPath, markers[0])
+				if err := objectlocation.ReadJSON(s.workspace.RootPath, filepath.ToSlash(markerRelative), &marker); err != nil || marker["diagnostic_path"] == "" {
+					t.Fatal("private diagnostic is not linked to the failed operation", marker, err)
+				}
+				var diagnostic struct {
+					OperationID string                    `json:"operation_id"`
+					Stage       string                    `json:"stage"`
+					Response    ai.JSONResponseDiagnostic `json:"response"`
+				}
+				if err := objectlocation.ReadJSON(s.workspace.RootPath, marker["diagnostic_path"], &diagnostic); err != nil || diagnostic.OperationID != sp.Operation.ID || diagnostic.Stage != "planning" || diagnostic.Response.Content != content || diagnostic.Response.ResponseHash != objectlocation.Hash([]byte(content)) {
+					t.Fatal("original model completion was not preserved", err)
+				}
+				info, err := os.Stat(filepath.Join(s.workspace.RootPath, marker["diagnostic_path"]))
+				if err != nil || info.Mode().Perm() != 0600 {
+					t.Fatal("private diagnostic permissions are not 0600", err)
+				}
+				res := httptest.NewRecorder()
+				req := httptest.NewRequest("GET", "/api/resources/"+filepath.Base(marker["diagnostic_path"])+"/content", nil)
+				s.handleTopicWorkspace(req.Context(), res, req)
+				if res.Code == http.StatusOK || strings.Contains(res.Body.String(), "PRIVATE-PLANNING-RESPONSE-CANARY") {
+					t.Fatal("private diagnostic exposed by the resource API", res.Code)
 				}
 			} else {
 				var run ds.Run
@@ -299,13 +383,23 @@ func TestCaptureArchiveWithWrappedPlannerJSONFallback(t *testing.T) {
 				if run.State != "committed" || len(run.Candidate.Members) != 6 {
 					t.Fatal("wrapped planner output did not generate the set", run.State, run.Error)
 				}
+				if run.Plan.PlanningCall == nil {
+					t.Fatal("missing persisted planner call")
+				}
+				if int64(run.Plan.PlanningCall.InputBytes) != planningInputBytes.Load() {
+					t.Fatalf("planner payload budget mismatch: persisted=%d actual=%d", run.Plan.PlanningCall.InputBytes, planningInputBytes.Load())
+				}
 				for _, member := range run.Candidate.Members {
 					if _, body, err := markdown.ReadThought(s.workspace.RootPath, member.DocumentID); err != nil || body.AINotes == "" {
 						t.Fatal("generated thought is unreadable", member.Key, err)
 					}
 				}
+				diagnostics, err := filepath.Glob(filepath.Join(s.workspace.RootPath, ".content-registry/private/document-sets/*/diagnostics/planning/*.json"))
+				if err != nil || len(diagnostics) != 0 {
+					t.Fatal("successful plan retained a raw response", diagnostics, err)
+				}
 			}
-			if formatted.Load() != 1 || plain.Load() != 1 {
+			if formatted.Load() != 1 || plain.Load() != 0 {
 				t.Fatal("unexpected automatic planner replay", formatted.Load(), plain.Load())
 			}
 		})

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/responses"
 
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/observability"
@@ -82,10 +83,10 @@ func (LocalRefineClassify) Classify(_ context.Context, req ClassifyRequest) (Cla
 }
 
 // Classify implements ClassifyProvider on the existing OpenAI provider
-// without disturbing its Refine/Embed/Synthesize methods. The chat
-// completion prompt asks for a strict JSON object with a type, an
+// without disturbing its Refine/Embed/Synthesize methods. The Responses
+// prompt asks for a strict JSON object with a type, an
 // optional extracted_url, and a confidence score. The same SDK
-// `chatCompletion` helper used by Refine/Weave/Synthesize/Expand is
+// `responseCompletion` helper used by Refine/Weave/Synthesize/Expand is
 // reused here so error mapping and retry semantics stay identical.
 func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyRequest) (ClassifyResult, error) {
 	ctx, cancel := generationContext(ctx, p.requestTimeout)
@@ -94,7 +95,7 @@ func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyReq
 	if temperature == 0 {
 		temperature = 0
 	}
-	content, err := p.chatCompletionWithMaxTokens(ctx, req.System, req.User, temperature, req.MaxTokens)
+	content, err := p.responseCompletionWithMaxTokens(ctx, req.System, req.User, temperature, req.MaxTokens)
 	if err != nil {
 		return ClassifyResult{}, err
 	}
@@ -110,22 +111,22 @@ func (p *OpenAICompatibleProvider) Classify(ctx context.Context, req ClassifyReq
 	return ClassifyResult{Raw: extractJSONObject(raw), Model: p.chatModel}, nil
 }
 
-// chatCompletionWithMaxTokens is the Classify-shaped variant of
-// chatCompletion: same retry + error translation, but accepts an
+// responseCompletionWithMaxTokens is the Classify-shaped variant of
+// responseCompletion: same retry + error translation, but accepts an
 // optional MaxTokens cap (Refine/Weave/Synthesize/Expand do not need
-// it). The MaxTokens field is only attached to the SDK request when
-// > 0, matching the previous "max_tokens" optional-key behaviour.
-func (p *OpenAICompatibleProvider) chatCompletionWithMaxTokens(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, maxTokens int) (string, error) {
-	params := openai.ChatCompletionNewParams{
+// it). Positive caps become Responses max_output_tokens; absent caps stay absent.
+func (p *OpenAICompatibleProvider) responseCompletionWithMaxTokens(ctx context.Context, systemPrompt string, userPrompt string, temperature float64, maxTokens int) (string, error) {
+	params := responses.ResponseNewParams{
 		Model: p.chatModel,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemPrompt),
-			openai.UserMessage(userPrompt),
-		},
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: responses.ResponseInputParam{
+			responses.ResponseInputItemParamOfMessage(systemPrompt, responses.EasyInputMessageRoleSystem),
+			responses.ResponseInputItemParamOfMessage(userPrompt, responses.EasyInputMessageRoleUser),
+		}},
+		Store:       openai.Bool(false),
 		Temperature: openai.Float(temperature),
 	}
 	if maxTokens > 0 {
-		params.MaxTokens = openai.Int(int64(maxTokens))
+		params.MaxOutputTokens = openai.Int(int64(maxTokens))
 	}
 	return p.executeGeneration(ctx, params)
 }

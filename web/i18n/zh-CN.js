@@ -116,6 +116,7 @@ export const messages = {
   "capture.archive.state.interrupted": "归档已中断，可再次发送“归档”继续处理。",
   "capture.archive.state.conflicted": "目标已变化，已保留现有编辑，请核对后重试",
   "capture.archive.state.failed": "归档失败，可再次发送“归档”重试。",
+  "capture.archive.state.json_unsupported": "归档未完成：当前模型或 Provider 路径不支持 JSON object。请更换为支持该能力的模型及 Provider 后重新归档；已保留对话内容。",
 
   "workspace.saved_navigation": "阅读列表",
   "workspace.favorites": "收藏",

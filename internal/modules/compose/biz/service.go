@@ -538,7 +538,7 @@ func (s *Service) CreateDraft(ctx context.Context, req models.ComposeRequest, op
 		var doc models.DocumentDraft
 		var rendered documentprofile.RenderResult
 		for attempt := 0; attempt <= s.maxRepairAttempts; attempt++ {
-			doc, err = s.documentGenerator.GenerateDocument(ctx, docReq)
+			doc, err = s.documentGenerator.GenerateDocument(ai.WithRequiredJSON(ctx), docReq)
 			if err != nil {
 				return models.ComposeDraft{}, fmt.Errorf("compose generate document: %w", err)
 			}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -69,8 +70,8 @@ func TestCaptureWireContractSurvivesCustomPromptAndJSONFallback(t *testing.T) {
 			var formatted, plain atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request struct {
-					Messages       []struct{ Role, Content string }
-					ResponseFormat json.RawMessage `json:"response_format"`
+					Messages       []struct{ Role, Content string } `json:"input"`
+					ResponseFormat json.RawMessage                  `json:"text"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
@@ -84,6 +85,27 @@ func TestCaptureWireContractSurvivesCustomPromptAndJSONFallback(t *testing.T) {
 				system, user := request.Messages[0].Content, request.Messages[1].Content
 				if !strings.HasSuffix(system, captureResponseContract) || !strings.HasSuffix(user, "candidate_summary and candidate_body are separate archive fields.") {
 					t.Error("missing required response contract")
+				}
+				_, schemaJSON, found := strings.Cut(system, "Capture response_schema JSON (wire types, not source content):\n")
+				schemaJSON, _, _ = strings.Cut(schemaJSON, "\n\n"+captureResponseContract)
+				var schema struct {
+					Defs map[string]struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					} `json:"$defs"`
+				}
+				if !found || json.Unmarshal([]byte(schemaJSON), &schema) != nil {
+					t.Error("missing exact capture wire schema")
+				}
+				properties := schema.Defs["captureContextJSON"].Properties
+				var parameters struct {
+					Type       string
+					Additional map[string]string `json:"additionalProperties"`
+				}
+				if json.Unmarshal(properties["document_parameters"], &parameters) != nil || parameters.Type != "object" || parameters.Additional["type"] != "string" {
+					t.Error("parameter map must require string values")
+				}
+				if !strings.Contains(system, "confirmation metadata is owned by the backend") || !strings.Contains(system, "Never put objects, arrays, numbers, booleans or null inside this map") {
+					t.Error("custom prompts must not erase parameter type/authority constraints")
 				}
 				_, history, ok := strings.Cut(user, "Existing context JSON (historical state, not the response schema):\n")
 				if !ok {
@@ -109,9 +131,7 @@ func TestCaptureWireContractSurvivesCustomPromptAndJSONFallback(t *testing.T) {
 					return
 				}
 				plain.Add(1)
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{
-					"content": `{"metadata":{"completed":true}}` + "\n" + `{"assistant_reply":"本轮仅包含预订和订单，不包含收付款。","candidate_summary":"限定范围"}`,
-				}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(`{"metadata":{"completed":true}}` + "\n" + `{"assistant_reply":"本轮仅包含预订和订单，不包含收付款。","candidate_summary":"限定范围"}`))
 			}))
 			defer server.Close()
 			cfg := appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}

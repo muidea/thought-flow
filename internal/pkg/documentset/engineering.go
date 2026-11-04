@@ -2,7 +2,6 @@ package documentset
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -440,54 +439,6 @@ func EngineeringIssues(p Plan) []Issue {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
-}
-
-// Registered endpoint types are enforced only for the explicit engineering
-// capability. Ordinary research relations retain their original interpretation.
-func validateEngineeringRelations(s SharedDesign) error {
-	f := map[string]Fact{}
-	for _, v := range s.Facts {
-		f[v.ID] = v
-	}
-	seen := map[string]bool{}
-	for _, r := range s.Relations {
-		if !ValidKey(r.ID) || seen[r.ID] {
-			return ErrInvalid
-		}
-		seen[r.ID] = true
-		a, b := f[r.From], f[r.To]
-		valid := false
-		switch r.Kind {
-		case "realizes":
-			valid = (a.Kind == "module" || a.Kind == "decision") && b.Kind == "requirement"
-		case "constrains":
-			valid = a.Kind == "constraint" && (b.Kind == "interface" || b.Kind == "module" || b.Kind == "artifact_spec")
-		case "uses_contract":
-			valid = (a.Kind == "module" || a.Kind == "decision") && (b.Kind == "interface" || b.Kind == "entity")
-		case "verifies":
-			valid = a.Kind == "verification" && (b.Kind == "requirement" || b.Kind == "constraint" || b.Kind == "interface" || b.Kind == "artifact_spec" || b.Kind == "module")
-		case "depends_on":
-			valid = a.ID != "" && b.ID != "" && a.ID != b.ID
-		case "supersedes":
-			valid = a.ID != "" && r.Historical != nil && r.Historical.FactID == r.To
-		}
-		if !valid {
-			return fmt.Errorf("%w: invalid typed relation %s", ErrInvalid, r.ID)
-		}
-	}
-	g := map[string][]string{}
-	for id := range f {
-		g[id] = []string{}
-	}
-	for _, r := range s.Relations {
-		if r.Kind == "depends_on" {
-			g[r.From] = append(g[r.From], r.To)
-		}
-	}
-	if !Acyclic(g) {
-		return fmt.Errorf("%w: cyclic prerequisite relation", ErrInvalid)
-	}
-	return nil
 }
 
 // EngineeringSchema is shared by the planner and deterministic fixture tooling.

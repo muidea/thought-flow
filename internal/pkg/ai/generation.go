@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
 	"thoughtflow/internal/pkg/models"
 )
 
@@ -50,6 +51,15 @@ func (p *OpenAICompatibleProvider) GenerationTimeout() time.Duration { return p.
 
 type generationScopeKey struct{}
 
+type requiredJSONKey struct{}
+
+// WithRequiredJSON requires native json_object support for this operation and
+// its child calls. It bypasses the ordinary conversation capability cache and
+// never retries without text.format. It does not change that cache.
+func WithRequiredJSON(ctx context.Context) context.Context {
+	return context.WithValue(ctx, requiredJSONKey{}, true)
+}
+
 // WithGenerationScope associates safe job/operation/session identity with gateway
 // request IDs. It never changes the deadline or places source content in headers.
 func WithGenerationScope(ctx context.Context, id string) context.Context {
@@ -72,7 +82,7 @@ func safeDiagnostic(value string) string {
 	return value
 }
 
-func (p *OpenAICompatibleProvider) executeGeneration(ctx context.Context, params openai.ChatCompletionNewParams, opts ...option.RequestOption) (string, error) {
+func (p *OpenAICompatibleProvider) executeGeneration(ctx context.Context, params responses.ResponseNewParams, opts ...option.RequestOption) (string, error) {
 	ctx, cancel := generationContext(ctx, p.requestTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -80,22 +90,40 @@ func (p *OpenAICompatibleProvider) executeGeneration(ctx context.Context, params
 	}
 	requestID := models.NewEventID(time.Now())
 	var response *http.Response
+	var raw *http.Response
 	// Force zero SDK retries even if a caller supplies different request options.
-	opts = append(opts, option.WithMaxRetries(0), option.WithHeader("X-Request-ID", requestID), option.WithResponseInto(&response))
-	result, err := p.client.Chat.Completions.New(ctx, params, opts...)
+	opts = append(opts, option.WithMaxRetries(0), option.WithHeader("X-Request-ID", requestID),
+		option.WithHeader("Accept", "application/json"), option.WithJSONSet("stream", false),
+		option.WithResponseInto(&response), option.WithResponseBodyInto(&raw))
+	_, err := p.client.Responses.New(ctx, params, opts...)
+	var result *responses.Response
+	var wire string
+	if err == nil {
+		result, wire, err = readResponsesHTTP(ctx, raw)
+	}
 	if response != nil {
 		if upstreamID := safeDiagnostic(response.Header.Get("X-Request-ID")); upstreamID != "" {
 			requestID = upstreamID
 		}
 	}
 	scope, _ := ctx.Value(generationScopeKey{}).(string)
-	attrs := []any{"model", p.chatModel, "scope_id", scope, "request_id", requestID, "json_format", params.ResponseFormat.OfJSONObject != nil}
+	requiredJSON, _ := ctx.Value(requiredJSONKey{}).(bool)
+	attrs := []any{"model", p.chatModel, "scope_id", scope, "request_id", requestID, "endpoint", "/v1/responses", "json_format", params.Text.Format.OfJSONObject != nil, "json_required", requiredJSON}
 	if response != nil {
 		attrs = append(attrs, "status", response.StatusCode)
+		if mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type")); err == nil {
+			attrs = append(attrs, "response_content_type", safeDiagnostic(mediaType))
+		}
+	}
+	if wire != "" {
+		attrs = append(attrs, "response_wire", wire)
 	}
 	if err != nil {
-		failure := wrapSDKError(err)
+		failure := err
 		var providerErr ProviderError
+		if !errors.As(failure, &providerErr) {
+			failure = wrapSDKError(err)
+		}
 		if errors.As(failure, &providerErr) {
 			if response != nil && response.StatusCode >= 400 && providerErr.StatusCode == 0 {
 				providerErr.StatusCode = response.StatusCode
@@ -104,6 +132,9 @@ func (p *OpenAICompatibleProvider) executeGeneration(ctx context.Context, params
 				if providerErr.Retryable {
 					providerErr.Code = "thoughtflow.ai.transient_status"
 				}
+			}
+			if response != nil && providerErr.StatusCode == 0 {
+				providerErr.StatusCode = response.StatusCode
 			}
 			providerErr.RequestID = requestID
 			providerErr.AutoRetry = false
@@ -117,16 +148,71 @@ func (p *OpenAICompatibleProvider) executeGeneration(ctx context.Context, params
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	failure := ProviderError{RequestID: requestID}
-	if len(result.Choices) == 0 {
-		failure.Code, failure.Message = "thoughtflow.ai.empty_completion", "chat completion returned no choices"
-	} else if strings.EqualFold(strings.TrimSpace(result.Choices[0].FinishReason), "length") {
-		failure.Code, failure.Message = "thoughtflow.ai.output_truncated", "chat completion stopped because the output token limit was reached"
-	}
+	content, failure := responseText(result)
 	if failure.Code != "" {
+		failure.RequestID = requestID
+		if response != nil {
+			failure.StatusCode = response.StatusCode
+		}
+		if result != nil {
+			failure.Reason = safeDiagnostic(string(result.IncompleteDetails.Reason))
+			failure.GatewayCode = safeDiagnostic(string(result.Error.Code))
+		}
 		slog.Warn("LLM generation returned incomplete output", append(attrs, "code", failure.Code)...)
 		return "", failure
 	}
+	if trace, ok := ctx.Value(jsonResponseTraceKey{}).(*jsonResponseTrace); ok {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		trace.capture(requestID, status, content)
+		trace.diagnostic.ResponseStatus = string(result.Status)
+		trace.diagnostic.PromptTokens = result.Usage.InputTokens
+		trace.diagnostic.CompletionTokens = result.Usage.OutputTokens
+	}
 	slog.Info("LLM generation request completed", attrs...)
-	return result.Choices[0].Message.Content, nil
+	return content, nil
+}
+
+// Only completed assistant text is usable. Never accept a partial answer, a
+// refusal, an unexecuted tool call or a legacy Chat Completions envelope as text.
+func responseText(result *responses.Response) (string, ProviderError) {
+	fail := func(code, message string) (string, ProviderError) {
+		return "", ProviderError{Code: "thoughtflow.ai." + code, Message: message}
+	}
+	if result == nil || result.Object != "response" {
+		return fail("invalid_response", "expected a Responses API response object")
+	}
+	if result.Error.Code != "" || result.Error.Message != "" || result.Status == "failed" {
+		return fail("response_failed", "Responses generation failed; output was rejected")
+	}
+	if result.Status == "incomplete" && result.IncompleteDetails.Reason == "max_output_tokens" {
+		return fail("output_truncated", "Responses generation exceeded max_output_tokens; partial output was rejected")
+	}
+	if result.Status != "completed" || result.IncompleteDetails.Reason != "" {
+		return fail("output_incomplete", "Responses generation is not complete; output was rejected")
+	}
+	var text strings.Builder
+	for _, item := range result.Output {
+		if item.Type == "reasoning" {
+			continue
+		}
+		if item.Type != "message" || item.Role != "assistant" || item.Status != "completed" {
+			return fail("invalid_response", "Responses output contains an unsupported or incomplete item")
+		}
+		for _, part := range item.Content {
+			if part.Type == "refusal" {
+				return fail("refusal", "the model refused the request; output was rejected")
+			}
+			if part.Type != "output_text" {
+				return fail("invalid_response", "Responses message contains unsupported content")
+			}
+			text.WriteString(part.Text)
+		}
+	}
+	if strings.TrimSpace(text.String()) == "" {
+		return fail("empty_completion", "Responses generation returned no assistant text")
+	}
+	return text.String(), ProviderError{}
 }

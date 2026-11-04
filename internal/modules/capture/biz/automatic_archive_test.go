@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/ai"
@@ -49,18 +50,16 @@ func TestAutomaticArchiveStopsUnknownGenerationAndExplicitRetryWritesOneThought(
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After-Ms", "1")
-		if _, found := request["response_format"]; found {
-			formatted.Add(1)
-			w.WriteHeader(400)
-			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
-			return
+		if string(request["text"]) != `{"format":{"type":"json_object"}}` {
+			plain.Add(1)
+			t.Error("archive request omitted json_object")
 		}
-		if plain.Add(1) == 1 {
+		if formatted.Add(1) == 1 {
 			w.WriteHeader(502)
 			_, _ = w.Write([]byte(`{"error":{"code":"upstream","message":"bootstrap: HTTP 403 (upstream)"}}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": string(content)}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response(string(content)))
 	}))
 	defer server.Close()
 	svc.contextAI = automaticResearchContext{}
@@ -76,7 +75,7 @@ func TestAutomaticArchiveStopsUnknownGenerationAndExplicitRetryWritesOneThought(
 	initial, _ := store.Get("s")
 	svc.handleCaptureContextEnrichRequest(captureContextEnrichRequest{SessionID: "s", InputGeneration: initial.InputGeneration, ContentAtSchedule: initial.Content})
 	sp, err := store.Get("s")
-	if err != nil || sp.Operation == nil || sp.Operation.State != "failed" || sp.CommittedThoughtID != "" || plain.Load() != 1 {
+	if err != nil || sp.Operation == nil || sp.Operation.State != "failed" || sp.CommittedThoughtID != "" || formatted.Load() != 1 || plain.Load() != 0 {
 		t.Fatalf("unknown generation replayed: %+v %v", sp, err)
 	}
 	notes, e := capture.ListThoughts(context.Background())
@@ -94,7 +93,7 @@ func TestAutomaticArchiveStopsUnknownGenerationAndExplicitRetryWritesOneThought(
 	if err != nil || sp.Operation == nil || sp.Operation.State != "saved" || sp.CommittedThoughtID == "" {
 		t.Fatalf("automatic save failed: %+v err=%v", sp, err)
 	}
-	if formatted.Load() != 1 || plain.Load() != 2 {
+	if formatted.Load() != 2 || plain.Load() != 0 {
 		t.Fatalf("unbounded generation: formatted=%d plain=%d", formatted.Load(), plain.Load())
 	}
 	replayed, err := svc.Commit(context.Background(), "s")

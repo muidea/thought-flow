@@ -361,7 +361,7 @@ DEFINED content obligations bind facts to a member and stable section. NOT_APPLI
 Offline PASS proves public consistency only. Private approval provenance and publisher authenticity require independent trusted evidence; a supplied trusted payload hash detects replacement. No approval, DoD, execution permission, consumer acceptance or final artifact success is created by this package.
 `
 
-func ValidateEngineeringPublicRelations(s SharedDesign) error { return validateEngineeringRelations(s) }
+func ValidateEngineeringPublicRelations(s SharedDesign) error { return ValidateEngineeringRelations(s) }
 
 func ScopeBlock(p Plan) string {
 	if !Engineering(p.Profile) || p.Shared.Scope == nil {

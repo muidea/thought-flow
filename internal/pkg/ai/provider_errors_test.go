@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"thoughtflow/internal/testutil/llmfixture"
 	"time"
 
 	"thoughtflow/internal/pkg/appconfig"
@@ -34,14 +35,16 @@ func TestJSONRequestsDoNotDowngradeOrRetryParameterErrors(t *testing.T) {
 				attempts.Add(1)
 				var request struct {
 					ResponseFormat struct {
-						Type string `json:"type"`
-					} `json:"response_format"`
+						Format struct {
+							Type string `json:"type"`
+						} `json:"format"`
+					} `json:"text"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
-				if request.ResponseFormat.Type != "json_object" {
-					t.Error("JSON request silently lost response_format")
+				if request.ResponseFormat.Format.Type != "json_object" {
+					t.Error("JSON request silently lost text.format")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				// Terminal failures must override even an upstream retry hint.
@@ -73,15 +76,15 @@ func TestPlainTextCompletionDoesNotSendResponseFormat(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
-		if _, exists := request["response_format"]; exists {
+		if _, exists := request["text"]; exists {
 			t.Error("plain text completion requested a JSON response format")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "plain text"}}}})
+		_ = json.NewEncoder(w).Encode(llmfixture.Response("plain text"))
 	}))
 	defer server.Close()
 	provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
-	if reply, err := provider.chatCompletion(context.Background(), "system", "user", 0.2); err != nil || reply != "plain text" {
+	if reply, err := provider.responseCompletion(context.Background(), "system", "user", 0.2); err != nil || reply != "plain text" {
 		t.Fatalf("reply=%q err=%v", reply, err)
 	}
 }
@@ -93,6 +96,10 @@ func TestAutomaticJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T)
 		fallback bool
 	}{
 		{"format", map[string]any{"code": "conversion_unsupported", "feature": "response_format"}, true},
+		{"responses-format", map[string]any{"code": "conversion_unsupported", "feature": "text.format"}, true},
+		{"responses-format-type", map[string]any{"code": "conversion_unsupported", "unsupported_features": []string{"text.format.json_object"}}, true},
+		{"responses-mixed", map[string]any{"code": "conversion_unsupported", "unsupported_features": []string{"text.format", "store"}}, false},
+		{"responses-text-ambiguous", map[string]any{"code": "conversion_unsupported", "feature": "text"}, false},
 		{"format-type", map[string]any{"type": "conversion_unsupported", "unsupported_features": []string{"response_format.json_object"}}, true},
 		{"ambiguous", map[string]any{"code": "conversion_unsupported"}, false},
 		{"tools", map[string]any{"code": "conversion_unsupported", "feature": "tools"}, false},
@@ -107,7 +114,7 @@ func TestAutomaticJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T)
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
 				}
-				_, hasFormat := request["response_format"]
+				_, hasFormat := request["text"]
 				if hasFormat != (turn == 1) {
 					t.Errorf("attempt %d response_format present=%v", turn, hasFormat)
 				}
@@ -117,7 +124,7 @@ func TestAutomaticJSONFallbackRequiresAnUnambiguousCapabilityError(t *testing.T)
 					_ = json.NewEncoder(w).Encode(map[string]any{"error": tc.features})
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"assistant_reply":"实质回答","candidate_summary":"归档摘要","candidate_body":"工作材料"}`}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(`{"assistant_reply":"实质回答","candidate_summary":"归档摘要","candidate_body":"工作材料"}`))
 			}))
 			defer server.Close()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -159,7 +166,7 @@ func TestJSONFallbackRejectsInvalidResultsAndBoundsTransientRecovery(t *testing.
 					return
 				}
 				w.WriteHeader(tc.status)
-				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": tc.content}}}})
+				_ = json.NewEncoder(w).Encode(llmfixture.Response(tc.content))
 			}))
 			defer server.Close()
 			provider := NewOpenAICompatibleProvider(appconfig.LLMConfig{BaseURL: server.URL, ChatModel: "scripted", Timeout: time.Second}, appconfig.EmbeddingConfig{})
@@ -201,7 +208,7 @@ func TestCachedJSONFallbackKeepsGatewayFailureSeparateFromJSONValidation(t *test
 			t.Error(err)
 		}
 		turn := attempts.Add(1)
-		_, hasFormat := request["response_format"]
+		_, hasFormat := request["text"]
 		if hasFormat != (turn == 1) {
 			t.Errorf("request %d: response_format present=%v", turn, hasFormat)
 		}
@@ -212,7 +219,7 @@ func TestCachedJSONFallbackKeepsGatewayFailureSeparateFromJSONValidation(t *test
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":{"code":"conversion_unsupported","feature":"response_format"}}`))
 		case 2:
-			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"assistant_reply":"ISA-95 connects enterprise and manufacturing operations."}`}}}})
+			_ = json.NewEncoder(w).Encode(llmfixture.Response(`{"assistant_reply":"ISA-95 connects enterprise and manufacturing operations."}`))
 		default:
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"error":{"code":"upstream","message":"chatgpt upstream: code:6, message:bootstrap: HTTP 403 (upstream)"}}`))

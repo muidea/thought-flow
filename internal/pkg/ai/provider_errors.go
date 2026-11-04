@@ -31,7 +31,8 @@ func (e ProviderError) onlyResponseFormatUnsupported() bool {
 		if feature == "" {
 			continue
 		}
-		if feature != "response_format" && !strings.HasPrefix(feature, "response_format.") {
+		if feature != "response_format" && !strings.HasPrefix(feature, "response_format.") &&
+			feature != "text.format" && !strings.HasPrefix(feature, "text.format.") {
 			return false
 		}
 		found = true
