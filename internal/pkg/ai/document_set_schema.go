@@ -11,9 +11,12 @@ import (
 // guidance consumes the same input allowance as the rest of the actual payload.
 func DocumentSetPlanningInput(c ds.CaptureSnapshot, profile ds.Profile, previous *ds.SharedDesign) map[string]any {
 	indices := []int{}
+	proposalIndices := []int{}
 	for i, message := range c.Messages {
 		if message.Role == "user" {
 			indices = append(indices, i)
+		} else if message.Role == "ai" || message.Role == "assistant" {
+			proposalIndices = append(proposalIndices, i)
 		}
 	}
 	schema := sharedDesignResponseSchema()
@@ -30,7 +33,14 @@ func DocumentSetPlanningInput(c ds.CaptureSnapshot, profile ds.Profile, previous
 		properties["to"].(map[string]any)["description"] = "Existing fact ID on the to_kinds side; supersedes instead requires a fixed historical reference."
 	}
 	input := map[string]any{"capture": c, "profile": profile, "previous": previous, "contract_schema": ds.EngineeringSchema(profile), "response_schema": schema,
-		"source_contract": map[string]any{"message_index_base": 0, "message_index_space": "capture.messages including ALL roles; never a user-turn ordinal", "user_message_indices": indices, "quote_policy": "copy an exact contiguous substring of capture.messages[source.message].text; do not paraphrase, summarize, escape twice, or quote assistant messages"}}
+		"source_contract": map[string]any{"message_index_base": 0, "message_index_space": "capture.messages including ALL roles; never a user-turn ordinal", "user_message_indices": indices, "proposal_message_indices": proposalIndices, "quote_policy": "confirmed facts and exclusions require exact USER evidence; proposed facts may quote exact AI/assistant design text with model_proposal provenance. Copy exact contiguous substrings; never treat an archive command as approval of every suggested design choice"}}
+	input["archive_contract"] = map[string]any{
+		"selection":      "ThoughtFlow derives filenames, role instances and storage paths from the frozen profile; the user need not define archive mechanics",
+		"storage_format": "Markdown", "execution_environment": "the running ThoughtFlow local workspace",
+		"completion_evidence": "durable private draft or published set record plus stored Markdown bytes; formal delivery is separate",
+		"unconfirmed_designs": "retain assistant proposals with their source and status; automatic Capture archive can save private unapproved drafts",
+		"target_artifact":     "Software build/run, data lifecycle and acceptance contracts describe the user's target software, not how ThoughtFlow stores this conversation",
+	}
 	if ds.Engineering(profile) {
 		input["relation_contract"] = ds.EngineeringRelationRules()
 	}

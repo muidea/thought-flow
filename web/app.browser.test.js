@@ -1653,6 +1653,13 @@ function startFixtureServer(options = {}) {
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    if (options.archivedDesignNotes) {
+      if (url.pathname === "/api/thoughts" && req.method === "GET") return json(res, api(options.archivedDesignNotes.map(snapshot=>snapshot.thought)));
+      const match = url.pathname.match(/^\/api\/thoughts\/([^/]+)(?:\/(markdown))?$/);
+      const snapshot = match && options.archivedDesignNotes.find(item=>item.thought.id===match[1]);
+      if (snapshot && !match[2]) return json(res, api(snapshot));
+      if (snapshot && match[2]) { res.setHeader("Content-Type","text/markdown; charset=utf-8");return res.end(snapshot.content.ai_notes); }
+    }
     if (options.markdownImport) {
       if (url.pathname === "/api/thoughts/import") {
         const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -3179,5 +3186,84 @@ test("capture archive in conversation automatically opens an engineering set wit
    await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Authenticate and atomically commit orders."));
    assert.match(await page.evaluate(()=>location.hash),/set_revision=auto-r-1/);
   } finally {await browser.close();}
+ });
+});
+
+test("Capture clarification consolidates diagnostic cascades on desktop and mobile after reload", async t=>{
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ for(const viewport of viewports())for(const structured of [false,true])await t.test(`${viewport.name}-${structured?"structured":"legacy"}`,async t=>{
+  const questions=[{id:"scope",kind:"question",message:"请确认本次接口范围？",blocking:true},
+   ...["fact-REQ","condition-has_interfaces","modules","gap-one","gap-two"].map(id=>({id,message:"INTERNAL_DIAGNOSTIC_CASCADE",blocking:true}))];
+  const raw=questions.map(q=>q.message).join("\n");
+  const op={id:"archive",state:"needs_input",input_generation:7,error:raw};
+  const current={role:"ai",text:`归档需要补充以下内容：\n${raw}`};
+  if(structured){op.clarification={run_id:"automatic-design-run",questions:[questions[0].message],diagnostic_count:5};current.archive_operation_id=op.id;current.text="PERSISTED_SUMMARY";}
+  const run={run_id:"automatic-design-run",state:"needs_clarification",state_version:2,calls:[],members:[{member_key:"architecture",state:"queued"}],plan:{capture:{session_id:"browser-session"},profile:{name:"工程设计与交付成果集"},members:[],shared_design:{open_questions:questions}}};
+  const server=await startFixtureServer({captureSeed:{session_id:"browser-session",input_generation:7,messages:[{role:"user",text:"请按讨论的范围归档。"},current],document_set_run_id:run.run_id,archive_operation:op},captureAutomaticSetRun:run});t.after(()=>server.close());
+  const browser=await launchChrome(viewport);
+  try{
+   const page=await connectPage(browser);await page.send("Page.enable");
+   await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=zh-CN#/capture`);
+   for(let pass=0;pass<2;pass++){
+    if(pass)await page.reload();
+    await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-kind="archive_clarification"]')?.textContent.includes("请确认本次接口范围？"),30000);
+    const ui=await page.evaluate(()=>({text:document.querySelector("#capture-conversation").textContent,bubbles:document.querySelectorAll('[data-kind="archive_clarification"]').length,status:document.querySelectorAll('[data-kind="archive_status"], [data-kind="document_set"]').length,composer:!document.querySelector("#capture-composer-input").disabled}));
+    assert.equal(ui.text.split("请确认本次接口范围？").length-1,1);
+    assert.equal(ui.bubbles,1);assert.equal(ui.status,0);assert.equal(ui.composer,true);
+    assert.match(ui.text,/回复后将自动继续归档/);
+    assert.doesNotMatch(ui.text,/INTERNAL_DIAGNOSTIC|PERSISTED_SUMMARY|queued|Confirm shared fact/);
+   }
+  }finally{await browser.close();}
+ });
+});
+
+test("Capture reads archived design drafts and their Thoughts in Notes after reload on desktop and mobile",async t=>{
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ for(const viewport of viewports())await t.test(viewport.name,async t=>{
+  const run={run_id:"automatic-design-run",state:"draft_saved",state_version:4,archive_unconfirmed_draft:true,archive_draft:{notes_ready:true,source_hash:"source-frozen",members:[
+   {thought_id:"archived-design-1",member_key:"architecture",filename:"architecture.md",title:"架构设计草稿",body:"# 自动抽取的架构设计\n\n## 状态恢复\n\n保留执行记录和检查点；这是模型设计建议，尚未批准。\n\n## 验证\n\n需求项与整体目标分别检查。"},
+   {thought_id:"archived-design-2",member_key:"archive-source",filename:"capture-original.md",title:"原始对话",body:"# 原始对话\n\n用户：根据 Workspace Profile 完成需求。\n\nAI：保留执行记录和检查点。"}
+  ]},calls:[],members:[],plan:{capture:{session_id:"browser-session"},members:[],shared_design:{open_questions:[{kind:"question",id:"scope",message:"MUST_NOT_ASK_AGAIN",blocking:true}]}}};
+  const archivedDesignNotes=run.archive_draft.members.map(member=>({thought:{id:member.thought_id,user_title:member.title,path:`thoughts/${member.thought_id}.md`,capture_draft:true,design_draft:{set_id:"set-design",run_id:run.run_id,member_key:member.member_key}},content:{ai_notes:member.body},jobs:[],git_commits:[]}));
+  const server=await startFixtureServer({archivedDesignNotes,captureSeed:{session_id:"browser-session",input_generation:9,messages:[{role:"user",text:"对上述设计文档进行归档"}],document_set_run_id:run.run_id,archive_operation:{id:"auto-archive",state:"document_set",input_generation:9}},captureAutomaticSetRun:run});t.after(()=>server.close());
+  const browser=await launchChrome(viewport);
+  try{
+   const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=zh-CN#/capture`);
+   for(let pass=0;pass<2;pass++){
+    if(pass)await page.reload();
+    await page.waitForExpression(()=>!!document.querySelector('[data-set-draft-run="automatic-design-run"]'),30000);
+    const text=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);assert.doesNotMatch(text,/MUST_NOT_ASK_AGAIN|queued/);assert.match(text,/已从对话自动归档为设计草稿/);
+    await clickVisibleCaptureControl(page,'[data-set-draft-run="automatic-design-run"]');
+    await page.waitForExpression(()=>document.querySelector("dialog[open]")?.textContent.includes("保留执行记录和检查点"),30000);
+    const reader=await page.evaluate(()=>({text:document.querySelector("dialog[open]").textContent,downloads:document.querySelectorAll("dialog[open] [data-draft-download]").length,approve:document.querySelectorAll("dialog[open] form").length}));
+    assert.match(reader.text,/需求项与整体目标分别检查/);assert.match(reader.text,/尚未定稿/);assert.equal(reader.downloads,2);assert.equal(reader.approve,0);
+    if(!pass){
+     // Inspect the exact download payload without writing into the user's
+     // Downloads directory. Filesystem persistence is exercised by Go tests.
+     await page.evaluate(()=>{
+      window.__draftDownload={};
+      URL.createObjectURL=blob=>{blob.text().then(text=>window.__draftDownload.body=text);return "blob:draft-test";};
+      HTMLAnchorElement.prototype.click=function(){window.__draftDownload.filename=this.download;};
+     });
+     await clickVisibleCaptureControl(page,'dialog[open] [data-draft-download="0"]');
+     await page.waitForExpression(()=>!!window.__draftDownload?.body);
+     const file=await page.evaluate(()=>window.__draftDownload);
+     assert.equal(file.filename,"architecture.md");assert.equal(file.body,run.archive_draft.members[0].body);
+    }
+    await clickVisibleCaptureControl(page,'dialog[open] [data-close]');
+   }
+   await clickVisibleCaptureControl(page,'#capture-conversation a[href="#/notes?id=archived-design-1"]');
+   await page.waitForExpression(()=>!!document.querySelector('#thought-detail [data-read-thought="archived-design-1"]'),30000);
+   await clickVisibleCaptureControl(page,'#notes-tablist [data-tab="notes-all"]');
+   await page.waitForExpression(()=>!!document.querySelector('#thought-list [data-read-thought="archived-design-1"]'),30000);
+   const list=await page.evaluate(()=>document.querySelector("#thought-list").textContent);
+   assert.match(list,/架构设计草稿/);assert.match(list,/设计草稿 · 未定稿/);
+   await clickVisibleCaptureControl(page,'#thought-list [data-read-thought="archived-design-1"]');
+   await page.waitForExpression(()=>document.querySelector("#thought-reader[open]")?.textContent.includes("需求项与整体目标分别检查"),30000);
+   const note=await page.evaluate(()=>document.querySelector("#thought-reader-content").textContent);
+   assert.match(note,/设计草稿 · 未定稿/);assert.match(note,/不代表实施或交付批准/);
+   await page.reload();
+   await page.waitForExpression(()=>document.querySelector("#thought-list")?.textContent.includes("设计草稿 · 未定稿"),30000);
+  }finally{await browser.close();}
  });
 });

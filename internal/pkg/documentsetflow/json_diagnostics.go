@@ -19,7 +19,7 @@ func (s *Service) persistJSONFailure(set, operation, stage string, failure error
 	if !ok {
 		return failure, ""
 	}
-	if !documentstore.ValidID(set) || !documentstore.ValidID(operation) || (stage != "planning" && stage != "review") {
+	if !documentstore.ValidID(set) || !documentstore.ValidID(operation) || (stage != "planning" && stage != "review" && stage != "generation") {
 		return errors.Join(failure, errors.New("invalid private JSON diagnostic identity")), ""
 	}
 	key := strings.TrimPrefix(documentstore.HashJSON([]string{diagnostic.RequestID, diagnostic.ResponseHash}), "sha256:")

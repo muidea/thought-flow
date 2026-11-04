@@ -29,6 +29,7 @@ import (
 type captureArchivePlanner struct {
 	calls            atomic.Int32
 	clarify          bool
+	incompleteFirst  bool
 	entered, release chan struct{}
 }
 
@@ -48,6 +49,9 @@ func (p *captureArchivePlanner) PlanDocumentSet(ctx context.Context, capture ds.
 	_, shared := designfixture.Capture()
 	if p.clarify && n == 1 {
 		shared.Questions = []ds.Question{{ID: "confirm-recovery", Kind: "question", Message: "中断后应保留已确认订单吗？", Blocking: true}}
+	}
+	if p.incompleteFirst && n == 1 {
+		shared.Facts[0].Status = "proposed"
 	}
 	return shared, nil
 }
@@ -162,24 +166,56 @@ func TestCaptureChatArchiveAutomaticallyMatchesPlansAndGeneratesSet(t *testing.T
 		t.Fatal("archive replay duplicated generation")
 	}
 }
-func TestCaptureArchiveClarificationContinuesFromChatWithoutGenerateClick(t *testing.T) {
-	planner := &captureArchivePlanner{clarify: true}
+func TestCaptureArchiveAutomaticallySavesUnconfirmedDesignWithoutGenerateClick(t *testing.T) {
+	planner := &captureArchivePlanner{clarify: true, incompleteFirst: true}
 	s, store := automaticSetFixture(t, planner)
 	capture, _ := designfixture.Capture()
 	sendAutomaticCapture(t, s, capture.Messages[0].Text)
 	awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool { return sp.SessionContext.FrozenSetProfile != nil })
 	sendAutomaticCapture(t, s, "请将以上讨论归档")
-	before := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool { return sp.Operation != nil && sp.Operation.State == "needs_input" })
-	if !strings.Contains(before.Operation.Error, "保留已确认订单") {
-		t.Fatal("missing concrete clarification", before.Operation.Error)
-	}
-	// No new archive command and no profile/plan/run HTTP calls from the client.
-	sendAutomaticCapture(t, s, "是，中断后保留已确认订单。")
-	after := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool {
-		return sp.DocumentSetRunID != "" && sp.DocumentSetRunID != before.DocumentSetRunID
+	sp := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool {
+		if sp.DocumentSetRunID == "" {
+			return false
+		}
+		run, e := s.documentSets.Store.Run(sp.DocumentSetRunID)
+		return e == nil && (run.State == "draft_saved" || run.State == "failed_terminal")
 	})
-	if after.DocumentSetID != before.DocumentSetID || planner.calls.Load() != 2 {
-		t.Fatal("clarification failed to resume the same set")
+	run, e := s.documentSets.Store.Run(sp.DocumentSetRunID)
+	if e != nil || run.State != "draft_saved" || run.Draft == nil || len(run.Draft.Members) == 0 {
+		t.Fatal(run.State, run.Error, e)
+	}
+	listed, e := s.captureService.ListThoughts(context.Background())
+	if e != nil || !run.Draft.NotesReady {
+		t.Fatal("automatic archive is not visible in Notes", len(listed), e)
+	}
+	listedIDs := map[string]bool{}
+	for _, thought := range listed {
+		listedIDs[thought.ID] = true
+	}
+	for _, member := range run.Draft.Members {
+		if !listedIDs[member.ThoughtID] {
+			t.Fatal("archived Thought missing from Notes", member.Key)
+		}
+		snapshot, err := s.captureService.GetThought(context.Background(), member.ThoughtID)
+		if err != nil || snapshot.Content.AINotes != member.Body || snapshot.Thought.DesignDraft == nil || !snapshot.Thought.CaptureDraft {
+			t.Fatal("ordinary note reader cannot read archived design", member.Key, err)
+		}
+	}
+	if sp.Operation.State == "needs_input" || sp.Operation.Clarification != nil {
+		t.Fatal("archive still demands schema confirmation")
+	}
+	if len(run.Plan.Shared.Questions) < 2 || run.Candidate != nil {
+		t.Fatal("unapproved draft escaped formal gates")
+	}
+	reloaded, e := scratchpad.New(filepath.Join(s.workspace.RootPath, "automatic-sessions")).Get(sp.SessionID)
+	if e != nil || reloaded.DocumentSetRunID != run.ID {
+		t.Fatal("reload lost draft binding", e)
+	}
+	if e = s.startCaptureArchive(sp); e != nil {
+		t.Fatal(e)
+	}
+	if planner.calls.Load() != 1 {
+		t.Fatal("draft replay re-planned")
 	}
 }
 
@@ -234,7 +270,13 @@ func TestCapturePendingArchiveDoesNotResumeWhenUserDefers(t *testing.T) {
 	sendAutomaticCapture(t, s, capture.Messages[0].Text)
 	awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool { return sp.SessionContext.FrozenSetProfile != nil })
 	sendAutomaticCapture(t, s, "请将以上讨论归档")
-	before := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool { return sp.Operation != nil && sp.Operation.State == "needs_input" })
+	before := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool {
+		if sp.DocumentSetRunID == "" {
+			return false
+		}
+		r, e := s.documentSets.Store.Run(sp.DocumentSetRunID)
+		return e == nil && r.State == "draft_saved"
+	})
 	sendAutomaticCapture(t, s, "暂时不要归档，先继续讨论。")
 	after := awaitAutomaticCapture(t, store, func(sp scratchpad.Scratchpad) bool {
 		return sp.InputGeneration > before.InputGeneration && sp.SessionContext.Goal != ""

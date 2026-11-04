@@ -73,3 +73,11 @@ func TestExplicitSourceDoesNotRebindDuringFreeze(t *testing.T) {
 		t.Fatal("explicit source was silently rebound", err)
 	}
 }
+
+func TestProposalEvidenceKeepsOriginalAssistantAddress(t *testing.T) {
+	c := CaptureSnapshot{Messages: []Message{{Role: "user", Text: "Discuss persistence"}, {Role: "ai", Text: "Use checkpoint recovery"}, {Role: "user", Text: "Archive: Use checkpoint recovery"}}}
+	s := SharedDesign{Facts: []Fact{{Status: "proposed", Source: Source{Message: 1, Quote: "Use checkpoint recovery"}}}}
+	if n := RebindPlannerEvidence(&s, c); n != 0 || s.Facts[0].Source.Message != 1 {
+		t.Fatal("proposal source rebound as user confirmation")
+	}
+}

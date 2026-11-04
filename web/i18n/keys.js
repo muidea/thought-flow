@@ -4,6 +4,20 @@
 // and still-missing keys are surfaced as [[key]] with a console.warn.
 
 export const Key = Object.freeze({
+  DesignDraftBadge: "notes.design_draft",
+  ArchiveDraftNotes: "docset.draft.in_notes",
+  ArchiveDraftRecoverNotes: "docset.draft.recover_notes",
+  ArchiveDraft0: "docset.state.draft_saved",
+  ArchiveDraft1: "docset.draft.notice",
+  ArchiveDraft2: "docset.draft.open",
+  ArchiveDraft3: "docset.draft.download",
+
+  DocsetClarificationIntro: "docset.clarification.intro",
+  DocsetClarificationContinue: "docset.clarification.continue",
+  DocsetClarificationCheckPending: "docset.clarification.check_pending",
+  DocsetClarificationPlanningIncomplete: "docset.clarification.planning_incomplete",
+  DocsetClarificationCriteria: "docset.clarification.criteria",
+
   DocsetExtra0: "docset.cancel",
   DocsetRecover: "docset.recover",
   DocsetExtra1: "docset.retry",

@@ -22,6 +22,9 @@ func boundedCall[T any](ctx context.Context, s *Service, run *ds.Run, kind, key 
 		}
 		var err error
 		value, err = call(ctx)
+		if err != nil && (kind == "member" || kind == "archive-draft") {
+			err, _ = s.persistJSONFailure(run.Plan.SetID, run.ID, "generation", err)
+		}
 		if e = s.callDone(run, index, value, err); e == nil {
 			return value, nil
 		}

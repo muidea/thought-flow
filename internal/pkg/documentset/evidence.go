@@ -74,6 +74,12 @@ func RebindPlannerEvidence(s *SharedDesign, c CaptureSnapshot) int {
 		}
 	}
 	for i := range s.Facts {
+		f := s.Facts[i]
+		// Extraction may legitimately retain exact assistant proposal sources;
+		// user-confirmation rebinding must not replace their provenance.
+		if f.Status != "confirmed" && f.Source.Message >= 0 && f.Source.Message < len(c.Messages) && strings.TrimSpace(f.Source.Quote) != "" && strings.Contains(c.Messages[f.Source.Message].Text, f.Source.Quote) {
+			continue
+		}
 		rebind(&s.Facts[i].Source)
 	}
 	for key, condition := range s.Conditions {

@@ -295,7 +295,7 @@ func (s *Service) RetryWithBinding(id string, req RetryRequest, bind func(ds.Run
 	if old.ModelHash != s.opts.ModelHash {
 		return old, ds.ErrConflict
 	}
-	if old.State == "committed" || old.State == "generating" || old.State == "checking" {
+	if old.State == "committed" || old.State == "draft_saved" || old.State == "generating" || old.State == "checking" {
 		return old, ds.ErrConflict
 	}
 	if old.Plan.BaseGeneration != *req.ExpectedGeneration {
@@ -365,7 +365,8 @@ func (s *Service) Search(id, revision, query string) ([]ds.Artifact, error) {
 var _ = context.Canceled
 
 // RecoverRun completes projections and durable notifications for a published
-// attempt. It cannot regenerate, publish a candidate, or incur model charges.
+// attempt or a saved archive. It cannot regenerate or publish a candidate;
+// downstream note indexing follows its existing configured policy.
 func (s *Service) RecoverRun(id string) (ds.Run, error) {
 	release := objectlocation.For(s.Store.Root).LockObject("set-publish-" + id)
 	defer release()
@@ -377,6 +378,15 @@ func (s *Service) RecoverRun(id string) (ds.Run, error) {
 	}
 	run, e := s.Store.Run(id)
 	if e != nil {
+		return run, e
+	}
+	if run.ArchiveDraft && run.Draft != nil && !run.CancelRequested && (run.State == "draft_saved" || run.Draft.NotesPending) {
+		if e = s.projectArchiveThoughts(s.ctx, &run); e != nil {
+			run.Error = "Archive drafts retained; Thought projection needs recovery: " + e.Error()
+			if saveErr := s.Store.SaveRun(run); saveErr != nil {
+				return run, errors.Join(e, saveErr)
+			}
+		}
 		return run, e
 	}
 	if run.Candidate == nil || !s.Store.Reachable(run.Plan.SetID, run.Candidate.ID) {

@@ -322,7 +322,27 @@ type Call struct {
 	OutputBytes     int    `json:"output_bytes"`
 	Error           string `json:"error,omitempty"`
 }
+
+// ArchiveDraftSet is an unapproved design snapshot, never a published Revision
+// or input to Ready/Finalize. Readable Thought copies retain this provenance.
+type ArchiveDraftMember struct {
+	ThoughtID string `json:"thought_id,omitempty"`
+	Key       string `json:"member_key"`
+	Filename  string `json:"filename"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Hash      string `json:"body_hash"`
+}
+type ArchiveDraftSet struct {
+	OriginRunID  string               `json:"origin_run_id,omitempty"`
+	NotesPending bool                 `json:"notes_pending,omitempty"`
+	NotesReady   bool                 `json:"notes_ready,omitempty"`
+	SourceHash   string               `json:"source_hash"`
+	Members      []ArchiveDraftMember `json:"members"`
+}
 type Run struct {
+	ArchiveDraft      bool               `json:"archive_unconfirmed_draft,omitempty"`
+	Draft             *ArchiveDraftSet   `json:"archive_draft,omitempty"`
 	StateVersion      uint64             `json:"state_version"`
 	ID                string             `json:"run_id"`
 	OperationID       string             `json:"operation_id"`

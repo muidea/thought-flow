@@ -1545,7 +1545,7 @@ function renderThoughtListItem(thought) {
   return `
     <article class="result-item${active}" data-thought-id="${escapeHTML(thought.id || "")}">
       <div>
-        <strong>${escapeHTML(title)}</strong>
+        <strong>${escapeHTML(title)}</strong>${thought.design_draft ? ` <span class="pill">${escapeHTML(t("notes.design_draft"))}</span>` : ""}
         <div class="result-meta">${escapeHTML(updatedAt)}${thought.path ? ` · ${escapeHTML(thought.path)}` : ""}</div>
         ${summary ? `<div class="result-meta">${escapeHTML(summary)}</div>` : ""}
         ${(statuses || tags) ? `<div class="score-line">${statuses}${tags}</div>` : ""}
@@ -1657,6 +1657,7 @@ function renderThoughtDetailPanel(snapshot) {
     [t("notes.status.topics"), joinCSV(thought.topic_ids || [])],
   ];
   return `<div class="tf-result">
+    ${thought.design_draft ? `<p role="status">${escapeHTML(t("notes.design_draft"))} — ${escapeHTML(t("docset.draft.notice"))}</p>` : ""}
     <div class="tf-description-list">${renderDescription(metaRows)}</div>
     <div class="tf-action-row">
       <button class="tf-btn" data-read-thought="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("notes.reader.open"))}</button>
@@ -2551,13 +2552,17 @@ function renderCaptureConversation() {
   const list = $("#capture-conversation");
   if (!list) return;
   // Backend context and generated previews are internal state, never chat content.
+  const clarification = captureSetClarificationFeedback();
   const status = captureArchiveStatusMessage();
  const setMessage = captureDocumentSetMessage();
   const messages = (state.capture.messages || []).filter((msg) =>
     msg.kind !== "archive_preview" &&
+    !(clarification && msg.role === "ai" && ((clarification.operationID && msg.archive_operation_id === clarification.operationID) ||
+      msg.text === clarification.legacyText)) &&
     (msg.kind !== "context" || msg.pending || stringsTrim(msg.sessionContext?.assistant_reply)) &&
     !(status?.thoughtId && msg.thoughtId === status.thoughtId)
   );
+  if (clarification) messages.push({role:"ai",kind:"archive_clarification",text:clarification.text});
   if (status) messages.push(status);
  if (setMessage) messages.push(setMessage);
   if (messages.length === 0) {
@@ -2590,6 +2595,7 @@ function captureValidationMessage(issue) {
 
 // Derive feedback from the durable operation so reconnect/reload cannot lose it.
 function captureArchiveStatusMessage() {
+  if (captureSetClarificationFeedback()) return null;
   const sp = state.capture.activeScratchpad;
   const operation = sp?.archive_operation;
   const statuses = ["preparing", "saving", "saved", "draft_saved", "needs_input", "blocked", "ready", "interrupted", "conflicted", "failed"];
@@ -4175,6 +4181,7 @@ function thoughtReadingMarkdown(snapshot) {
   const thought = snapshot.thought || {};
   const content = snapshot.content || {};
   const sections = [`# ${thoughtDisplayTitle(thought) || thought.id || ""}`];
+  if (thought.design_draft) sections.push(`> ${t("notes.design_draft")}\n> ${t("docset.draft.notice")}`);
   if (thought.summary) sections.push(`## ${t("thoughts.preview_summary")}\n\n${thought.summary}`);
   if (thought.key_points?.length) sections.push(`## ${t("notes.detail.key_points")}\n\n${thought.key_points.map(value => `- ${value}`).join("\n")}`);
   const seen = new Set();
@@ -6473,19 +6480,68 @@ async function saveCollectionCatalog(catalog, topic = state.activeTopicId, reque
 function setRoute(id,revision,member="",section="") {
  return buildRouteHash("topics",{topicId:id},{tab:"documents",set_revision:revision,...(member?{member}:{}),...(section?{section}:{})});
 }
+// Presentation only: the complete frozen question ledger remains on the run.
+function captureSetQuestionSummary(plan) {
+ const questions=[],seen=new Set();let diagnostic_count=0;
+ for(const q of plan?.shared_design?.open_questions||[]) {
+  if(!q.blocking||stringsTrim(q.resolution))continue;
+  if(!q.kind&&(q.id==="modules"||/^(fact-|input-|condition-|gap-)/.test(q.id||""))){diagnostic_count++;continue;}
+  let text=stringsTrim(q.message);
+  for(const option of q.options||[])text+=`\n- ${option.description}${option.impact?` (${option.impact})`:""}`;
+  if(q.resolution_criteria?.length)text+=`\n${t("docset.clarification.criteria")}: ${q.resolution_criteria.join("; ")}`;
+  const key=text.replace(/\s+/g," ").trim();
+  if(key&&!seen.has(key)){seen.add(key);questions.push(text);}
+ }
+ return {questions,diagnostic_count};
+}
+function captureSetClarificationText(summary) {
+ if(!summary.questions.length)return t("docset.clarification.planning_incomplete");
+ return `${t("docset.clarification.intro")}\n${summary.questions.join("\n\n")}\n\n${t("docset.clarification.continue")}${summary.diagnostic_count?` ${t("docset.clarification.check_pending")}`:""}`;
+}
+function captureSetClarificationFeedback() {
+ const sp=state.capture.activeScratchpad,op=sp?.archive_operation;
+ if(!sp||sp.session_id!==state.capture.sessionId||op?.state!=="needs_input"||!sp.document_set_run_id)return null;
+ let summary=op.clarification;
+ if(summary?.run_id!==sp.document_set_run_id){
+  const data=captureDocumentSet,run=data?.run;
+  // Legacy sessions have no durable projection. Keep raw diagnostics out of
+  // chat while the authoritative run is loading, or if an old run is cached.
+  summary=data?.session===sp.session_id&&run?.run_id===sp.document_set_run_id&&run.state==="needs_clarification"
+   ?captureSetQuestionSummary(run.plan):{questions:[],diagnostic_count:0};
+ }
+ return {operationID:op.id,runID:sp.document_set_run_id,text:captureSetClarificationText(summary),
+  legacyText:op.error?`归档需要补充以下内容：\n${op.error}`:null};
+}
 function captureDocumentSetMessage(){
  const session=currentCaptureSession();
  const data=captureDocumentSet;
  if(!data || data.session!==session)return null;
  const run=data.run;const plan=run?.plan||data.plan;
+ const boundRun=state.capture.activeScratchpad?.document_set_run_id;
+ if(run&&boundRun&&boundRun!==run.run_id)return null;
  const status=run?.state||"planning";
+ if(run?.archive_unconfirmed_draft) {
+  let html=`<div class="tf-msg-body"><strong>${escapeHTML(t("docset.title"))}</strong><p>${escapeHTML(t(`docset.state.${status}`))}</p><p>${escapeHTML(t("docset.draft.notice"))}</p>`;
+  if(run.state==="draft_saved")html+=`<p>${run.archive_draft?.members?.length||0} ${escapeHTML(t("docset.files"))}</p><button class="tf-btn" data-set-draft-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.draft.open"))}</button>`;
+  if(run.archive_draft?.notes_ready)html+=`<p>${escapeHTML(t("docset.draft.in_notes"))}</p><ul>${run.archive_draft.members.filter(member=>member.thought_id).map(member=>`<li><a href="${escapeHTML(buildRouteHash("thoughts",{thoughtId:member.thought_id},{id:member.thought_id}))}">${escapeHTML(member.title)}</a></li>`).join("")}</ul>`;
+  if(["queued","generating","committing"].includes(status))html+=`<button class="tf-btn" data-set-cancel-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.cancel"))}</button>`;
+  if((run.archive_draft?.notes_pending||run.state==="draft_saved"&&!run.archive_draft?.notes_ready)&&status!=="committing"&&!run.cancel_requested)html+=`<button class="tf-btn" data-set-recover-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.draft.recover_notes"))}</button>`;
+  else if(["failed_retryable","failed_terminal","cancelled"].includes(status))html+=`<button class="tf-btn" data-set-retry-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.retry"))}</button>`;
+  if(run.error)html+=`<p role="alert">${escapeHTML(run.error)}</p>`;
+  return {role:"system",kind:"document_set",html:html+"</div>"};
+ }
+ if(status==="needs_clarification") {
+  if(captureSetClarificationFeedback()?.runID===run?.run_id)return null;
+  const text=captureSetClarificationText(captureSetQuestionSummary(plan));
+  return {role:"ai",kind:"document_set",text};
+ }
  let html=`<div class="tf-msg-body"><strong>${escapeHTML(t("docset.title"))}</strong><p>${escapeHTML(t(`docset.state.${status}`))}</p>`;
  if(plan){html+=`<p>${escapeHTML(plan.profile?.name||"")} · ${plan.members?.length||0} ${escapeHTML(t("docset.files"))}</p><details><summary>${escapeHTML(t("docset.plan"))}</summary><ul>${(plan.members||[]).map(m=>`<li>${escapeHTML(m.title)} — ${escapeHTML(m.role)}</li>`).join("")}</ul></details>`;}
  if(plan?.impact){html+=`<details><summary>${escapeHTML(t("design.impact"))}</summary><p>${escapeHTML(t("design.regenerate"))}: ${escapeHTML(plan.impact.regenerate_members.join(", "))}</p><p>${escapeHTML(t("design.reuse"))}: ${escapeHTML(plan.impact.reuse_candidates.join(", "))}</p><p>${escapeHTML(t("design.fresh_review"))}</p></details>`;}
  if(run){html+=`<ul>${(run.members||[]).map(m=>`<li>${escapeHTML(m.member_key)}: ${escapeHTML(m.state)}${m.error?` — ${escapeHTML(m.error)}`:""}</li>`).join("")}</ul>`;if(run.state==="committed"){html+=`<a href="${escapeHTML(setRoute(run.plan.set_id,run.candidate.set_revision_id))}">${escapeHTML(t("docset.open"))}</a>`;}else if(run.state==="awaiting_review"){html+=`<button class="tf-btn" data-set-review-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.review"))}</button>`;}}
  if(run){if(run.state==="committed"&&run.error)html+=`<button class="tf-btn" data-set-recover-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.recover"))}</button>`;if(["queued","planning","generating","checking","committing","ready"].includes(run.state))html+=`<button class="tf-btn" data-set-cancel-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.cancel"))}</button>`;if(["failed_retryable","failed_terminal","cancelled","awaiting_review"].includes(run.state))html+=`<button class="tf-btn" data-set-retry-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.retry"))}</button>`;if(run.reconciliations?.length)html+=`<details><summary>${escapeHTML(t("docset.diff"))}</summary>${run.reconciliations.map(c=>`<h4>${escapeHTML(c.member_key)}</h4><div class="tf-set-diff"><pre>${escapeHTML(c.base)}</pre><pre>${escapeHTML(c.generated)}</pre><pre>${escapeHTML(c.manual)}</pre></div>`).join("")}</details>`;}
  if(data.error||run?.error)html+=`<p role="alert">${escapeHTML(data.error||run.error)}</p>`;
- const questions=plan?.shared_design?.open_questions||[];if(questions.some(q=>q.blocking&&!q.resolution))html+=`<ul>${questions.filter(q=>q.blocking&&!q.resolution).map(q=>`<li>${escapeHTML(q.message)}${q.facts?.length?` · ${escapeHTML(q.facts.join(", "))}`:""}</li>`).join("")}</ul>`;
+ const summary=captureSetQuestionSummary(plan);if(summary.questions.length||summary.diagnostic_count)html+=`<p>${escapeHTML(captureSetClarificationText(summary))}</p>`;
  return {role:"system",kind:"document_set",html:html+"</div>"};
 }
 function currentCaptureSession(){return state.capture.activeScratchpad?.session_id||state.capture.activeSessionId||state.capture.sessionId;}
@@ -6506,8 +6562,25 @@ function setVersionMember(revision,key){
  return revision.members.some(member=>member.member_key===key)?key:(revision.members[0]?.member_key||"");
 }
 function bindSetReviewButtons(){
+ document.querySelectorAll("[data-set-draft-run]").forEach(button=>{button.onclick=()=>openCaptureSetDraft(button.dataset.setDraftRun).catch(error=>toast(error.message));});
  document.querySelectorAll("[data-set-cancel-run],[data-set-retry-run],[data-set-recover-run]").forEach(button=>{button.onclick=async()=>{const session=currentCaptureSession(),epoch=++captureSetEpoch;const id=button.dataset.setCancelRun||button.dataset.setRetryRun||button.dataset.setRecoverRun;button.disabled=true;try{let run;if(button.dataset.setRecoverRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/recover`,{method:"POST",body:"{}"});}else if(button.dataset.setCancelRun){run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/cancel`,{method:"POST",body:"{}"});}else{const old=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);const uncertain=old.calls.some(c=>["running","uncertain"].includes(c.state));if(uncertain&&!window.confirm(t("docset.uncertain")))return;run=await api(`/api/document-set-runs/${encodeURIComponent(id)}/retry`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:old.plan.base_generation,acknowledge_uncertain:uncertain})});}if(epoch!==captureSetEpoch||currentCaptureSession()!==session)return;await pollCaptureDocumentSet(session,run.run_id,epoch);}catch(error){if(epoch===captureSetEpoch&&currentCaptureSession()===session)toast(error.message);}finally{if(button.isConnected)button.disabled=false;}};});
  document.querySelectorAll("[data-set-review-run]").forEach(button=>{button.onclick=()=>openSetReview(button.dataset.setReviewRun).catch(error=>toast(error.message));});
+}
+async function openCaptureSetDraft(id) {
+ const scope=captureRequestScope(),epoch=captureSetEpoch;
+ const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);
+ if(!scope.isCurrent()||epoch!==captureSetEpoch||captureDocumentSet?.run?.run_id!==id)return;
+ if(run.state!=="draft_saved"||!run.archive_unconfirmed_draft||run.plan.capture.session_id!==scope.sessionId)return;
+ const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";
+ dialog.innerHTML=`<h2>${escapeHTML(t("docset.draft.open"))}</h2><p>${escapeHTML(t("docset.draft.notice"))}</p><div class="tf-document-set-review">${run.archive_draft.members.map((member,index)=>`<details ${index===0?"open":""}><summary>${escapeHTML(member.title)}</summary><button class="tf-btn" data-draft-download="${index}">${escapeHTML(t("docset.draft.download"))}</button><div class="markdown-rendered">${renderMarkdown(member.body)}</div></details>`).join("")}</div><button class="tf-btn" data-close>${escapeHTML(t("common.close"))}</button>`;
+ document.body.appendChild(dialog);
+ dialog.querySelector("[data-close]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();
+ dialog.querySelectorAll("[data-draft-download]").forEach(button=>{button.onclick=()=>{
+  const member=run.archive_draft.members[Number(button.dataset.draftDownload)];
+  const url=URL.createObjectURL(new Blob([member.body],{type:"text/markdown;charset=utf-8"}));
+  const link=document.createElement("a");link.href=url;link.download=member.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }});
+ dialog.showModal();
 }
 async function openSetReview(id){
  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(!run.candidate)return;

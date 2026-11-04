@@ -3,6 +3,9 @@
 // phrases are tuned to fit AntD-style components without truncation.
 
 export const messages = {
+  "notes.design_draft": "设计草稿 · 未定稿",
+  "docset.draft.in_notes": "归档文件已保存为 Thought，可在笔记列表中阅读。",
+  "docset.draft.recover_notes": "恢复到笔记（不重新生成）",
   "docset.cancel": "取消生成",
   "docset.recover": "恢复已提交文件（不调用模型）",
   "docset.retry": "重试失败项",
@@ -16,6 +19,10 @@ export const messages = {
   "docset.save_first": "请先保存当前修改，再进行转换。",
 
   "docset.generate": "生成整套",
+  "docset.state.draft_saved": "已从对话自动归档为设计草稿",
+  "docset.draft.notice": "已自动整理对话中的用户需求与模型设计建议。草稿保留未决事项和原始对话，尚未定稿，不代表实施或交付批准。",
+  "docset.draft.open": "阅读设计草稿",
+  "docset.draft.download": "下载 Markdown",
   "docset.title": "文档成果集",
   "docset.files": "个文件",
   "docset.calls": "次模型调用上限",
@@ -105,6 +112,11 @@ export const messages = {
   "capture.archive.recheck": "重新生成并检查预览",
   "capture.archive.draft_saved": "已保存私有草稿：{id}，尚未归档或定稿。",
   "capture.archive.source_links": "来源链接（每行一条；添加链接不代表已核验）",
+  "docset.clarification.intro": "归档尚未开始生成文件，请在对话中补充以下待决事项：",
+  "docset.clarification.continue": "已有对话内容无需重复填写，回复后将自动继续归档。",
+  "docset.clarification.check_pending": "规划中另有完整性校验缺口，将在补充答复后重新核验；本次不会跳过校验生成。",
+  "docset.clarification.planning_incomplete": "归档规划尚未通过完整性校验，尚未生成文件。已有对话已保留，无需逐条确认内部校验项。请核对设计范围后重新要求归档；若范围已经明确，需要检查规划结果。",
+  "docset.clarification.criteria": "确认依据",
   "capture.archive.state.idle": "尚未归档",
   "capture.archive.state.preparing": "正在整理文档，尚未归档",
   "capture.archive.state.needs_input": "缺少关键内容，请在对话中补充后再次要求归档。",

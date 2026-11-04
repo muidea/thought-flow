@@ -3,6 +3,9 @@
 // switch is a no-op for English speakers.
 
 export const messages = {
+  "notes.design_draft": "Design draft · Not finalized",
+  "docset.draft.in_notes": "Archived files are saved as Thoughts and available in Notes.",
+  "docset.draft.recover_notes": "Restore to Notes (no regeneration)",
   "docset.cancel": "Cancel generation",
   "docset.recover": "Recover published files (no model call)",
   "docset.retry": "Retry failed work",
@@ -16,6 +19,10 @@ export const messages = {
   "docset.save_first": "Save current changes before converting.",
 
   "docset.generate": "Generate document set",
+  "docset.state.draft_saved": "Design draft archived from the conversation",
+  "docset.draft.notice": "User requirements and assistant design proposals are extracted automatically. Drafts retain open decisions and the original conversation; they are not finalized or approved for execution or delivery.",
+  "docset.draft.open": "Read design drafts",
+  "docset.draft.download": "Download Markdown",
   "docset.title": "Document set",
   "docset.files": "files",
   "docset.calls": "maximum model calls",
@@ -105,6 +112,11 @@ export const messages = {
   "capture.archive.recheck": "Generate and check preview",
   "capture.archive.draft_saved": "Private draft saved: {id}. It has not been archived or finalized.",
   "capture.archive.source_links": "Source links (one per line; adding a link does not verify it)",
+  "docset.clarification.intro": "No files have been generated. Please answer these open decisions in the conversation:",
+  "docset.clarification.continue": "You do not need to repeat existing information. Archiving will continue after your reply.",
+  "docset.clarification.check_pending": "The plan also has completeness checks to resolve after your reply. Generation remains blocked until validation passes.",
+  "docset.clarification.planning_incomplete": "The archive plan has not passed completeness checks; no files have been generated. Your conversation is preserved. You do not need to confirm internal validation fields. Review the design scope and ask to archive again; if the scope is already clear, the planning result needs investigation.",
+  "docset.clarification.criteria": "Decision criteria",
   "capture.archive.state.idle": "Not archived",
   "capture.archive.state.preparing": "Preparing your document; not yet archived",
   "capture.archive.state.needs_input": "Essential information is missing. Add it in the conversation, then ask to archive again.",

@@ -162,15 +162,19 @@ func (s *Store) Runs() ([]ds.Run, error) {
 	return out, nil
 }
 func (s *Store) immutable(path string, v any, private bool) error {
-	target, e := objectlocation.SafePath(s.Root, path)
-	if e != nil {
-		return e
-	}
 	raw, e := json.MarshalIndent(v, "", "  ")
 	if e != nil {
 		return e
 	}
 	raw = append(raw, '\n')
+	return s.immutableBytes(path, raw, private)
+}
+
+func (s *Store) immutableBytes(path string, raw []byte, private bool) error {
+	target, e := objectlocation.SafePath(s.Root, path)
+	if e != nil {
+		return e
+	}
 	if existing, e := objectlocation.ReadFileBounded(target, 32<<20); e == nil {
 		if string(existing) == string(raw) {
 			return nil
@@ -206,7 +210,7 @@ func (s *Store) immutable(path string, v any, private bool) error {
 	}
 	if e = os.Link(f.Name(), target); e != nil {
 		if os.IsExist(e) {
-			return s.immutable(path, v, private)
+			return s.immutableBytes(path, raw, private)
 		}
 		return e
 	}
@@ -836,4 +840,16 @@ func projectionHash(root, path string) (string, error) {
 		return "", e
 	}
 	return documentstore.Hash(raw), nil
+}
+
+// SaveArchiveDraftMember writes only to the private attempt, never to ordinary
+// Thought projections or SetHead. Replays must match exact immutable bytes.
+func (s *Store) SaveArchiveDraftMember(set, run string, m ds.ArchiveDraftMember) error {
+	if e := valid(set, run); e != nil {
+		return e
+	}
+	if !ds.ValidKey(m.Key) || filepath.Base(m.Filename) != m.Filename || !strings.HasSuffix(m.Filename, ".md") || m.Hash != documentstore.Hash([]byte(m.Body)) {
+		return ds.ErrInvalid
+	}
+	return s.immutableBytes(Private(set)+"/drafts/"+run+"/"+m.Filename, []byte(m.Body), true)
 }

@@ -31,6 +31,19 @@ func ThoughtRelativePath(thoughtID string) string {
 }
 
 func WriteThought(rootPath string, thought models.Thought, content models.ThoughtContent) error {
+	return writeThought(rootPath, thought, content, false)
+}
+
+// CreateThought only creates an ordinary note. The exclusive file publication
+// also protects against external editors that do not participate in our locks.
+func CreateThought(rootPath string, thought models.Thought, content models.ThoughtContent) error {
+	if thought.Document != nil || thought.DocumentProfile != nil {
+		return documentstore.ErrInvalid
+	}
+	return writeThought(rootPath, thought, content, true)
+}
+
+func writeThought(rootPath string, thought models.Thought, content models.ThoughtContent, createOnly bool) error {
 	registry := objectlocation.For(rootPath)
 	location, e := registry.Reserve(thought.ID, thought.OwnerTopicID, "create-"+thought.ID)
 	if e != nil {
@@ -56,7 +69,7 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 		if _, err := flow.SyncProjectionLocked(&thought, &content, false); err != nil {
 			return err
 		}
-		return writeThoughtProjection(rootPath, thought, content)
+		return publishThoughtProjection(rootPath, thought, content, createOnly)
 	}()
 	if err != nil {
 		return err
@@ -68,6 +81,10 @@ func WriteThought(rootPath string, thought models.Thought, content models.Though
 }
 
 func writeThoughtProjection(rootPath string, thought models.Thought, content models.ThoughtContent) error {
+	return publishThoughtProjection(rootPath, thought, content, false)
+}
+
+func publishThoughtProjection(rootPath string, thought models.Thought, content models.ThoughtContent, createOnly bool) error {
 	location, e := objectlocation.For(rootPath).Lookup(thought.ID)
 	if e != nil {
 		return e
@@ -91,8 +108,14 @@ func writeThoughtProjection(rootPath string, thought models.Thought, content mod
 	defer func() {
 		_ = os.Remove(tmpPath)
 	}()
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return err
+	var publishErr error
+	if createOnly {
+		publishErr = os.Link(tmpPath, targetPath)
+	} else {
+		publishErr = os.Rename(tmpPath, targetPath)
+	}
+	if publishErr != nil {
+		return publishErr
 	}
 	dir, e := os.Open(filepath.Dir(targetPath))
 	if e != nil {
@@ -293,12 +316,17 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 	}
 	boundary := ""
 	encoding := "sections-v2"
+	if thought.DesignDraft != nil {
+		encoding = "sections-v3"
+		raw, _ := json.Marshal(thought.DesignDraft)
+		writeScalar(&buf, "design_draft", string(raw))
+	}
 	if thought.MarkdownImport != nil {
 		encoding = "sections-v3"
 		raw, _ := json.Marshal(thought.MarkdownImport)
 		writeScalar(&buf, "markdown_import", string(raw))
 	}
-	if thought.DocumentProfile != nil || thought.Document != nil || thought.MarkdownImport != nil {
+	if thought.DocumentProfile != nil || thought.Document != nil || thought.MarkdownImport != nil || thought.DesignDraft != nil {
 		boundary = documentstore.HashJSON(content)
 		writeScalar(&buf, "body_encoding", encoding)
 		writeScalar(&buf, "body_boundary", boundary)
@@ -346,7 +374,8 @@ func renderThought(thought models.Thought, content models.ThoughtContent, unknow
 			value := documentstore.Normalize(section.value)
 			if encoding == "sections-v3" {
 				// The extra LF belongs to the envelope, not the source. Preserve
-				// BOM, CRLF, indentation and trailing whitespace byte for byte.
+				// BOM, CRLF, indentation and trailing whitespace byte for byte,
+				// including archived original-conversation Markdown.
 				value = section.value + "\n"
 			}
 			fmt.Fprintf(&buf, "<!-- thoughtflow:%s:%s:start -->\n## %s\n\n%s<!-- thoughtflow:%s:%s:end -->\n\n", boundary, section.name, section.name, value, boundary, section.name)
@@ -608,6 +637,7 @@ func knownThoughtFrontMatterKey(key string) bool {
 		"expansion_plan",
 		"document_profile",
 		"capture_draft",
+		"design_draft",
 		"document_parameters",
 		"document_sources",
 		"capture_status",
@@ -643,6 +673,8 @@ func parseFrontMatter(frontMatter string, thought *models.Thought) {
 		key := strings.TrimSpace(parts[0])
 		value := parseScalar(parts[1])
 		switch key {
+		case "design_draft":
+			_ = json.Unmarshal([]byte(value), &thought.DesignDraft)
 		case "markdown_import":
 			_ = json.Unmarshal([]byte(value), &thought.MarkdownImport)
 		case "document_id":

@@ -124,6 +124,7 @@ type Workspace struct {
 }
 
 type Thought struct {
+	DesignDraft                *DesignDraftLink    `json:"design_draft,omitempty"`
 	ContentExpectedHash        string              `json:"-"`
 	MarkdownImport             *MarkdownImport     `json:"markdown_import,omitempty"`
 	CaptureDraft               bool                `json:"capture_draft,omitempty"`
@@ -161,6 +162,16 @@ type Thought struct {
 	URLFollowups               []URLFollowup       `json:"url_followups,omitempty" yaml:"url_followups,omitempty"`
 	ExpansionPlan              string              `json:"expansion_plan,omitempty" yaml:"expansion_plan,omitempty"`
 	DocumentProfile            *DocumentProfileRef `json:"document_profile,omitempty" yaml:"document_profile,omitempty"`
+}
+
+// DesignDraftLink records an archived proposal's origin, never approval or a
+// finalized revision. The immutable source remains in the archive attempt.
+type DesignDraftLink struct {
+	SetID      string `json:"set_id"`
+	RunID      string `json:"run_id"`
+	MemberKey  string `json:"member_key"`
+	SourceHash string `json:"source_hash"`
+	BodyHash   string `json:"body_hash"`
 }
 
 // MarkdownImport describes the immutable source held in ThoughtContent.Original.

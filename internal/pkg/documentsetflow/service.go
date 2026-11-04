@@ -319,6 +319,7 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 }
 
 type RunRequest struct {
+	ArchiveDraft       bool    `json:"archive_unconfirmed_draft,omitempty"`
 	MarkdownPreviewID  string  `json:"markdown_preview_id,omitempty"`
 	OperationID        string  `json:"operation_id"`
 	SetID              string  `json:"set_id"`
@@ -391,6 +392,10 @@ func (s *Service) StartWithBinding(req RunRequest, bind func(ds.Run) error) (ds.
 		if q.Blocking && q.Resolution == "" {
 			run.State = "needs_clarification"
 		}
+	}
+	if run.State == "needs_clarification" && req.ArchiveDraft {
+		run.ArchiveDraft = true
+		run.State = "queued"
 	}
 	for _, m := range plan.Members {
 		run.Members = append(run.Members, ds.MemberProgress{Key: m.Key, State: "queued"})
@@ -535,6 +540,10 @@ func (s *Service) execute(parent context.Context, id string) {
 	defer cancel()
 	if e = s.check(run.Plan); e != nil {
 		s.fail(&run, e)
+		return
+	}
+	if run.ArchiveDraft {
+		s.executeArchiveDraft(ctx, &run)
 		return
 	}
 	run.State = "generating"
@@ -1064,6 +1073,12 @@ func (s *Service) Recover() []error {
 	}
 	for _, r := range runs {
 		if r.Plan.SetID == "" {
+			continue
+		}
+		if r.ArchiveDraft && r.Draft != nil && !r.CancelRequested && ((!r.Draft.NotesReady && r.State == "draft_saved") || r.Draft.NotesPending) {
+			if _, e := s.RecoverRun(r.ID); e != nil {
+				issues = append(issues, e)
+			}
 			continue
 		}
 		if r.Candidate != nil && s.Store.Reachable(r.Plan.SetID, r.Candidate.ID) {

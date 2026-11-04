@@ -72,7 +72,7 @@ func TestPlannerRequestContainsExactResponseContractAndCompleteInput(t *testing.
 		if !strings.Contains(request.Messages[0].Content, "do not copy it into artifact") {
 			t.Error("acceptance and artifact applicability guidance is ambiguous")
 		}
-		for _, instruction := range []string{"compact JSON", "open_questions, never questions", "Preserve ALL distinct requirements", "members are generated later"} {
+		for _, instruction := range []string{"compact JSON", "open_questions, never questions", "Preserve ALL distinct requirements", "members are generated later", "read ALL frozen user messages", "never ask the user to reconfirm", "planning completeness defect", "Unknown has_interfaces/has_persistence belongs in conditions", "document-only delivery"} {
 			if !strings.Contains(request.Messages[0].Content, instruction) {
 				t.Error("missing output guidance", instruction)
 			}

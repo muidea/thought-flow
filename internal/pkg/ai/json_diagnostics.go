@@ -50,7 +50,7 @@ func JSONResponseErrorDiagnostic(err error) (JSONResponseDiagnostic, bool) {
 	return JSONResponseDiagnostic{}, false
 }
 
-// One trace belongs to one synchronous planning/review call, including its
+// One trace belongs to one synchronous structured-output call, including its
 // capability fallback. It is discarded on success and never shared across calls.
 type jsonResponseTrace struct{ diagnostic JSONResponseDiagnostic }
 type jsonResponseTraceKey struct{}

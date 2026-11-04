@@ -38,9 +38,10 @@ import (
 // conversation after a reload; the commit path only uses the user
 // messages and the cumulative Content field.
 type Message struct {
-	Role string    `json:"role"` // "user" | "ai" | "system"
-	Text string    `json:"text"`
-	At   time.Time `json:"at"`
+	ArchiveOperationID string    `json:"archive_operation_id,omitempty"`
+	Role               string    `json:"role"` // "user" | "ai" | "system"
+	Text               string    `json:"text"`
+	At                 time.Time `json:"at"`
 }
 
 // Draft accumulates every chat command the user has issued while the
@@ -178,13 +179,22 @@ type ArchivePreview struct {
 // ArchiveStrategy, ArchivePreview, SourceThoughtID per PRD §3.1 /
 // §3.1.1. The v1 → v2 migration is implemented in loadFromDisk —
 // old files are read as-is and the new fields are zero-valued.
+// ArchiveClarification is presentation data; the frozen plan retains every
+// blocker and remains authoritative for generation and publication gates.
+type ArchiveClarification struct {
+	RunID           string   `json:"run_id"`
+	Questions       []string `json:"questions"`
+	DiagnosticCount int      `json:"diagnostic_count"`
+}
+
 type ArchiveOperation struct {
-	GenerationStarted bool   `json:"generation_started,omitempty"`
-	ID                string `json:"id"`
-	State             string `json:"state"`
-	InputGeneration   uint64 `json:"input_generation"`
-	Error             string `json:"error,omitempty"`
-	AutoCommit        bool   `json:"auto_commit"`
+	Clarification     *ArchiveClarification `json:"clarification,omitempty"`
+	GenerationStarted bool                  `json:"generation_started,omitempty"`
+	ID                string                `json:"id"`
+	State             string                `json:"state"`
+	InputGeneration   uint64                `json:"input_generation"`
+	Error             string                `json:"error,omitempty"`
+	AutoCommit        bool                  `json:"auto_commit"`
 }
 type SaveCommand struct {
 	ExpectedTargetHash string                `json:"expected_target_hash,omitempty"`

@@ -316,3 +316,69 @@ DocumentSetPlanningInput 将同一规则表放入 relation_contract，并据此�
 本增量最终 `GOMAXPROCS=2 GOFLAGS=-p=2 make check` 全部通过，覆盖全量 Go、构建、Node 154/154、i18n 6/6，日志 `/tmp/thoughtflow-planner-relations-check.log`。新二进制的 API/SSE 端到端 41/41 通过，含六成员生成、交付、备份恢复、重启、专题刷新及真实事件流，日志 `/tmp/thoughtflow-planner-relations-e2e.log`。documentset、AI、成果集流程的 Relation/Evidence/私有诊断定向 race 通过，日志 `/tmp/thoughtflow-planner-relations-race.log`；相关包全量初步检查日志 `/tmp/thoughtflow-planner-relations-focused.log`。重命名统一入口时编译检查发现并修正历史计划验证和公开读取的两处旧调用，最终全量检查及上述 race、端到端均在修正后通过。没有前端变更，未重复早前已执行的完整浏览器套件，不将旧结果记为此次重跑；源码空白检查通过。
 
 以上为当前工作树的本地受控证据，不是原始 REL-003 的现场重放或真实模型质量证明。本次未调用真实模型、未改网关／配置／真实会话、未重启运行中的服务，未擅自改写关系，尚未提交或核实远端 CI。已构建的新二进制需重启现有服务后生效；若模型仍输出不合法关系，新错误会直接给出关系类型、端点身份／事实类型、原因码及 request_id，并保存私有原始结果以便准确核对。
+
+## 2026-11-04 Capture 澄清回复与内部校验分离
+
+用户提供的当前归档输出包含四条中文业务问题，以及大量重复的 fact／condition／内容义务／覆盖校验消息；同一清单又出现在 AI 回复、归档状态与成果集卡片中。源码确认 archiveDocumentSet 将所有阻断问题直接写入消息和 Operation.Error，前端又分别渲染 Error 和完整 Questions。仅凭此输出不能认定冻结对话确实缺少所有相关决定，本轮没有读取或修改真实会话，也没有以用户贴出的错误清单作为业务确认依据。
+
+本次在 Capture 服务中增加只读澄清投影：保留类型化业务问题及旧版非诊断问题，按完整显示文本去重，保留选项、影响和确认依据；BuildPlan 的空 kind、fact-/input-/condition-/gap- 前缀及 modules 诊断仅计数，不再逐条作为用户问题。类型化问题即使使用相同前缀也仍保留。所有原始问题、事实状态、EngineeringIssues 和生成／定稿门禁维持原值，不将显示摘要作为计划可执行性证据。只有内部诊断、没有可回答的业务问题时，明确显示规划未通过完整性检查，避免要求用户逐条确认内部 schema。
+
+ArchiveOperation 持久化与 run ID 绑定的澄清摘要，AI 消息记录 archive_operation_id。前端按当前会话／操作／任务显示一次澄清气泡，抑制同轮归档状态和待澄清成果集卡片，不再显示尚未开始的 queued 文件；旧任务没有摘要时从原计划生成兼容投影，仅替换当前操作精确匹配的旧 AI 清单，不改写磁盘历史、不删除用户输入或以前轮次的问答。任务尚未加载或缓存属于其他任务时，不展示原始诊断或错误任务的清单。真实失败状态仍保留错误。
+
+规划提示补充：先阅读全部冻结用户消息并整理已有证据，不为了满足字段格式再次确认已表达的需求；只对真实业务决定、矛盾和范围选择提问。未知接口／持久化范围应记录为 condition 和业务问题，不能伪装为可测质量约束；所有权和覆盖装配缺口属于规划完整性问题。文档交付与可运行软件交付必须基于用户范围区分，不编造构建运行要求或豁免证据。此处是减少规划噪声的输入约束，不是实际模型质量或本次真实会话成功归档的证明，也没有增加模型自动重放。
+
+验证：新增四个业务问题加成组诊断、选项／影响保留、仅诊断、类型化问题前缀、已解决问题、无副作用投影测试。真实临时 Capture 流程构造未确认事实与业务问题并存，验证原计划仍阻断、摘要与任务绑定可从磁盘恢复、答复后自动继续同一成果集。Node 验证新旧摘要、重复显示、历史问答保留、失败反馈、旧任务缓存及会话隔离。Chromium 桌面／手机各覆盖新旧格式并刷新，四个场景通过，日志 `/tmp/thoughtflow-clarification-browser-final.log`，未执行其他浏览器用例。`GOMAXPROCS=2 GOFLAGS=-p=2 make check` 通过（全量 Go、构建、Node 156/156、i18n 6/6），日志 `/tmp/thoughtflow-clarification-check.log`；服务定向 race 通过，日志 `/tmp/thoughtflow-clarification-race.log`。
+
+新构建二进制的 API/SSE 端到端测试 41/41 通过，含六成员成果集生成、交付、备份恢复及重启，日志 `/tmp/thoughtflow-clarification-e2e.log`。上述均为本地受控测试，未调用真实模型、未重启运行中的服务、未改配置或真实工作区，未取得当前工作树的远端 CI 证据。新二进制需由用户重启服务后生效。
+
+## 2026-11-04 完整对话自动抽取与私有设计草稿归档
+
+用户继续验证后确认，设计预期是所有已有信息自动从对话抽取。本轮只读核对当前 Capture 会话，确认用户提出平台目标后，AI 已形成模块、状态流转、存储及两级验收的设计方案；用户随后要求归档这些设计。此前澄清收敛只修复了展示，未修复“仅允许用户消息作为提取来源”与“未确认即禁止任何文件生成”的链路问题。本节行为更新前一节关于自动归档等待澄清的说明。
+
+规划输入现区分 user_message_indices 与 proposal_message_indices；完整对话仍原样冻结，已形成的 AI 设计作为 proposed/model_proposal 素材保留，不能因为缺用户批准而抹为待确认占位内容。confirmed 事实仍必须有精确用户证据，不允许借归档命令把 AI 提议变成批准。来源地址修正保留已有的精确 AI 建议地址，避免与后续用户转述混淆。archive_contract 明确文件格式、运行位置、角色和文件名由 ThoughtFlow 管理，与目标软件 artifact 的构建、运行及验收合同分开，不再把保存机制交给用户回答。
+
+Capture 自动归档内部开启未确认设计的私有草稿分支，无需客户端开关或再次点击生成。只有原计划因未确认问题而阻断时使用此分支；已经满足正常条件的计划仍走原生成、联合检查及发布路径，普通显式成果集运行入口维持原阻断行为。草稿按冻结 Profile 角色及已讨论模块整理；未知／建议性否定条件不能省略角色，只有有用户确认依据的排除才省略。按 Profile 的角色依赖顺序生成，传入完整冻结对话、带来源状态的事实以及此前固定草稿正文。真正未定义之处在对应草稿章节明确保留缺口，不能编造实现、批准或验证成功，也不使用通用补全伪装为工程内容完成。调用仍继承原生 JSON object 及预算、取消、失败和明确重试机制，不退回自由文本。
+
+角色 Markdown 以不可覆盖的字节保存到 `.content-registry/private/document-sets/<set>/drafts/<run>/`，0600 文件权限，原始 Capture 快照继续私有保存；另存完整原始对话 Markdown，确保整理不会成为删除素材的渠道。成功任务状态为 draft_saved，草稿成员及 source_hash 随任务持久化，重放不产生新模型调用；中断任务仍由原恢复机制保留失败／不确定调用，不自动重放。来源与当前会话不符、预算超限、空／非法输出、文件字节冲突等不得显示成功。私有草稿不创建正式 Revision、SetHead、普通 Thought／个人 HEAD 或正式索引，原计划的全部阻断项保持不变；正式定稿、delivery 和 Workorch 交接不能读取它作为合格成果。
+
+Capture 对话展示“已从对话自动归档为设计草稿”，提供阅读及 Markdown 下载，不再展示要求重复填写字段的澄清清单。读者明确看到草稿及来源状态，可查看各角色内容和原始对话；刷新仍从会话关联任务恢复，正式审查／批准表单不出现在草稿读者中。设计文档第 12.1.1 节同步明确自动提取、草稿隔离与正式门禁阶段。
+
+新增受控回归覆盖：真实临时 Capture 自动归档，无额外生成点击或字段确认；AI 提议提取与用户证据分离；普通运行仍阻断；所有角色与原始对话 Markdown 的实际字节、权限及 hash；模块生成收到固定接口／存储草稿；未知／建议性排除不静默省略；空输出报错；人工字节不被重放覆盖；冻结来源变化拒绝；幂等、重启恢复、定稿／正式导出拒绝草稿。原生 Responses 模拟网关验证草稿要求 json_object，unsupported 只请求一次，不回退或重放。Chromium 桌面／手机覆盖阅读、刷新及下载数据逐字一致；下载测试拦截文件落盘，不写用户 Downloads。
+
+本增量 `GOMAXPROCS=2 GOFLAGS=-p=2 make check` 通过（全量 Go／构建／Node 157/157／i18n 6/6），日志 `/tmp/thoughtflow-context-archive-check.log`；随后涉及提议来源、草稿空内容处理及快照一致性的最终版本又完成 AI、成果集流程、HTTP 服务相关包全量测试，日志 `/tmp/thoughtflow-context-archive-final-backend.log`。最终草稿依赖顺序、未知范围、来源篡改等补充回归通过定向 race，日志 `/tmp/thoughtflow-context-archive-final-race-v2.log`；最终 fmt-check、node-check 与二进制构建通过，日志 `/tmp/thoughtflow-context-archive-final-build.log`。桌面／手机草稿阅读及下载载荷验证通过，日志 `/tmp/thoughtflow-context-archive-download-browser.log`，本轮还保留旧澄清兼容的浏览器回归结果 `/tmp/thoughtflow-context-archive-browser.log`。以上按执行层级记录，不冒充最终 SHA 的远端 CI。
+
+本轮只读核对真实会话；没有改动其内容、调用真实模型重新归档、修改配置或重启运行中的服务。真实模型的内容质量和该会话最终归档结果尚需用户使用新构建重启服务后验证。源码修改尚未提交。
+
+最终构建的 API/SSE 端到端 41/41 通过，日志 `/tmp/thoughtflow-context-archive-final-e2e.log`；该套验证原有正式成果集、备份、交付及事件链回归，私有草稿新增路径的独立证据为上述临时文件／HTTP 服务／race 及浏览器场景，不把原有成功六篇夹具替代新草稿路径验证。
+
+## 2026-11-04 草稿生成章节协议与失败诊断收口
+
+用户随后反馈，私有草稿生成在渲染阶段同时报告 scope、behavior、design、failures、verification 为空，以及 assumptions、references 不是合法章节。该错误表明交给渲染器的对象不符合冻结 Profile；本次失败发生时尚未保存生成返包原文，不能据此断定模型实际返回了哪一种外层结构，也不能追溯补造响应证据。
+
+源码核对发现两处协议缺口：生成提示只有允许和必填的章节名，没有定义每章的 `{ "content": "Markdown 正文" }` 值结构；生成解码沿用扫描任意 JSON 对象的通用方法，外层类型错误后可能继续尝试内部对象，并忽略未知字段。现从 DocumentDraft／DocumentSection DTO 派生响应 schema，并按冻结 Profile 替换为精确章节名和必填集合；references、assumptions 的数组明确放在顶层。自定义 Profile 若明确声明同名章节或允许扩展，仍按其自身政策执行。Schema 作为提示上下文传递，归档的原生 json_object 请求保持不变，不要求 Provider 新增 json_schema 能力。
+
+生成响应只严格解析已规范化的完整外层对象，不再从失败文档中搜索内层对象；错误包装、未知字段、章节类型和非法章节名在生成适配器内拒绝。工程成员的必填正文仍不能用本地通用段落补齐；缺失／空正文返回具体受信字段，不流入渲染器形成误导性的可用文档。普通非工程文档对已知章节的既有本地补全仍保留，Profile 渲染与正式业务审查门禁继续执行，不把结构通过当作内容质量或正式批准。
+
+生成阶段接入已有私有 JSON 诊断：普通成员和私有归档草稿的结构失败均保留完整原始返包、request_id、大小及摘要，路径为 `.content-registry/private/document-sets/<set>/diagnostics/generation/`，文件权限 0600。公开任务错误仅含协议原因、受信字段及请求追踪信息，未知字段名和返包正文不泄露到普通错误中。失败结果不成为计划、候选或正式成果，不自动修补、丢弃字段或重放模型调用；用户显式重试为独立任务，旧失败记录及原始诊断继续保留。
+
+新增回归覆盖实际 Responses 请求中的动态 schema、完整合法五章正文及顶层假设的渲染、元数据误放章节、章节字符串、正文对象、嵌套包装、未知根字段、空／缺必填章、null、多对象、含内层 JSON 的未知标签，以及明确声明同名章节的自定义 Profile。临时磁盘与真实 provider 适配器的集成回归覆盖误标 SSE 的 JSON、一次失败调用、私有诊断完整字节与权限、公开输出不泄漏、显式新任务重试成功保存六角色草稿及原对话，以及未创建公开 SetHead／定稿指针。受控模型不代表真实模型内容质量或该用户会话已经归档成功。
+
+本增量 `GOMAXPROCS=2 GOFLAGS=-p=2 make check` 通过，含全量 Go、构建、Node 157/157 和 i18n 6/6，日志 `/tmp/thoughtflow-draft-protocol-check.log`；定向协议及归档流程 race 通过，日志 `/tmp/thoughtflow-draft-protocol-race.log`。定向 provider 测试及归档集成日志分别为 `/tmp/thoughtflow-draft-protocol-focused.log`、`/tmp/thoughtflow-draft-generation-integration.log`。最终构建的 API/SSE 端到端 41/41 通过，日志 `/tmp/thoughtflow-draft-protocol-e2e.log`。本次没有新增前端修改，未重复上一增量的浏览器测试，不将旧浏览器结果记为本次执行。源码空白检查通过，修改尚未提交，没有最终 SHA 的远端 CI 结果。新二进制已构建，未重启真实服务、修改真实会话／配置或调用真实模型；需在新构建启动后显式重试失败任务，验证实际返包和该会话归档结果。
+
+## 2026-11-04 已归档设计草稿进入普通笔记收口
+
+用户确认 Capture 已显示“已从对话自动归档为设计草稿”，但普通笔记没有对应 Thought。前序实现只将六角色草稿和原始对话保存为私有不可变 Markdown，未创建普通 Thought；这属于保存与笔记发现链路缺口，不能通过再次生成或提示用户逐篇导入解决。
+
+归档现先保存全部冻结原件，再为每个成员及原始对话创建普通 Thought。持久元数据 `design_draft` 记录 set/run/member、来源摘要与原件正文摘要，`capture_draft=true`，禁用自动改写；列表、详情和完整阅读器均显示“设计草稿 · 未定稿”，Capture 提供成员到笔记的直接链接。正文采用已有 sections-v3 编码，完整保留原件字节及原始对话的尾部换行。没有赋予 DocumentProfile、正式成员 HEAD、SetHead 或定稿批准；后续正式发布仍须满足原门禁。
+
+新增本地保存恢复协议：Thought ID 由冻结时间、套、原始 attempt 和成员确定，所有 ID 在文件写入前保存；NotesPending 标记未完成投影，只有全部文件、事件及 Git 提交入队成功才置 NotesReady 并报告 draft_saved。新增普通 Thought 的独占创建使用同目录临时文件、fsync 和排他链接，外部编辑器即使不参与进程锁，也不能被 rename 覆盖。已存在同来源副本保留人工编辑；同 ID 外来内容、已删除对象、损坏原件和冻结来源不符均拒绝，保留私有原件并返回恢复错误。
+
+升级启动会验证旧 draft_saved 的完整冻结 Capture、计划、成员集合和原件字节，再补入笔记；不依赖当前对话可用、不重新生成。中断后也可在 Capture 执行“恢复到笔记（不重新生成）”。已成功保存的任务不再次生成，不在后续启动中复活用户删除的成功副本；普通笔记索引仍按现有配置处理，可独立执行 embedding。事件携带 capture_draft，避免 refiner 自动重写；Git 提交闭包显式包含笔记、位置及相关持久记录，排除私有运行和诊断。按实际提交文件清单复制到独立临时工作区，普通读取仍完整可用，不依赖私有档案。
+
+新增测试覆盖三个本地保存断点、旧版档案回填、无生成器／无实时会话恢复、人工编辑及嵌套 Markdown 标题保留、成功后删除不复活、外来同 ID 与私有字节／来源损坏拒绝、并发排他创建、已完成任务拒绝新 retry、真实服务 List/Get 中的可见性。浏览器覆盖桌面和移动端归档阅读／下载／刷新、成员跳转普通笔记、列表草稿徽标和完整阅读器；所有场景均使用临时数据与受控模型。
+
+定向集成通过，日志 `/tmp/thoughtflow-archive-notes-integration-v2.log`；定向 Node 与桌面／移动浏览器通过，日志 `/tmp/thoughtflow-archive-notes-node-v2.log`、`/tmp/thoughtflow-archive-notes-browser-v2.log`。初轮测试发现原有 v2 编码规范化原对话尾部换行，已改用 v3 后验证精确正文；另修正了测试中已有夹具笔记的总数假设，以及浏览器进入详情后点击不可见列表项的测试步骤，没有移除正文或可见性断言。定向恢复及服务 race 通过，日志 `/tmp/thoughtflow-archive-notes-race.log`；独占创建 race 通过，日志 `/tmp/thoughtflow-archive-notes-create-race.log`。完成态 retry 拒绝的追加定向测试通过，日志 `/tmp/thoughtflow-archive-notes-terminal-retry.log`。
+
+缓存问题在本次归档收口后独立核对，结果与后续代码门禁见 [LLM 缓存核对](ThoughtFlow-LLM-Cache-Review-2026-11-04.md)。未在本次顺带变更真实缓存会话、提示词布局或账号路由，未把输入增长和三个账号轮换直接当作唯一线上根因。
+
+最终本地 `GOMAXPROCS=2 GOFLAGS=-p=2 make ci-check` 全部通过：全量 Go、构建、Node 语法／组件、i18n、完整浏览器及 API/SSE 端到端，日志 `/tmp/thoughtflow-archive-notes-ci.log`。全量 Go 执行期间追加的完成态 retry 拒绝用例另行定向运行并通过 race，日志 `/tmp/thoughtflow-archive-notes-terminal-retry-race.log`；没有将其宣称为前一轮已编译测试包含的用例。最终空白及格式检查通过。新二进制已构建，未重启真实服务、修改真实会话或配置、重放真实归档，也未调用真实模型。升级生效需要重启新构建，由启动恢复验证并补入已有档案，无需用户重新发起生成。当前修改尚未提交，没有最终 SHA 的远端 CI 结果。

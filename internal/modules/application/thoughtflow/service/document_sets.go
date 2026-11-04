@@ -412,7 +412,8 @@ func (s *Service) handleDocumentSet(ctx context.Context, w http.ResponseWriter, 
 }
 
 // Archive intent selects a frozen set profile automatically. Planning and all
-// generation/checking gates run on the server; only working drafts are published.
+// generation/checking gates run on the server. Unapproved designs are saved as
+// private drafts; only eligible, validated sets enter the publication path.
 func (s *Service) archiveDocumentSet(ctx context.Context, sp scratchpad.Scratchpad) error {
 	if s.documentSets == nil || sp.Operation == nil {
 		return ds.ErrUnavailable
@@ -462,7 +463,7 @@ func (s *Service) archiveDocumentSet(ctx context.Context, sp scratchpad.Scratchp
 	if e != nil {
 		return e
 	}
-	_, e = s.documentSets.StartWithBinding(documentsetflow.RunRequest{OperationID: sp.Operation.ID, SetID: plan.SetID, PlanID: plan.ID, PlanHash: plan.Hash, ExpectedGeneration: &plan.BaseGeneration, CaptureGeneration: &plan.Capture.Generation}, func(run ds.Run) error {
+	_, e = s.documentSets.StartWithBinding(documentsetflow.RunRequest{ArchiveDraft: true, OperationID: sp.Operation.ID, SetID: plan.SetID, PlanID: plan.ID, PlanHash: plan.Hash, ExpectedGeneration: &plan.BaseGeneration, CaptureGeneration: &plan.Capture.Generation}, func(run ds.Run) error {
 		_, err := s.scratchpad.Update(sp.SessionID, func(current *scratchpad.Scratchpad) error {
 			if current.InputGeneration != sp.InputGeneration || current.Operation == nil || current.Operation.ID != sp.Operation.ID || current.DocumentSetPlanID != plan.ID {
 				return ds.ErrConflict
@@ -471,15 +472,11 @@ func (s *Service) archiveDocumentSet(ctx context.Context, sp scratchpad.Scratchp
 			current.Operation.State = "document_set"
 			current.Operation.InputGeneration = sp.InputGeneration
 			if run.State == "needs_clarification" {
-				var questions []string
-				for _, q := range plan.Shared.Questions {
-					if q.Blocking && q.Resolution == "" {
-						questions = append(questions, q.Message)
-					}
-				}
+				clarification := captureSetClarification(plan, run.ID)
 				current.Operation.State = "needs_input"
-				current.Operation.Error = strings.Join(questions, "\n")
-				current.Messages = append(current.Messages, scratchpad.Message{Role: "ai", Text: "归档需要补充以下内容：\n" + strings.Join(questions, "\n"), At: time.Now().UTC()})
+				current.Operation.Clarification = &clarification
+				current.Operation.Error = strings.Join(clarification.Questions, "\n")
+				current.Messages = append(current.Messages, scratchpad.Message{Role: "ai", ArchiveOperationID: current.Operation.ID, Text: captureSetClarificationText(clarification), At: time.Now().UTC()})
 			}
 			return nil
 		})

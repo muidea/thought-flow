@@ -59,11 +59,14 @@ func jsonResponseError(err error, usedFallback bool) error {
 	var syntax *json.SyntaxError
 	var fieldType *json.UnmarshalTypeError
 	var missing requiredJSONFieldError
+	var documentSections documentDraftSectionsError
 	switch {
 	case errors.As(err, &syntax):
 		failure.Reason = "invalid_json"
 	case errors.As(err, &fieldType):
 		failure.Reason, failure.Field = "invalid_field_type", fieldType.Field
+	case errors.As(err, &documentSections):
+		failure.Reason, failure.Field = "invalid_document_sections", "sections"
 	case errors.As(err, &missing):
 		failure.Reason, failure.Field = "missing_required_field", missing.field
 	}

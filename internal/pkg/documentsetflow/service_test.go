@@ -120,7 +120,7 @@ func wait(t *testing.T, s *Service, id string) ds.Run {
 			t.Fatal(e)
 		}
 		switch r.State {
-		case "committed", "awaiting_review", "failed_terminal", "failed_retryable", "cancelled", "stale":
+		case "draft_saved", "committed", "awaiting_review", "failed_terminal", "failed_retryable", "cancelled", "stale":
 			// Durable terminal state is written just before worker teardown.
 			// Join that boundary before tests replace callbacks or inspect data
 			// produced by them; filesystem polling is not a memory barrier.

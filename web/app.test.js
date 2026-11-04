@@ -3440,7 +3440,7 @@ test("Capture set status distinguishes committed drafts, clarification and failu
  const plan={set_id:"set-a",members:[{key:"architecture",title:"Architecture",role:"architecture"}],profile:{name:"Design set"},shared_design:{open_questions:[]}};
  for(const state of ["generating","awaiting_review","committed","failed_terminal","needs_clarification"]){
   app.setCaptureDocumentSet({session:"session-a",run:{run_id:"run-a",plan,state,members:[],candidate:{set_revision_id:"fixed-r"}}});
-  const message=app.captureDocumentSetMessage();assert.match(message.html,new RegExp(`docset.state.${state}`));
+  const message=app.captureDocumentSetMessage();if(state==="needs_clarification"){assert.match(message.text,/docset.clarification.planning_incomplete/);continue;}assert.match(message.html,new RegExp(`docset.state.${state}`));
   if(state==="committed"){assert.match(message.html,/set_revision=fixed-r/);assert.doesNotMatch(message.html,/data-set-cancel-run/);}
   if(state==="generating")assert.match(message.html,/data-set-cancel-run/);
   if(state==="failed_terminal")assert.match(message.html,/data-set-retry-run/);
@@ -3590,7 +3590,7 @@ test("public design JCS vectors agree with independent JavaScript UTF-16 encodin
 test("Capture engineering gaps retain stable facts and resolved questions disappear",()=>{
  const app=loadAppFunctions();app.appState.capture.sessionId="engineering";
  app.setCaptureDocumentSet({session:"engineering",plan:{members:[],profile:{name:"Engineering"},shared_design:{open_questions:[{id:"gap",message:"Missing acceptance evidence",blocking:true,facts:["TEST-ORDER"]},{id:"resolved",message:"RESOLVED_MARKER",blocking:true,resolution:"Approved answer"}]}}});
- const message=app.captureDocumentSetMessage();assert.match(message.html,/TEST-ORDER/);assert.match(message.html,/Missing acceptance evidence/);assert.doesNotMatch(message.html,/RESOLVED_MARKER/);
+ const message=app.captureDocumentSetMessage();assert.doesNotMatch(message.html,/TEST-ORDER/);assert.match(message.html,/Missing acceptance evidence/);assert.doesNotMatch(message.html,/RESOLVED_MARKER/);
 });
 
 test("session archive polling discovers the automatic set task when initial SSE was lost", async () => {
@@ -3608,4 +3608,86 @@ test("session archive polling discovers the automatic set task when initial SSE 
  assert.match(dom.nodes["capture-conversation"].innerHTML,/set_revision=r-auto/);
  assert.equal(timers.length,0);
  assert.ok(calls.every(call=>call.method==="GET"));
+});
+
+test("Capture clarification shows one actionable bubble for current and legacy plans",()=>{
+ for(const structured of [true,false]) {
+  const dom=makeDomStub();
+  const app=loadAppFunctionsWith({dom});
+  const questions=[
+   {id:"interface",kind:"question",message:"请确认接口范围",blocking:true},
+   {id:"duplicate",kind:"question",message:"请确认接口范围",blocking:true},
+   {id:"persist",kind:"question",message:"请确认持久化生命周期",blocking:true},
+   ...["fact-REQ","condition-has_interfaces","modules","gap-a","gap-b"].map(id=>({id,message:"INTERNAL_DIAGNOSTIC",blocking:true})),
+   {id:"resolved",kind:"question",message:"RESOLVED",blocking:true,resolution:"done"},
+  ];
+  const raw=questions.filter(q=>!q.resolution).map(q=>q.message).join("\n");
+  const operation={id:"op",state:"needs_input",input_generation:5,error:raw};
+  const current={role:"ai",text:`归档需要补充以下内容：\n${raw}`};
+  if(structured){
+   operation.clarification={run_id:"run",questions:["请确认接口范围","请确认持久化生命周期"],diagnostic_count:5};
+   current.archive_operation_id="op";current.text="PERSISTED_CURRENT_CLARIFICATION";
+  }
+  const history=[{role:"user",text:"设计已讨论，请归档"},{role:"ai",archive_operation_id:"earlier-op",text:"EARLIER_QUESTION"},current];
+  app.appState.capture.sessionId="S";
+  app.appState.capture.messages=history;
+  app.appState.capture.activeScratchpad={session_id:"S",input_generation:5,document_set_run_id:"run",archive_operation:operation,messages:history};
+  const run={run_id:"run",state:"needs_clarification",members:[{member_key:"architecture",state:"queued"}],plan:{shared_design:{open_questions:questions}}};
+  app.setCaptureDocumentSet({session:"S",run});
+  app.renderCaptureConversation();
+  const html=dom.nodes["capture-conversation"].innerHTML;
+  assert.equal((html.match(/请确认接口范围/g)||[]).length,1);
+  assert.equal((html.match(/请确认持久化生命周期/g)||[]).length,1);
+  assert.match(html,/docset.clarification.check_pending/);
+  assert.match(html,/EARLIER_QUESTION/);
+  assert.doesNotMatch(html,/INTERNAL_DIAGNOSTIC|PERSISTED_CURRENT_CLARIFICATION|RESOLVED|queued|archive_status|data-kind="document_set"/);
+  assert.equal(app.captureArchiveStatusMessage(),null);
+  assert.equal(questions.length,9,"presentation must retain the full raw plan");
+  // An unrelated failure remains visible; do not suppress based on text alone.
+  operation.state="failed";operation.error="ACTUAL_FAILURE";
+  assert.match(app.captureArchiveStatusMessage().error,/ACTUAL_FAILURE/);
+ }
+});
+
+test("Capture clarification is durable before run polling and rejects stale run bindings",()=>{
+ const app=loadAppFunctions();app.appState.capture.sessionId="S";
+ const op={id:"op",state:"needs_input",clarification:{run_id:"new",questions:["SCOPE_QUESTION"],diagnostic_count:3}};
+ app.appState.capture.activeScratchpad={session_id:"S",document_set_run_id:"new",archive_operation:op};
+ assert.equal(app.captureArchiveStatusMessage(),null,"durable feedback works before run GET");
+ op.clarification.run_id="old";
+ app.renderCaptureConversation();
+ assert.equal(app.captureArchiveStatusMessage(),null,"stale feedback uses a safe loading projection");
+ app.setCaptureDocumentSet({session:"S",run:{run_id:"other",state:"needs_clarification",plan:{shared_design:{open_questions:[{id:"gap-a",blocking:true,message:"INTERNAL"}]}}}});
+ assert.equal(app.captureDocumentSetMessage(),null,"a cached foreign run cannot add another clarification");
+ app.appState.capture.sessionId="new-session";
+ assert.equal(app.captureArchiveStatusMessage(),null,"old session cannot render clarification for a new selection");
+});
+
+test("Capture automatically archived drafts expose reading without confirmation or generation controls",()=>{
+ const app=loadAppFunctions();app.appState.capture.sessionId="S";
+ const run={run_id:"draft-run",state:"draft_saved",archive_unconfirmed_draft:true,archive_draft:{source_hash:"hash",members:[{member_key:"architecture",title:"Architecture",body:"draft"}]},plan:{capture:{session_id:"S"},shared_design:{open_questions:[{kind:"question",id:"scope",message:"MUST_NOT_ASK_AGAIN",blocking:true}]}},members:[{member_key:"architecture",state:"queued"}]};
+ app.setCaptureDocumentSet({session:"S",run});
+ const message=app.captureDocumentSetMessage();
+ assert.match(message.html,/data-set-draft-run="draft-run"/);
+ assert.match(message.html,/docset.draft.notice/);
+ assert.match(message.html,/docset.state.draft_saved/);
+ assert.doesNotMatch(message.html,/MUST_NOT_ASK_AGAIN|queued|data-set-review-run|docset.generate|docset.clarification/);
+ run.state="failed_terminal";run.error="INVALID_DRAFT_JSON";
+ const failed=app.captureDocumentSetMessage();assert.match(failed.html,/INVALID_DRAFT_JSON/);assert.match(failed.html,/data-set-retry-run/);
+});
+
+test("archived design Thoughts are labeled in Notes and linked from Capture",()=>{
+ const app=loadAppFunctions();app.appState.capture.sessionId="S";
+ const thought={id:"design-1",user_title:"Archived architecture",design_draft:{set_id:"set",run_id:"run",member_key:"architecture"},capture_draft:true};
+ const list=app.renderThoughtListItem(thought);
+ assert.match(list,/notes.design_draft/);assert.match(list,/data-read-thought="design-1"/);
+ assert.doesNotMatch(app.renderThoughtListItem({id:"normal"}),/notes.design_draft/);
+ const markdown=app.thoughtReadingMarkdown({thought,content:{ai_notes:"# Architecture\n\nPreserved proposal."}});
+ assert.match(markdown,/notes.design_draft/);assert.match(markdown,/docset.draft.notice/);assert.match(markdown,/Preserved proposal/);
+ const run={run_id:"run",state:"draft_saved",archive_unconfirmed_draft:true,archive_draft:{notes_ready:true,members:[{member_key:"architecture",title:"Archived architecture",thought_id:"design-1"}]},plan:{capture:{session_id:"S"}}};
+ app.setCaptureDocumentSet({session:"S",run});
+ const message=app.captureDocumentSetMessage();assert.match(message.html,/docset.draft.in_notes/);assert.match(message.html,/#\/notes\?id=design-1/);
+ assert.doesNotMatch(message.html,/data-set-retry-run|data-set-recover-run|data-set-review-run/);
+ run.archive_draft.notes_ready=false;run.archive_draft.notes_pending=true;run.state="failed_terminal";run.error="Projection interrupted";
+ const pending=app.captureDocumentSetMessage();assert.match(pending.html,/data-set-recover-run="run"/);assert.doesNotMatch(pending.html,/data-set-retry-run|docset.draft.in_notes/);
 });
