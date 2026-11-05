@@ -15,6 +15,14 @@ const zhCNPath = pathToFileURL(
   path.join(__dirname, "zh-CN.js"),
 ).href;
 
+test("overview translation keys are registered and parse as an ES module", async () => {
+  const {Key}=await import(pathToFileURL(path.join(__dirname,"keys.js")).href);
+  const en=await import(enUSPath),zh=await import(zhCNPath);
+  const keys=Object.values(Key).filter(key=>key.startsWith("overview."));
+  assert.ok(keys.includes("overview.heading"));assert.ok(keys.includes("overview.attention"));
+  for(const key of keys){assert.ok(en.messages[key],key);assert.ok(zh.messages[key],key);}
+});
+
 test("i18n registry resolves a key in zh-CN", async () => {
   const { init, t, setLocale, getLocale } = await import(i18nPath);
   init({ locale: "zh-CN" });

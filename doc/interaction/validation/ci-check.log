@@ -1,0 +1,16 @@
+ci: running fmt-check
+ci: ok fmt-check
+ci: running test
+ci: ok test
+ci: running build
+ci: ok build
+ci: running node-check
+ci: ok node-check
+ci: running node-test
+ci: ok node-test
+ci: running i18n-check
+ci: ok i18n-check
+ci: running browser-test
+ci: ok browser-test
+ci: running e2e-test
+ci: ok e2e-test

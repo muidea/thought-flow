@@ -267,16 +267,13 @@ func (s *Service) Plan(ctx context.Context, session string, req PlanRequest) (ds
 			return ds.Plan{}, e
 		}
 	}
-	// Existing collections are explicit targets; new sets get a server-generated
-	// name to avoid slug aliases and never adopt another collection by accident.
+	// Identity stays server-generated; a business title must not become a path
+	// alias or cause a same-title collection to be adopted accidentally.
 	ts := topicstore.New(s.Store.Root)
 	var catalogGen uint64
 	if req.SetID == "" {
-		name := req.Name
-		if strings.TrimSpace(name) == "" {
-			name = p.Name
-		}
-		_, e = ts.Create(ctx, models.TopicCreateRequest{Name: set, Description: name, Mode: models.TopicModeCollection, OperationID: "create-" + req.OperationID, SearchPolicy: &models.TopicSearchPolicy{TopicGlobalVisible: true, OwnedThoughtsGlobalDefault: false}})
+		name := ds.DisplayTitle(*shared, req.Name, p.Name)
+		_, e = ts.CreateWithID(ctx, set, models.TopicCreateRequest{Name: name, Description: strings.TrimSpace(shared.Inputs["goal"]), Mode: models.TopicModeCollection, OperationID: "create-" + req.OperationID, SearchPolicy: &models.TopicSearchPolicy{TopicGlobalVisible: true, OwnedThoughtsGlobalDefault: false}})
 		if e != nil {
 			return ds.Plan{}, e
 		}

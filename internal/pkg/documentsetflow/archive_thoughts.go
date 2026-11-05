@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -48,6 +49,9 @@ func (s *Service) verifyArchiveThoughtSource(run ds.Run) error {
 	original := archiveOriginalMember(capture)
 	seen := map[string]bool{}
 	for _, member := range run.Draft.Members {
+		if filepath.Base(member.Filename) != member.Filename || strings.ContainsAny(member.Filename, "/\\") || member.Filename == "." {
+			return ds.ErrInvalid
+		}
 		if seen[member.Key] || member.Hash != documentstore.Hash([]byte(member.Body)) {
 			return ds.ErrInvalid
 		}
@@ -72,6 +76,11 @@ func (s *Service) verifyArchiveThoughtSource(run ds.Run) error {
 		}
 	}
 	return nil
+}
+
+// VerifySavedArchive verifies frozen evidence before exposing saved archive content.
+func VerifySavedArchive(root string, run ds.Run) error {
+	return (&Service{Store: documentsetstore.New(root)}).verifyArchiveThoughtSource(run)
 }
 
 // This is ordinary Thought materialization, not set publication. IDs are

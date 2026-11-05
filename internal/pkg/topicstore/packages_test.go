@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"thoughtflow/internal/pkg/contentreference"
 
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/markdown"
@@ -328,5 +329,46 @@ func TestPendingImportCannotExposeFinalizedDocumentThroughExport(t *testing.T) {
 	after, e := restoredFlow.Export(id, final.RevisionID, "final")
 	if e != nil || after != before {
 		t.Fatal("completed import unavailable", e)
+	}
+}
+
+func TestBackupPreservesExternalSetReferenceWithoutClaimingToBundleTarget(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := New(root)
+	topic, err := store.Create(ctx, models.TopicCreateRequest{OperationID: "create-reference-topic", Name: "Reference backup", Mode: "collection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := contentreference.Links{Schema: 1, Generation: 1, OperationID: "pin-external", Entries: []contentreference.Link{{SetID: "external-set", Policy: "pinned", Selection: contentreference.Selection{Kind: "revision", ID: "external-revision"}}}}
+	path := "topics/" + topic.ID + "/content-links.json"
+	if err = objectlocation.WriteJSON(root, path, links, false); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.ExportPackage(ctx, topic.ID, ExportRequest{OperationID: "backup-reference-topic", Kind: "backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := store.ExportBytes(topic.ID, result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, files, err := ReadPackage(raw)
+	if err != nil || len(files[path]) == 0 {
+		t.Fatal("lost reference", err)
+	}
+	for name := range files {
+		if strings.Contains(name, "external-set/") {
+			t.Fatal("external target falsely included", name)
+		}
+	}
+	dest := t.TempDir()
+	restored, err := New(dest).ImportPackage(ctx, "restore-references", raw)
+	if err != nil || restored.Phase != "completed" {
+		t.Fatal(restored, err)
+	}
+	var actual contentreference.Links
+	if err = objectlocation.ReadJSON(dest, path, &actual); err != nil || objectlocation.HashJSON(actual) != objectlocation.HashJSON(links) {
+		t.Fatal(actual, err)
 	}
 }

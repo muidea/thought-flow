@@ -151,9 +151,9 @@ func setError(w http.ResponseWriter, r *http.Request, e error) {
 	switch {
 	case errors.Is(e, ds.ErrPrecondition):
 		status, code = 428, "precondition_required"
-	case errors.Is(e, ds.ErrConflict), errors.Is(e, ds.ErrSourceMissing), errors.Is(e, objectlocation.ErrConflict), errors.Is(e, documentstore.ErrConflict):
+	case errors.Is(e, ds.ErrConflict), errors.Is(e, ds.ErrSourceMissing), errors.Is(e, objectlocation.ErrConflict), errors.Is(e, objectlocation.ErrOperationConflict), errors.Is(e, documentstore.ErrConflict):
 		status, code = 409, "conflict"
-	case errors.Is(e, ds.ErrInvalid), errors.Is(e, ds.ErrRules):
+	case errors.Is(e, ds.ErrInvalid), errors.Is(e, ds.ErrRules), errors.Is(e, objectlocation.ErrInvalid), errors.Is(e, objectlocation.ErrUnsafe):
 		status, code = 422, "validation_blocked"
 	case errors.Is(e, ds.ErrBudget):
 		status, code = 422, "budget_exceeded"

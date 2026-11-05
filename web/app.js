@@ -138,11 +138,13 @@ function parseRoute(hash) {
     return { page: "thoughts", nav: "notes", params: { thoughtId: query.id || "" }, query };
   }
   if (parts[0] === "write") {
-    return { page: "compose", nav: "compose", params: {}, query };
+    return { page: "compose", nav: "notes", params: {}, query };
   }
   if (parts[0] === "overview") {
     return { page: "dashboard", nav: "overview", params: {}, query };
   }
+  if(parts[0]==="settings")return {page:"settings",nav:"",params:{section:normalizeSettingsSection(parts[1])},query};
+  if(parts[0]==="help"||parts[0]==="about")return {page:"about",nav:"",params:{},query};
   const known = new Set(["capture", "search", "topics", "about"]);
   if (known.has(parts[0])) return { page: parts[0], nav: parts[0], params: {}, query };
   return { page: "dashboard", nav: "overview", params: {}, query };
@@ -170,6 +172,8 @@ const PAGE_SERIALIZERS = {
     return q;
   },
   thoughts: () => {
+    if(state.route?.query?.set)return {...state.route.query};
+    if(!state.activeThoughtId&&!state.route?.params?.thoughtId)return {...state.libraryQuery};
     const q = {};
     const id = state.activeThoughtId || state.route?.params?.thoughtId || "";
     if (id) q.id = id;
@@ -287,8 +291,10 @@ function buildRouteHash(page, params = {}, query = {}) {
     dashboard: "overview",
     thoughts: "notes",
     compose: "write",
+    about: "help",
   };
   let path = `#/${pageToSegment[page] || page}`;
+  if(page==="settings")path=`#/settings/${normalizeSettingsSection(params.section)}`;
   if (page === "topics" && params.topicId) {
     path = `#/topics/${encodeURIComponent(params.topicId)}`;
   }
@@ -348,7 +354,7 @@ async function refreshRouteData(route, options = {}) {
   if (!route || !route.page) return;
   switch (route.page) {
     case "dashboard":
-      await Promise.all([loadStatus(), loadMetrics()]);
+      await Promise.all([loadStatus(), libraryUI().home($("#workspace-home-content")), loadDashboardSessions()]);
       break;
     case "capture":
       renderCaptureConversation();
@@ -364,6 +370,10 @@ async function refreshRouteData(route, options = {}) {
       break;
     case "topics":
       await loadTopics();
+      break;
+    case "settings":
+      activateTab(`settings-drawer-${normalizeSettingsSection(route.params.section)}`, $("#settings-drawer"));
+      await Promise.allSettled([loadStatus(),loadPrivacyReport(),loadMetrics(),loadDocumentProfiles()]);
       break;
     case "compose":
       await loadComposeDrafts();
@@ -412,6 +422,9 @@ function handleTabClick(event) {
   const tabName = tab?.dataset?.tab;
   if (!tabName) return;
   const page = tab.closest(".tf-page");
+  if(page?.dataset?.page==="settings"){
+    navigateHash(buildRouteHash("settings",{section:tabName.replace("settings-drawer-","")}));return;
+  }
   if (page?.dataset?.page === "topics") {
     handleTopicsTabClick(tabName);
     return;
@@ -480,7 +493,11 @@ async function refreshSourcesSnapshot(revision) {
     next.set(`${source.source_type}::${source.source_id}`, {
       source_type: String(source.source_type),
       source_id: String(source.source_id),
+      ...source,
       title: source.title ? String(source.title) : "",
+      ...(source.snippet ? {snippet:String(source.snippet)} : {}),
+      ...(source.source_link ? {source_link:String(source.source_link)} : {}),
+      ...(source.metadata ? {metadata:{...source.metadata}} : {}),
     });
   }
   state.composeSources = next;
@@ -902,6 +919,9 @@ function createComposeSources(initial = []) {
       source_type: String(source.source_type),
       source_id: String(source.source_id),
       title: source.title ? String(source.title) : "",
+      ...(source.snippet ? {snippet:String(source.snippet)} : {}),
+      ...(source.source_link ? {source_link:String(source.source_link)} : {}),
+      ...(source.metadata ? {metadata:{...source.metadata}} : {}),
     });
     return true;
   }
@@ -1378,6 +1398,7 @@ async function loadStatus() {
   try {
     const status = await api("/api/system/status");
     state.status = status;
+    renderWorkspaceSidebar();
     const statusText = `${status.workspace.id} / ${status.status}`;
     $("#system-status").textContent = statusText;
     const aboutStatus = $("#about-system-status");
@@ -1436,7 +1457,7 @@ function formatBadgeCount(value) {
 function computeSidebarBadgeCounts(snapshot) {
   const state = snapshot || {};
   return {
-    notes: formatBadgeCount(state.notes?.length),
+    notes: formatBadgeCount(state.libraryCounts?.content ?? state.notes?.length),
     topics: formatBadgeCount(state.topics?.length),
     compose: formatBadgeCount(state.composeDrafts?.length),
   };
@@ -1489,16 +1510,15 @@ function upsertThoughtRecord(thought, { render = true } = {}) {
   }
 }
 
-const DASHBOARD_CAPTURE_LIMIT = 8;
+const DASHBOARD_CAPTURE_LIMIT = 4;
 
 function renderDashboardCaptureSessionItem(session) {
   const label = captureSessionLabel(session);
-  const status = session.thoughtId ? t("capture.drawer.archived") : t("capture.drawer.draft");
+  const status = session.thoughtId || state.homeArchivedSessions?.has(session.sessionId) ? t("overview.session_saved") : t("overview.session_unsaved");
   return `
-    <article class="result-item" data-dashboard-session-id="${escapeHTML(session.sessionId || "")}">
-      <strong>${escapeHTML(label)}</strong>
-      <div class="result-meta">${escapeHTML(status)} · ${escapeHTML(fmtDate(session.updatedAt))}</div>
-    </article>
+    <button type="button" class="workspace-session-row" data-dashboard-session-id="${escapeHTML(session.sessionId || "")}">
+      <span><strong>${escapeHTML(label)}</strong><span class="result-meta">${escapeHTML(status)} · ${escapeHTML(fmtDate(session.updatedAt))}</span></span><span aria-hidden="true">→</span>
+    </button>
   `;
 }
 
@@ -1508,7 +1528,12 @@ function renderDashboardCaptureSessionItem(session) {
 function renderDashboardCaptureSessions() {
   const list = $("#dashboard-capture-sessions");
   if (!list) return;
-  const sessions = (state.capture.sessions || []).slice(0, DASHBOARD_CAPTURE_LIMIT);
+  if(state.homeSessionsError){
+    list.innerHTML=`<p role="alert">${escapeHTML(state.homeSessionsError)}</p><button type="button" class="tf-btn" data-retry-sessions>${escapeHTML(t("library.retry"))}</button>`;
+    list.querySelector("[data-retry-sessions]")?.addEventListener("click",loadDashboardSessions);
+    return;
+  }
+  const sessions = [...(state.capture.sessions || [])].sort((a,b)=>thoughtTimeValue(b.updatedAt)-thoughtTimeValue(a.updatedAt)||String(a.sessionId).localeCompare(String(b.sessionId))).slice(0, DASHBOARD_CAPTURE_LIMIT);
   if (sessions.length === 0) {
     list.innerHTML = `<div class="tf-empty">${escapeHTML(t("empty.no_capture"))}</div>`;
     return;
@@ -1522,6 +1547,16 @@ function renderDashboardCaptureSessions() {
       switchCaptureSession(sessionID);
     });
   });
+}
+
+async function loadDashboardSessions() {
+  try {
+    await refreshCaptureSessionsFromServer({reportError:true});
+  } catch(error) {
+    if(state.route?.page!=="dashboard")return;
+    state.homeSessionsError=error.message;
+    renderDashboardCaptureSessions();
+  }
 }
 
 function renderThoughtListItem(thought) {
@@ -1560,59 +1595,81 @@ function renderThoughtListItem(thought) {
   `;
 }
 
+// Browser-local reading shortcuts contain titles and internal routes only.
+// Workspace identity is required: never mix histories before status is loaded.
+const sidebarReadingMemory = new Map();
+function sidebarReadingKey() {
+  const id = state.status?.workspace?.id;
+  return typeof id === "string" && id ? `thoughtflow.recent-reading.v1.${encodeURIComponent(id)}` : "";
+}
+function validSidebarReading(item) {
+  if (!item || typeof item.title !== "string" || !item.title.trim() || item.title.length > 500 ||
+      typeof item.href !== "string" || item.href.length > 4096 || !item.href.startsWith("#/notes?") ||
+      !["thought", "set"].includes(item.kind)) return false;
+  const q = new URLSearchParams(item.href.slice(8));
+  if ([...q.keys()].some(key => !["id", "set", "kind", "version", "member", "section"].includes(key)) ||
+      [...q.keys()].some(key => q.getAll(key).length !== 1)) return false;
+  if (item.kind === "thought") return !!q.get("id") && [...q.keys()].every(key => key === "id");
+  return !!q.get("set") && !!q.get("version") && ["archive", "revision"].includes(q.get("kind")) && !q.has("id");
+}
+function sidebarReadings() {
+  const key = sidebarReadingKey();
+  if (!key) return [];
+  try {
+    const raw = window.localStorage?.getItem(key);
+    if (raw && raw.length <= 100000) {
+      const data = JSON.parse(raw);
+      return Array.isArray(data) ? data.filter(validSidebarReading).slice(0, 8) : [];
+    }
+  } catch (_) { /* Reading must remain available when storage is blocked. */ }
+  return sidebarReadingMemory.get(key) || [];
+}
+function rememberSidebarReading(item) {
+  const key = sidebarReadingKey();
+  if (!key || !validSidebarReading(item)) return;
+  const entry = {title: item.title.trim(), href: item.href, kind: item.kind};
+  const items = [entry, ...sidebarReadings().filter(old => old.href !== entry.href)].slice(0, 8);
+  sidebarReadingMemory.set(key, items);
+  try { window.localStorage?.setItem(key, JSON.stringify(items)); } catch (_) {}
+  renderWorkspaceSidebar();
+}
+function renderWorkspaceSidebar() {
+  const items = sidebarReadings().slice(0, 3);
+  const html = items.length ? items.map(item => `<a class="workspace-reading-link" href="${escapeHTML(item.href)}" title="${escapeHTML(item.title)}"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M5 3h8l3 3v11H5zM12 3v4h4M8 10h5M8 13h5"/></svg><span>${escapeHTML(item.title)}</span></a>`).join("") : `<p class="workspace-reading-empty">${escapeHTML(t("workspace_ui.recent_empty"))}</p>`;
+  document.querySelectorAll("[data-sidebar-recent]").forEach(node => { node.innerHTML = html; });
+}
+
+let contentLibraryUI;
+function libraryUI() {
+  if (!contentLibraryUI) contentLibraryUI = globalThis.ThoughtFlowLibrary.create({
+    api, t, escapeHTML, date: fmtDate, toast, navigate: navigateHash, copy: copyText,
+    reading: rememberSidebarReading,
+    noteActions(id){return `<button class="mini-button" data-reopen-capture="${escapeHTML(id)}">${escapeHTML(t("thoughts.action.reopen_capture"))}</button><button class="mini-button" data-note-compose="${escapeHTML(id)}">${escapeHTML(t("search.result.add_source"))}</button>${publicThoughtSharingEnabled()?`<button class="mini-button" data-copy-thought-id="${escapeHTML(id)}">${escapeHTML(t("search.result.copy_share_link"))}</button>`:""}`;},
+    bindNoteActions(root){bindThoughtReadButtons(root);bindThoughtReopenButtons(root);root.querySelectorAll("[data-note-compose]").forEach(b=>b.onclick=()=>addSavedComposeSources({thought_id:b.dataset.noteCompose}).catch(error=>toast(error.message)));root.querySelectorAll("[data-copy-thought-id]").forEach(b=>b.onclick=()=>copyThoughtLink(b.dataset.copyThoughtId));},
+    markdown(body,id,bindings,context) {
+      const previous=documentSetRenderContext;
+      if(context?.selection.kind === "revision") documentSetRenderContext={id:context.id,revision:context.selection.id,member:context.member||"",keys:new Set(context.members.map(m=>m.key))};
+      try{return renderObjectMarkdown(body,id,bindings);}finally{documentSetRenderContext=previous;}
+    },
+    counts(counts){state.libraryCounts=counts;renderSidebarBadges();},
+    isHomeCurrent(){return state.route?.page==="dashboard";},
+    homeRegions(){return {stats:$("#workspace-home-stats"),attention:$("#workspace-home-attention"),count:$("#workspace-attention-count")};},
+    homeLoaded(result){state.homeArchivedSessions=new Set(result.archived_sessions||[]);renderDashboardCaptureSessions();},
+    openSession(id){navigateHash(buildRouteHash("capture"),{force:true});switchCaptureSession(id);},
+    addSources(request){return addSavedComposeSources(request).then(()=>openComposeSources()).catch(error=>toast(error.message));},
+    pickSet(){return openSavedSourcePicker({setsOnly:true});},
+    listQuery(q){state.libraryQuery={layout:q.layout,kind:q.kind,state:q.state||"",q:q.q,sort:q.sort,page:String(q.page)};if(state.route?.page==="thoughts"&&!state.route.query.set&&!state.route.params.thoughtId){replaceHashSilently(buildRouteHash("thoughts",{},state.libraryQuery));state.route.query={...state.libraryQuery};}},
+    fixRoute(hash){replaceHashSilently(hash);state.route=parseRoute(hash);},
+    isSetCurrent(id){return state.route?.page==="thoughts"&&state.route.query.set===id;},
+    async tools(detail,root,isCurrent){const data=await api(`/api/document-sets/${encodeURIComponent(detail.id)}`);if(isCurrent())await renderDocumentSetWorkspace(detail.id,data,0,{root,query:{set_revision:detail.selection.id},isCurrent});},
+  });
+  return contentLibraryUI;
+}
+
 function renderThoughtsList() {
-  const list = $("#thought-list");
-  if (!list) return;
-  const count = $("#thought-list-count");
-  const filterText = ($("#thought-filter")?.value || "").trim().toLowerCase();
-  const thoughts = Array.isArray(state.notes) ? state.notes : [];
-  const filtered = thoughts.filter((thought) => {
-    const haystack = [
-      thought.id,
-      thought.display_title,
-      thought.user_title,
-      thought.extracted_title,
-      thought.summary,
-      thought.url,
-      ...(thought.user_tags || []),
-      ...(thought.ai_tags || []),
-      ...(thought.topic_ids || []),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return !filterText || haystack.includes(filterText);
-  });
-  if (count) {
-    count.setAttribute("data-n", String(filtered.length));
-    count.textContent = t("notes.list_count", { n: filtered.length });
-  }
-  if (thoughts.length === 0) {
-    list.innerHTML = `<div class="tf-empty" data-i18n="notes.list_empty">${escapeHTML(t("notes.list_empty"))}</div>`;
-    return;
-  }
-  if (filtered.length === 0) {
-    list.innerHTML = `<div class="tf-empty" data-i18n="notes.list_empty_filtered">${escapeHTML(t("notes.list_empty_filtered"))}</div>`;
-    return;
-  }
-  list.innerHTML = filtered.map((thought) => renderThoughtListItem(thought)).join("");
-  list.querySelectorAll(".result-item[data-thought-id]").forEach((item) => {
-    item.addEventListener("click", (event) => {
-      if (event.target.closest("button")) return;
-      activateTab("notes-detail", $("#page-thoughts"));
-      previewThought(item.dataset.thoughtId, { syncRoute: true }).catch((error) => toast(error.message));
-    });
-  });
-  list.querySelectorAll("[data-note-compose]").forEach((button) => {
-    button.addEventListener("click", () => addToComposeSources([button.dataset.noteCompose]));
-  });
-  bindThoughtReopenButtons(list);
-  bindThoughtReadButtons(list);
-  list.querySelectorAll("[data-copy-thought-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      copyThoughtLink(button.dataset.copyThoughtId || "");
-    });
-  });
+  if(!globalThis.ThoughtFlowLibrary)return;
+  const q=state.route?.page==="thoughts"&&!state.route.query.set&&!state.route.params.thoughtId ? state.route.query : state.libraryQuery;
+  libraryUI().list($("#thought-list"),{layout:q?.layout||"grouped",kind:q?.kind||"all",state:q?.state||"",sort:q?.sort||"updated",page:Number(q?.page)||1,q:$("#thought-filter")?.value||""});
 }
 
 function renderEmptyThoughtPanels() {
@@ -1658,16 +1715,19 @@ function renderThoughtDetailPanel(snapshot) {
   ];
   return `<div class="tf-result">
     ${thought.design_draft ? `<p role="status">${escapeHTML(t("notes.design_draft"))} — ${escapeHTML(t("docset.draft.notice"))}</p>` : ""}
-    <div class="tf-description-list">${renderDescription(metaRows)}</div>
+    <a class="tf-btn" href="#/notes">${escapeHTML(t("library.back"))}</a><h1>${escapeHTML(title)}</h1>
     <div class="tf-action-row">
       <button class="tf-btn" data-read-thought="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("notes.reader.open"))}</button>
       <a class="tf-btn" href="/api/thoughts/${encodeURIComponent(thought.id || "")}/markdown">${escapeHTML(t("notes.reader.download"))}</a>
       ${thought.markdown_import ? `<a class="tf-btn" href="/api/thoughts/${encodeURIComponent(thought.id)}/import-source">${escapeHTML(t("notes.reader.original"))}</a><p class="tf-text-secondary">${escapeHTML(t("notes.import.attachments"))}</p>` : ""}
+      <button class="tf-btn" data-note-compose="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("search.result.add_source"))}</button>
       <button class="tf-btn" data-reopen-capture="${escapeHTML(thought.id || "")}" type="button">${escapeHTML(t("thoughts.action.reopen_capture"))}</button>
-      ${thought.document_profile && thought.document_profile.family !== "note" ? `<button class="tf-btn" data-document-open="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("document.open"))}</button>` : ""}
+      <button class="tf-btn" data-document-open="${escapeHTML(thought.id)}" type="button">${escapeHTML(t("document.open"))}</button>
       <button class="tf-btn tf-thought-delete" data-delete-thought="${escapeHTML(thought.id || "")}" data-delete-title="${escapeHTML(title)}" type="button">${escapeHTML(t("thoughts.action.delete"))}</button>
     </div>
-    <div class="preview-box tf-thought-content markdown-rendered">${renderObjectMarkdown(sections.join("\n\n"),thought.id,snapshot.resource_bindings)}</div>
+    ${snapshot.content_set?`<p class="library-notice">${escapeHTML(t("library.copy_notice"))} <a href="${escapeHTML(globalThis.ThoughtFlowLibrary.route(snapshot.content_set.set_id,{kind:snapshot.content_set.kind,id:snapshot.content_set.version},snapshot.content_set.member))}">${escapeHTML(snapshot.content_set.title)} · ${escapeHTML(t("library.original"))}</a></p>`:thought.design_draft ? `<p>${escapeHTML(t("library.copy_notice"))} <a href="${escapeHTML(globalThis.ThoughtFlowLibrary.route(thought.design_draft.set_id,{kind:"archive",id:thought.design_draft.run_id},thought.design_draft.member_key))}">${escapeHTML(t("library.original"))}</a></p>` : ""}
+    <div class="preview-box tf-thought-content markdown-rendered">${renderObjectMarkdown(content.ai_notes || content.extracted_content || content.original || "",thought.id,snapshot.resource_bindings)}</div>
+    <details class="library-secondary"><summary>${escapeHTML(t("library.metadata"))}</summary><div class="tf-description-list">${renderDescription(metaRows)}</div><div class="markdown-rendered">${renderObjectMarkdown(sections.join("\n\n"),thought.id,snapshot.resource_bindings)}</div>${renderThoughtStatusPanel(snapshot)}</details>
   </div>`;
 }
 
@@ -1752,12 +1812,13 @@ function renderThoughtPanels(snapshot = state.activeThoughtSnapshot) {
   const drawer = $("#thought-drawer-content");
   if (drawer) drawer.innerHTML = html;
   const detail = $("#thought-detail");
-  if (detail) detail.innerHTML = renderThoughtDetailPanel(snapshot);
+  if (detail) {detail.classList.remove("tf-empty");detail.innerHTML = renderThoughtDetailPanel(snapshot);}
   const status = $("#thought-status-detail");
   if (status) status.innerHTML = renderThoughtStatusPanel(snapshot);
   bindThoughtReopenButtons(document);
   bindThoughtReadButtons(document);
   bindThoughtDeleteButtons(document);
+  detail?.querySelectorAll("[data-note-compose]").forEach(button => button.onclick = () => addSavedComposeSources({thought_id: button.dataset.noteCompose}).then(() => openComposeSources()).catch(error => toast(error.message)));
  bindDocumentButtons(document);
   const addCompose = $("#drawer-add-compose");
   if (addCompose) addCompose.disabled = false;
@@ -1891,6 +1952,7 @@ function renderMetrics(metrics) {
   node.innerHTML = rows.length > 0 ? renderDescription(rows) : `<div class="tf-empty">${escapeHTML(t("settings.metrics_empty"))}</div>`;
 }
 
+let topicCountsEpoch = 0;
 async function loadTopics() {
   const topics = await api("/api/topics");
   state.topics = topics || [];
@@ -1899,6 +1961,7 @@ async function loadTopics() {
 }
 
 function renderTopics() {
+  const countsEpoch=++topicCountsEpoch;
   const list = $("#topic-list");
   const textFilter = ($("#topic-filter")?.value || "").trim().toLowerCase();
   const filteredTopics = state.topics.filter((topic) => {
@@ -1928,12 +1991,25 @@ function renderTopics() {
       return `
         <article class="topic-item${active}" data-topic-id="${escapeHTML(topic.id)}">
           <strong>${escapeHTML(topic.name)}</strong>
-          <div class="topic-meta">${topic.member_count || 0} thoughts · ${topic.word_count || 0} words</div>
+          <div class="topic-meta" data-topic-content-count>${escapeHTML(t("library.topic_summary"))}</div>
           <div class="topic-meta">${escapeHTML(topic.description || t("topics.no_description"))}</div>
         </article>
       `;
     })
     .join("");
+  if(state.route?.page === "topics") {
+    const queue=[...filteredTopics];
+    const current=()=>countsEpoch===topicCountsEpoch&&state.route?.page==="topics";
+    const worker=async()=>{while(queue.length&&current()){
+      const topic=queue.shift();
+      try{const content=await api(`/api/topics/${encodeURIComponent(topic.id)}/content-library`);if(!current())return;
+        const node=[...list.querySelectorAll(".topic-item")].find(item=>item.dataset.topicId===topic.id)?.querySelector("[data-topic-content-count]");
+        if(node)node.textContent=t("workspace_ui.topic_counts",{sets:content.sets.length,notes:content.notes.length,sources:content.sources.length});
+      }catch{/* Counts are secondary; the content page retains its own error and retry. */}
+    }};
+    const workers=Math.min(3,queue.length);
+    for(let i=0;i<workers;i++)worker();
+  }
   list.querySelectorAll(".topic-item").forEach((item) => {
     item.addEventListener("click", (event) => {
       if (event.target.closest("button")) return;
@@ -1959,6 +2035,7 @@ async function openTopic(topicId) {
   if (epoch !== topicRequestEpoch) return;
   state.activeTopicId = topicId;
   state.activeTopicDetail = detail;
+  const heading=$("#workspace-topic-heading");if(heading)heading.innerHTML=`<h2>${escapeHTML(detail.topic?.name||topicId)}</h2><p>${escapeHTML(detail.topic?.description||"")}</p>`;
   // Topic detail / rules are tabs inside the topics
   // page; enable them once a topic is loaded and populate the document
   // panel. Tab activation follows the URL `?tab=` query so deep-links
@@ -1969,12 +2046,20 @@ async function openTopic(topicId) {
   });
   const collection = detail.topic?.mode === "collection";
  $("#topic-document").closest(".tf-topic-detail-layout")?.classList.toggle("is-collection",collection);
- if (collection) { await openCollectionWorkspace(topicId,epoch); if(epoch!==topicRequestEpoch)return; }
+ const legacy=collection && (state.route?.query?.entry || state.route?.query?.references==="1");
+ $("#topic-content-library").hidden=legacy;
+ $("#topic-document").closest(".tf-topic-detail-layout")?.classList.toggle("library-topic-home",!legacy);
+ if(legacy&&$("#workspace-topic-management"))$("#workspace-topic-management").open=true;
+ if (legacy) { await openCollectionWorkspace(topicId,epoch); if(epoch!==topicRequestEpoch)return; }
+ else if(state.route?.query?.set_revision){navigateHash(globalThis.ThoughtFlowLibrary.route(topicId,{kind:"revision",id:state.route.query.set_revision},state.route.query.member,state.route.query.section));return;}
+ else if(collection){$("#topic-document").innerHTML=`<a class="tf-btn" href="${escapeHTML(buildRouteHash("topics",{topicId},{references:"1",tab:"documents"}))}">${escapeHTML(t("docset.references"))}</a>`;}
  else { $("#topic-document").innerHTML = renderTopicDocumentMarkdown(detail.document || t("topics.document_empty")); renderAggregateConversion(topicId); }
   $("#refresh-topic").disabled = false;
   $("#open-topic-rules").disabled = false;
   populateTopicEditor(detail.topic);
-  renderTopicMembers(detail.members || []);
+  if(legacy)renderTopicMembers(detail.members || []);
+  else await libraryUI().topic($("#topic-content-library"),topicId,()=>epoch===topicRequestEpoch&&state.activeTopicId===topicId);
+  if(epoch!==topicRequestEpoch)return;
   renderTopicRules(detail.topic);
   renderTopics();
   await loadTopicCandidates(topicId);
@@ -2068,7 +2153,7 @@ function renderTopicMembers(members) {
   node.querySelectorAll("[data-compose-source-id]").forEach((button) => {
     button.addEventListener("click", () => {
       // Stay on the topic page after enqueueing — only add to the source queue.
-      addToComposeSources([button.dataset.composeSourceId]);
+      addSavedComposeSources({thought_id:button.dataset.composeSourceId}).catch(error=>toast(error.message));
     });
   });
 }
@@ -2758,14 +2843,19 @@ function renderCaptureSessionsDrawer() {
   refreshCaptureSessionsFromServer();
 }
 
-async function refreshCaptureSessionsFromServer() {
+async function refreshCaptureSessionsFromServer({reportError=false}={}) {
+  const request=state.capture.sessionsRequest=(state.capture.sessionsRequest||0)+1;
   let response;
   try {
     response = await api("/api/capture/sessions", { method: "GET" });
-  } catch (_) {
+  } catch (error) {
+    if(request!==state.capture.sessionsRequest)return null;
+    if(reportError)throw error;
     return null;
   }
   response = response || {};
+  if(request!==state.capture.sessionsRequest)return null;
+  state.homeSessionsError="";
   const summaries = response.summaries || response.Summaries || [];
   if (Array.isArray(summaries)) {
     state.capture.sessions = summaries
@@ -2840,7 +2930,8 @@ async function rehydrateActiveScratchpad() {
 function redrawCaptureSessionsList() {
   const list = $("#capture-sessions-list");
   if (!list) return;
-  const sessions = state.capture.sessions || [];
+  const query = ($("#workspace-session-filter")?.value || "").trim().toLocaleLowerCase();
+  const sessions = (state.capture.sessions || []).filter(session => !query || `${session.title || ""} ${session.sessionId}`.toLocaleLowerCase().includes(query));
   const markup = sessions.length === 0
     ? `<li class="tf-empty">${escapeHTML(t("empty.no_capture"))}</li>`
     : sessions.map(renderCaptureSessionItem).join("");
@@ -2879,7 +2970,12 @@ function closeCaptureSessionsDrawer() {
   }
 }
 
-function switchCaptureSession(sessionId) {
+async function switchCaptureSession(sessionId) {
+  const input=$("#capture-composer-input");
+  if(sessionId!==state.capture.sessionId && input?.value.trim()) {
+    if(!await confirmAction(t("capture.session.sessions"),t("workspace_ui.discard_input")))return;
+    input.value="";
+  }
   const session = (state.capture.sessions || []).find((item) => item.sessionId === sessionId);
   if (!session) return;
   beginCaptureSelection();
@@ -3869,13 +3965,8 @@ function renderResults(response) {
   });
   list.querySelectorAll("[data-compose-source-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      addToComposeSources([{
-        source_type: "search_result",
-        source_id: button.dataset.composeSourceId,
-        snippet: (state.lastResults || []).find((item) => (item.source_id || item.thought_id) === button.dataset.composeSourceId)?.snippet || "",
-        title: button.dataset.composeSourceTitle || "",
-      }], "search_result");
-      openComposeSources();
+      addSavedComposeSources({ thought_id: button.dataset.composeSourceId })
+        .then(() => openComposeSources()).catch(error => toast(error.message));
     });
   });
   list.querySelectorAll("[data-copy-thought-id]").forEach((button) => {
@@ -3912,6 +4003,7 @@ function renderSearchResultItem(item, options = {}) {
         <input type="checkbox" data-select-id="${escapeHTML(thoughtID)}" ${checked} aria-label="${escapeHTML(t("search.result.select_aria"))}">
         <div>
           <strong>${canPreview ? `<button class="link-button" data-preview-id="${escapeHTML(thoughtID)}" type="button">${escapeHTML(title)}</button>` : escapeHTML(title)}</strong>
+          ${item.content_set?`<p class="library-meta"><a href="${escapeHTML(globalThis.ThoughtFlowLibrary.route(item.content_set.set_id,{kind:item.content_set.kind,id:item.content_set.version},item.content_set.member))}">${escapeHTML(item.content_set.title)} › ${escapeHTML(item.content_set.role)} · ${escapeHTML(t(`library.state.${item.content_set.state}`))}</a></p>`:""}
           <div class="result-meta">${escapeHTML(item.snippet || "")}</div>
           <div class="score-line">
             ${tags}
@@ -3987,7 +4079,7 @@ function addToComposeSources(sources, sourceType = "thought") {
     .filter(Boolean)
     .map((entry) => {
       if (typeof entry === "string") return { source_type: sourceType, source_id: entry };
-      return { source_type: entry.source_type || sourceType, source_id: entry.source_id, title: entry.title };
+      return {...entry, source_type: entry.source_type || sourceType, source_id: entry.source_id, title: entry.title };
     })
     .filter((entry) => entry.source_id);
   if (normalised.length === 0) return;
@@ -3996,14 +4088,16 @@ function addToComposeSources(sources, sourceType = "thought") {
     const key = `${source.source_type}::${source.source_id}`;
     if (state.composeSources.has(key)) continue;
     state.composeSources.set(key, {
+      ...source,
       source_type: source.source_type,
       source_id: source.source_id,
       title: source.title || "",
     });
   }
-  persistSources();
+  const saved=persistSources();
   renderComposeSources();
   toast(t("toast.sources_add", { n: state.composeSources.size }));
+  return saved;
 }
 
 function openComposeSources() {
@@ -4090,9 +4184,11 @@ function renderComposeSourcesItem(source) {
         <strong>${escapeHTML(title)}</strong>
         <span class="pill">${escapeHTML(sourceTypeLabel)}</span>
       </div>
-      <div class="topic-meta">${escapeHTML(t("compose.source_id"))}: <code>${escapeHTML(sourceID)}</code></div>
+      ${sourceType==="frozen_thought"||sourceType==="document_set_member"?`<div class="topic-meta">${escapeHTML(t("workspace_ui.frozen_source"))}${source.metadata?.version?` · ${escapeHTML(t("library.version"))}: ${escapeHTML(source.metadata.version)}`:""}</div>`:""}
+      <details class="library-secondary"><summary>${escapeHTML(t("library.metadata"))}</summary><code>${escapeHTML(sourceID)}</code></details>
     </div>
     <div class="tf-action-row">
+      ${sourceType==="frozen_thought"||sourceType==="document_set_member"?`<button class="mini-button" data-frozen-source-preview="${escapeHTML(sourceID)}" data-source-type="${escapeHTML(sourceType)}" type="button">${escapeHTML(t("search.result.preview"))}</button>`:""}
       ${canPreview ? `<button class="mini-button" data-compose-source-preview="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("search.result.preview"))}</button>` : ""}
       <button class="mini-button" data-compose-source-remove="${escapeHTML(sourceID)}" data-source-type="${escapeHTML(sourceType)}" data-source-id="${escapeHTML(sourceID)}" type="button">${escapeHTML(t("compose.source_remove"))}</button>
     </div>
@@ -4111,6 +4207,9 @@ async function previewThought(thoughtId, options = {}) {
   state.activeThoughtSnapshot = snapshot;
   upsertThoughtRecord(snapshot.thought, { render: false });
   renderThoughtPanels(snapshot);
+  if (options.syncRoute || options.drawer || (state.route?.page === "thoughts" && state.route?.params?.thoughtId === thoughtId)) {
+    rememberSidebarReading({title: thoughtDisplayTitle(snapshot.thought) || thoughtId, href: `#/notes?${new URLSearchParams({id: thoughtId})}`, kind: "thought"});
+  }
   if (options.syncRoute) {
     const query = { id: thoughtId };
     const activeTab = document.querySelector("#page-thoughts .tab.active")?.dataset.tab || "";
@@ -4227,6 +4326,7 @@ async function openThoughtReader(id) {
     $("#thought-reader-original").href = `/api/thoughts/${encodeURIComponent(id)}/import-source`;
     $("#thought-reader-notice").hidden = !snapshot.thought.markdown_import;
     await renderThoughtReaderView("reading");
+    if (thoughtReaderSnapshot === snapshot && dialog.open) rememberSidebarReading({title: thoughtDisplayTitle(snapshot.thought) || id, href: `#/notes?${new URLSearchParams({id})}`, kind: "thought"});
   } catch (error) {
     if (epoch === thoughtReaderEpoch && dialog.open) $("#thought-reader-content").textContent = error.message;
   }
@@ -4823,6 +4923,8 @@ async function saveComposeDraft() {
   };
   renderComposeReader();
   await loadComposeDrafts();
+  await loadThoughts();
+  navigateHash(buildRouteHash("thoughts",{},{id:result.thought.id}));
   window.setTimeout(() => runSearch().catch((error) => toast(error.message)), 1000);
 }
 
@@ -4838,7 +4940,7 @@ async function refreshTopic() {
 }
 
 const DOMAIN_EVENT_TYPES = [
- "object.placement_changed","topic.migration_completed","topic.migration_failed","thought.restored","topic.catalog_updated","topic.search_policy_updated","thought.search_policy_updated","thought.ownership_changed","topic.resource_updated","topic.snapshot_created","topic.mode_changed","topic.deleted",
+ "object.placement_changed","topic.migration_completed","topic.migration_failed","thought.restored","topic.catalog_updated","topic.search_policy_updated","thought.search_policy_updated","thought.ownership_changed","topic.resource_updated","topic.snapshot_created","topic.mode_changed","topic.deleted","topic.content_links_updated",
  "document_set.progress", "document_set.awaiting_review", "document_set.committed", "document_set.failed", "document_set.finalized",
  "document.revision_created", "document.validation_completed", "document.finalized", "document.deleted",
   "thought.captured",
@@ -4903,7 +5005,11 @@ function connectEvents() {
           if (state.capture.activeThoughtId === deleted) { beginCaptureSelection(); state.capture.activeThoughtId = ""; state.capture.activeSnapshot = null; }
         }
       }
-      if (type.startsWith("thought.")) loadThoughts().catch(() => {});
+      if (type.startsWith("thought.")||type.startsWith("document_set.")) {
+        loadThoughts().catch(() => {});
+        scheduleOverviewRefresh();
+      }
+      if(type==="topic.content_links_updated"&&state.route?.page==="topics"&&state.activeTopicId&&!$("#topic-content-library")?.hidden){const epoch=topicRequestEpoch,id=state.activeTopicId;libraryUI().topic($("#topic-content-library"),id,()=>topicRequestEpoch===epoch&&state.activeTopicId===id).catch(error=>toast(error.message));}
       if (type === "compose.draft_created" || type === "compose.draft_saved" || type === "compose.draft_deleted" || type === "job.updated") {
         handleComposeEvent(type, event.data);
       }
@@ -4925,6 +5031,16 @@ function connectEvents() {
       appendEvent("events", t("toast.sse_reconnecting"));
     }
   };
+}
+
+function scheduleOverviewRefresh() {
+  if(state.route?.page!=="dashboard")return;
+  clearTimeout(state.homeRefreshTimer);
+  state.homeRefreshTimer=setTimeout(()=>{
+    if(state.route?.page!=="dashboard")return;
+    libraryUI().home($("#workspace-home-content"));
+    loadDashboardSessions();
+  },250);
 }
 
 // handleComposeEvent refreshes the writing list when a generate job
@@ -5190,6 +5306,8 @@ function renderRoute(route = state.route) {
   document.querySelectorAll(".tf-page").forEach((page) => {
     page.classList.toggle("active", page.dataset.page === route.page);
   });
+  renderWorkspaceBreadcrumb(route);
+  document.querySelectorAll(".workspace-sidebar-bottom a").forEach(link => { const current = route.page === "settings" ? link.hasAttribute("data-workspace-settings") : route.page === "about" && link.getAttribute("href") === "#/help"; if(current)link.setAttribute("aria-current","page");else link.removeAttribute("aria-current"); });
   document.querySelectorAll("[data-nav]").forEach((item) => {
     item.className = navItemClass(route, item.dataset.nav);
     const current = navItemAriaCurrent(route, item.dataset.nav);
@@ -5199,16 +5317,24 @@ function renderRoute(route = state.route) {
 }
 
 async function applyRoute(hash = window.location.hash, options = {}) {
- if(documentEditor?.dirty && documentEditor.routeHash!==hash && !options.keepEditor && !window.confirm(t("docset.unsaved"))){history.replaceState(null,"",documentEditor.routeHash||"#/notes");return;}
+  if(documentEditor && documentEditor.routeHash!==hash && !options.keepEditor) {
+    const editor=documentEditor;
+    if(editor.busy || (editor.dirty && !window.confirm(t("docset.unsaved")))) { history.replaceState(null,"",editor.routeHash||"#/notes"); return; }
+    editor.dialog?.close();
+    documentEditor=null;
+  }
 
   const serial = ++routeApplySerial;
   const route = parseRoute(hash);
   state.route = route;
+  contentLibraryUI?.invalidate();
+  if(route.page==="thoughts"&&!route.params.thoughtId){state.activeThoughtId="";state.activeThoughtSnapshot=null;}
  ++topicRequestEpoch; ++collectionReadEpoch;
   // Restore DOM inputs / state from the URL query before rendering, so the
   // first render of the page reflects the URL — no flicker of defaults.
   restoreRoutePage(route.page, route.query);
   renderRoute(route);
+  if(route.page==="thoughts"&&$("#thought-filter"))$("#thought-filter").value=route.query.q||"";
   await refreshRouteData(route, options);
   if (serial !== routeApplySerial) return;
   if (route.page === "topics" && route.params.topicId) {
@@ -5217,15 +5343,46 @@ async function applyRoute(hash = window.location.hash, options = {}) {
     const topicTab = normalizeTopicsTabName(route.query.tab);
     activateTab(topicTab, $("#page-topics"));
   }
+  if(route.page==="thoughts"){
+    const viewing=!!(route.query.set||route.params.thoughtId);
+    $("#notes-library-home").hidden=viewing;
+    $("#notes-library-reading").hidden=!viewing;
+    $("#library-set-detail").hidden=!route.query.set;
+    $("#thought-detail").hidden=!!route.query.set;
+    if(route.query.import==="1"){$("#workspace-import-panel").open=true;$("#thought-import-files")?.focus();}
+    if(route.query.set)await libraryUI().show($("#library-set-detail"),route.query.set,route.query);
+  }
   if (route.page === "thoughts" && route.params.thoughtId) {
     await previewThought(route.params.thoughtId);
   }
   // Live routes: capture, search, topics (incl. detail), notes, compose.
-  // settings and jobs are gone — the gear opens a drawer, jobs surface on
-  // the notes runtime card. No additional loader needed here.
+  // Settings has its own routable management page. Technical task details
+  // also remain reachable from the notes processing records.
 }
 
 function bind() {
+  $("#workspace-reindex")?.addEventListener("click", async event => {
+    if (!await confirmAction(t("workspace_ui.reindex"), t("workspace_ui.reindex_confirm"))) return;
+    const button=$("#workspace-reindex"), result=$("#workspace-reindex-result"); button.disabled=true;
+    try { const job=await api("/api/system/reindex", {method:"POST"}); result.textContent=t("workspace_ui.reindex_queued",{id:job.id||""}); }
+    catch(error){result.textContent=error.message;} finally {button.disabled=false;}
+  });
+  $("#workspace-session-filter")?.addEventListener("input", () => redrawCaptureSessionsList());
+  $("#workspace-search")?.addEventListener("submit",event=>{event.preventDefault();navigateHash(buildRouteHash("search",{},{q:$("#workspace-search-input").value.trim()}),{force:true});});
+  $("#workspace-open-import")?.addEventListener("click",()=>{if(state.route?.params?.thoughtId||state.route?.query?.set)navigateHash("#/notes?import=1");else{$("#workspace-import-panel").open=true;$("#thought-import-files").focus();}});
+  $("#workspace-pick-sources")?.addEventListener("click",()=>openSavedSourcePicker().catch(error=>toast(error.message)));
+  document.addEventListener("click",event=>{const button=event.target.closest?.("[data-frozen-source-preview]");if(button)previewFrozenSource(button.dataset.sourceType,button.dataset.frozenSourcePreview).catch(error=>toast(error.message));});
+  $("#mobile-navigation")?.addEventListener("click",()=>{
+    renderWorkspaceSidebar();
+    const trigger=$("#mobile-navigation");
+    const dialog=document.createElement("dialog");dialog.className="library-nav-dialog workspace-navigation-drawer";
+    dialog.setAttribute("aria-label",t("library.navigation"));
+    dialog.innerHTML=`<header><h2>${escapeHTML(t("library.navigation"))}</h2><button class="tf-btn" data-close-navigation>${escapeHTML(t("common.close"))}</button></header><p class="workspace-side-label">${escapeHTML(t("workspace_ui.workspace"))}</p><nav aria-label="${escapeHTML(t("library.navigation"))}">${$(".tf-menu").innerHTML}</nav>${$(".workspace-sidebar-recent").outerHTML}<div class="workspace-sidebar-bottom">${$(".workspace-sidebar-bottom").innerHTML}</div>`;
+    document.body.appendChild(dialog);
+    dialog.querySelector("[data-close-navigation]").onclick=()=>dialog.close();
+    dialog.addEventListener("click",event=>{const a=event.target.closest?.("a[href]");if(!a||!dialog.contains(a))return;event.preventDefault();const href=a.getAttribute("href");dialog.close();navigateHash(href,{force:true});});
+    dialog.onclose=()=>{dialog.remove();trigger.focus();};dialog.showModal();
+  });
   $("#thought-import-start")?.addEventListener("click", () => importThoughtFiles());
   $("#thought-reader-close")?.addEventListener("click", () => $("#thought-reader")?.close());
   $("#thought-reader")?.addEventListener("close", () => { thoughtReaderEpoch++; thoughtReaderSnapshot = null; });
@@ -5242,7 +5399,7 @@ function bind() {
   $("#capture-form")?.addEventListener("submit", (event) => captureThought(event).catch((error) => toast(error.message)));
   $("#capture-composer")?.addEventListener("submit", (event) => submitCaptureComposer(event).catch((error) => toast(error.message)));
   $("#capture-composer-input")?.addEventListener("keydown", handleCaptureComposerKeydown);
-  $("#capture-new-session")?.addEventListener("click", () => newCaptureSession());
+  $("#capture-new-session")?.addEventListener("click", async () => {const pending=$("#capture-composer-input")?.value.trim();if(pending&&!await confirmAction(t("capture.session.new"),t("workspace_ui.discard_input")))return;newCaptureSession();const input=$("#capture-composer-input");if(input)input.value="";});
   $("#capture-sessions-toggle")?.addEventListener("click", () => {
     const drawer = $("#capture-sessions-drawer");
     if (!drawer) return;
@@ -5258,7 +5415,7 @@ function bind() {
   $("#search-query").addEventListener("input", persistRouteDebounced);
   $("#search-tags").addEventListener("input", persistRouteDebounced);
   $("#reset-search").addEventListener("click", () => { resetSearchFilters(); persistRouteDebounced(); });
-  $("#thought-filter")?.addEventListener("input", () => renderThoughtsList());
+  $("#thought-filter")?.addEventListener("input", () => {state.libraryQuery={...state.libraryQuery,page:"1"};clearTimeout(state.libraryFilterTimer);state.libraryFilterTimer=setTimeout(()=>renderThoughtsList(),180);});
   $("#refresh-thoughts")?.addEventListener("click", () => loadThoughts().catch((error) => toast(error.message)));
   $("#compose-form").addEventListener("submit", (event) => createComposeDraft(event).catch((error) => toast(error.message)));
   $("#settings-drawer-event-type")?.addEventListener("input", () => applyEventFilter());
@@ -5296,12 +5453,11 @@ function bind() {
   $("#open-compose-create-sources")?.addEventListener("click", () => openDrawer("compose-create-drawer"));
   $("#refresh-compose").addEventListener("click", () => loadComposeDrafts().catch((error) => toast(error.message)));
   $("#add-selected-compose").addEventListener("click", () => {
-    addToComposeSources(Array.from(state.selectedThoughts));
-    openComposeSources();
+    freezeSelectedThoughts(Array.from(state.selectedThoughts)).then(()=>openComposeSources()).catch(error=>toast(error.message));
   });
   $("#clear-selected").addEventListener("click", clearSearchSelection);
   $("#clear-compose-sources-tab").addEventListener("click", clearComposeSources);
-  $("#drawer-add-compose").addEventListener("click", () => addToComposeSources([state.activeThoughtId]));
+  $("#drawer-add-compose").addEventListener("click", () => addSavedComposeSources({thought_id:state.activeThoughtId}).catch(error=>toast(error.message)));
   $("#drawer-read-full")?.addEventListener("click", () => openThoughtReader(state.activeThoughtId).catch(error => toast(error.message)));
   $("#retry-refine").addEventListener("click", () => retryRefine().catch((error) => toast(error.message)));
   $("#confirm-cancel").addEventListener("click", () => closeConfirm(false));
@@ -5351,23 +5507,27 @@ function bind() {
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      $("#search-query").focus();
+      $("#workspace-search-input")?.focus();
     }
   });
 }
 
-// PR3: open the settings drawer and optionally jump to a specific tab. The
-// drawer is reused as the single home for system status, language, models,
-// sync, index, metrics, and the live event stream. Metrics load lazily on
-// first open since the request is the heaviest of the bunch and most users
-// never look at them.
-function openSettingsDrawer(drawerID = "settings-drawer", tabID = "") {
-  if (tabID) activateTab(tabID, $(`#${drawerID}`));
-  openDrawer(drawerID);
-  if (!state.metricsLoadedOnce) {
-    state.metricsLoadedOnce = true;
-    loadMetrics().catch(() => {});
-  }
+// Existing callers retain this adapter while settings now uses a full page
+// and a stable category route; feature drawers retain their existing behavior.
+function normalizeSettingsSection(section="general") {
+  const value=String(section||"").replace(/^settings-drawer-/,"");
+  const alias={models:"models",git:"sync",sync:"sync",general:"general",index:"index",events:"events",profiles:"profiles",recovery:"recovery"};
+  return alias[value]||"general";
+}
+function openSettingsDrawer(drawerID="settings-drawer",tabID="") {
+  if(drawerID!=="settings-drawer"){if(tabID)activateTab(tabID,$(`#${drawerID}`));openDrawer(drawerID);return;}
+  navigateHash(buildRouteHash("settings",{section:normalizeSettingsSection(tabID)}),{force:true});
+}
+function renderWorkspaceBreadcrumb(route=state.route) {
+  const node=$("#workspace-breadcrumb");if(!node)return;
+  const label={dashboard:"nav.overview",capture:"nav.capture",thoughts:"nav.notes",topics:"nav.topics",search:"nav.search",compose:"workspace_ui.write",settings:"workspace_ui.settings",about:"workspace_ui.help"}[route.page];
+  node.innerHTML=`<a href="#/overview">${escapeHTML(t("workspace_ui.workspace"))}</a><span aria-hidden="true">/</span><span aria-current="page">${escapeHTML(t(label||"nav.overview"))}</span>`;
+  const input=$("#workspace-search-input");if(route.page==="search"&&input)input.value=route.query.q||"";
 }
 
 function syncLanguageSwitcher() {
@@ -5381,9 +5541,13 @@ function syncLanguageSwitcher() {
 
 function rerenderForLocale() {
   tApply(document);
+  renderWorkspaceSidebar();
   // re-render dynamic content that holds its own text
+  try { renderWorkspaceBreadcrumb();if(state.route?.page==="dashboard")libraryUI().home($("#workspace-home-content")); } catch (_) {}
   try { renderThoughtsList(); } catch (_) {}
   try { renderThoughtPanels(); } catch (_) {}
+  if(state.route?.page==="thoughts"&&state.route.query.set)libraryUI().show($("#library-set-detail"),state.route.query.set,state.route.query).catch(error=>toast(error.message));
+  if(state.route?.page==="topics"&&state.activeTopicId&&!$("#topic-content-library")?.hidden){const id=state.activeTopicId,epoch=topicRequestEpoch;libraryUI().topic($("#topic-content-library"),id,()=>topicRequestEpoch===epoch&&state.activeTopicId===id).catch(error=>toast(error.message));}
   try { renderTopics(); } catch (_) {}
   try { renderComposeSources(); } catch (_) {}
   try { renderAboutDocumentProfiles(); } catch (_) {}
@@ -5401,7 +5565,7 @@ function rerenderForLocale() {
 }
 
 async function boot() {
- window.addEventListener("beforeunload",event=>{if(documentEditor?.dirty){event.preventDefault();event.returnValue="";}});
+ window.addEventListener("beforeunload",event=>{if(documentEditor?.dirty||isComposeReaderDirty()||$("#capture-composer-input")?.value.trim()){event.preventDefault();event.returnValue="";}});
   if (typeof tInit === "function") tInit();
   // Apply static translations to data-i18n elements BEFORE the async loaders
   // run, so the initial paint shows the chosen locale. Dynamic elements
@@ -5409,6 +5573,7 @@ async function boot() {
   // data-i18n, otherwise this call would overwrite the live text on every
   // boot and any subsequent locale switch.
   tApply(document);
+  renderWorkspaceSidebar();
   syncLanguageSwitcher();
   applyHelpVisibility();
   initTflowBus();
@@ -5450,12 +5615,8 @@ async function boot() {
   if (!window.location.hash) window.location.hash = "#/overview";
   state.route = parseRoute(window.location.hash);
   renderRoute();
-  await loadStatus();
-  await loadPrivacyReport();
-  await loadTopics();
-  await loadComposeDrafts();
-  await loadThoughts();
-  await loadMetrics();
+  const initial=await Promise.allSettled([loadStatus(),loadPrivacyReport(),loadTopics(),loadComposeDrafts(),loadThoughts()]);
+  for(const result of initial)if(result.status==="rejected")toast(result.reason?.message||t("toast.request_failed"));
   await applyRoute();
   // Land the user back in the most recent uncommitted capture
   // session if there is one, so a refresh doesn't dump them onto
@@ -5702,12 +5863,6 @@ function collectionRoute(entry, view = "final", revision = "", section = "") {
   );
 }
 async function openCollectionWorkspace(topic, topicEpoch) {
- if (state.route?.query?.references !== "1") {
-  try { const set = await api(`/api/document-sets/${encodeURIComponent(topic)}`);
-   if(topicEpoch !== topicRequestEpoch || state.route?.params?.topicId !== topic)return;
-   if(set?.head?.working_set_revision){await renderDocumentSetWorkspace(topic,set,topicEpoch);return;}
-  } catch(error) { if(error.status && error.status !== 404) throw error; }
- }
 
   const data = await api(`/api/topics/${encodeURIComponent(topic)}/catalog`);
   if (
@@ -6478,7 +6633,7 @@ async function saveCollectionCatalog(catalog, topic = state.activeTopicId, reque
 // additionally bind to topic epoch and the particular installed DOM root.
 
 function setRoute(id,revision,member="",section="") {
- return buildRouteHash("topics",{topicId:id},{tab:"documents",set_revision:revision,...(member?{member}:{}),...(section?{section}:{})});
+ return globalThis.ThoughtFlowLibrary.route(id,{kind:"revision",id:revision},member,section);
 }
 // Presentation only: the complete frozen question ledger remains on the run.
 function captureSetQuestionSummary(plan) {
@@ -6522,12 +6677,14 @@ function captureDocumentSetMessage(){
  const status=run?.state||"planning";
  if(run?.archive_unconfirmed_draft) {
   let html=`<div class="tf-msg-body"><strong>${escapeHTML(t("docset.title"))}</strong><p>${escapeHTML(t(`docset.state.${status}`))}</p><p>${escapeHTML(t("docset.draft.notice"))}</p>`;
-  if(run.state==="draft_saved")html+=`<p>${run.archive_draft?.members?.length||0} ${escapeHTML(t("docset.files"))}</p><button class="tf-btn" data-set-draft-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.draft.open"))}</button>`;
-  if(run.archive_draft?.notes_ready)html+=`<p>${escapeHTML(t("docset.draft.in_notes"))}</p><ul>${run.archive_draft.members.filter(member=>member.thought_id).map(member=>`<li><a href="${escapeHTML(buildRouteHash("thoughts",{thoughtId:member.thought_id},{id:member.thought_id}))}">${escapeHTML(member.title)}</a></li>`).join("")}</ul>`;
+  const archivedMembers=run.archive_draft?.members||[];
+  const sourceCount=archivedMembers.filter(member=>member.member_key==="archive-source").length;
+  if(run.state==="draft_saved")html+=`<p>${escapeHTML(t("library.member_count",{n:archivedMembers.length-sourceCount,sources:sourceCount}))}</p><button class="tf-btn" data-set-draft-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.draft.open"))}</button>`;
+  if(run.archive_draft?.notes_ready)html+=`<p>${escapeHTML(t("docset.draft.in_notes"))} <a href="#/notes">${escapeHTML(t("workspace_ui.all_content"))}</a></p>`;
   if(["queued","generating","committing"].includes(status))html+=`<button class="tf-btn" data-set-cancel-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.cancel"))}</button>`;
   if((run.archive_draft?.notes_pending||run.state==="draft_saved"&&!run.archive_draft?.notes_ready)&&status!=="committing"&&!run.cancel_requested)html+=`<button class="tf-btn" data-set-recover-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.draft.recover_notes"))}</button>`;
   else if(["failed_retryable","failed_terminal","cancelled"].includes(status))html+=`<button class="tf-btn" data-set-retry-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.retry"))}</button>`;
-  if(run.error)html+=`<p role="alert">${escapeHTML(run.error)}</p>`;
+  if(run.error)html+=`<details class="library-secondary"><summary>${escapeHTML(t("library.task_record"))}</summary><p role="alert">${escapeHTML(run.error)}</p></details>`;
   return {role:"system",kind:"document_set",html:html+"</div>"};
  }
  if(status==="needs_clarification") {
@@ -6540,7 +6697,7 @@ function captureDocumentSetMessage(){
  if(plan?.impact){html+=`<details><summary>${escapeHTML(t("design.impact"))}</summary><p>${escapeHTML(t("design.regenerate"))}: ${escapeHTML(plan.impact.regenerate_members.join(", "))}</p><p>${escapeHTML(t("design.reuse"))}: ${escapeHTML(plan.impact.reuse_candidates.join(", "))}</p><p>${escapeHTML(t("design.fresh_review"))}</p></details>`;}
  if(run){html+=`<ul>${(run.members||[]).map(m=>`<li>${escapeHTML(m.member_key)}: ${escapeHTML(m.state)}${m.error?` — ${escapeHTML(m.error)}`:""}</li>`).join("")}</ul>`;if(run.state==="committed"){html+=`<a href="${escapeHTML(setRoute(run.plan.set_id,run.candidate.set_revision_id))}">${escapeHTML(t("docset.open"))}</a>`;}else if(run.state==="awaiting_review"){html+=`<button class="tf-btn" data-set-review-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.review"))}</button>`;}}
  if(run){if(run.state==="committed"&&run.error)html+=`<button class="tf-btn" data-set-recover-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.recover"))}</button>`;if(["queued","planning","generating","checking","committing","ready"].includes(run.state))html+=`<button class="tf-btn" data-set-cancel-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.cancel"))}</button>`;if(["failed_retryable","failed_terminal","cancelled","awaiting_review"].includes(run.state))html+=`<button class="tf-btn" data-set-retry-run="${escapeHTML(run.run_id)}">${escapeHTML(t("docset.retry"))}</button>`;if(run.reconciliations?.length)html+=`<details><summary>${escapeHTML(t("docset.diff"))}</summary>${run.reconciliations.map(c=>`<h4>${escapeHTML(c.member_key)}</h4><div class="tf-set-diff"><pre>${escapeHTML(c.base)}</pre><pre>${escapeHTML(c.generated)}</pre><pre>${escapeHTML(c.manual)}</pre></div>`).join("")}</details>`;}
- if(data.error||run?.error)html+=`<p role="alert">${escapeHTML(data.error||run.error)}</p>`;
+ if(data.error||run?.error)html+=`<details class="library-secondary"><summary>${escapeHTML(t("library.task_record"))}</summary><p role="alert">${escapeHTML(data.error||run.error)}</p></details>`;
  const summary=captureSetQuestionSummary(plan);if(summary.questions.length||summary.diagnostic_count)html+=`<p>${escapeHTML(captureSetClarificationText(summary))}</p>`;
  return {role:"system",kind:"document_set",html:html+"</div>"};
 }
@@ -6571,17 +6728,9 @@ async function openCaptureSetDraft(id) {
  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);
  if(!scope.isCurrent()||epoch!==captureSetEpoch||captureDocumentSet?.run?.run_id!==id)return;
  if(run.state!=="draft_saved"||!run.archive_unconfirmed_draft||run.plan.capture.session_id!==scope.sessionId)return;
- const dialog=document.createElement("dialog");dialog.className="tf-document-dialog";
- dialog.innerHTML=`<h2>${escapeHTML(t("docset.draft.open"))}</h2><p>${escapeHTML(t("docset.draft.notice"))}</p><div class="tf-document-set-review">${run.archive_draft.members.map((member,index)=>`<details ${index===0?"open":""}><summary>${escapeHTML(member.title)}</summary><button class="tf-btn" data-draft-download="${index}">${escapeHTML(t("docset.draft.download"))}</button><div class="markdown-rendered">${renderMarkdown(member.body)}</div></details>`).join("")}</div><button class="tf-btn" data-close>${escapeHTML(t("common.close"))}</button>`;
- document.body.appendChild(dialog);
- dialog.querySelector("[data-close]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();
- dialog.querySelectorAll("[data-draft-download]").forEach(button=>{button.onclick=()=>{
-  const member=run.archive_draft.members[Number(button.dataset.draftDownload)];
-  const url=URL.createObjectURL(new Blob([member.body],{type:"text/markdown;charset=utf-8"}));
-  const link=document.createElement("a");link.href=url;link.download=member.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
- }});
- dialog.showModal();
+ navigateHash(globalThis.ThoughtFlowLibrary.route(run.plan.set_id,{kind:"archive",id:run.run_id}));return;
 }
+
 async function openSetReview(id){
  const run=await api(`/api/document-set-runs/${encodeURIComponent(id)}`);if(!run.candidate)return;
  const r=run.candidate;const report=r.validation;
@@ -6592,10 +6741,10 @@ async function openSetReview(id){
   try{await api(`/api/document-sets/${encodeURIComponent(run.plan.set_id)}/reviews`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_generation:run.plan.base_generation,candidate_manifest_hash:report.candidate_manifest_hash,run_id:id,reviewer:"workspace user",evidence,decisions:report.issues.filter(i=>i.confirmable).map(i=>({issue_id:i.id,reason:dialog.querySelector(`[data-risk="${CSS.escape(i.id)}"]`).value,locations:i.locations}))})});dialog.close();if(currentCaptureSession()===run.plan.capture.session_id)pollCaptureDocumentSet(currentCaptureSession(),id).catch(error=>toast(error.message));}catch(error){dialog.querySelector("[data-error]").textContent=error.message;}
  };dialog.showModal();
 }
-async function renderDocumentSetWorkspace(id,data,topicEpoch){
- const root=$("#topic-document");if(!root)return;const h=data.head;const rev=state.route?.query?.set_revision || h.finalized_set_revision || h.working_set_revision;
+async function renderDocumentSetWorkspace(id,data,topicEpoch,options={}){
+ const root=options.root||$("#topic-document");if(!root)return;const query=options.query||state.route?.query||{};const h=data.head;const rev=query.set_revision || h.finalized_set_revision || h.working_set_revision;
  const r=data.revisions.find(v=>v.set_revision_id===rev);if(!r)throw new Error(t("docset.version_missing"));
- const token=()=>topicEpoch===topicRequestEpoch&&state.route?.params?.topicId===id&&$("#topic-document")===root&&root.dataset.setRevision===rev;
+ const token=()=>options.isCurrent?options.isCurrent():topicEpoch===topicRequestEpoch&&state.route?.params?.topicId===id&&$("#topic-document")===root&&root.dataset.setRevision===rev;
  root.dataset.setRevision=rev;
  let savedPosition=null;try{savedPosition=JSON.parse(localStorage.getItem(`thoughtflow.documentset-reading.${id}`)||"null");}catch{}
  let key=state.route?.query?.member || (savedPosition?.revision===rev?savedPosition.member:"") || r.members[0]?.member_key;const selected=r.members.find(a=>a.member_key===key);if(!selected)throw new Error(t("workspace.entry_missing"));
@@ -6640,6 +6789,84 @@ async function openThoughtConversion(id, editor) {
   dialog.querySelector("[data-close]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();
   dialog.querySelector("form").onsubmit=async event=>{event.preventDefault();if(documentEditor!==editor||editor.dirty)return;const button=dialog.querySelector('[type="submit"]');button.disabled=true;try{const profile=data.profiles[Number(select.value)];const parameters=Object.fromEntries([...dialog.querySelectorAll("[data-param]")].map(input=>[input.dataset.param,input.value]));await api(`/api/thoughts/${encodeURIComponent(id)}/document-conversions`,{method:"POST",body:JSON.stringify({operation_id:crypto.randomUUID(),expected_content_hash:data.expected_content_hash,profile_ref:profileRef(profile),parameters})});dialog.close();editor.dialog.close();await openDocumentEditor(id);}catch(error){dialog.querySelector("[data-error]").textContent=error.message;}finally{button.disabled=false;}};
   dialog.showModal();
+}
+
+// Selection resolves through the server before entering the shared basket. The
+// browser never supplies substitute body text for a fixed archived member.
+async function addSavedComposeSources(request) {
+  const sources=await api("/api/content-library/sources",{method:"POST",body:JSON.stringify(request)});
+  await addToComposeSources(sources);
+}
+async function freezeSelectedThoughts(ids) {
+  const batches=await Promise.all(ids.map(thought_id=>api("/api/content-library/sources",{method:"POST",body:JSON.stringify({thought_id})})));
+  await addToComposeSources(batches.flat());
+}
+async function previewFrozenSource(sourceType,id) {
+  const source=state.composeSources.get(`${sourceType}::${id}`);if(!source)return;
+  if(sourceType==="document_set_member") {
+    const m=source.metadata||{};
+    navigateHash(globalThis.ThoughtFlowLibrary.route(m.set_id,{kind:m.kind,id:m.version},m.member));return;
+  }
+  const snapshot=await api(`/api/content-library/sources/${encodeURIComponent(id)}`);
+  const dialog=document.createElement("dialog");dialog.className="workspace-source-preview";
+  dialog.innerHTML=`<header><h2>${escapeHTML(source.title||id)}</h2><button class="tf-btn" data-close-source>${escapeHTML(t("common.close"))}</button></header><p class="workspace-info">${escapeHTML(t("workspace_ui.frozen_source"))}</p><article class="markdown-rendered">${renderMarkdown(thoughtReadingMarkdown(snapshot))}</article>`;
+  document.body.appendChild(dialog);dialog.querySelector("[data-close-source]").onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();dialog.showModal();
+}
+function openSavedSourcePicker({setsOnly=false}={}) {
+  return new Promise(resolve=>{
+    const dialog=document.createElement("dialog");dialog.className="workspace-source-picker";
+    dialog.innerHTML=`<header><h2>${escapeHTML(t(setsOnly?"workspace_ui.choose_set":"workspace_ui.choose_sources"))}</h2><button class="tf-btn" data-close-picker type="button">${escapeHTML(t("common.close"))}</button></header>
+      <p class="workspace-info">${escapeHTML(t("workspace_ui.source_help"))}</p>
+      <form data-picker-search><input name="q" type="search" aria-label="${escapeHTML(t("workspace_ui.filter_sources"))}" placeholder="${escapeHTML(t("workspace_ui.filter_sources"))}"><button class="tf-btn" type="submit">${escapeHTML(t("search.submit"))}</button></form>
+      <div data-picker-status role="status"></div><div data-picker-list></div><footer><button class="tf-btn" data-picker-previous type="button">${escapeHTML(t("library.previous_page"))}</button><span data-picker-page></span><button class="tf-btn" data-picker-next type="button">${escapeHTML(t("library.next_page"))}</button>${setsOnly?"":`<button class="tf-btn primary" data-picker-add type="button">${escapeHTML(t("workspace_ui.add_selected"))}</button>`}</footer>`;
+    document.body.appendChild(dialog);
+    const selected=new Map();let serial=0,page=1,query="",resolved=false;
+    const finish=value=>{if(!resolved){resolved=true;resolve(value);}dialog.close();};
+    dialog.querySelector("[data-close-picker]").onclick=()=>finish(null);
+    const pickerHash=window.location.hash;
+    const routeClose=()=>{if(window.location.hash!==pickerHash)finish(null);};
+    window.addEventListener("hashchange",routeClose);
+    dialog.onclose=()=>{serial++;window.removeEventListener("hashchange",routeClose);if(!resolved)resolve(null);dialog.remove();};
+    const token=()=>dialog.isConnected&&dialog.open;
+    const status=dialog.querySelector("[data-picker-status]");
+    async function load(){
+      const request=++serial;status.textContent=t("library.loading");
+      try{
+        const result=await api(`/api/content-library?${new URLSearchParams({page:String(page),page_size:"12",kind:setsOnly?"document_set":"all",q:query})}`);
+        if(!token()||request!==serial)return;
+        status.textContent="";
+        const list=dialog.querySelector("[data-picker-list]");
+        list.innerHTML=result.items.map((item,index)=>{
+          const request=item.kind==="thought"?{thought_id:item.id}:{set_id:item.id,selection:item.selection};
+          const key=JSON.stringify(request);
+          return `<section class="workspace-source-option" data-source-option="${index}">${setsOnly?`<button class="tf-btn" type="button" data-pick-set="${index}">${escapeHTML(item.title)}</button>`:`<label><input type="checkbox" data-source-select value="${escapeHTML(key)}" ${selected.has(key)?"checked":""}><span><strong>${escapeHTML(item.title)}</strong><small>${escapeHTML(t(item.kind==="thought"?"library.independent":"workspace_ui.whole_set"))}</small></span></label>${item.kind==="document_set"?`<details data-source-members="${index}"><summary>${escapeHTML(t("library.expand"))}</summary><div data-member-choices></div></details>`:""}`}</section>`;
+        }).join("")||`<p class="tf-empty">${escapeHTML(t("library.empty"))}</p>`;
+        list.querySelectorAll("[data-pick-set]").forEach(button=>button.onclick=()=>finish(result.items[Number(button.dataset.pickSet)]));
+        const bindChecks=root=>root.querySelectorAll("[data-source-select]").forEach(input=>input.onchange=()=>{if(input.checked)selected.set(input.value,JSON.parse(input.value));else selected.delete(input.value);status.textContent=t("workspace_ui.selected_sources",{n:selected.size});});
+        bindChecks(list);
+        list.querySelectorAll("[data-source-members]").forEach(details=>details.ontoggle=async()=>{
+          if(!details.open||details.dataset.loaded)return;details.dataset.loaded="1";
+          const item=result.items[Number(details.dataset.sourceMembers)],node=details.querySelector("[data-member-choices]");node.textContent=t("library.loading");
+          try{const detail=await api(`/api/content-library/sets/${encodeURIComponent(item.id)}?${new URLSearchParams({kind:item.selection.kind,version:item.selection.id})}`);if(!token()||request!==serial)return;
+            node.innerHTML=detail.members.map(member=>{const key=JSON.stringify({set_id:item.id,selection:item.selection,member:member.key});return `<label><input type="checkbox" data-source-select value="${escapeHTML(key)}" ${selected.has(key)?"checked":""}><span>${escapeHTML(member.title)}</span></label>`;}).join("");bindChecks(node);
+          }catch(error){if(token()){node.textContent=error.message;delete details.dataset.loaded;}}
+        });
+        dialog.querySelector("[data-picker-previous]").disabled=page<=1;
+        dialog.querySelector("[data-picker-next]").disabled=page*result.page_size>=result.total;
+        dialog.querySelector("[data-picker-page]").textContent=`${page} / ${Math.max(1,Math.ceil(result.total/result.page_size))}`;
+      }catch(error){if(token()&&request===serial)status.textContent=error.message;}
+    }
+    dialog.querySelector("[data-picker-search]").onsubmit=event=>{event.preventDefault();page=1;query=event.target.elements.q.value.trim();load();};
+    dialog.querySelector("[data-picker-previous]").onclick=()=>{page--;load();};
+    dialog.querySelector("[data-picker-next]").onclick=()=>{page++;load();};
+    dialog.querySelector("[data-picker-add]")?.addEventListener("click",async event=>{
+      if(!selected.size){status.textContent=t("workspace_ui.select_first");return;}
+      const button=event.currentTarget;button.disabled=true;
+      try{const batches=await Promise.all([...selected.values()].map(request=>api("/api/content-library/sources",{method:"POST",body:JSON.stringify(request)})));if(!token())return;await addToComposeSources(batches.flat());finish(true);}
+      catch(error){if(token()){status.textContent=error.message;button.disabled=false;}}
+    });
+    dialog.showModal();load();
+  });
 }
 
 boot().catch((error) => toast(error.message + (error.stack ? "\n" + error.stack.split("\n").slice(0, 3).join("\n") : "")));

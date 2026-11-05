@@ -29,6 +29,7 @@ import (
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/contentlibrary"
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/documentstore"
@@ -912,7 +913,7 @@ func (s *Service) SaveDraft(ctx context.Context, draftID string, req models.Comp
 // in a multi-source request does not abort the whole compose. The
 // caller only receives a non-nil error when no source of any type
 // survived hydration, because then the LLM has nothing to draw on.
-func (s *Service) hydrateSnapshots(_ context.Context, sources []models.ComposeSource) ([]models.ThoughtSnapshot, []error) {
+func (s *Service) hydrateSnapshots(ctx context.Context, sources []models.ComposeSource) ([]models.ThoughtSnapshot, []error) {
 	if s == nil || s.workspace == nil {
 		return nil, []error{errors.New("compose workspace is not ready")}
 	}
@@ -920,6 +921,12 @@ func (s *Service) hydrateSnapshots(_ context.Context, sources []models.ComposeSo
 	errs := []error{}
 	for _, src := range sources {
 		switch src.SourceType {
+		case models.ComposeSourceTypeFrozenThought, models.ComposeSourceTypeSetMember:
+			snapshot, err := contentlibrary.New(s.workspace.RootPath).ResolveSource(ctx, src)
+			if err != nil {
+				return nil, []error{fmt.Errorf("frozen compose source %q: %w", src.SourceID, err)}
+			}
+			snapshots = append(snapshots, snapshot)
 		case models.ComposeSourceTypeThought, "":
 			thought, content, err := markdown.ReadThought(s.workspace.RootPath, src.SourceID)
 			if err != nil {

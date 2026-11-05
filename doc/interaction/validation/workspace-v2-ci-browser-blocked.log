@@ -1,0 +1,173 @@
+ci: running fmt-check
+ci: ok fmt-check
+ci: running test
+ci: ok test
+ci: running build
+ci: ok build
+ci: running node-check
+ci: ok node-check
+ci: running node-test
+ci: ok node-test
+ci: running i18n-check
+ci: ok i18n-check
+ci: running browser-test
+ci: failed browser-test
+node --test web/app.browser.test.js
+TAP version 13
+# Subtest: embedded UI browser smoke matrix
+    # Subtest: chrome
+        # Subtest: desktop
+        not ok 1 - desktop
+          ---
+          duration_ms: 20020.028046
+          location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:24:27'
+          failureType: 'testCodeFailure'
+          error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+          code: 'ERR_TEST_FAILURE'
+          stack: |-
+            Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+            listOnTimeout (node:internal/timers:581:17)
+            process.processTimers (node:internal/timers:519:7)
+          ...
+        # Subtest: mobile
+        not ok 2 - mobile
+          ---
+          duration_ms: 20015.630242
+          location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:24:27'
+          failureType: 'testCodeFailure'
+          error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+          code: 'ERR_TEST_FAILURE'
+          stack: |-
+            Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+            listOnTimeout (node:internal/timers:581:17)
+            process.processTimers (node:internal/timers:519:7)
+          ...
+        1..2
+    not ok 1 - chrome
+      ---
+      duration_ms: 40037.406606
+      location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:22:13'
+      failureType: 'subtestsFailed'
+      error: '2 subtests failed'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        async TestContext.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:22:5)
+      ...
+    # Subtest: firefox
+    ok 2 - firefox # SKIP playwright npm package is not installed
+      ---
+      duration_ms: 0.167769
+      ...
+    # Subtest: safari
+    ok 3 - safari # SKIP Safari/WebKit automation is unavailable on this linux test host
+      ---
+      duration_ms: 0.109802
+      ...
+    1..3
+not ok 1 - embedded UI browser smoke matrix
+  ---
+  duration_ms: 40040.969401
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:19:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: browser smoke matrix declares cross-browser targets
+ok 2 - browser smoke matrix declares cross-browser targets
+  ---
+  duration_ms: 0.626547
+  ...
+# Subtest: browser fixture serves the document profile catalog used during boot and refresh
+ok 3 - browser fixture serves the document profile catalog used during boot and refresh
+  ---
+  duration_ms: 60.032724
+  ...
+# Subtest: embedded UI restores deep-link query into inputs and reflects input changes back into the hash
+not ok 4 - embedded UI restores deep-link query into inputs and reflects input changes back into the hash
+  ---
+  duration_ms: 20016.307488
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:556:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+# Subtest: compose sources load from the backend
+not ok 5 - compose sources load from the backend
+  ---
+  duration_ms: 20016.657123
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:625:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+# Subtest: compose draft reader opens preview and supports edit/preview toggle
+not ok 6 - compose draft reader opens preview and supports edit/preview toggle
+  ---
+  duration_ms: 20015.93007
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:659:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+# Subtest: capture composer starts a new session, persists a thought, and shows the conversation
+not ok 7 - capture composer starts a new session, persists a thought, and shows the conversation
+  ---
+  duration_ms: 20015.489992
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:774:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+# Subtest: capture conversation accepts edits and archives through chat
+not ok 8 - capture conversation accepts edits and archives through chat
+  ---
+  duration_ms: 20015.066743
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:825:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+# Subtest: capture lock indicator stays hidden when no session is active
+not ok 9 - capture lock indicator stays hidden when no session is active
+  ---
+  duration_ms: 20016.894715
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:897:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2411:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...
+1..9
+# tests 14
+# suites 0
+# pass 2
+# fail 10
+# cancelled 0
+# skipped 2
+# todo 0
+# duration_ms 178396.832104
+make[1]: *** [Makefile:132: browser-test] Error 1
+make: *** [Makefile:146: ci-check] Error 2

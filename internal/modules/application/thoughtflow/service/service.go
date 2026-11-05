@@ -32,6 +32,7 @@ import (
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/appconfig"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/contentlibrary"
 	"thoughtflow/internal/pkg/documentflow"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/documentsetflow"
@@ -253,6 +254,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/index.html", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/styles.css", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/app.js", engine.GET, s.handleWeb)
+	s.registry.AddHandler("/content-library.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/session-lock.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/i18n/index.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/i18n/zh-CN.js", engine.GET, s.handleWeb)
@@ -260,6 +262,7 @@ func (s *Service) RegisterRoutes() {
 	s.registry.AddHandler("/vendor/markdown-it.min.js", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/vendor/markdown-it.LICENSE", engine.GET, s.handleWeb)
 	s.registry.AddHandler("/assets/thoughtflow.png", engine.GET, s.handleWeb)
+	s.registerContentLibraryRoutes()
 	s.registry.AddHandler("/api/thoughts", engine.GET, s.handleListThoughts)
 	s.registry.AddHandler("/api/thoughts", engine.POST, s.handleCreateThought)
 	s.registry.AddHandler("/api/thoughts/import", engine.POST, s.handleImportThought)
@@ -494,6 +497,11 @@ func (s *Service) handleGetThought(ctx context.Context, res http.ResponseWriter,
 		}
 		writeError(res, req, status, "thoughtflow.capture.not_found", err.Error())
 		return
+	}
+	if s.workspace != nil {
+		if contexts, err := contentlibrary.New(s.workspace.RootPath).Contexts(ctx, []string{thoughtID}); err == nil {
+			snapshot.ContentSet = contexts[thoughtID]
+		}
 	}
 	snapshot.Jobs = recentJobsByResource(s.jobs, thoughtID, 20)
 	if s.gitQueries != nil {
@@ -878,6 +886,19 @@ func (s *Service) buildSearchResultView(ctx context.Context, query models.Search
 			Actions:  actions,
 		})
 	}
+	if s.workspace != nil {
+		ids := make([]string, 0, len(summaries))
+		for _, item := range summaries {
+			if item.ThoughtID != "" {
+				ids = append(ids, item.ThoughtID)
+			}
+		}
+		if contexts, err := contentlibrary.New(s.workspace.RootPath).Contexts(ctx, ids); err == nil {
+			for i := range summaries {
+				summaries[i].ContentSet = contexts[summaries[i].ThoughtID]
+			}
+		}
+	}
 	view := models.SearchResultView{
 		Results:  summaries,
 		Page:     response.Page,
@@ -1204,7 +1225,7 @@ func (s *Service) handleListTopics(ctx context.Context, res http.ResponseWriter,
 		writeError(res, req, http.StatusInternalServerError, "thoughtflow.topic.list_failed", err.Error())
 		return
 	}
-	writeJSON(res, req, http.StatusOK, topics)
+	writeJSON(res, req, http.StatusOK, s.topicDisplay(ctx, topics))
 }
 
 func (s *Service) handleCreateTopic(ctx context.Context, res http.ResponseWriter, req *http.Request) {
@@ -1237,7 +1258,7 @@ func (s *Service) handleGetTopic(ctx context.Context, res http.ResponseWriter, r
 		return
 	}
 	detail.Activities = topicActivities(s.stream, topicID, 20)
-	writeJSON(res, req, http.StatusOK, detail)
+	writeJSON(res, req, http.StatusOK, s.topicDisplay(ctx, detail))
 }
 
 func topicActivities(stream *eventstream.Stream, topicID string, limit int) []models.DomainEvent {

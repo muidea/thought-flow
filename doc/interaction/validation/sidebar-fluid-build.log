@@ -1,0 +1,1 @@
+CGO_LDFLAGS=" -L/usr/lib/gcc/x86_64-linux-gnu/14 -L/usr/lib/gcc/x86_64-linux-gnu/13" go build -trimpath -gcflags "" -ldflags "-s -w" -o ./thoughtflow ./cmd/thoughtflow

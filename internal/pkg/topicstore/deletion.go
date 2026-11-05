@@ -98,7 +98,7 @@ func (s *Store) DeleteCollectionCAS(ctx context.Context, id string, req DeleteCo
 	if e != nil {
 		return e
 	}
-	allowed := map[string]bool{"topic.yaml": true, "catalog.json": true, "catalog.md": true, "index.md": true, "storage.snapshot.json": true}
+	allowed := map[string]bool{"topic.yaml": true, "catalog.json": true, "catalog.md": true, "index.md": true, "storage.snapshot.json": true, "content-links.json": true}
 	tombstone = collectionDeletion{TopicID: id, OperationID: req.OperationID, DeletedAt: time.Now().UTC()}
 	emptyDirs := []string{}
 	for _, entry := range entries {

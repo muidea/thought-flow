@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"thoughtflow/internal/pkg/contentreference"
 
 	documentset "thoughtflow/internal/pkg/documentset"
 	"thoughtflow/internal/pkg/documentsetstore"
@@ -39,7 +40,7 @@ func allowedImportPath(path, topic string, objects map[string]models.ObjectLocat
 		}
 		return len(parts) == 3 && parts[0] == "revisions" && objectlocation.ValidID(parts[1]) && (parts[2] == "manifest.json" || parts[2] == "plan.json" || parts[2] == "shared-design.json" || parts[2] == "validation.json")
 	}
-	if path == "topics/"+topic+"/topic.yaml" || path == catalogPath(topic) || path == "topics/"+topic+"/catalog.md" || path == "topics/"+topic+"/index.md" || path == "topics/"+topic+"/storage.snapshot.json" {
+	if path == "topics/"+topic+"/topic.yaml" || path == catalogPath(topic) || path == "topics/"+topic+"/catalog.md" || path == "topics/"+topic+"/index.md" || path == "topics/"+topic+"/storage.snapshot.json" || path == "topics/"+topic+"/content-links.json" {
 		return true
 	}
 	for id, l := range objects {
@@ -182,6 +183,14 @@ func (s *Store) ImportPackage(ctx context.Context, operation string, raw []byte)
 	}
 	if e = objectlocation.ReadJSON(stageRoot, catalogPath(manifest.TopicID), &importedCatalog); e != nil || importedCatalog.TopicID != manifest.TopicID {
 		return result, objectlocation.ErrInvalid
+	}
+	var links contentreference.Links
+	if err := objectlocation.ReadJSON(stageRoot, "topics/"+manifest.TopicID+"/content-links.json", &links); err == nil {
+		if !contentreference.Validate(links) {
+			return result, objectlocation.ErrInvalid
+		}
+	} else if !os.IsNotExist(err) {
+		return result, err
 	}
 	// Body identity is independent of the JSON record identity.
 	setStore := documentsetstore.New(stageRoot)

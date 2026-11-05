@@ -62,6 +62,19 @@ func New(rootPath string, options ...Option) *Store {
 }
 
 func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (models.Topic, error) {
+	return s.create(ctx, "", req)
+}
+
+// CreateWithID separates a server-owned identity from its human-readable name.
+// It never adopts an existing topic, even when the display names are identical.
+func (s *Store) CreateWithID(ctx context.Context, id string, req models.TopicCreateRequest) (models.Topic, error) {
+	if !objectlocation.ValidID(id) || Slugify(id) != id {
+		return models.Topic{}, objectlocation.ErrInvalid
+	}
+	return s.create(ctx, id, req)
+}
+
+func (s *Store) create(ctx context.Context, id string, req models.TopicCreateRequest) (models.Topic, error) {
 	r := objectlocation.For(s.rootPath)
 	if e := r.Initialize(); e != nil {
 		return models.Topic{}, e
@@ -74,6 +87,9 @@ func (s *Store) Create(ctx context.Context, req models.TopicCreateRequest) (mode
 		return models.Topic{}, errors.New("topic name is required")
 	}
 	slug := topicSlugFromName(name)
+	if id != "" {
+		slug = id
+	}
 	unlock := s.lock(slug)
 	defer unlock()
 	if slug == "" {

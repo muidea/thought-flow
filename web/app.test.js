@@ -275,6 +275,7 @@ function makeDomStub(initial = {}) {
     setAttribute: (name, value) => { store[`thought-list-count_${name}`] = String(value); },
   };
   nodes["thought-detail"] = {
+    querySelectorAll: () => [],
     get innerHTML() { return store["thought-detail_innerHTML"] || ""; },
     set innerHTML(v) { store["thought-detail_innerHTML"] = String(v); },
     classList: classSet(),
@@ -421,6 +422,7 @@ function loadAppFunctionsWith(opts = {}) {
   };
   const result = vm.runInNewContext(
     `${parserCode}
+    ${fs.readFileSync(path.join(__dirname,"content-library.js"),"utf8")}
     ${code}
     ({
       escapeHTML,
@@ -515,6 +517,8 @@ function loadAppFunctionsWith(opts = {}) {
       patchActiveThought,
       newCaptureSession,
       previewThought,
+      addSavedComposeSources,
+      freezeSelectedThoughts,
       submitCaptureComposer,
       appendSessionMessage,
       deleteCaptureSession,
@@ -553,6 +557,7 @@ function loadAppFunctionsWith(opts = {}) {
       resourceContentHref,
       setCollectionWorkspace(value){collectionWorkspace=value;},
       setMarkdownResourceContext(value){markdownResourceContext=value;},
+      sidebarReadingKey, sidebarReadings, rememberSidebarReading, renderWorkspaceSidebar,
       appState: state,
     });`,
     context,
@@ -608,7 +613,10 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   assert.deepEqual(route("#/overview"), { page: "dashboard", nav: "overview", params: {}, query: {} });
   assert.deepEqual(route("#/capture"), { page: "capture", nav: "capture", params: {}, query: {} });
   assert.deepEqual(route("#/search"), { page: "search", nav: "search", params: {}, query: {} });
-  assert.deepEqual(route("#/about"), { page: "about", nav: "about", params: {}, query: {} });
+  assert.deepEqual(route("#/about"), { page: "about", nav: "", params: {}, query: {} });
+  assert.deepEqual(route("#/help"), { page: "about", nav: "", params: {}, query: {} });
+  assert.deepEqual(route("#/settings/models"), { page: "settings", nav: "", params: { section: "models" }, query: {} });
+  assert.deepEqual(route("#/settings/git"), { page: "settings", nav: "", params: { section: "sync" }, query: {} });
   // Legacy /topics/{id}/review links land on the topic detail workspace.
   assert.deepEqual(route("#/topics/demo"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: {} });
   assert.deepEqual(route("#/topics/demo/review"), { page: "topics", nav: "topics", params: { topicId: "demo" }, query: { tab: "detail" } });
@@ -617,9 +625,9 @@ test("parseRoute maps hash routes to pages and navigation groups", () => {
   // the topic id lives in the query and the page has no in-param topicId.
   assert.deepEqual(route("#/topics?topic=demo&tab=rules"), { page: "topics", nav: "topics", params: {}, query: { topic: "demo", tab: "rules" } });
   assert.deepEqual(route("#/notes?id=abc"), { page: "thoughts", nav: "notes", params: { thoughtId: "abc" }, query: { id: "abc" } });
-  assert.deepEqual(route("#/write"), { page: "compose", nav: "compose", params: {}, query: {} });
-  assert.deepEqual(route("#/write?tab=sources"), { page: "compose", nav: "compose", params: {}, query: { tab: "sources" } });
-  assert.deepEqual(route("#/write?draft=d-1"), { page: "compose", nav: "compose", params: {}, query: { draft: "d-1" } });
+  assert.deepEqual(route("#/write"), { page: "compose", nav: "notes", params: {}, query: {} });
+  assert.deepEqual(route("#/write?tab=sources"), { page: "compose", nav: "notes", params: {}, query: { tab: "sources" } });
+  assert.deepEqual(route("#/write?draft=d-1"), { page: "compose", nav: "notes", params: {}, query: { draft: "d-1" } });
   assert.deepEqual(route("#/compose?tab=basket"), { page: "dashboard", nav: "overview", params: {}, query: { tab: "basket" } });
   // The bare /notes segment opens the notes list with no thought selected;
   // ?id= selects a specific thought.
@@ -652,6 +660,26 @@ test("parseRoute falls back to overview for unknown segments", () => {
     route("#/legacy-jobs?id=foo"),
     { page: "dashboard", nav: "overview", params: {}, query: { id: "foo" } },
   );
+});
+
+test("saved source selection persists exact set version metadata and restores it after reload", async () => {
+  const canonical = { source_type: "document_set_member", source_id: "snapshot-fixed", title: "Architecture", source_link: "/#/notes?set=design&kind=archive&version=run-1&member=architecture", metadata: {set_id:"design",kind:"archive",version:"run-1",member:"architecture",body_hash:"sha256:fixed"} };
+  const calls=[];
+  let basket={version:0,sources:[]};
+  const app=loadAppFunctionsWith({fetch:async(url,options={})=>{
+    const body=options.body?JSON.parse(options.body):null;calls.push([url,body]);
+    let data;
+    if(url==="/api/content-library/sources")data=[canonical];
+    else if(options.method==="PUT"){basket={version:basket.version+1,sources:body.sources};data=basket;}
+    else data=basket;
+    return {ok:true,json:async()=>({data})};
+  }});
+  await app.addSavedComposeSources({set_id:"design",selection:{kind:"archive",id:"run-1"}});
+  assert.deepEqual(basket.sources,[canonical]);
+  app.appState.composeSources.clear();
+  await app.restoreSources();
+  assert.deepEqual(JSON.parse(JSON.stringify([...app.appState.composeSources.values()])),[canonical]);
+  assert.equal(calls[0][1].selection.id,"run-1");
 });
 
 test("navigation and status helpers map to AntD-style classes", () => {
@@ -1195,7 +1223,7 @@ test("renderComposeSourcesItem exposes source metadata and actions", () => {
   assert.match(html, /compose\.source_type\.thought/);
   assert.match(html, /data-compose-source-preview="thought-1"/);
   assert.match(html, /data-compose-source-remove="thought-1"/);
-  assert.match(html, /compose\.source_id/);
+  assert.match(html, /<details[^>]*><summary>library\.metadata<\/summary><code>thought-1<\/code><\/details>/);
 });
 
 test("outline helpers preserve one title per line", () => {
@@ -1291,8 +1319,16 @@ test("renderDashboardCaptureSessions shows recent capture sessions, not event de
   assert.match(html, /Latest conversation/);
   assert.match(html, /Earlier conversation/);
   assert.match(html, /data-dashboard-session-id="latest"/);
-  assert.match(html, /capture\.drawer\.archived/);
+  assert.match(html, /overview\.session_saved/);
   assert.doesNotMatch(html, /search\.index_updated|resource_id/);
+});
+
+test("overview conversations recognize saved sets and expose keyboard buttons in recent order", () => {
+  const dom=makeDomStub();const app=loadAppFunctionsWith({dom,exposeState:true});
+  app._state.homeArchivedSessions=new Set(["set-conversation"]);
+  app._state.capture.sessions=[{sessionId:"earlier",title:"Earlier",updatedAt:"2026-11-04T00:00:00Z"},{sessionId:"set-conversation",title:"Saved set conversation",updatedAt:"2026-11-05T00:00:00Z"}];
+  app.renderDashboardCaptureSessions();const html=dom.nodes["dashboard-capture-sessions"].innerHTML;
+  assert.match(html,/<button type="button"/);assert.ok(html.indexOf('set-conversation')<html.indexOf('earlier'));assert.match(html,/overview\.session_saved/);assert.match(html,/overview\.session_unsaved/);
 });
 
 test("buildRouteHash omits empty query fields and keeps the path clean", () => {
@@ -1879,7 +1915,7 @@ test("createComposeDraft queues a job without waiting for draft body", async () 
     ["thought::t-1", { source_type: "thought", source_id: "t-1", title: "T1" }],
   ]);
   app._state.composeGenerating = false;
-  app._state.route = { page: "compose", nav: "compose", params: {}, query: {} };
+  app._state.route = { page: "compose", nav: "notes", params: {}, query: {} };
 
   const event = { preventDefault() {}, submitter: submit };
   await app.createComposeDraft(event);
@@ -1916,7 +1952,7 @@ test("handleComposeEvent clears generating lock on succeeded job", async () => {
   });
   app._state.composeGenerating = true;
   app._state.composeActiveJobId = "job-1";
-  app._state.route = { page: "compose", nav: "compose", params: {}, query: {} };
+  app._state.route = { page: "compose", nav: "notes", params: {}, query: {} };
 
   const payload = JSON.stringify({
     event_type: "job.updated",
@@ -1948,7 +1984,7 @@ test("handleComposeEvent keeps the active generation lock for another compose jo
   });
   app._state.composeGenerating = true;
   app._state.composeActiveJobId = "job-active";
-  app._state.route = { page: "compose", nav: "compose", params: {}, query: {} };
+  app._state.route = { page: "compose", nav: "notes", params: {}, query: {} };
 
   app.handleComposeEvent("job.updated", JSON.stringify({
     event_type: "job.updated",
@@ -2159,16 +2195,13 @@ test("restoreRoutePage preserves explicit notes tab over detail default", () => 
   assert.equal(activeNotesTab(dom), "notes-status");
 });
 
-test("notes list item click switches directly to detail tab", () => {
-  const dom = makeDomStub();
-  const app = loadAppFunctionsWith({ dom, exposeState: true });
-  app._state.notes = [{ id: "thought-123", display_title: "Thought 123", summary: "Summary" }];
-
-  app.renderThoughtsList();
-  const [item] = dom.find("#thought-list").querySelectorAll(".result-item[data-thought-id]");
-  item.handlers.click({ target: { closest: () => null } });
-
-  assert.equal(activeNotesTab(dom), "notes-detail");
+test("notes content route preserves filters and exact set selection", () => {
+  const app = loadAppFunctionsWith({ exposeState: true });
+  const route = app.parseRoute("#/notes?set=design-1&kind=archive&version=run-1&member=architecture&section=scope");
+  app._state.route=route;
+  assert.equal(route.page,"thoughts");
+  assert.equal(route.query.version,"run-1");
+  assert.equal(JSON.stringify(app.PAGE_SERIALIZERS.thoughts()),JSON.stringify(route.query));
 });
 
 test("restoreRoutePage hydrates compose sources tab from query", () => {
@@ -2740,7 +2773,7 @@ test("capture session history is not persisted in browser storage", () => {
 
 test("opened capture history session can continue through composer", async () => {
   const calls = [];
-  const dom = makeDomStub({ "capture-composer-input": "继续完善历史会话" });
+  const dom = makeDomStub();
   const app = loadAppFunctionsWith({
     dom,
     exposeState: true,
@@ -2780,8 +2813,9 @@ test("opened capture history session can continue through composer", async () =>
     title: "Archived session",
   }];
 
-  app.switchCaptureSession("history-1");
+  await app.switchCaptureSession("history-1");
   await Promise.resolve();
+  dom.nodes["capture-composer-input"].value = "继续完善历史会话";
   await app.submitCaptureComposer({ preventDefault: () => {} });
 
   assert.equal(app._state.capture.sessionId, "history-1");
@@ -2791,6 +2825,24 @@ test("opened capture history session can continue through composer", async () =>
   );
   const posted = calls.find((call) => call.method === "POST" && call.url === "/api/capture/sessions/history-1/messages");
   assert.match(posted.body, /继续完善历史会话/);
+});
+
+test("switching conversations preserves unsent text until the user explicitly discards it", async () => {
+  const dom=installComposeReaderDom(makeDomStub({"capture-composer-input":"UNSENT"}));
+  const calls=[];
+  const app=loadAppFunctionsWith({dom,fetch:async url=>{calls.push(url);return {ok:true,json:async()=>({data:{session_id:"next",messages:[]}})};}});
+  app.appState.capture.sessionId="old";
+  app.appState.capture.sessions=[{sessionId:"next",messages:[]}];
+  const cancelled=app.switchCaptureSession("next");
+  app.appState.pendingConfirm(false);await cancelled;
+  assert.equal(app.appState.capture.sessionId,"old");
+  assert.equal(dom.nodes["capture-composer-input"].value,"UNSENT");
+  assert.deepEqual(calls,[]);
+  const confirmed=app.switchCaptureSession("next");
+  app.appState.pendingConfirm(true);await confirmed;
+  assert.equal(app.appState.capture.sessionId,"next");
+  assert.equal(dom.nodes["capture-composer-input"].value,"");
+  assert.ok(calls.includes("/api/capture/sessions/next"));
 });
 
 test("deleteCaptureSession removes one session and calls backend delete", async () => {
@@ -3426,7 +3478,7 @@ test("document set links require matching fixed context and reject unknown membe
  const app=loadAppFunctions();
  app.setSetRenderContext({id:"set-demo",revision:"set-r-1",keys:new Set(["module:MOD-ORDER","architecture"])});
  const html=app.renderMarkdown("[Order](docset://set-demo/module:MOD-ORDER#scope) [Unknown](docset://set-demo/missing#scope) [external](docset://another/architecture#scope)");
- assert.match(html,/set_revision=set-r-1/);assert.match(html,/member=module%3AMOD-ORDER/);assert.match(html,/section=scope/);
+ assert.match(html,/version=set-r-1/);assert.match(html,/member=module%3AMOD-ORDER/);assert.match(html,/section=scope/);
  assert.doesNotMatch(html,/href="docset:/);
  assert.equal(app.cleanMarkdownHref("docset://set-demo/missing#scope"),"");
  app.setSetRenderContext(null);
@@ -3441,7 +3493,7 @@ test("Capture set status distinguishes committed drafts, clarification and failu
  for(const state of ["generating","awaiting_review","committed","failed_terminal","needs_clarification"]){
   app.setCaptureDocumentSet({session:"session-a",run:{run_id:"run-a",plan,state,members:[],candidate:{set_revision_id:"fixed-r"}}});
   const message=app.captureDocumentSetMessage();if(state==="needs_clarification"){assert.match(message.text,/docset.clarification.planning_incomplete/);continue;}assert.match(message.html,new RegExp(`docset.state.${state}`));
-  if(state==="committed"){assert.match(message.html,/set_revision=fixed-r/);assert.doesNotMatch(message.html,/data-set-cancel-run/);}
+  if(state==="committed"){assert.match(message.html,/version=fixed-r/);assert.doesNotMatch(message.html,/data-set-cancel-run/);}
   if(state==="generating")assert.match(message.html,/data-set-cancel-run/);
   if(state==="failed_terminal")assert.match(message.html,/data-set-retry-run/);
  }
@@ -3605,7 +3657,7 @@ test("session archive polling discovers the automatic set task when initial SSE 
  app.resumeCaptureArchivePolling();await timers.shift()();
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(app.getCaptureDocumentSet().run.run_id,"auto-set-run");
- assert.match(dom.nodes["capture-conversation"].innerHTML,/set_revision=r-auto/);
+ assert.match(dom.nodes["capture-conversation"].innerHTML,/version=r-auto/);
  assert.equal(timers.length,0);
  assert.ok(calls.every(call=>call.method==="GET"));
 });
@@ -3686,8 +3738,45 @@ test("archived design Thoughts are labeled in Notes and linked from Capture",()=
  assert.match(markdown,/notes.design_draft/);assert.match(markdown,/docset.draft.notice/);assert.match(markdown,/Preserved proposal/);
  const run={run_id:"run",state:"draft_saved",archive_unconfirmed_draft:true,archive_draft:{notes_ready:true,members:[{member_key:"architecture",title:"Archived architecture",thought_id:"design-1"}]},plan:{capture:{session_id:"S"}}};
  app.setCaptureDocumentSet({session:"S",run});
- const message=app.captureDocumentSetMessage();assert.match(message.html,/docset.draft.in_notes/);assert.match(message.html,/#\/notes\?id=design-1/);
+ const message=app.captureDocumentSetMessage();assert.match(message.html,/docset.draft.in_notes/);assert.match(message.html,/href="#\/notes"/);
  assert.doesNotMatch(message.html,/data-set-retry-run|data-set-recover-run|data-set-review-run/);
  run.archive_draft.notes_ready=false;run.archive_draft.notes_pending=true;run.state="failed_terminal";run.error="Projection interrupted";
  const pending=app.captureDocumentSetMessage();assert.match(pending.html,/data-set-recover-run="run"/);assert.doesNotMatch(pending.html,/data-set-retry-run|docset.draft.in_notes/);
+});
+
+
+test("sidebar reading shortcuts use real workspace identity and retain exact saved versions", () => {
+  const storage=makeStorageStub(), app=loadAppFunctionsWith({storage});
+  const note={title:"Order note",href:"#/notes?id=order",kind:"thought",body:"DO_NOT_STORE_BODY"};
+  app.rememberSidebarReading(note);
+  assert.equal(app.sidebarReadings().length,0,"unknown workspace must not acquire global history");
+  app.appState.status={workspace:{id:"workspace/A"}};
+  app.rememberSidebarReading(note);
+  const old={title:"Architecture v1",href:"#/notes?set=order&kind=revision&version=v1&member=architecture",kind:"set"};
+  app.rememberSidebarReading(old);
+  app.rememberSidebarReading({...old,title:"Architecture v1 revisited"});
+  app.rememberSidebarReading({...old,title:"Architecture v2",href:old.href.replace("version=v1","version=v2")});
+  assert.deepEqual(Array.from(app.sidebarReadings(),x=>x.title),["Architecture v2","Architecture v1 revisited","Order note"]);
+  assert.doesNotMatch(storage.data[app.sidebarReadingKey()],/DO_NOT_STORE_BODY/);
+  app.appState.status.workspace.id="workspace/B";
+  assert.equal(app.sidebarReadings().length,0);
+  app.appState.status.workspace.id="workspace/A";
+  const reloaded=loadAppFunctionsWith({storage});reloaded.appState.status=app.appState.status;
+  assert.equal(reloaded.sidebarReadings().length,3,"refresh retains workspace-scoped history");
+});
+
+test("sidebar ignores malformed or external shortcuts, escapes titles, and survives unavailable storage", () => {
+  const storage=makeStorageStub(),dom=makeDomStub();
+  const recent=makeElementStub();
+  dom.all=selector=>selector==="[data-sidebar-recent]"?[recent]:[];
+  const app=loadAppFunctionsWith({storage,dom});app.appState.status={workspace:{id:"actual-workspace"}};
+  const key=app.sidebarReadingKey();
+  storage.data[key]=JSON.stringify([{title:"External",href:"javascript:alert(1)",kind:"thought"},{title:"Missing version",href:"#/notes?set=order",kind:"set"},{title:"Duplicate identity",href:"#/notes?id=a&id=b",kind:"thought"},{title:"<img onerror=alert(1)>",href:"#/notes?id=safe",kind:"thought"}]);
+  app.renderWorkspaceSidebar();
+  assert.match(recent.innerHTML,/&lt;img/);assert.doesNotMatch(recent.innerHTML,/<img|javascript:|Missing version|Duplicate identity/);
+  storage.data[key]="[invalid";assert.equal(app.sidebarReadings().length,0);
+  storage.getItem=()=>{throw new Error("storage denied");};storage.setItem=()=>{throw new Error("storage denied");};
+  app.rememberSidebarReading({title:"Readable",href:"#/notes?id=readable",kind:"thought"});
+  assert.equal(app.sidebarReadings()[0].title,"Readable");
+  app.renderWorkspaceSidebar();assert.match(recent.innerHTML,/Readable/);
 });

@@ -89,14 +89,13 @@ async function runBrowserSmoke(browser, url) {
   await page.waitForExpression(() => document.querySelectorAll(".topic-item").length === 1);
   await page.waitForExpression(() => !!document.querySelector("#search-results"));
   await page.waitForExpression(() => document.querySelectorAll("#thought-list .result-item").length === 2);
-  // PR5: sidebar count badges surface notes / topics / compose totals.
+  // Primary navigation badges summarize saved content and topics.
   // Notes now comes from GET /api/thoughts, while Topics and Compose
   // come from their own list endpoints.
   await page.waitForExpression(() => {
     const notes = document.querySelector('.tf-menu-badge[data-badge="notes"]');
     const topics = document.querySelector('.tf-menu-badge[data-badge="topics"]');
-    const compose = document.querySelector('.tf-menu-badge[data-badge="compose"]');
-    return notes && topics && compose && notes.dataset.count && topics.dataset.count && compose.dataset.count;
+    return notes && topics && notes.dataset.count && topics.dataset.count;
   });
 
   const state = await page.evaluate(async () => {
@@ -120,7 +119,7 @@ async function runBrowserSmoke(browser, url) {
       ["search", "#/search", "#page-search", "#search-results"],
       ["topics", "#/topics", "#page-topics", "#topic-list"],
       ["compose", "#/write", "#page-compose", "#compose-writing"],
-      ["about", "#/about", "#page-about", "#about-document-profiles"],
+      ["about", "#/help", "#page-about", "#about-system-status"],
     ];
     // PR3 placeholder: /jobs lives in the settings drawer; no sidebar
     // entry and no dedicated page section, so it isn't in the routes
@@ -131,7 +130,7 @@ async function runBrowserSmoke(browser, url) {
       // Normalize navActive to a boolean so deepStrictEqual can compare
       // against missing sidebar entries (those would otherwise surface as
       // `undefined` and trip the strict comparator).
-      const navEl = document.querySelector(`[data-nav="${name}"]`);
+      const navEl = document.querySelector(`[data-nav="${name === "compose" ? "notes" : name}"]`);
       routeStates.push({
         name,
         active: !!document.querySelector(pageSelector)?.classList.contains("active"),
@@ -139,16 +138,15 @@ async function runBrowserSmoke(browser, url) {
         navActive: navEl ? navEl.classList.contains("active") : false,
       });
     }
-    // Settings is no longer in the sidebar (gear button instead). The
-    // drawer mounts on demand; visiting /settings via the hash is a
-    // deprecated redirect to /overview.
+    // Settings is a full page reached from the sidebar footer or gear.
+    // Its direct route must survive refresh and normal page navigation.
     await settleRoute("#/settings");
     await new Promise((resolve) => setTimeout(resolve, 20));
     routeStates.push({
       name: "settings",
-      active: !!document.querySelector("#page-dashboard")?.classList.contains("active"),
-      visible: false,
-      navActive: document.querySelector('[data-nav="overview"]')?.classList.contains("active") || false,
+      active: !!document.querySelector("#page-settings")?.classList.contains("active"),
+      visible: true,
+      navActive: false,
     });
     await settleRoute("#/capture");
     const composer = document.querySelector("#capture-composer-input");
@@ -201,9 +199,8 @@ async function runBrowserSmoke(browser, url) {
     const rulesDrawerOpen = document.querySelector("#topic-rules-drawer")?.classList.contains("open");
     document.querySelector("[data-close-drawer='topic-rules-drawer']")?.click();
 
-    // /jobs and /settings are gone — jobs surface on the notes runtime
-    // card, the settings gear button opens the settings drawer. Visiting
-    // these hashes falls through to the overview page.
+    // Unknown legacy addresses retain their overview fallback. Actual
+    // settings routes now open the management page.
     await settleRoute("#/legacy-jobs?id=job-capture");
     await new Promise((resolve) => setTimeout(resolve, 20));
     const overviewAfterJobsFallback = !!document.querySelector("#page-dashboard")?.classList.contains("active");
@@ -212,14 +209,14 @@ async function runBrowserSmoke(browser, url) {
     const overviewAfterSettingsFallback = !!document.querySelector("#page-dashboard")?.classList.contains("active");
     const openSettingsBtn = document.querySelector("#open-settings");
     openSettingsBtn?.click();
-    await waitUntil(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
-    const settingsDrawerOpen = !!document.querySelector("#settings-drawer")?.classList.contains("open");
+    await waitUntil(() => document.querySelector("#page-settings")?.classList.contains("active"));
+    const settingsDrawerOpen = !!document.querySelector("#page-settings")?.classList.contains("active");
     // Switch to the events tab and confirm the event list exists.
     document.querySelector("[data-tab='settings-drawer-events']")?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const eventsTabActive = !!document.querySelector("#tab-settings-drawer-events")?.classList.contains("active");
     const eventsListPresent = !!document.querySelector("#settings-drawer-event-list");
-    document.querySelector("[data-close-drawer='settings-drawer']")?.click();
+    await settleRoute("#/overview");
     const metricsText = document.querySelector("#settings-drawer-metrics-json")?.textContent || "";
     const shell = document.querySelector(".tf-layout").getBoundingClientRect();
     const clientWidth = document.documentElement.clientWidth;
@@ -276,7 +273,7 @@ async function runBrowserSmoke(browser, url) {
       settingsDrawerOpen,
       eventsTabActive,
       eventsListPresent,
-      // PR5: sidebar count badges surface notes / topics / compose totals.
+      // Primary navigation badges summarize saved content and topics.
       sidebarWidth: document.querySelector(".tf-sider")?.getBoundingClientRect().width,
       sidebarBadges: {
         notes: document.querySelector('.tf-menu-badge[data-badge="notes"]')?.dataset.count || "",
@@ -300,11 +297,11 @@ async function runBrowserSmoke(browser, url) {
   assert.deepEqual(state.routeStates, [
     { name: "capture", active: true, visible: true, navActive: true },
     { name: "notes", active: true, visible: true, navActive: true },
-    { name: "search", active: true, visible: true, navActive: true },
+    { name: "search", active: true, visible: true, navActive: false },
     { name: "topics", active: true, visible: true, navActive: true },
     { name: "compose", active: true, visible: true, navActive: true },
-    { name: "about", active: true, visible: true, navActive: true },
-    { name: "settings", active: true, visible: false, navActive: true },
+    { name: "about", active: true, visible: true, navActive: false },
+    { name: "settings", active: true, visible: true, navActive: false },
   ]);
   assert.match(state.captureResult, /Captured from browser smoke|Session context|Archive preview/);
   assert.equal(state.thoughtDrawerOpen, true);
@@ -327,7 +324,7 @@ async function runBrowserSmoke(browser, url) {
   assert.equal(state.settingsDrawerOpen, true);
   assert.equal(state.eventsTabActive, true);
   assert.equal(state.eventsListPresent, true);
-  // PR5: sidebar count badges surface notes / topics / compose totals.
+  // Primary navigation badges summarize saved content and topics.
   // Width check skipped on mobile because @media (max-width: 760px)
   // collapses the sidebar to a single column (full viewport width);
   // we only assert width on viewports that use the grid layout —
@@ -337,12 +334,12 @@ async function runBrowserSmoke(browser, url) {
   const width = state.sidebarWidth || 0;
   const usesGrid = width >= 130 && width < 250;
   if (usesGrid) {
-    assert.ok(width <= 200, `sidebar too wide (${width}px) — was narrowed from 248px to 184px`);
+    assert.ok(width <= 225, `sidebar too wide (${width}px)`);
     assert.ok(width >= 150, `sidebar too narrow (${width}px) — labels may clip`);
   }
   assert.ok(state.sidebarBadges.notes && state.sidebarBadges.notes.length > 0, `notes badge empty: ${JSON.stringify(state.sidebarBadges)}`);
   assert.ok(state.sidebarBadges.topics && state.sidebarBadges.topics.length > 0, `topics badge empty: ${JSON.stringify(state.sidebarBadges)}`);
-  assert.ok(state.sidebarBadges.compose && state.sidebarBadges.compose.length > 0, `compose badge empty: ${JSON.stringify(state.sidebarBadges)}`);
+  assert.equal(state.sidebarBadges.compose, "", "composition is reached from content rather than primary navigation");
   assert.ok(state.shellWidth > 0);
   if (state.clientWidth >= 760) {
     assert.ok(state.scrollWidth <= state.clientWidth + 4, `horizontal overflow: ${JSON.stringify(state)}`);
@@ -983,13 +980,12 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
       captureNav: document.querySelector('[data-nav="capture"] .tf-menu-label')?.textContent,
     }));
     assert.equal(zhSnapshot.lang, "zh-CN");
-    assert.equal(zhSnapshot.overviewTitle, "总览");
+    assert.equal(zhSnapshot.overviewTitle, "从讨论到完整成果");
     assert.equal(zhSnapshot.navOverview, "总览");
-    assert.equal(zhSnapshot.captureNav, "采集");
-    // switch to en-US via the settings drawer (PR3 moved the language
-    // segmented control out of the topbar and into the settings drawer).
+    assert.equal(zhSnapshot.captureNav, "对话");
+    // Language belongs to the general category of the settings page.
     await page.evaluate(() => { document.querySelector("#open-settings")?.click(); });
-    await page.waitForExpression(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
+    await page.waitForExpression(() => document.querySelector("#page-settings")?.classList.contains("active"));
     await page.evaluate(() => {
       const button = document.querySelector('#settings-language [data-locale="en-US"]');
       if (button) button.click();
@@ -1002,9 +998,9 @@ test("embedded UI renders zh-CN by default and switches to en-US", async (t) => 
       captureNav: document.querySelector('[data-nav="capture"] .tf-menu-label')?.textContent,
     }));
     assert.equal(enSnapshot.lang, "en-US");
-    assert.equal(enSnapshot.overviewTitle, "Overview");
+    assert.equal(enSnapshot.overviewTitle, "From discussion to complete results");
     assert.equal(enSnapshot.navOverview, "Overview");
-    assert.equal(enSnapshot.captureNav, "Capture");
+    assert.equal(enSnapshot.captureNav, "Conversations");
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -1075,37 +1071,16 @@ test("embedded UI exposes a11y affordances: skip link, aria-current, focus trap,
     assert.equal(structural.confirmModal, "true");
     assert.equal(structural.confirmLabelledby, "confirm-title");
 
-    // Open the settings drawer via the gear button and verify Tab cycles
-    // inside it. PR3 moves the settings UI from a top-level page into a
-    // drawer; the focus-trap contract is unchanged.
-    await page.evaluate(() => { document.querySelector("#open-settings")?.click(); });
-    await page.waitForExpression(() => document.querySelector("#settings-drawer")?.classList.contains("open"));
-    const drawerOpen = await page.evaluate(() => {
-      const el = document.querySelector("#settings-drawer");
-      if (!el) return false;
-      const style = window.getComputedStyle(el);
-      return style.display !== "none" && !el.classList.contains("hidden");
-    });
-    if (drawerOpen) {
-      const trap = await page.evaluate(() => {
-        const drawer = document.querySelector("#settings-drawer");
-        const focusables = Array.from(drawer.querySelectorAll("button, input, select, textarea, a[href]"))
-          .filter((el) => !el.disabled && el.offsetParent !== null);
-        if (focusables.length < 2) return { focusableCount: focusables.length };
-        const last = focusables[focusables.length - 1];
-        last.focus();
-        const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true });
-        drawer.dispatchEvent(event);
-        // The trap itself doesn't move focus (the browser does), but it must
-        // call preventDefault so the browser wraps to the first element.
-        // We can't observe preventDefault from a synthesized event, so we
-        // verify the listener is installed by checking the keydown reaches
-        // the drawer (it does, given the dispatch above) and that at least
-        // two focusables exist so the wrap path is meaningful.
-        return { focusableCount: focusables.length, lastFocused: last === document.activeElement };
-      });
-      assert.ok(trap.focusableCount >= 2, "drawer must have at least two focusables for the trap to be meaningful");
-    }
+    // Settings is now a routable page with ordinary keyboard navigation.
+    // The source-picker regression below checks native modal keyboard focus.
+    await page.evaluate(() => document.querySelector("#open-settings").click());
+    await page.waitForExpression(() => document.querySelector("#page-settings")?.classList.contains("active"));
+    assert.match(await page.evaluate(() => location.hash), /^#\/settings\/general$/);
+    await page.evaluate(() => document.querySelector('[data-tab="settings-drawer-models"]').click());
+    await page.waitForExpression(() => location.hash === "#/settings/models" && document.querySelector("#tab-settings-drawer-models").classList.contains("active"));
+    assert.equal(await page.evaluate(() => document.querySelector(".workspace-sidebar-bottom [aria-current='page']")?.getAttribute("href")), "#/settings/general");
+    await page.reload();
+    await page.waitForExpression(() => document.querySelector("#tab-settings-drawer-models").classList.contains("active") && window.__thoughtflowReady === true);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -1651,8 +1626,67 @@ function startFixtureServer(options = {}) {
       });
     }, enrichDelayMs);
   };
+  let libraryReferenceLinks={schema_version:1,generation:0,entries:[]};
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
+    // Authoritative saved-content projection fixture, independent of the raw
+    // Thought endpoint. This exercises the product library, not the prototype.
+    const libraryNotes = () => options.archivedDesignNotes ? [] : options.markdownImport ? Array.from(importedThoughts.values(),s=>s.thought) : [
+      {id:"thought-2",display_title:"Second Browser Thought",updated_at:"2026-06-10T10:00:00Z"},
+      {id:"thought-1",display_title:"Browser Thought",summary:"Browser summary",updated_at:"2026-06-10T09:00:00Z"}
+    ];
+    const libraryDetail = selection => {
+      if(options.documentSet){
+        const data=options.documentSet;
+        const id=selection || data.head.finalized_set_revision || data.head.working_set_revision;
+        const r=data.revisions.find(r=>r.set_revision_id===id);if(!r)return null;
+        const versions=data.revisions.map((v,i)=>({kind:"revision",id:v.set_revision_id,state:v.set_revision_id===data.head.finalized_set_revision?"finalized":"working",created_at:`2026-11-0${4-i}T08:00:00Z`,count:v.members.length}));
+        return {id:"demo",kind:"document_set",title:r.plan.profile.name,description:"Feature design goal",state:id===data.head.finalized_set_revision?"finalized":"working",selection:{kind:"revision",id},versions,updated_at:versions.find(v=>v.id===id).created_at,members:r.members.map(m=>({key:m.member_key,title:m.contract.title,thought_id:m.document_id,role:m.member_key,body:m.body,resources:m.resource_bindings?.bindings||[],available:true})),sources:[],questions:[],validation:"ready",new_version:id!==versions[0].id,task_state:options.libraryTaskState||"committed"};
+      }
+      const run=options.captureAutomaticSetRun;
+      if(run?.state==="draft_saved"){
+        if(selection&&selection!==run.run_id)return null;
+        const members=run.archive_draft.members.map(m=>({key:m.member_key,title:m.title,thought_id:m.thought_id,filename:m.filename,role:m.member_key,body:m.body,available:true}));
+        return {id:run.plan.set_id||"set-design",kind:"document_set",title:"工程设计与交付成果集",description:"自动归档设计草稿",state:"draft",selection:{kind:"archive",id:run.run_id},versions:[{kind:"archive",id:run.run_id,state:"draft",created_at:"2026-11-04T08:00:00Z",count:members.length-1}],members:members.filter(m=>m.key!=="archive-source"),sources:members.filter(m=>m.key==="archive-source"),validation:"not_reviewed",task_state:"draft_saved",task_run_id:run.run_id,questions:[]};
+      }
+      return null;
+    };
+    if(url.pathname==="/api/content-library/sources" && req.method==="POST") {
+      const body=await readJson(req);
+      if(body.thought_id) {
+        const thought=libraryNotes().find(note=>note.id===body.thought_id);
+        if(!thought)return json(res,{error:{message:"source missing"}},404);
+        return json(res,api([{source_type:"frozen_thought",source_id:"snapshot-"+body.thought_id,title:thought.display_title||thought.user_title,source_link:"/api/content-library/sources/snapshot-"+body.thought_id,metadata:{thought_id:body.thought_id}}]));
+      }
+      const detail=libraryDetail(body.selection?.id);
+      if(!detail)return json(res,{error:{message:"source missing"}},404);
+      const members=body.member?[...detail.members,...detail.sources].filter(member=>member.key===body.member):detail.members;
+      return json(res,api(members.map(member=>({source_type:"document_set_member",source_id:`snapshot-${detail.selection.id}-${member.key}`,title:member.title,metadata:{set_id:detail.id,kind:detail.selection.kind,version:detail.selection.id,member:member.key,body_hash:"fixture"}}))));
+    }
+    if(url.pathname==="/api/content-library"){
+      if(url.searchParams.get("overview")==="1"&&options.overviewError)return json(res,{error:{message:"Overview inventory unavailable"}},503);
+      const d=libraryDetail();let items=libraryNotes().map(thought=>({id:thought.id,kind:"thought",title:thought.display_title||thought.user_title||thought.id,description:thought.summary||"",state:"note",updated_at:thought.updated_at,thought}));
+      if(d)items.unshift(d);
+      const counts={content:items.length,sets:d?1:0,notes:libraryNotes().length,documents:libraryNotes().length+(d?.members.length||0),drafts:d?.state==="draft"?1:0};
+      const kind=url.searchParams.get("kind"),q=url.searchParams.get("q")?.toLowerCase();
+      if(kind&&kind!=="all")items=items.filter(i=>i.kind===kind);
+      if(url.searchParams.get("state"))items=items.filter(i=>i.state===url.searchParams.get("state"));
+      if(url.searchParams.get("layout")==="flat")items=items.flatMap(i=>i.kind==="document_set"?i.members.map(m=>({id:i.id+":"+m.key,kind:"member",set_id:i.id,member_key:m.key,title:m.title,description:i.title,state:i.state,selection:i.selection,members:[m]})):i);
+      if(q)items=items.filter(i=>(i.title+" "+i.description).toLowerCase().includes(q));
+      return json(res,api({items,total:items.length,page:1,page_size:24,counts,...(url.searchParams.get("overview")==="1"?{attention:options.overviewAttention||[],attention_total:options.overviewAttention?.length||0,archived_sessions:options.overviewArchivedSessions||[]}: {})}));
+    }
+    if(url.pathname.startsWith("/api/content-library/sets/")){const d=libraryDetail(url.searchParams.get("version"));return json(res,d?api(d):{error:{message:"not found"}},d?200:404);}
+    if(url.pathname.match(/^\/api\/topics\/[^/]+\/content-links$/)&&req.method==="PUT"){
+      const body=await readJson(req);
+      if(body.expected_generation!==libraryReferenceLinks.generation)return json(res,{error:{message:"stale generation"}},409);
+      libraryReferenceLinks={schema_version:1,generation:libraryReferenceLinks.generation+1,entries:body.entries};return json(res,api(libraryReferenceLinks));
+    }
+    if(url.pathname.match(/^\/api\/topics\/[^/]+\/content-library$/)){
+      const ref=libraryReferenceLinks.entries[0];
+      let selected=ref?.policy==="pinned"?ref.selection.id:ref?.policy==="latest_working"?options.documentSet?.head.working_set_revision:ref?.policy==="latest_finalized"?options.documentSet?.head.finalized_set_revision:"";
+      const d=libraryDetail(selected);
+      return json(res,api({sets:d?[{set_id:d.id,policy:ref?.policy||(d.state==="draft"?"latest_archive":"latest_finalized"),item:d}]:[],notes:d?[]:libraryNotes().map(t=>({id:t.id,kind:"thought",title:t.display_title,state:"note"})),sources:[],links:libraryReferenceLinks}));
+    }
     if (options.archivedDesignNotes) {
       if (url.pathname === "/api/thoughts" && req.method === "GET") return json(res, api(options.archivedDesignNotes.map(snapshot=>snapshot.thought)));
       const match = url.pathname.match(/^\/api\/thoughts\/([^/]+)(?:\/(markdown))?$/);
@@ -1883,6 +1917,8 @@ function startFixtureServer(options = {}) {
         return serveFile(res, path.join(webRoot, "index.html"), "text/html; charset=utf-8");
       case "/styles.css":
         return serveFile(res, path.join(webRoot, "styles.css"), "text/css; charset=utf-8");
+      case "/content-library.js":
+        return serveFile(res,path.join(webRoot,"content-library.js"),"application/javascript; charset=utf-8");
       case "/app.js":
         return serveFile(res, path.join(webRoot, "app.js"), "application/javascript; charset=utf-8");
       case "/i18n/index.js":
@@ -2945,6 +2981,8 @@ test("Markdown files import intact and open in a complete desktop and mobile rea
       assert.match(server.importRequests[0].contentType, /^multipart\/form-data; boundary=/);
       assert.ok(server.importRequests[0].raw.includes(Buffer.from(original)), "browser changed original bytes");
       assert.match(await page.evaluate(() => document.querySelector("#thought-import-results").textContent), /skip.txt/);
+      await page.waitForExpression(()=>!!document.querySelector('#thought-list [data-read-thought="imported-1"]'));
+      await page.evaluate(()=>document.querySelector('#thought-list [data-read-thought="imported-1"]').closest("details").open=true);
       await clickVisibleCaptureControl(page, '#thought-list [data-read-thought="imported-1"]');
       await page.waitForExpression(() => document.querySelector("#thought-reader-content")?.textContent.includes("TAIL_CONTENT"));
       assert.equal(await page.evaluate(() => window.importExecuted), undefined);
@@ -3107,33 +3145,35 @@ test("document set reader pins version, follows logical links and restores brows
   const browser=await launchChrome(viewport);
   try {
    const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/topics/demo?tab=documents&set_revision=set-r-1&member=architecture`);
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"),30000);
-   await clickVisibleCaptureControl(page,"[data-set-body] .collection-toc summary");
-   await clickVisibleCaptureControl(page,'[data-set-body] .collection-toc a[href*="section=scope"]');
-   await page.waitForExpression(()=>location.hash.includes("section=scope")&&document.querySelector("[data-set-body]")?.dataset.section==="scope");
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-1"),30000);
+   if(viewport.name==="mobile")await clickVisibleCaptureControl(page,"[data-toc-toggle]");
+   await clickVisibleCaptureControl(page,viewport.name==="mobile"?'dialog[open] a[href*="section=scope"]':'[data-library-toc] a[href*="section=scope"]');
+   await page.waitForExpression(()=>location.hash.includes("section=scope")&&document.querySelector("[data-library-body]")?.dataset.section==="scope");
    assert.equal(await page.evaluate(()=>new URLSearchParams(location.hash.split("?")[1]).get("section")),"scope");
-   await clickVisibleCaptureControl(page,'[data-set-body] a[href*="member=module%3AORDER"]');
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Order module set-r-1"));
-   assert.match(await page.evaluate(()=>location.hash),/set_revision=set-r-1/);
+   await clickVisibleCaptureControl(page,'[data-library-body] a[href*="member=module%3AORDER"]');
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Order module set-r-1"));
+   assert.match(await page.evaluate(()=>location.hash),/version=set-r-1/);
    await page.evaluate(()=>history.back());
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
-   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-2";select.dispatchEvent(new Event("change",{bubbles:true}));});
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"));
-   await clickVisibleCaptureControl(page,'[data-set-nav] a[href*="member=storage"]');
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Storage new-only"));
-   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-1";select.dispatchEvent(new Event("change",{bubbles:true}));});
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-1"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-library-version]");select.value=[...select.options].find(o=>o.textContent.includes("set-r-2")).value;select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-2"));
+   if(viewport.name==="mobile")await clickVisibleCaptureControl(page,"[data-directory-toggle]");
+   await clickVisibleCaptureControl(page,viewport.name==="mobile"?'dialog[open] a[href*="member=storage"]':'.library-members a[href*="member=storage"]');
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Storage new-only"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-library-version]");select.value=[...select.options].find(o=>o.textContent.includes("set-r-1")).value;select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-1"));
    assert.doesNotMatch(await page.evaluate(()=>location.hash),/member=storage/);
    await page.evaluate(()=>history.back());
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Storage new-only"));
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Storage new-only"));
    await page.evaluate(()=>history.forward());
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-1"));
-   await page.evaluate(()=>{const select=document.querySelector("[data-set-version]");select.value="set-r-2";select.dispatchEvent(new Event("change",{bubbles:true}));});
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"));
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-1"));
+   await page.evaluate(()=>{const select=document.querySelector("[data-library-version]");select.value=[...select.options].find(o=>o.textContent.includes("set-r-2")).value;select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-2"));
+   await clickVisibleCaptureControl(page,"[data-management]>summary");await page.waitForExpression(()=>!!document.querySelector("[data-set-search]"));
    await page.evaluate(()=>{const form=document.querySelector("[data-set-search]");form.elements.q.value="old";form.requestSubmit();form.elements.q.value="new";form.requestSubmit();});
    await page.waitForExpression(()=>document.querySelector("[data-set-results]")?.textContent.includes("NEW_RESULT"));
    await new Promise(resolve=>setTimeout(resolve,350));assert.doesNotMatch(await page.evaluate(()=>document.querySelector("[data-set-results]").textContent),/OLD_RESULT/);
-   await page.evaluate(()=>window.__docsetBeforeReload=true);await page.reload();await page.waitForExpression(()=>window.__docsetBeforeReload===undefined&&document.querySelector("[data-set-body]")?.textContent.includes("Architecture set-r-2"),30000);
+   await page.evaluate(()=>window.__docsetBeforeReload=true);await page.reload();await page.waitForExpression(()=>window.__docsetBeforeReload===undefined&&document.querySelector("[data-library-body]")?.textContent.includes("Architecture set-r-2"),30000);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),true);
   }finally{await browser.close();}
  });
@@ -3145,6 +3185,7 @@ test("engineering handoff previews preserve source channels and invalidate stale
  const handoff={requests:[]};const data={head:{generation:2,working_set_revision:"engineering-r",finalized_set_revision:"engineering-r",finalization:{delivery_level:"ready_for_use"}},revisions:[{set_revision_id:"engineering-r",plan:{profile:{name:"Engineering design",purpose:"engineering-design-v1"},shared_design:{facts:[]}},validation:{semantic_status:"model_reviewed",issues:[]},members:[{member_key:"architecture",document_id:"engineering-document",contract:{title:"Engineering architecture"},body:"# Architecture\n\n## Scope\n\nAuthenticated orders survive restart."}]}]};
  const server=await startFixtureServer({collection:true,documentSet:data,handoff});t.after(()=>server.close());const browser=await launchChrome(viewports()[0]);
  try{const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/topics/demo?tab=documents&set_revision=engineering-r&member=architecture`);
+ await page.waitForExpression(()=>!!document.querySelector("[data-management]>summary"));await clickVisibleCaptureControl(page,"[data-management]>summary");
  await page.waitForExpression(()=>!!document.querySelector("[data-set-handoff]"));await clickVisibleCaptureControl(page,"[data-set-handoff]");
  await page.waitForExpression(()=>document.querySelector("dialog [data-preview]")?.textContent.includes("PENDING_TEMPLATE"));assert.equal(handoff.requests.length,1);assert.deepEqual(handoff.requests[0].direct_acceptance,[]);assert.equal(handoff.requests[0].input_revision,undefined);
  assert.match(await page.evaluate(()=>document.querySelector("dialog [data-preview]").textContent),/design_resource/);
@@ -3176,15 +3217,17 @@ test("capture archive in conversation automatically opens an engineering set wit
    await waitForFixtureEventClient(`http://127.0.0.1:${server.address().port}`);
    await page.evaluate(()=>{document.querySelector("#capture-composer-input").value="完成订单管理的软件功能设计并归档";});
    await clickVisibleCaptureControl(page,"#capture-composer-send");
-   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="set_revision=auto-r-1"]'));
+   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="version=auto-r-1"]'));
    assert.equal(await page.evaluate(()=>document.querySelectorAll("dialog[open]").length),0);
    assert.equal(writes.filter(url=>/document-set-(plans|runs|markdown-previews)/.test(url)).length,0);
    await page.reload();await page.waitForExpression(()=>window.__thoughtflowReady===true,30000);
    assert.equal(await page.evaluate(()=>document.querySelectorAll('#capture-generate-set, #page-capture [data-i18n="docset.tools"], #page-capture [data-i18n="docset.generate"]').length),0);
-   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="set_revision=auto-r-1"]'));
+   await page.waitForExpression(()=>!!document.querySelector('#capture-conversation [data-kind="document_set"] a[href*="version=auto-r-1"]'));
    await clickVisibleCaptureControl(page,'#capture-conversation [data-kind="document_set"] a');
-   await page.waitForExpression(()=>document.querySelector("[data-set-body]")?.textContent.includes("Authenticate and atomically commit orders."));
-   assert.match(await page.evaluate(()=>location.hash),/set_revision=auto-r-1/);
+   await page.waitForExpression(()=>!!document.querySelector(".library-directory"));
+   await clickVisibleCaptureControl(page,'.library-directory a[href*="member=architecture"]');
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Authenticate and atomically commit orders."));
+   assert.match(await page.evaluate(()=>location.hash),/version=auto-r-1/);
   } finally {await browser.close();}
  });
 });
@@ -3209,7 +3252,7 @@ test("Capture clarification consolidates diagnostic cascades on desktop and mobi
     await page.waitForExpression(()=>document.querySelector('#capture-conversation [data-kind="archive_clarification"]')?.textContent.includes("请确认本次接口范围？"),30000);
     const ui=await page.evaluate(()=>({text:document.querySelector("#capture-conversation").textContent,bubbles:document.querySelectorAll('[data-kind="archive_clarification"]').length,status:document.querySelectorAll('[data-kind="archive_status"], [data-kind="document_set"]').length,composer:!document.querySelector("#capture-composer-input").disabled}));
     assert.equal(ui.text.split("请确认本次接口范围？").length-1,1);
-    assert.equal(ui.bubbles,1);assert.equal(ui.status,0);assert.equal(ui.composer,true);
+    assert.equal(ui.bubbles,1);assert.equal(ui.status,0,JSON.stringify(ui));assert.equal(ui.composer,true);
     assert.match(ui.text,/回复后将自动继续归档/);
     assert.doesNotMatch(ui.text,/INTERNAL_DIAGNOSTIC|PERSISTED_SUMMARY|queued|Confirm shared fact/);
    }
@@ -3223,47 +3266,152 @@ test("Capture reads archived design drafts and their Thoughts in Notes after rel
   const run={run_id:"automatic-design-run",state:"draft_saved",state_version:4,archive_unconfirmed_draft:true,archive_draft:{notes_ready:true,source_hash:"source-frozen",members:[
    {thought_id:"archived-design-1",member_key:"architecture",filename:"architecture.md",title:"架构设计草稿",body:"# 自动抽取的架构设计\n\n## 状态恢复\n\n保留执行记录和检查点；这是模型设计建议，尚未批准。\n\n## 验证\n\n需求项与整体目标分别检查。"},
    {thought_id:"archived-design-2",member_key:"archive-source",filename:"capture-original.md",title:"原始对话",body:"# 原始对话\n\n用户：根据 Workspace Profile 完成需求。\n\nAI：保留执行记录和检查点。"}
-  ]},calls:[],members:[],plan:{capture:{session_id:"browser-session"},members:[],shared_design:{open_questions:[{kind:"question",id:"scope",message:"MUST_NOT_ASK_AGAIN",blocking:true}]}}};
+  ]},calls:[],members:[],plan:{set_id:"set-design",capture:{session_id:"browser-session"},members:[],shared_design:{open_questions:[{kind:"question",id:"scope",message:"MUST_NOT_ASK_AGAIN",blocking:true}]}}};
   const archivedDesignNotes=run.archive_draft.members.map(member=>({thought:{id:member.thought_id,user_title:member.title,path:`thoughts/${member.thought_id}.md`,capture_draft:true,design_draft:{set_id:"set-design",run_id:run.run_id,member_key:member.member_key}},content:{ai_notes:member.body},jobs:[],git_commits:[]}));
   const server=await startFixtureServer({archivedDesignNotes,captureSeed:{session_id:"browser-session",input_generation:9,messages:[{role:"user",text:"对上述设计文档进行归档"}],document_set_run_id:run.run_id,archive_operation:{id:"auto-archive",state:"document_set",input_generation:9}},captureAutomaticSetRun:run});t.after(()=>server.close());
   const browser=await launchChrome(viewport);
   try{
    const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=zh-CN#/capture`);
-   for(let pass=0;pass<2;pass++){
-    if(pass)await page.reload();
-    await page.waitForExpression(()=>!!document.querySelector('[data-set-draft-run="automatic-design-run"]'),30000);
-    const text=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);assert.doesNotMatch(text,/MUST_NOT_ASK_AGAIN|queued/);assert.match(text,/已从对话自动归档为设计草稿/);
-    await clickVisibleCaptureControl(page,'[data-set-draft-run="automatic-design-run"]');
-    await page.waitForExpression(()=>document.querySelector("dialog[open]")?.textContent.includes("保留执行记录和检查点"),30000);
-    const reader=await page.evaluate(()=>({text:document.querySelector("dialog[open]").textContent,downloads:document.querySelectorAll("dialog[open] [data-draft-download]").length,approve:document.querySelectorAll("dialog[open] form").length}));
-    assert.match(reader.text,/需求项与整体目标分别检查/);assert.match(reader.text,/尚未定稿/);assert.equal(reader.downloads,2);assert.equal(reader.approve,0);
-    if(!pass){
-     // Inspect the exact download payload without writing into the user's
-     // Downloads directory. Filesystem persistence is exercised by Go tests.
-     await page.evaluate(()=>{
-      window.__draftDownload={};
-      URL.createObjectURL=blob=>{blob.text().then(text=>window.__draftDownload.body=text);return "blob:draft-test";};
-      HTMLAnchorElement.prototype.click=function(){window.__draftDownload.filename=this.download;};
-     });
-     await clickVisibleCaptureControl(page,'dialog[open] [data-draft-download="0"]');
-     await page.waitForExpression(()=>!!window.__draftDownload?.body);
-     const file=await page.evaluate(()=>window.__draftDownload);
-     assert.equal(file.filename,"architecture.md");assert.equal(file.body,run.archive_draft.members[0].body);
-    }
-    await clickVisibleCaptureControl(page,'dialog[open] [data-close]');
-   }
-   await clickVisibleCaptureControl(page,'#capture-conversation a[href="#/notes?id=archived-design-1"]');
-   await page.waitForExpression(()=>!!document.querySelector('#thought-detail [data-read-thought="archived-design-1"]'),30000);
-   await clickVisibleCaptureControl(page,'#notes-tablist [data-tab="notes-all"]');
-   await page.waitForExpression(()=>!!document.querySelector('#thought-list [data-read-thought="archived-design-1"]'),30000);
+   await page.waitForExpression(()=>!!document.querySelector('[data-set-draft-run="automatic-design-run"]'),30000);
+   const text=await page.evaluate(()=>document.querySelector("#capture-conversation").textContent);assert.doesNotMatch(text,/MUST_NOT_ASK_AGAIN|queued/);
+   await clickVisibleCaptureControl(page,'[data-set-draft-run="automatic-design-run"]');
+   await page.waitForExpression(()=>!!document.querySelector(".library-directory"),30000);
+   assert.equal(await page.evaluate(()=>document.querySelectorAll(".library-directory li").length),1);
+   await clickVisibleCaptureControl(page,'.library-directory a');
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("需求项与整体目标分别检查"));
+   await page.reload();await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("需求项与整体目标分别检查"));
+   assert.match(await page.evaluate(()=>location.hash),/kind=archive.*version=automatic-design-run/);
+   assert.equal(await page.evaluate(()=>document.querySelectorAll("#library-set-detail form").length),0);
+   await page.evaluate(()=>location.hash="#/notes");
+   await page.waitForExpression(()=>document.querySelectorAll(".library-card").length===1);
    const list=await page.evaluate(()=>document.querySelector("#thought-list").textContent);
-   assert.match(list,/架构设计草稿/);assert.match(list,/设计草稿 · 未定稿/);
-   await clickVisibleCaptureControl(page,'#thought-list [data-read-thought="archived-design-1"]');
-   await page.waitForExpression(()=>document.querySelector("#thought-reader[open]")?.textContent.includes("需求项与整体目标分别检查"),30000);
-   const note=await page.evaluate(()=>document.querySelector("#thought-reader-content").textContent);
-   assert.match(note,/设计草稿 · 未定稿/);assert.match(note,/不代表实施或交付批准/);
-   await page.reload();
-   await page.waitForExpression(()=>document.querySelector("#thought-list")?.textContent.includes("设计草稿 · 未定稿"),30000);
+   assert.match(list,/1 篇正文.*1 份来源/);assert.doesNotMatch(list,/后台.*queued/);
+   await page.evaluate(()=>{const select=document.querySelector("[data-layout]");select.value="flat";select.dispatchEvent(new Event("change",{bubbles:true}));});
+   await page.waitForExpression(()=>document.querySelector(".library-card h3")?.textContent.includes("架构设计草稿"));
+   assert.equal(await page.evaluate(()=>document.querySelectorAll(".library-card").length),1);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
   }finally{await browser.close();}
  });
+});
+
+test("saved-content library groups sets, keeps final default on failed update and persists topic version policy",async t=>{
+ if(!chromePath){t.skip("Chrome executable not found");return;}
+ for(const viewport of viewports())await t.test(viewport.name,async t=>{
+  const revision=(id,count)=>({set_revision_id:id,plan:{profile:{name:"Order platform"},shared_design:{facts:[]}},validation:{semantic_status:"model_reviewed",issues:[]},members:Array.from({length:count},(_,i)=>({member_key:["architecture","verification","storage"][i],document_id:`member-${i}`,contract:{title:["Architecture","Verification","Storage"][i]},body:`# ${id} document ${i}\n\n## Scope\n\nFixed ${id} body.`}))});
+  const data={head:{generation:4,working_set_revision:"working-2",finalized_set_revision:"final-1"},revisions:[revision("working-2",3),revision("final-1",2)]};
+  const server=await startFixtureServer({collection:true,documentSet:data,libraryTaskState:"failed_terminal"});t.after(()=>server.close());
+  const browser=await launchChrome(viewport);
+  try{const page=await connectPage(browser);await page.send("Page.enable");await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/notes`);
+   await page.waitForExpression(()=>document.querySelectorAll(".library-card").length===3);
+   assert.equal(await page.evaluate(()=>document.querySelectorAll('[data-library-set="demo"]').length),1);
+   assert.match(await page.evaluate(()=>document.querySelector('[data-library-set="demo"]').textContent),/2 documents.*0 sources/);
+   await clickVisibleCaptureControl(page,'[data-library-set="demo"] h3 a');
+   await page.waitForExpression(()=>document.querySelectorAll(".library-directory li").length===2);
+   assert.match(await page.evaluate(()=>location.hash),/version=final-1/);
+   assert.match(await page.evaluate(()=>document.querySelector("#library-set-detail").textContent),/Previously saved content remains readable/);
+   await clickVisibleCaptureControl(page,'.library-directory a');
+   await page.waitForExpression(()=>document.querySelector("[data-library-body]")?.textContent.includes("Fixed final-1 body"));
+   await page.evaluate(()=>location.hash="#/topics/demo");
+   await page.waitForExpression(()=>document.querySelector('[data-reference="demo"]')?.value==="latest_finalized");
+   await page.evaluate(()=>{const p=document.querySelector('[data-reference="demo"]');p.value="pinned";const v=document.querySelector('[data-reference-version="demo"]');v.value=[...v.options].find(o=>o.textContent.includes("working-2")).value;});
+   await page.evaluate(()=>document.querySelector('.workspace-reference-policy').open=true);
+   await clickVisibleCaptureControl(page,'[data-reference-save="demo"]');
+   await page.waitForExpression(()=>document.querySelector('[data-reference="demo"]')?.value==="pinned"&&document.querySelector("#topic-content-library .library-card")?.textContent.includes("3 documents"));
+   await page.reload();await page.waitForExpression(()=>document.querySelector('[data-reference="demo"]')?.value==="pinned");
+   assert.match(await page.evaluate(()=>document.querySelector('#topic-content-library .library-card h3 a').href),/version=working-2/);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+   await page.evaluate(()=>location.hash="#/notes?set=demo&kind=revision&version=final-1&member=storage");
+   await page.waitForExpression(()=>!!document.querySelector('#library-set-detail [role="alert"]'));
+   assert.equal(await page.evaluate(()=>!!document.querySelector("[data-library-body]")),false);
+   if(viewport.name==="mobile"){
+    await clickVisibleCaptureControl(page,"#mobile-navigation");
+    await clickVisibleCaptureControl(page,'dialog[open] [data-nav="notes"]');
+    await page.waitForExpression(()=>!document.querySelector("dialog[open]")&&document.querySelectorAll("#thought-list .library-card").length===3);
+   }
+  }finally{await browser.close();}
+ });
+});
+
+test("unified workspace routes, global search and fixed source picker survive refresh", async t => {
+  if (!chromePath) { t.skip("Chrome executable not found"); return; }
+  for (const viewport of viewports()) await t.test(viewport.name, async t => {
+    const server=await startFixtureServer({documentSet:{head:{generation:1,working_set_revision:"fixed-working"},revisions:[{set_revision_id:"fixed-working",plan:{profile:{name:"Order design"}},members:["architecture","verification"].map(key=>({member_key:key,document_id:`doc-${key}`,contract:{title:key},body:`# ${key}\n\nFrozen design body.`}))}]}});
+    t.after(()=>server.close());
+    const browser=await launchChrome(viewport);
+    try {
+      const page=await connectPage(browser);await page.send("Page.enable");
+      await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=en-US#/overview`);
+      await page.waitForExpression(()=>window.__thoughtflowReady&&document.querySelectorAll("#workspace-home-content .library-card").length===3);
+      assert.deepEqual(await page.evaluate(()=>[...document.querySelectorAll(".tf-sider .tf-menu [data-nav]")].map(a=>a.dataset.nav)),["overview","capture","notes","topics"]);
+      assert.equal(await page.evaluate(()=>document.querySelector(".workspace-health").open),false);
+      await page.evaluate(()=>document.dispatchEvent(new KeyboardEvent("keydown",{key:"k",ctrlKey:true,bubbles:true,cancelable:true})));
+      assert.equal(await page.evaluate(()=>document.activeElement.id),"workspace-search-input");
+      await page.evaluate(()=>{document.querySelector("#workspace-search-input").value="browser";document.querySelector("#workspace-search").requestSubmit();});
+      await page.waitForExpression(()=>location.hash==="#/search?q=browser"&&document.querySelectorAll("#search-results .result-item").length===1);
+      await page.evaluate(()=>location.hash="#/write?tab=sources");
+      await page.waitForExpression(()=>document.querySelector("#page-compose").classList.contains("active"));
+      await clickVisibleCaptureControl(page,"#workspace-pick-sources");
+      await page.waitForExpression(()=>document.querySelectorAll("dialog[open] .workspace-source-option").length===3);
+      await page.evaluate(()=>{const input=[...document.querySelectorAll("dialog[open] [data-source-select]")].find(input=>JSON.parse(input.value).set_id==="demo");input.checked=true;input.dispatchEvent(new Event("change"));});
+      await page.evaluate(()=>{const buttons=[...document.querySelector(".workspace-source-picker[open]").querySelectorAll("button,input")].filter(node=>!node.disabled&&node.offsetParent!==null);buttons.at(-1).focus();});
+      await page.send("Input.dispatchKeyEvent",{type:"keyDown",key:"Tab",code:"Tab",windowsVirtualKeyCode:9});
+      await page.send("Input.dispatchKeyEvent",{type:"keyUp",key:"Tab",code:"Tab",windowsVirtualKeyCode:9});
+      assert.equal(await page.evaluate(()=>document.activeElement.hasAttribute("data-close-picker")),true);
+      await clickVisibleCaptureControl(page,"[data-picker-add]");
+      await page.waitForExpression(()=>!document.querySelector(".workspace-source-picker[open]")&&document.querySelector("#compose-source-count-sources").dataset.n==="2");
+      await page.reload();
+      await page.waitForExpression(()=>window.__thoughtflowReady&&document.querySelector("#compose-source-count-sources").dataset.n==="2");
+      assert.match(await page.evaluate(()=>document.querySelector("#compose-sources-list").textContent),/fixed-working/);
+      await page.evaluate(()=>location.hash="#/settings/models");
+      await page.waitForExpression(()=>document.querySelector("#tab-settings-drawer-models").classList.contains("active"));
+      assert.match(await page.evaluate(()=>document.querySelector("#tab-settings-drawer-models").textContent),/configuration file.*restart/);
+      await page.evaluate(()=>location.hash="#/capture");
+      await page.waitForExpression(()=>document.querySelector("#page-capture").classList.contains("active"));
+      assert.equal(await page.evaluate(()=>!!document.querySelector("#capture-session-context, #capture-document-set-tools")),false);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+2),true);
+    } finally {await browser.close();}
+  });
+});
+
+test("overview follows the approved results-and-attention layout at desktop, wide and mobile widths", async t => {
+  if(!chromePath){t.skip("Chrome executable not found");return;}
+  const options={captureSeed:{session_id:"overview-conversation",session_context:{candidate_title:"订单平台设计讨论"}},overviewArchivedSessions:["overview-conversation"],documentSet:{head:{generation:1,working_set_revision:"v1",finalized_set_revision:"v1"},revisions:[{set_revision_id:"v1",plan:{profile:{name:"订单平台设计"}},members:[{member_key:"architecture",document_id:"architecture-note",contract:{title:"总体架构"},body:"# 总体架构\n\n## Scope\n\nFixed design body."}]}]},overviewAttention:[{kind:"questions",set_id:"demo",title:"订单平台设计",question_count:3,selection:{kind:"revision",id:"v1"}},{kind:"task_failed",set_id:"unsaved",title:"归档失败的设计",session_id:"overview-conversation",run_id:"missing-attempt"}]};
+  const server=await startFixtureServer(options);t.after(()=>server.close());
+  const browser=await launchChrome({width:1280,height:900});
+  try {
+    const page=await connectPage(browser);await page.send("Page.enable");
+    for(const viewport of [{name:"desktop",width:1280,height:900},{name:"wide",width:1920,height:1080},{name:"ultrawide",width:2560,height:1440},{name:"mobile",width:390,height:844}]) {
+      await page.send("Emulation.setDeviceMetricsOverride",{width:viewport.width,height:viewport.height,deviceScaleFactor:1,mobile:false});
+      await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=zh-CN#/overview`);
+      await page.waitForExpression(()=>window.__thoughtflowReady&&document.querySelectorAll("#workspace-home-content .library-card").length===3&&document.querySelectorAll(".workspace-session-row").length===1);
+      const layout=await page.evaluate(()=>{
+        const rect=s=>{const r=document.querySelector(s).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+        return {container:rect("#page-container"),frame:rect(".tf-main"),workspaceCard:!!document.querySelector(".workspace-sidebar-workspace"),reading:!!document.querySelector(".tf-sider .workspace-sidebar-recent"),main:rect(".workspace-home-main"),aside:rect(".workspace-home-aside"),recent:rect("#workspace-home-content"),sessions:rect(".workspace-conversations"),heading:document.querySelector("#page-dashboard h2").textContent,stats:document.querySelectorAll("#workspace-home-stats a.workspace-stat").length,attention:document.querySelector("#workspace-home-attention").textContent,session:document.querySelector(".workspace-session-row").textContent,health:document.querySelector(".workspace-health").open,overflow:document.documentElement.scrollWidth>innerWidth+1};
+      });
+      assert.ok(layout.container.left-layout.frame.left<=37,viewport.name+" excessive left gutter");
+      assert.ok(layout.frame.right-layout.container.right<=37,viewport.name+" excessive right gutter");
+      assert.equal(layout.workspaceCard,false);assert.equal(layout.reading,true);
+      if(viewport.width>1100)assert.ok(layout.aside.right-layout.aside.left<=341,"aside must leave wide screens to main content");
+      assert.equal(layout.heading,"从讨论到完整成果");assert.equal(layout.stats,4);assert.equal(layout.health,false);assert.equal(layout.overflow,false,viewport.name);
+      assert.ok(layout.sessions.top>=layout.recent.bottom-1);assert.match(layout.attention,/3 项设计选择待决/);assert.match(layout.session,/已有归档成果/);
+      if(viewport.name==="mobile")assert.ok(layout.aside.top>=layout.main.bottom-1);else assert.ok(layout.aside.left>=layout.main.right-1);
+      if(process.env.THOUGHTFLOW_SCREENSHOT_DIR){fs.mkdirSync(process.env.THOUGHTFLOW_SCREENSHOT_DIR,{recursive:true});const screenshot=await page.send("Page.captureScreenshot",{format:"png",captureBeyondViewport:true});fs.writeFileSync(path.join(process.env.THOUGHTFLOW_SCREENSHOT_DIR,`overview-${viewport.name}.png`),Buffer.from(screenshot.data,"base64"));}
+    }
+    await clickVisibleCaptureControl(page,"#mobile-navigation");
+    await page.waitForExpression(()=>!!document.querySelector(".workspace-navigation-drawer[open]"));
+    assert.equal(await page.evaluate(()=>!!document.querySelector(".workspace-navigation-drawer .workspace-sidebar-recent")),true);
+    await clickVisibleCaptureControl(page,".workspace-navigation-drawer [data-close-navigation]");
+    assert.equal(await page.evaluate(()=>document.activeElement.id),"mobile-navigation");
+    await clickVisibleCaptureControl(page,'#workspace-home-attention a');
+    await page.waitForExpression(()=>location.hash.includes("version=v1"));
+    assert.match(await page.evaluate(()=>location.hash),/set=demo&kind=revision&version=v1/);
+    options.overviewError=true;
+    await page.navigate(`http://127.0.0.1:${server.address().port}/?lang=zh-CN#/overview`);
+    await page.waitForExpression(()=>window.__thoughtflowReady&&document.querySelector("#workspace-home-content [role=alert]"));
+    assert.equal(await page.evaluate(()=>document.querySelectorAll(".workspace-session-row").length),1);
+    assert.equal(await page.evaluate(()=>document.querySelectorAll("#workspace-home-stats strong").length),0);
+    options.overviewError=false;
+    await clickVisibleCaptureControl(page,"#workspace-home-content [data-reload-home]");
+    await page.waitForExpression(()=>document.querySelectorAll("#workspace-home-content .library-card").length===3);
+  } finally {await browser.close();}
 });

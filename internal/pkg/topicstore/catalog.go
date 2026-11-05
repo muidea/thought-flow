@@ -700,6 +700,16 @@ func (s *Store) TopicPaths(ctx context.Context, id string) ([]string, error) {
 	if t.Mode == models.TopicModeCollection {
 		paths = append(paths, catalogPath(id), "topics/"+id+"/catalog.md")
 	}
+	links := "topics/" + id + "/content-links.json"
+	path, err := objectlocation.SafePath(s.rootPath, links)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = os.Stat(path); err == nil {
+		paths = append(paths, links)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	return paths, nil
 }
 

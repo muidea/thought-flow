@@ -14,6 +14,8 @@ const (
 	ThoughtSourceScratchpadSupplement = "scratchpad-supplement"
 
 	ComposeSourceTypeThought        = "thought"
+	ComposeSourceTypeFrozenThought  = "frozen_thought"
+	ComposeSourceTypeSetMember      = "document_set_member"
 	ComposeSourceTypeSearchResult   = "search_result"
 	ComposeSourceTypeTopicSection   = "topic_section"
 	ComposeSourceTypeCaptureSession = "capture_session"
@@ -249,12 +251,13 @@ type ThoughtContent struct {
 }
 
 type ThoughtSnapshot struct {
-	ContentHash      string            `json:"content_hash,omitempty"`
-	ResourceBindings []ResourceBinding `json:"resource_bindings,omitempty"`
-	Thought          Thought           `json:"thought"`
-	Content          ThoughtContent    `json:"content,omitempty"`
-	Jobs             []Job             `json:"jobs,omitempty"`
-	GitCommits       []GitCommitRecord `json:"git_commits,omitempty"`
+	ContentSet       *ContentSetContext `json:"content_set,omitempty"`
+	ContentHash      string             `json:"content_hash,omitempty"`
+	ResourceBindings []ResourceBinding  `json:"resource_bindings,omitempty"`
+	Thought          Thought            `json:"thought"`
+	Content          ThoughtContent     `json:"content,omitempty"`
+	Jobs             []Job              `json:"jobs,omitempty"`
+	GitCommits       []GitCommitRecord  `json:"git_commits,omitempty"`
 }
 
 type ThoughtRefinement struct {
@@ -646,20 +649,31 @@ type SearchResultView struct {
 // SearchResultView. PathHint is repo-relative (no absolute filesystem
 // location) so the Web never accidentally renders a host-local path
 // that the user has no way to dereference.
+type ContentSetContext struct {
+	SetID   string `json:"set_id"`
+	Title   string `json:"title"`
+	Kind    string `json:"kind"`
+	Version string `json:"version"`
+	Member  string `json:"member"`
+	Role    string `json:"role"`
+	State   string `json:"state"`
+}
+
 type SearchResultSummary struct {
-	SnapshotID        string   `json:"snapshot_id,omitempty"`
-	EntryID           string   `json:"entry_id,omitempty"`
-	IndexedRevisionID string   `json:"indexed_revision_id,omitempty"`
-	VersionKind       string   `json:"version_kind"`
-	ThoughtID         string   `json:"thought_id"`
-	Title             string   `json:"title"`
-	Snippet           string   `json:"snippet"`
-	Tags              []string `json:"tags,omitempty"`
-	Topics            []string `json:"topics,omitempty"`
-	Source            string   `json:"source"`
-	SourceID          string   `json:"source_id"`
-	PathHint          string   `json:"path_hint,omitempty"`
-	Actions           []string `json:"actions,omitempty"`
+	ContentSet        *ContentSetContext `json:"content_set,omitempty"`
+	SnapshotID        string             `json:"snapshot_id,omitempty"`
+	EntryID           string             `json:"entry_id,omitempty"`
+	IndexedRevisionID string             `json:"indexed_revision_id,omitempty"`
+	VersionKind       string             `json:"version_kind"`
+	ThoughtID         string             `json:"thought_id"`
+	Title             string             `json:"title"`
+	Snippet           string             `json:"snippet"`
+	Tags              []string           `json:"tags,omitempty"`
+	Topics            []string           `json:"topics,omitempty"`
+	Source            string             `json:"source"`
+	SourceID          string             `json:"source_id"`
+	PathHint          string             `json:"path_hint,omitempty"`
+	Actions           []string           `json:"actions,omitempty"`
 }
 
 // SearchResultCandidate is a topic-level candidate surfaced
@@ -906,9 +920,9 @@ type SynthesisDraftHistory struct {
 
 // ComposeSource represents a single source entry inside a
 // ComposeBasket or a ComposeDraft. The source_type/source_id pair is
-// the stable join key for the Web basket helper; the auxiliary
-// fields (title/snippet/source_link/metadata) are display-only and
-// may be rehydrated server-side when a draft is opened.
+// the stable join key for the Web basket helper. Fixed set members bind
+// canonical metadata to a content-addressed ID and revalidate it against the
+// authoritative version; title, snippet and source_link never replace bytes.
 type ComposeSource struct {
 	SourceType string            `json:"source_type" yaml:"source_type"`
 	SourceID   string            `json:"source_id" yaml:"source_id"`

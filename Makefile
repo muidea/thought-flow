@@ -111,15 +111,17 @@ build:
 node-check:
 	$(NODE) --check $(WEB_DIR)/vendor/markdown-it.min.js
 	$(NODE) --check $(WEB_DIR)/i18n/index.js
+	$(NODE) --input-type=module --check < $(WEB_DIR)/i18n/keys.js
 	$(NODE) --check $(WEB_DIR)/i18n/en-US.js
 	$(NODE) --check $(WEB_DIR)/i18n/zh-CN.js
 	$(NODE) --check $(WEB_DIR)/session-lock.js
 	$(NODE) --check $(WEB_DIR)/app.js
+	$(NODE) --check $(WEB_DIR)/content-library.js
 	$(NODE) --check $(WEB_DIR)/api.e2e.test.js
 	$(NODE) --check $(WEB_DIR)/events.e2e.test.js
 
 node-test:
-	$(NODE) --test $(WEB_DIR)/app.test.js $(WEB_DIR)/session-lock.test.js
+	$(NODE) --test $(WEB_DIR)/app.test.js $(WEB_DIR)/session-lock.test.js $(WEB_DIR)/content-library.test.js
 
 node-test-i18n:
 	$(NODE) --test $(WEB_DIR)/i18n/i18n.test.js

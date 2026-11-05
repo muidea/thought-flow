@@ -445,7 +445,7 @@ func (s *Service) handleTopicWorkspace(ctx context.Context, w http.ResponseWrite
 		}
 		s.workspaceChanged(ctx, topic, objectID, kind, paths)
 	}
-	writeJSON(w, r, 200, value)
+	writeJSON(w, r, 200, s.topicDisplay(ctx, value))
 }
 func (s *Service) createCatalogDraft(ctx context.Context, r *http.Request, store *topicstore.Store, topic, entryID string) (any, error) {
 	var req struct {

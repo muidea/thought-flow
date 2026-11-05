@@ -1,0 +1,876 @@
+node --test web/app.test.js web/session-lock.test.js web/content-library.test.js
+TAP version 13
+# Subtest: renderMarkdown escapes HTML and renders supported Markdown
+ok 1 - renderMarkdown escapes HTML and renders supported Markdown
+  ---
+  duration_ms: 43.976966
+  ...
+# Subtest: api sends the active interface locale to the server
+ok 2 - api sends the active interface locale to the server
+  ---
+  duration_ms: 7.896673
+  ...
+# Subtest: parseRoute maps hash routes to pages and navigation groups
+ok 3 - parseRoute maps hash routes to pages and navigation groups
+  ---
+  duration_ms: 11.828403
+  ...
+# Subtest: parseRoute falls back to overview for unknown segments
+ok 4 - parseRoute falls back to overview for unknown segments
+  ---
+  duration_ms: 6.996248
+  ...
+# Subtest: saved source selection persists exact set version metadata and restores it after reload
+ok 5 - saved source selection persists exact set version metadata and restores it after reload
+  ---
+  duration_ms: 7.965045
+  ...
+# Subtest: navigation and status helpers map to AntD-style classes
+ok 6 - navigation and status helpers map to AntD-style classes
+  ---
+  duration_ms: 6.279881
+  ...
+# Subtest: runtime path display avoids leaking absolute workspace paths
+ok 7 - runtime path display avoids leaking absolute workspace paths
+  ---
+  duration_ms: 7.548147
+  ...
+# Subtest: renderSearchResultItem exposes source actions without score details
+ok 8 - renderSearchResultItem exposes source actions without score details
+  ---
+  duration_ms: 7.373294
+  ...
+# Subtest: buildThoughtContentURL requires explicit public sharing opt-in
+ok 9 - buildThoughtContentURL requires explicit public sharing opt-in
+  ---
+  duration_ms: 9.254822
+  ...
+# Subtest: public sharing disabled hides all copy affordances
+ok 10 - public sharing disabled hides all copy affordances
+  ---
+  duration_ms: 7.329533
+  ...
+# Subtest: compose sources helper deduplicates and clears sources
+ok 11 - compose sources helper deduplicates and clears sources
+  ---
+  duration_ms: 7.643959
+  ...
+# Subtest: renderMarkdown supports extended document structures safely
+ok 12 - renderMarkdown supports extended document structures safely
+  ---
+  duration_ms: 12.300698
+  ...
+# Subtest: renderTopicDocumentMarkdown hides front matter from topic detail
+ok 13 - renderTopicDocumentMarkdown hides front matter from topic detail
+  ---
+  duration_ms: 7.976942
+  ...
+# Subtest: thoughtLinksForDisplay hides internal topic backlink metadata
+ok 14 - thoughtLinksForDisplay hides internal topic backlink metadata
+  ---
+  duration_ms: 8.481793
+  ...
+# Subtest: renderMarkdown uses CommonMark block parsing with GFM extensions
+ok 15 - renderMarkdown uses CommonMark block parsing with GFM extensions
+  ---
+  duration_ms: 7.983858
+  ...
+# Subtest: renderComposeDraft keeps source links out of the editable body
+ok 16 - renderComposeDraft keeps source links out of the editable body
+  ---
+  duration_ms: 7.080459
+  ...
+# Subtest: compose reader defaults to preview and hides textarea
+ok 17 - compose reader defaults to preview and hides textarea
+  ---
+  duration_ms: 28.207481
+  ...
+# Subtest: compose reader edit to preview keeps local content
+ok 18 - compose reader edit to preview keeps local content
+  ---
+  duration_ms: 13.40871
+  ...
+# Subtest: compose reader preview uses local edits not original draft body
+ok 19 - compose reader preview uses local edits not original draft body
+  ---
+  duration_ms: 7.599537
+  ...
+# Subtest: compose reader dirty switch can cancel and keep edits
+ok 20 - compose reader dirty switch can cancel and keep edits
+  ---
+  duration_ms: 47.525014
+  ...
+# Subtest: compose reader disables actions for generating failed and saved
+ok 21 - compose reader disables actions for generating failed and saved
+  ---
+  duration_ms: 25.0188
+  ...
+# Subtest: saving a compose draft keeps its reader preview and Thought link
+ok 22 - saving a compose draft keeps its reader preview and Thought link
+  ---
+  duration_ms: 11.613137
+  ...
+# Subtest: composeTitleFromContent prefers the first markdown heading
+ok 23 - composeTitleFromContent prefers the first markdown heading
+  ---
+  duration_ms: 6.26578
+  ...
+# Subtest: renderTopicCandidateImpact surfaces source discriminator and metadata
+ok 24 - renderTopicCandidateImpact surfaces source discriminator and metadata
+  ---
+  duration_ms: 5.026713
+  ...
+# Subtest: renderTopicCandidates lists every item and falls back to empty state
+ok 25 - renderTopicCandidates lists every item and falls back to empty state
+  ---
+  duration_ms: 6.04825
+  ...
+# Subtest: renderComposeSourcesItem exposes source metadata and actions
+ok 26 - renderComposeSourcesItem exposes source metadata and actions
+  ---
+  duration_ms: 5.677765
+  ...
+# Subtest: outline helpers preserve one title per line
+ok 27 - outline helpers preserve one title per line
+  ---
+  duration_ms: 5.580789
+  ...
+# Subtest: app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)
+ok 28 - app.js reads i18n keys from window.tflow_i18n (lazy stub is identity)
+  ---
+  duration_ms: 7.151764
+  ...
+# Subtest: appendEvent keeps internal events in the settings drawer
+ok 29 - appendEvent keeps internal events in the settings drawer
+  ---
+  duration_ms: 8.440036
+  ...
+# Subtest: connectEvents sends all domain events to the settings drawer only
+ok 30 - connectEvents sends all domain events to the settings drawer only
+  ---
+  duration_ms: 10.014651
+  ...
+# Subtest: renderDashboardCaptureSessions shows recent capture sessions, not event details
+ok 31 - renderDashboardCaptureSessions shows recent capture sessions, not event details
+  ---
+  duration_ms: 5.712322
+  ...
+# Subtest: overview conversations recognize saved sets and expose keyboard buttons in recent order
+ok 32 - overview conversations recognize saved sets and expose keyboard buttons in recent order
+  ---
+  duration_ms: 5.527134
+  ...
+# Subtest: buildRouteHash omits empty query fields and keeps the path clean
+ok 33 - buildRouteHash omits empty query fields and keeps the path clean
+  ---
+  duration_ms: 7.131113
+  ...
+# Subtest: PAGE_SERIALIZERS.search captures only the non-default state of inputs
+ok 34 - PAGE_SERIALIZERS.search captures only the non-default state of inputs
+  ---
+  duration_ms: 6.95659
+  ...
+# Subtest: PAGE_SERIALIZERS omits fields that are at their default value
+ok 35 - PAGE_SERIALIZERS omits fields that are at their default value
+  ---
+  duration_ms: 6.727585
+  ...
+# Subtest: PAGE_SERIALIZERS.topics omits the selected topic detail default tab
+ok 36 - PAGE_SERIALIZERS.topics omits the selected topic detail default tab
+  ---
+  duration_ms: 5.58304
+  ...
+# Subtest: runSearch with empty criteria renders idle state without fetching
+ok 37 - runSearch with empty criteria renders idle state without fetching
+  ---
+  duration_ms: 5.55867
+  ...
+# Subtest: restoreRoutePage populates search inputs from the query object
+ok 38 - restoreRoutePage populates search inputs from the query object
+  ---
+  duration_ms: 7.180355
+  ...
+# Subtest: restoreRoutePage ignores unknown / malformed keys without throwing
+ok 39 - restoreRoutePage ignores unknown / malformed keys without throwing
+  ---
+  duration_ms: 62.162246
+  ...
+# Subtest: restoreRoutePage hydrates topic state from query
+ok 40 - restoreRoutePage hydrates topic state from query
+  ---
+  duration_ms: 42.62484
+  ...
+# Subtest: topics list item click navigates directly to topic detail
+ok 41 - topics list item click navigates directly to topic detail
+  ---
+  duration_ms: 7.45561
+  ...
+# Subtest: normalizeTopicsTabName maps route query aliases to DOM tab ids
+ok 42 - normalizeTopicsTabName maps route query aliases to DOM tab ids
+  ---
+  duration_ms: 5.962731
+  ...
+# Subtest: topicTabRouteValue writes stable URL aliases instead of DOM tab ids
+ok 43 - topicTabRouteValue writes stable URL aliases instead of DOM tab ids
+  ---
+  duration_ms: 6.044093
+  ...
+# Subtest: renderTopicRules shows the simplified rule summary and hides inactive internals
+ok 44 - renderTopicRules shows the simplified rule summary and hides inactive internals
+  ---
+  duration_ms: 6.256933
+  ...
+# Subtest: handleTabClick scopes ordinary page tabs to their own page
+ok 45 - handleTabClick scopes ordinary page tabs to their own page
+  ---
+  duration_ms: 6.156828
+  ...
+# Subtest: applyRoute refreshes the target page data when navigation enters search
+ok 46 - applyRoute refreshes the target page data when navigation enters search
+  ---
+  duration_ms: 7.509435
+  ...
+# Subtest: persistSources writes through the backend and clears browser storage
+ok 47 - persistSources writes through the backend and clears browser storage
+  ---
+  duration_ms: 70.370751
+  ...
+# Subtest: persistSources clears the backend sources when no sources remain
+ok 48 - persistSources clears the backend sources when no sources remain
+  ---
+  duration_ms: 94.891756
+  ...
+# Subtest: restoreSources reads from the backend only
+ok 49 - restoreSources reads from the backend only
+  ---
+  duration_ms: 83.45947
+  ...
+# Subtest: usage guide visibility is controlled by settings storage
+ok 50 - usage guide visibility is controlled by settings storage
+  ---
+  duration_ms: 11.794463
+  ...
+# Subtest: createComposeSources deduplicates by source_type+source_id and supports clear
+ok 51 - createComposeSources deduplicates by source_type+source_id and supports clear
+  ---
+  duration_ms: 16.887361
+  ...
+# Subtest: addToComposeSources accepts strings and source objects, defaults to thought
+ok 52 - addToComposeSources accepts strings and source objects, defaults to thought
+  ---
+  duration_ms: 44.04967
+  ...
+# Subtest: deleteComposeDraft removes draft from state and clears active editor
+ok 53 - deleteComposeDraft removes draft from state and clears active editor
+  ---
+  duration_ms: 6.976755
+  ...
+# Subtest: createComposeDraft queues a job without waiting for draft body
+ok 54 - createComposeDraft queues a job without waiting for draft body
+  ---
+  duration_ms: 6.930488
+  ...
+# Subtest: handleComposeEvent clears generating lock on succeeded job
+ok 55 - handleComposeEvent clears generating lock on succeeded job
+  ---
+  duration_ms: 21.085952
+  ...
+# Subtest: handleComposeEvent keeps the active generation lock for another compose job
+ok 56 - handleComposeEvent keeps the active generation lock for another compose job
+  ---
+  duration_ms: 9.252009
+  ...
+# Subtest: compose create actions are disabled until the source queue has sources
+ok 57 - compose create actions are disabled until the source queue has sources
+  ---
+  duration_ms: 6.334844
+  ...
+# Subtest: navItemAriaCurrent marks the active page and clears others
+ok 58 - navItemAriaCurrent marks the active page and clears others
+  ---
+  duration_ms: 7.12651
+  ...
+# Subtest: classifyCaptureInput recognizes URLs and plain text
+ok 59 - classifyCaptureInput recognizes URLs and plain text
+  ---
+  duration_ms: 11.74304
+  ...
+# Subtest: parseCaptureCommand matches known intents and ignores noise
+ok 60 - parseCaptureCommand matches known intents and ignores noise
+  ---
+  duration_ms: 7.428263
+  ...
+# Subtest: appendCaptureMessage records the message into state.capture
+ok 61 - appendCaptureMessage records the message into state.capture
+  ---
+  duration_ms: 8.83252
+  ...
+# Subtest: capture composer Enter submits while modified Enter keeps editing
+ok 62 - capture composer Enter submits while modified Enter keeps editing
+  ---
+  duration_ms: 6.227153
+  ...
+# Subtest: formatBadgeCount returns empty for zero/negative/non-finite, caps at 99+
+ok 63 - formatBadgeCount returns empty for zero/negative/non-finite, caps at 99+
+  ---
+  duration_ms: 6.41346
+  ...
+# Subtest: computeSidebarBadgeCounts only shows badges for surfaces with a real enumerable collection
+ok 64 - computeSidebarBadgeCounts only shows badges for surfaces with a real enumerable collection
+  ---
+  duration_ms: 13.334547
+  ...
+# Subtest: restoreRoutePage keeps notes deep-link state without a manual ID input
+ok 65 - restoreRoutePage keeps notes deep-link state without a manual ID input
+  ---
+  duration_ms: 14.630238
+  ...
+# Subtest: restoreRoutePage preserves explicit notes tab over detail default
+ok 66 - restoreRoutePage preserves explicit notes tab over detail default
+  ---
+  duration_ms: 12.407872
+  ...
+# Subtest: notes content route preserves filters and exact set selection
+ok 67 - notes content route preserves filters and exact set selection
+  ---
+  duration_ms: 12.862487
+  ...
+# Subtest: restoreRoutePage hydrates compose sources tab from query
+ok 68 - restoreRoutePage hydrates compose sources tab from query
+  ---
+  duration_ms: 24.821671
+  ...
+# Subtest: appendExpansionSections renders the 4 expansion fields when present
+ok 69 - appendExpansionSections renders the 4 expansion fields when present
+  ---
+  duration_ms: 14.518704
+  ...
+# Subtest: appendExpansionSections emits pending hint when nothing has landed
+ok 70 - appendExpansionSections emits pending hint when nothing has landed
+  ---
+  duration_ms: 10.006332
+  ...
+# Subtest: appendExpansionSections stays silent once any field lands
+ok 71 - appendExpansionSections stays silent once any field lands
+  ---
+  duration_ms: 11.254897
+  ...
+# Subtest: appendExpansionSections surfaces partial-failure errors
+ok 72 - appendExpansionSections surfaces partial-failure errors
+  ---
+  duration_ms: 12.678351
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot renders status chips and refine sections
+ok 73 - renderCaptureThoughtCardFromSnapshot renders status chips and refine sections
+  ---
+  duration_ms: 15.73426
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot shows the complete archived typed document
+ok 74 - renderCaptureThoughtCardFromSnapshot shows the complete archived typed document
+  ---
+  duration_ms: 16.840941
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot keeps ordinary note cards compact
+ok 75 - renderCaptureThoughtCardFromSnapshot keeps ordinary note cards compact
+  ---
+  duration_ms: 10.533831
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot renders the 4 expansion sections
+ok 76 - renderCaptureThoughtCardFromSnapshot renders the 4 expansion sections
+  ---
+  duration_ms: 12.197135
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot surfaces a pending hint when nothing has landed yet
+ok 77 - renderCaptureThoughtCardFromSnapshot surfaces a pending hint when nothing has landed yet
+  ---
+  duration_ms: 9.790794
+  ...
+# Subtest: renderCaptureThoughtCardFromSnapshot surfaces partial-failure errors
+ok 78 - renderCaptureThoughtCardFromSnapshot surfaces partial-failure errors
+  ---
+  duration_ms: 13.494056
+  ...
+# Subtest: renderCaptureBubbleBody re-renders thoughtId-bound bubbles as markdown from the active snapshot
+ok 79 - renderCaptureBubbleBody re-renders thoughtId-bound bubbles as markdown from the active snapshot
+  ---
+  duration_ms: 13.901863
+  ...
+# Subtest: renderCaptureBubbleBody falls back to stored html/text for non-bound messages
+ok 80 - renderCaptureBubbleBody falls back to stored html/text for non-bound messages
+  ---
+  duration_ms: 12.294663
+  ...
+# Subtest: capture renders assistant replies without exposing session metadata
+ok 81 - capture renders assistant replies without exposing session metadata
+  ---
+  duration_ms: 15.065375
+  ...
+# Subtest: capture context restore keeps persisted message timeline without duplicating last context
+ok 82 - capture context restore keeps persisted message timeline without duplicating last context
+  ---
+  duration_ms: 12.015859
+  ...
+# Subtest: scratchpad context event replaces pending context with persisted ai reply
+ok 83 - scratchpad context event replaces pending context with persisted ai reply
+  ---
+  duration_ms: 14.127165
+  ...
+# Subtest: context events only observe backend archive state, including repeated notifications
+ok 84 - context events only observe backend archive state, including repeated notifications
+  ---
+  duration_ms: 57.547654
+  ...
+# Subtest: capture context failure does not repeat a previous generation's archive failure
+ok 85 - capture context failure does not repeat a previous generation's archive failure
+  ---
+  duration_ms: 19.32168
+  ...
+# Subtest: archive capability errors require a supporting Provider instead of an unchanged retry
+ok 86 - archive capability errors require a supporting Provider instead of an unchanged retry
+  ---
+  duration_ms: 11.201987
+  ...
+# Subtest: source coverage failure distinguishes generated output from missing user input
+ok 87 - source coverage failure distinguishes generated output from missing user input
+  ---
+  duration_ms: 10.881644
+  ...
+# Subtest: full Thought reading includes working body, original, extracted content and links without truncation
+ok 88 - full Thought reading includes working body, original, extracted content and links without truncation
+  ---
+  duration_ms: 73.680956
+  ...
+# Subtest: multipart imports let the browser set a boundary and preserve the File body
+ok 89 - multipart imports let the browser set a boundary and preserve the File body
+  ---
+  duration_ms: 8.434218
+  ...
+# Subtest: archive feedback survives state restoration and hides internal preview content
+ok 90 - archive feedback survives state restoration and hides internal preview content
+  ---
+  duration_ms: 21.708404
+  ...
+# Subtest: capture session history drawer opens with visible drawer state
+ok 91 - capture session history drawer opens with visible drawer state
+  ---
+  duration_ms: 25.074924
+  ...
+# Subtest: capture session history item uses session title and includes delete action
+ok 92 - capture session history item uses session title and includes delete action
+  ---
+  duration_ms: 58.695735
+  ...
+# Subtest: capture session history is not persisted in browser storage
+ok 93 - capture session history is not persisted in browser storage
+  ---
+  duration_ms: 22.618746
+  ...
+# Subtest: opened capture history session can continue through composer
+ok 94 - opened capture history session can continue through composer
+  ---
+  duration_ms: 16.478878
+  ...
+# Subtest: switching conversations preserves unsent text until the user explicitly discards it
+ok 95 - switching conversations preserves unsent text until the user explicitly discards it
+  ---
+  duration_ms: 10.780195
+  ...
+# Subtest: deleteCaptureSession removes one session and calls backend delete
+ok 96 - deleteCaptureSession removes one session and calls backend delete
+  ---
+  duration_ms: 9.482037
+  ...
+# Subtest: handleCaptureEvent ignores unrelated thought events for the current capture conversation
+ok 97 - handleCaptureEvent ignores unrelated thought events for the current capture conversation
+  ---
+  duration_ms: 8.481578
+  ...
+# Subtest: formatPatchFeedback picks the right message per PATCH shape
+ok 98 - formatPatchFeedback picks the right message per PATCH shape
+  ---
+  duration_ms: 9.503912
+  ...
+# Subtest: document profile options render dynamic choices
+ok 99 - document profile options render dynamic choices
+  ---
+  duration_ms: 6.448756
+  ...
+# Subtest: about page document profile guide summarizes loaded profiles and registry issues
+ok 100 - about page document profile guide summarizes loaded profiles and registry issues
+  ---
+  duration_ms: 7.247952
+  ...
+# Subtest: about page explains document profile purpose and lifecycle
+ok 101 - about page explains document profile purpose and lifecycle
+  ---
+  duration_ms: 1.103669
+  ...
+# Subtest: document profile loader preserves the active compose selection across automatic refresh
+ok 102 - document profile loader preserves the active compose selection across automatic refresh
+  ---
+  duration_ms: 11.045555
+  ...
+# Subtest: source writes send the last acknowledged version and serialize rapid changes
+ok 103 - source writes send the last acknowledged version and serialize rapid changes
+  ---
+  duration_ms: 8.199938
+  ...
+# Subtest: a stale source write reloads current sources without overwriting another client
+ok 104 - a stale source write reloads current sources without overwriting another client
+  ---
+  duration_ms: 8.133178
+  ...
+# Subtest: source refresh during a save preserves additions in the next write
+ok 105 - source refresh during a save preserves additions in the next write
+  ---
+  duration_ms: 18.620849
+  ...
+# Subtest: a refresh started before a local edit cannot replace the pending addition
+ok 106 - a refresh started before a local edit cannot replace the pending addition
+  ---
+  duration_ms: 7.450533
+  ...
+# Subtest: a refresh cannot resurrect sources cleared while the GET is in flight
+ok 107 - a refresh cannot resurrect sources cleared while the GET is in flight
+  ---
+  duration_ms: 8.343042
+  ...
+# Subtest: a failed source refresh does not block the next save
+ok 108 - a failed source refresh does not block the next save
+  ---
+  duration_ms: 6.38397
+  ...
+# Subtest: document finalization rejects dirty, stale and hard-error reports
+ok 109 - document finalization rejects dirty, stale and hard-error reports
+  ---
+  duration_ms: 6.023265
+  ...
+# Subtest: saving a typed document preserves newer local edits while advancing CAS generation
+ok 110 - saving a typed document preserves newer local edits while advancing CAS generation
+  ---
+  duration_ms: 7.472242
+  ...
+# Subtest: SSE context replies cannot restore old messages or preview after A-B-A
+ok 111 - SSE context replies cannot restore old messages or preview after A-B-A
+  ---
+  duration_ms: 9.608399
+  ...
+# Subtest: Markdown destination fixtures match the actual embedded renderer
+ok 112 - Markdown destination fixtures match the actual embedded renderer
+  ---
+  duration_ms: 21.223393
+  ...
+# Subtest: capture selection rejects stale history and message responses including A-B-A
+ok 113 - capture selection rejects stale history and message responses including A-B-A
+  ---
+  duration_ms: 10.476043
+  ...
+# Subtest: archive preview keeps its original target and stops after selection changes
+ok 114 - archive preview keeps its original target and stops after selection changes
+  ---
+  duration_ms: 13.794329
+  ...
+# Subtest: search stale replies cannot restore results after a newer query or clearing
+ok 115 - search stale replies cannot restore results after a newer query or clearing
+  ---
+  duration_ms: 14.587529
+  ...
+# Subtest: new capture releases the previous thought lease before resetting IDs
+ok 116 - new capture releases the previous thought lease before resetting IDs
+  ---
+  duration_ms: 14.723844
+  ...
+# Subtest: api retains status, code and request ID for conflict handling
+ok 117 - api retains status, code and request ID for conflict handling
+  ---
+  duration_ms: 11.254375
+  ...
+# Subtest: thought detail replies remain bound to the latest selection
+ok 118 - thought detail replies remain bound to the latest selection
+  ---
+  duration_ms: 10.158115
+  ...
+# Subtest: compose late loads cannot overwrite another draft or in-flight local edits
+ok 119 - compose late loads cannot overwrite another draft or in-flight local edits
+  ---
+  duration_ms: 9.243335
+  ...
+# Subtest: collection full-body replies use a selection epoch across A-B-A
+ok 120 - collection full-body replies use a selection epoch across A-B-A
+  ---
+  duration_ms: 9.265613
+  ...
+# Subtest: resource links require document context and preserve private-scheme boundaries
+ok 121 - resource links require document context and preserve private-scheme boundaries
+  ---
+  duration_ms: 17.440487
+  ...
+# Subtest: collection directory and continuous reading share group order and skip unreadable entries
+ok 122 - collection directory and continuous reading share group order and skip unreadable entries
+  ---
+  duration_ms: 9.06653
+  ...
+# Subtest: collection copy freezes the verified response revision even when request followed latest
+ok 123 - collection copy freezes the verified response revision even when request followed latest
+  ---
+  duration_ms: 7.071477
+  ...
+# Subtest: collection overlapping searches preserve the latest query and snapshot identity
+ok 124 - collection overlapping searches preserve the latest query and snapshot identity
+  ---
+  duration_ms: 6.774368
+  ...
+# Subtest: collection late activity reply cannot populate another topic or install confirmation
+ok 125 - collection late activity reply cannot populate another topic or install confirmation
+  ---
+  duration_ms: 8.941875
+  ...
+# Subtest: collection late migrate reply cannot populate another topic or install confirmation
+ok 126 - collection late migrate reply cannot populate another topic or install confirmation
+  ---
+  duration_ms: 7.939228
+  ...
+# Subtest: collection late convert reply cannot populate another topic or install confirmation
+ok 127 - collection late convert reply cannot populate another topic or install confirmation
+  ---
+  duration_ms: 6.308799
+  ...
+# Subtest: collection late export reply cannot populate another topic or install confirmation
+ok 128 - collection late export reply cannot populate another topic or install confirmation
+  ---
+  duration_ms: 25.247165
+  ...
+# Subtest: snapshot search summaries do not inherit thought actions
+ok 129 - snapshot search summaries do not inherit thought actions
+  ---
+  duration_ms: 7.061562
+  ...
+# Subtest: capture displays the per-turn answer while archive metadata stays backstage
+ok 130 - capture displays the per-turn answer while archive metadata stays backstage
+  ---
+  duration_ms: 10.27698
+  ...
+# Subtest: archive preview never delegates a second commit to the browser
+ok 131 - archive preview never delegates a second commit to the browser
+  ---
+  duration_ms: 33.019351
+  ...
+# Subtest: one archive action generates and saves without a separate preview confirmation
+ok 132 - one archive action generates and saves without a separate preview confirmation
+  ---
+  duration_ms: 6.834184
+  ...
+# Subtest: archive polling restores saved feedback without SSE or a second write
+ok 133 - archive polling restores saved feedback without SSE or a second write
+  ---
+  duration_ms: 7.619471
+  ...
+# Subtest: late archive polling cannot replace another selected session
+ok 134 - late archive polling cannot replace another selected session
+  ---
+  duration_ms: 7.035979
+  ...
+# Subtest: document set links require matching fixed context and reject unknown members
+ok 135 - document set links require matching fixed context and reject unknown members
+  ---
+  duration_ms: 9.479051
+  ...
+# Subtest: Capture set status distinguishes committed drafts, clarification and failures
+ok 136 - Capture set status distinguishes committed drafts, clarification and failures
+  ---
+  duration_ms: 7.731863
+  ...
+# Subtest: late set event for old Capture selection cannot overwrite a reopened conversation
+ok 137 - late set event for old Capture selection cannot overwrite a reopened conversation
+  ---
+  duration_ms: 18.315834
+  ...
+# Subtest: unchanged Capture history refresh preserves the button receiving a pointer click
+ok 138 - unchanged Capture history refresh preserves the button receiving a pointer click
+  ---
+  duration_ms: 18.335132
+  ...
+# Subtest: same-session old attempt event cannot replace a newer attempt
+ok 139 - same-session old attempt event cannot replace a newer attempt
+  ---
+  duration_ms: 7.382064
+  ...
+# Subtest: authoritative retry from another page is adopted and same-attempt states never regress
+ok 140 - authoritative retry from another page is adopted and same-attempt states never regress
+  ---
+  duration_ms: 7.085865
+  ...
+# Subtest: reversed run polling responses preserve newest state and continue polling after an event
+ok 141 - reversed run polling responses preserve newest state and continue polling after an event
+  ---
+  duration_ms: 8.019022
+  ...
+# Subtest: set version selection keeps only members present in the target manifest
+ok 142 - set version selection keeps only members present in the target manifest
+  ---
+  duration_ms: 5.708307
+  ...
+# Subtest: same-attempt event fetches returning out of order preserve the newer response
+ok 143 - same-attempt event fetches returning out of order preserve the newer response
+  ---
+  duration_ms: 5.409104
+  ...
+# Subtest: unrelated set events cannot invalidate a new authoritative run without polling
+ok 144 - unrelated set events cannot invalidate a new authoritative run without polling
+  ---
+  duration_ms: 13.392707
+  ...
+# Subtest: late authority lookups cannot supersede a newer qualified set event
+ok 145 - late authority lookups cannot supersede a newer qualified set event
+  ---
+  duration_ms: 16.668463
+  ...
+# Subtest: public design JCS vectors agree with independent JavaScript UTF-16 encoding
+ok 146 - public design JCS vectors agree with independent JavaScript UTF-16 encoding
+  ---
+  duration_ms: 0.506876
+  ...
+# Subtest: Capture engineering gaps retain stable facts and resolved questions disappear
+ok 147 - Capture engineering gaps retain stable facts and resolved questions disappear
+  ---
+  duration_ms: 7.35343
+  ...
+# Subtest: session archive polling discovers the automatic set task when initial SSE was lost
+ok 148 - session archive polling discovers the automatic set task when initial SSE was lost
+  ---
+  duration_ms: 7.463893
+  ...
+# Subtest: Capture clarification shows one actionable bubble for current and legacy plans
+ok 149 - Capture clarification shows one actionable bubble for current and legacy plans
+  ---
+  duration_ms: 15.858315
+  ...
+# Subtest: Capture clarification is durable before run polling and rejects stale run bindings
+ok 150 - Capture clarification is durable before run polling and rejects stale run bindings
+  ---
+  duration_ms: 7.430014
+  ...
+# Subtest: Capture automatically archived drafts expose reading without confirmation or generation controls
+ok 151 - Capture automatically archived drafts expose reading without confirmation or generation controls
+  ---
+  duration_ms: 7.045985
+  ...
+# Subtest: archived design Thoughts are labeled in Notes and linked from Capture
+ok 152 - archived design Thoughts are labeled in Notes and linked from Capture
+  ---
+  duration_ms: 7.076148
+  ...
+# Subtest: sidebar reading shortcuts use real workspace identity and retain exact saved versions
+ok 153 - sidebar reading shortcuts use real workspace identity and retain exact saved versions
+  ---
+  duration_ms: 11.802261
+  ...
+# Subtest: sidebar ignores malformed or external shortcuts, escapes titles, and survives unavailable storage
+ok 154 - sidebar ignores malformed or external shortcuts, escapes titles, and survives unavailable storage
+  ---
+  duration_ms: 11.237046
+  ...
+# Subtest: fixed content links preserve exact kind, version, member and section
+ok 155 - fixed content links preserve exact kind, version, member and section
+  ---
+  duration_ms: 7.411484
+  ...
+# Subtest: version selection preserves existing member and sources; absent member chooses first body only
+ok 156 - version selection preserves existing member and sources; absent member chooses first body only
+  ---
+  duration_ms: 1.727949
+  ...
+# Subtest: unrelated stale list responses cannot overwrite the latest authoritative inventory
+ok 157 - unrelated stale list responses cannot overwrite the latest authoritative inventory
+  ---
+  duration_ms: 5.345803
+  ...
+# Subtest: invalidated reader cannot render a response after navigating away
+ok 158 - invalidated reader cannot render a response after navigating away
+  ---
+  duration_ms: 3.183442
+  ...
+# Subtest: home ignores a late inventory after leaving overview and preserves the next home response
+ok 159 - home ignores a late inventory after leaving overview and preserves the next home response
+  ---
+  duration_ms: 2.533778
+  ...
+# Subtest: empty overview has conversation and import paths, with no generated sample content
+ok 160 - empty overview has conversation and import paths, with no generated sample content
+  ---
+  duration_ms: 2.803538
+  ...
+# Subtest: overview separates full-inventory counts and concerns from recent result cards
+ok 161 - overview separates full-inventory counts and concerns from recent result cards
+  ---
+  duration_ms: 2.185617
+  ...
+# Subtest: overview load failure clears misleading statistics and provides local retries
+ok 162 - overview load failure clears misleading statistics and provides local retries
+  ---
+  duration_ms: 2.276303
+  ...
+# Subtest: draft statistic filters remain in inventory requests and can be cleared
+ok 163 - draft statistic filters remain in inventory requests and can be cleared
+  ---
+  duration_ms: 14.976809
+  ...
+# Subtest: fixed reader passes the exact member and version into attachment rendering
+ok 164 - fixed reader passes the exact member and version into attachment rendering
+  ---
+  duration_ms: 4.09158
+  ...
+# Subtest: acquire grants the lock to a fresh session without browser storage
+ok 165 - acquire grants the lock to a fresh session without browser storage
+  ---
+  duration_ms: 5.860091
+  ...
+# Subtest: acquire refuses a session that does not own the lock
+ok 166 - acquire refuses a session that does not own the lock
+  ---
+  duration_ms: 1.534708
+  ...
+# Subtest: acquire is idempotent for the existing holder
+ok 167 - acquire is idempotent for the existing holder
+  ---
+  duration_ms: 1.896171
+  ...
+# Subtest: release drops the lock for the owner and is a no-op for others
+ok 168 - release drops the lock for the owner and is a no-op for others
+  ---
+  duration_ms: 2.036024
+  ...
+# Subtest: heartbeat extends the lease timestamp for the owner only
+ok 169 - heartbeat extends the lease timestamp for the owner only
+  ---
+  duration_ms: 3.147793
+  ...
+# Subtest: stale lock above TTL is dropped and can be re-acquired
+ok 170 - stale lock above TTL is dropped and can be re-acquired
+  ---
+  duration_ms: 1.1878
+  ...
+# Subtest: sweepStaleLocks drops expired entries and keeps live ones
+ok 171 - sweepStaleLocks drops expired entries and keeps live ones
+  ---
+  duration_ms: 1.477046
+  ...
+# Subtest: sweepStaleLocks is a no-op on an empty store
+ok 172 - sweepStaleLocks is a no-op on an empty store
+  ---
+  duration_ms: 1.12738
+  ...
+# Subtest: remote leases use the receiving tab clock and heartbeat refreshes local TTL
+ok 173 - remote leases use the receiving tab clock and heartbeat refreshes local TTL
+  ---
+  duration_ms: 3.210396
+  ...
+1..173
+# tests 173
+# suites 0
+# pass 173
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2309.874308

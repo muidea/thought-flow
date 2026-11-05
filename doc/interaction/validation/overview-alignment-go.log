@@ -1,0 +1,50 @@
+CGO_LDFLAGS=" -L/usr/lib/gcc/x86_64-linux-gnu/14 -L/usr/lib/gcc/x86_64-linux-gnu/13" go test ./...
+?   	thoughtflow/assets/documentformats	[no test files]
+?   	thoughtflow/assets/prompts	[no test files]
+ok  	thoughtflow/cmd/thoughtflow	0.018s
+ok  	thoughtflow/internal/modules/application/thoughtflow	0.020s
+ok  	thoughtflow/internal/modules/application/thoughtflow/service	18.506s
+?   	thoughtflow/internal/modules/capture	[no test files]
+ok  	thoughtflow/internal/modules/capture/biz	(cached)
+?   	thoughtflow/internal/modules/compose	[no test files]
+ok  	thoughtflow/internal/modules/compose/biz	0.731s
+?   	thoughtflow/internal/modules/expander	[no test files]
+ok  	thoughtflow/internal/modules/expander/biz	(cached)
+?   	thoughtflow/internal/modules/git_sync	[no test files]
+ok  	thoughtflow/internal/modules/git_sync/biz	(cached)
+?   	thoughtflow/internal/modules/refiner	[no test files]
+ok  	thoughtflow/internal/modules/refiner/biz	(cached)
+?   	thoughtflow/internal/modules/search	[no test files]
+ok  	thoughtflow/internal/modules/search/biz	(cached)
+?   	thoughtflow/internal/modules/topic	[no test files]
+ok  	thoughtflow/internal/modules/topic/biz	(cached)
+ok  	thoughtflow/internal/pkg/ai	(cached)
+ok  	thoughtflow/internal/pkg/appconfig	(cached)
+ok  	thoughtflow/internal/pkg/composedraft	(cached)
+ok  	thoughtflow/internal/pkg/contentlibrary	0.015s
+ok  	thoughtflow/internal/pkg/contentreference	(cached)
+ok  	thoughtflow/internal/pkg/documentflow	(cached)
+ok  	thoughtflow/internal/pkg/documentprofile	(cached)
+ok  	thoughtflow/internal/pkg/documentset	(cached)
+ok  	thoughtflow/internal/pkg/documentsetflow	(cached)
+ok  	thoughtflow/internal/pkg/documentsetstore	(cached)
+ok  	thoughtflow/internal/pkg/documentstore	(cached)
+ok  	thoughtflow/internal/pkg/documentvalidation	(cached)
+ok  	thoughtflow/internal/pkg/eventstream	(cached)
+?   	thoughtflow/internal/pkg/eventutil	[no test files]
+ok  	thoughtflow/internal/pkg/jobstore	(cached)
+ok  	thoughtflow/internal/pkg/markdown	(cached)
+ok  	thoughtflow/internal/pkg/models	(cached)
+ok  	thoughtflow/internal/pkg/objectlocation	(cached)
+?   	thoughtflow/internal/pkg/observability	[no test files]
+ok  	thoughtflow/internal/pkg/scratchpad	(cached)
+ok  	thoughtflow/internal/pkg/searchdb	(cached)
+ok  	thoughtflow/internal/pkg/thoughtlock	(cached)
+ok  	thoughtflow/internal/pkg/topicstore	(cached)
+ok  	thoughtflow/internal/pkg/webfetch	(cached)
+ok  	thoughtflow/internal/pkg/workspace	(cached)
+?   	thoughtflow/internal/testutil/designfixture	[no test files]
+?   	thoughtflow/internal/testutil/llmfixture	[no test files]
+ok  	thoughtflow/scripts	(cached)
+?   	thoughtflow/scripts/designcheck	[no test files]
+?   	thoughtflow/web	[no test files]

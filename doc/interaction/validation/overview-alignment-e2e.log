@@ -1,0 +1,218 @@
+node --test web/api.e2e.test.js web/events.e2e.test.js
+TAP version 13
+# Subtest: API e2e
+    # Subtest: health endpoints respond 200
+    ok 1 - health endpoints respond 200
+      ---
+      duration_ms: 48.711998
+      ...
+    # Subtest: system status reports duckdb ready
+    ok 2 - system status reports duckdb ready
+      ---
+      duration_ms: 20.406112
+      ...
+    # Subtest: thoughts lifecycle: create, get, patch, suggest
+    ok 3 - thoughts lifecycle: create, get, patch, suggest
+      ---
+      duration_ms: 559.152143
+      ...
+    # Subtest: Markdown import preserves all bytes and never adopts source identity
+    ok 4 - Markdown import preserves all bytes and never adopts source identity
+      ---
+      duration_ms: 830.098703
+      ...
+    # Subtest: thoughts list returns workspace notes in recent-first order
+    ok 5 - thoughts list returns workspace notes in recent-first order
+      ---
+      duration_ms: 291.083235
+      ...
+    # Subtest: patch thought rejects unknown fields and missing session id
+    ok 6 - patch thought rejects unknown fields and missing session id
+      ---
+      duration_ms: 106.757081
+      ...
+    # Subtest: post-refine expansion writes 4 fields to the thought
+    ok 7 - post-refine expansion writes 4 fields to the thought
+      ---
+      duration_ms: 357.67531
+      ...
+    # Subtest: HTTP search remains available when unsupported mode parameters are supplied
+    ok 8 - HTTP search remains available when unsupported mode parameters are supplied
+      ---
+      duration_ms: 466.547816
+      ...
+    # Subtest: search filters by tag and returns SearchResultView shape
+    ok 9 - search filters by tag and returns SearchResultView shape
+      ---
+      duration_ms: 590.312478
+      ...
+    # Subtest: topics CRUD: create, get, update, refresh, weave-proposals
+    ok 10 - topics CRUD: create, get, update, refresh, weave-proposals
+      ---
+      duration_ms: 67.566032
+      ...
+    # Subtest: topic creation and refresh synchronize exact search membership
+    ok 11 - topic creation and refresh synchronize exact search membership
+      ---
+      duration_ms: 1074.273088
+      ...
+    # Subtest: document profile republishing returns a conflict without overwriting
+    ok 12 - document profile republishing returns a conflict without overwriting
+      ---
+      duration_ms: 15.978581
+      ...
+    # Subtest: topics weave preview + accept round-trip
+    ok 13 - topics weave preview + accept round-trip
+      ---
+      duration_ms: 132.56907
+      ...
+    # Subtest: compose draft list/create/save
+    ok 14 - compose draft list/create/save
+      ---
+      duration_ms: 278.195849
+      ...
+    # Subtest: capture session recovery round-trips through active and reuse_last
+    ok 15 - capture session recovery round-trips through active and reuse_last
+      ---
+      duration_ms: 30.410181
+      ...
+    # Subtest: capture session survives service restart with session_context
+    ok 16 - capture session survives service restart with session_context
+      ---
+      duration_ms: 597.620403
+      ...
+    # Subtest: session_context update persists structured fields and survives a follow-up read
+    ok 17 - session_context update persists structured fields and survives a follow-up read
+      ---
+      duration_ms: 24.249173
+      ...
+    # Subtest: session messages auto-refresh context without explicit context call
+    ok 18 - session messages auto-refresh context without explicit context call
+      ---
+      duration_ms: 23.649442
+      ...
+    # Subtest: archive preview then commit (new strategy) lands a thought
+    ok 19 - archive preview then commit (new strategy) lands a thought
+      ---
+      duration_ms: 246.32792
+      ...
+    # Subtest: update_thought preview exposes the full document before confirmed update
+    ok 20 - update_thought preview exposes the full document before confirmed update
+      ---
+      duration_ms: 826.849428
+      ...
+    # Subtest: reopen-session defaults to updating the source thought
+    ok 21 - reopen-session defaults to updating the source thought
+      ---
+      duration_ms: 1167.11368
+      ...
+    # Subtest: archive re-previews after a follow-up invalidates the previous preview
+    ok 22 - archive re-previews after a follow-up invalidates the previous preview
+      ---
+      duration_ms: 702.565049
+      ...
+    # Subtest: archive GET is read-only; private draft survives reload and archives with one ID
+    ok 23 - archive GET is read-only; private draft survives reload and archives with one ID
+      ---
+      duration_ms: 787.539432
+      ...
+    # Subtest: topic candidates list returns matching unarchived sessions
+    ok 24 - topic candidates list returns matching unarchived sessions
+      ---
+      duration_ms: 291.283524
+      ...
+    # Subtest: system privacy report lists surfaces and actions
+    ok 25 - system privacy report lists surfaces and actions
+      ---
+      duration_ms: 7.333465
+      ...
+    # Subtest: jobs and metrics endpoints respond
+    ok 26 - jobs and metrics endpoints respond
+      ---
+      duration_ms: 62.616616
+      ...
+    # Subtest: reindex accepts POST and survives follow-up search
+    ok 27 - reindex accepts POST and survives follow-up search
+      ---
+      duration_ms: 55.469421
+      ...
+    # Subtest: invalid thought id surfaces 4xx
+    ok 28 - invalid thought id surfaces 4xx
+      ---
+      duration_ms: 3.697206
+      ...
+    # Subtest: delete thought removes the note
+    ok 29 - delete thought removes the note
+      ---
+      duration_ms: 202.354403
+      ...
+    # Subtest: encoded rendered links block validation and cannot be confirmed into final documents
+    ok 30 - encoded rendered links block validation and cannot be confirmed into final documents
+      ---
+      duration_ms: 3383.016961
+      ...
+    # Subtest: typed documents freeze edits, manual reviews, final versions and exact exports
+    ok 31 - typed documents freeze edits, manual reviews, final versions and exact exports
+      ---
+      duration_ms: 2739.614287
+      ...
+    # Subtest: collection catalog owns independent documents with CAS, migration, resource and scope boundaries
+    ok 32 - collection catalog owns independent documents with CAS, migration, resource and scope boundaries
+      ---
+      duration_ms: 2124.434677
+      ...
+    # Subtest: unknown route returns 404 envelope
+    ok 33 - unknown route returns 404 envelope
+      ---
+      duration_ms: 2.527463
+      ...
+    1..33
+ok 1 - API e2e
+  ---
+  duration_ms: 19110.726591
+  ...
+# Subtest: first startup records import conflicts and continues healthy recovery
+ok 2 - first startup records import conflicts and continues healthy recovery
+  ---
+  duration_ms: 1781.632074
+  ...
+# Subtest: Capture document set: six files, joint gate, fixed reading, delivery, backup and restart
+ok 3 - Capture document set: six files, joint gate, fixed reading, delivery, backup and restart
+  ---
+  duration_ms: 14946.866843
+  ...
+# Subtest: SSE e2e
+    # Subtest: subscribe and receive thought.captured after a POST
+    ok 1 - subscribe and receive thought.captured after a POST
+      ---
+      duration_ms: 365.831005
+      ...
+    # Subtest: patched and compose lifecycle events reach the real stream
+    ok 2 - patched and compose lifecycle events reach the real stream
+      ---
+      duration_ms: 1065.177786
+      ...
+    # Subtest: collection catalog and policy changes arrive without document bodies
+    ok 3 - collection catalog and policy changes arrive without document bodies
+      ---
+      duration_ms: 352.251937
+      ...
+    # Subtest: type filter suppresses non-matching events
+    ok 4 - type filter suppresses non-matching events
+      ---
+      duration_ms: 1502.757498
+      ...
+    1..4
+ok 4 - SSE e2e
+  ---
+  duration_ms: 6622.755892
+  ...
+1..4
+# tests 41
+# suites 0
+# pass 41
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 35990.431147

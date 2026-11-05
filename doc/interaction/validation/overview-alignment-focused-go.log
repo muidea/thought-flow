@@ -1,0 +1,8 @@
+ok  	thoughtflow/internal/pkg/contentlibrary	0.014s
+2026/11/05 10:40:21 INFO LLM generation request completed model=fixture scope_id=engineering-capture request_id=evt-20261105-104021-fa206178 endpoint=/v1/responses json_format=true json_required=false status=200 response_content_type=application/json response_wire=json
+2026/11/05 10:40:21 INFO LLM generation request completed model=fixture scope_id=engineering-capture request_id=evt-20261105-104021-dbff8749 endpoint=/v1/responses json_format=true json_required=false status=200 response_content_type=application/json response_wire=json
+--- FAIL: TestOverviewUsesFullInventoryForCountsAttentionAndSavedConversations (0.88s)
+    content_library_test.go:57: {[{ [] 0 recent-note-6 thought Recent independent note  note 2026-11-05 03:40:22.265637256 +0000 UTC { } [] [] [] 0x248b3c96c008   false    [] false}] 9 1 1 {9 1 8 14 1} [{task_failed set-unsaved-overview Recoverable orders { } 0 overview-failed-update unsaved-conversation failed_terminal 2026-11-05 02:40:22.305422799 +0000 UTC} {questions set-25fcb6c506e2d0302ad6c9fc Recoverable orders {archive evt-20261105-024021-baf175ec} 1    2026-11-05 02:40:22.077107775 +0000 UTC}] 2 [engineering-capture]}
+FAIL
+FAIL	thoughtflow/internal/modules/application/thoughtflow/service	0.891s
+FAIL

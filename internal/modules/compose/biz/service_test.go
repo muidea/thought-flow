@@ -12,8 +12,10 @@ import (
 
 	"thoughtflow/internal/pkg/ai"
 	"thoughtflow/internal/pkg/composedraft"
+	"thoughtflow/internal/pkg/contentlibrary"
 	"thoughtflow/internal/pkg/documentprofile"
 	"thoughtflow/internal/pkg/jobstore"
+	"thoughtflow/internal/pkg/markdown"
 	"thoughtflow/internal/pkg/models"
 )
 
@@ -162,6 +164,49 @@ func TestServiceCreateDraftHappyPath(t *testing.T) {
 	}
 	if synth.lastReq.Format != models.ComposeFormatOutline {
 		t.Fatalf("format = %q", synth.lastReq.Format)
+	}
+}
+
+func TestFrozenSourcesPreserveSelectionAndRejectMissingBytes(t *testing.T) {
+	svc, _, synth := newTestService(t)
+	ctx := context.Background()
+	id := "20260609-0001-frozen"
+	if err := markdown.CreateThought(svc.workspace.RootPath, models.Thought{ID: id, UserTitle: "Original", Type: "text"}, models.ThoughtContent{Original: "selected bytes"}); err != nil {
+		t.Fatal(err)
+	}
+	library := contentlibrary.New(svc.workspace.RootPath)
+	sources, err := library.Sources(ctx, contentlibrary.SourceRequest{ThoughtID: id})
+	if err != nil || len(sources) != 1 {
+		t.Fatal(sources, err)
+	}
+	if err = markdown.UpdateThought(svc.workspace.RootPath, id, func(_ *models.Thought, content *models.ThoughtContent) error {
+		content.Original = "later edit"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, errs := svc.hydrateSnapshots(ctx, sources)
+	if len(errs) != 0 || len(snapshots) != 1 || !strings.Contains(snapshots[0].Content.AINotes+snapshots[0].Content.Original, "selected bytes") || snapshots[0].Thought.ID != sources[0].SourceID {
+		t.Fatal("selection drifted", snapshots, errs)
+	}
+	manifest := composeSnapshotManifest(sources, snapshots)
+	if manifest.Sources[0].Type != models.ComposeSourceTypeFrozenThought || manifest.Sources[0].Locator != sources[0].SourceLink {
+		t.Fatal("lost frozen provenance", manifest)
+	}
+	path := filepath.Join(svc.workspace.RootPath, ".content-registry", "private", "compose-sources", sources[0].SourceID+".json")
+	if err = os.WriteFile(path, []byte(`{"schema_version":1,"snapshot":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = library.ResolveSource(ctx, sources[0]); err == nil {
+		t.Fatal("tampered snapshot accepted")
+	}
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	sources[0].Snippet = "client fallback must not bypass missing bytes"
+	sources = append(sources, models.ComposeSource{SourceType: models.ComposeSourceTypeThought, SourceID: id})
+	if _, err = svc.CreateDraft(ctx, models.ComposeRequest{Sources: sources}); err == nil || synth.calls != 0 {
+		t.Fatal("missing fixed source silently skipped", err, synth.calls)
 	}
 }
 

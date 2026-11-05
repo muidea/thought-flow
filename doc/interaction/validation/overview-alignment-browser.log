@@ -1,0 +1,169 @@
+TAP version 13
+# Subtest: embedded UI browser smoke matrix
+ok 1 - embedded UI browser smoke matrix # SKIP test name does not match pattern
+  ---
+  duration_ms: 1.293227
+  ...
+# Subtest: browser smoke matrix declares cross-browser targets
+ok 2 - browser smoke matrix declares cross-browser targets # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.117092
+  ...
+# Subtest: browser fixture serves the document profile catalog used during boot and refresh
+ok 3 - browser fixture serves the document profile catalog used during boot and refresh # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.079557
+  ...
+# Subtest: embedded UI restores deep-link query into inputs and reflects input changes back into the hash
+ok 4 - embedded UI restores deep-link query into inputs and reflects input changes back into the hash # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.081614
+  ...
+# Subtest: compose sources load from the backend
+ok 5 - compose sources load from the backend # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.089389
+  ...
+# Subtest: compose draft reader opens preview and supports edit/preview toggle
+ok 6 - compose draft reader opens preview and supports edit/preview toggle # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.099301
+  ...
+# Subtest: capture composer starts a new session, persists a thought, and shows the conversation
+ok 7 - capture composer starts a new session, persists a thought, and shows the conversation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.123786
+  ...
+# Subtest: capture conversation accepts edits and archives through chat
+ok 8 - capture conversation accepts edits and archives through chat # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.081756
+  ...
+# Subtest: capture lock indicator stays hidden when no session is active
+ok 9 - capture lock indicator stays hidden when no session is active # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.140031
+  ...
+# Subtest: embedded UI renders zh-CN by default and switches to en-US
+ok 10 - embedded UI renders zh-CN by default and switches to en-US # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.152597
+  ...
+# Subtest: embedded UI exposes a11y affordances: skip link, aria-current, focus trap, live region
+ok 11 - embedded UI exposes a11y affordances: skip link, aria-current, focus trap, live region # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.152983
+  ...
+# Subtest: scratchpad.context_updated updates assistant replies while context stays internal
+ok 12 - scratchpad.context_updated updates assistant replies while context stays internal # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.093952
+  ...
+# Subtest: SSE context response arriving after A-B-A preserves the latest conversation
+ok 13 - SSE context response arriving after A-B-A preserves the latest conversation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.133118
+  ...
+# Subtest: scratchpad.committed mode=supplement switches activeThoughtId and anchors a new bubble
+ok 14 - scratchpad.committed mode=supplement switches activeThoughtId and anchors a new bubble # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.124374
+  ...
+# Subtest: thought.refined updates only the matching thoughtId bubble, not the first thought
+ok 15 - thought.refined updates only the matching thoughtId bubble, not the first thought # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.080968
+  ...
+# Subtest: LLM-enriched thought fields land in the conversation without a reload
+ok 16 - LLM-enriched thought fields land in the conversation without a reload # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.126231
+  ...
+# Subtest: typed document editor separates draft, review, confirmation and pinned export
+ok 17 - typed document editor separates draft, review, confirmation and pinned export # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.120249
+  ...
+# Subtest: collection continuous reading keeps filters, deep links and mobile focus
+ok 18 - collection continuous reading keeps filters, deep links and mobile focus # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.174636
+  ...
+# Subtest: capture research replies answer both turns and survive a browser reload
+ok 19 - capture research replies answer both turns and survive a browser reload # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.087818
+  ...
+# Subtest: Markdown files import intact and open in a complete desktop and mobile reader
+ok 20 - Markdown files import intact and open in a complete desktop and mobile reader # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.137707
+  ...
+# Subtest: capture archives through chat and restores its result without context or preview panels
+ok 21 - capture archives through chat and restores its result without context or preview panels # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.073575
+  ...
+# Subtest: capture shows current context type failure without an old archive failure after reload
+ok 22 - capture shows current context type failure without an old archive failure after reload # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.056592
+  ...
+# Subtest: capture JSON capability failures require a supporting Provider after reload
+ok 23 - capture JSON capability failures require a supporting Provider after reload # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.051544
+  ...
+# Subtest: backend archive events report saved or missing information through bubbles without browser generation
+ok 24 - backend archive events report saved or missing information through bubbles without browser generation # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.050201
+  ...
+# Subtest: document set reader pins version, follows logical links and restores browser history on desktop and mobile
+ok 25 - document set reader pins version, follows logical links and restores browser history on desktop and mobile # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.079206
+  ...
+# Subtest: engineering handoff previews preserve source channels and invalidate stale confirmations
+ok 26 - engineering handoff previews preserve source channels and invalidate stale confirmations # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.060653
+  ...
+# Subtest: capture archive in conversation automatically opens an engineering set without a generation dialog
+ok 27 - capture archive in conversation automatically opens an engineering set without a generation dialog # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.048155
+  ...
+# Subtest: Capture clarification consolidates diagnostic cascades on desktop and mobile after reload
+ok 28 - Capture clarification consolidates diagnostic cascades on desktop and mobile after reload # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.054443
+  ...
+# Subtest: Capture reads archived design drafts and their Thoughts in Notes after reload on desktop and mobile
+ok 29 - Capture reads archived design drafts and their Thoughts in Notes after reload on desktop and mobile # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.045804
+  ...
+# Subtest: saved-content library groups sets, keeps final default on failed update and persists topic version policy
+ok 30 - saved-content library groups sets, keeps final default on failed update and persists topic version policy # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.047387
+  ...
+# Subtest: unified workspace routes, global search and fixed source picker survive refresh
+ok 31 - unified workspace routes, global search and fixed source picker survive refresh # SKIP test name does not match pattern
+  ---
+  duration_ms: 0.045751
+  ...
+# Subtest: overview follows the approved results-and-attention layout at desktop, wide and mobile widths
+not ok 32 - overview follows the approved results-and-attention layout at desktop, wide and mobile widths
+  ---
+  duration_ms: 20025.511356
+  location: '/home/rangh/aispace/thought-flow/web/app.browser.test.js:3376:1'
+  failureType: 'testCodeFailure'
+  error: 'timed out waiting for Chrome DevTools endpoint from /usr/bin/google-chrome: '
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    Timeout.<anonymous> (/home/rangh/aispace/thought-flow/web/app.browser.test.js:2410:12)
+    listOnTimeout (node:internal/timers:581:17)
+    process.processTimers (node:internal/timers:519:7)
+  ...

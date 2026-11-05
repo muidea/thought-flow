@@ -1,0 +1,50 @@
+CGO_LDFLAGS=" -L/usr/lib/gcc/x86_64-linux-gnu/14 -L/usr/lib/gcc/x86_64-linux-gnu/13" go test ./...
+?   	thoughtflow/assets/documentformats	[no test files]
+?   	thoughtflow/assets/prompts	[no test files]
+ok  	thoughtflow/cmd/thoughtflow	0.028s
+ok  	thoughtflow/internal/modules/application/thoughtflow	0.020s
+ok  	thoughtflow/internal/modules/application/thoughtflow/service	30.115s
+?   	thoughtflow/internal/modules/capture	[no test files]
+ok  	thoughtflow/internal/modules/capture/biz	9.872s
+?   	thoughtflow/internal/modules/compose	[no test files]
+ok  	thoughtflow/internal/modules/compose/biz	1.080s
+?   	thoughtflow/internal/modules/expander	[no test files]
+ok  	thoughtflow/internal/modules/expander/biz	0.641s
+?   	thoughtflow/internal/modules/git_sync	[no test files]
+ok  	thoughtflow/internal/modules/git_sync/biz	(cached)
+?   	thoughtflow/internal/modules/refiner	[no test files]
+ok  	thoughtflow/internal/modules/refiner/biz	3.357s
+?   	thoughtflow/internal/modules/search	[no test files]
+ok  	thoughtflow/internal/modules/search/biz	4.418s
+?   	thoughtflow/internal/modules/topic	[no test files]
+ok  	thoughtflow/internal/modules/topic/biz	1.661s
+ok  	thoughtflow/internal/pkg/ai	6.306s
+ok  	thoughtflow/internal/pkg/appconfig	(cached)
+ok  	thoughtflow/internal/pkg/composedraft	(cached)
+?   	thoughtflow/internal/pkg/contentlibrary	[no test files]
+ok  	thoughtflow/internal/pkg/contentreference	(cached)
+ok  	thoughtflow/internal/pkg/documentflow	19.439s
+ok  	thoughtflow/internal/pkg/documentprofile	(cached)
+ok  	thoughtflow/internal/pkg/documentset	0.408s
+ok  	thoughtflow/internal/pkg/documentsetflow	186.317s
+ok  	thoughtflow/internal/pkg/documentsetstore	3.886s
+ok  	thoughtflow/internal/pkg/documentstore	(cached)
+ok  	thoughtflow/internal/pkg/documentvalidation	(cached)
+ok  	thoughtflow/internal/pkg/eventstream	(cached)
+?   	thoughtflow/internal/pkg/eventutil	[no test files]
+ok  	thoughtflow/internal/pkg/jobstore	(cached)
+ok  	thoughtflow/internal/pkg/markdown	1.872s
+ok  	thoughtflow/internal/pkg/models	(cached)
+ok  	thoughtflow/internal/pkg/objectlocation	11.949s
+?   	thoughtflow/internal/pkg/observability	[no test files]
+ok  	thoughtflow/internal/pkg/scratchpad	(cached)
+ok  	thoughtflow/internal/pkg/searchdb	17.997s
+ok  	thoughtflow/internal/pkg/thoughtlock	(cached)
+ok  	thoughtflow/internal/pkg/topicstore	24.772s
+ok  	thoughtflow/internal/pkg/webfetch	(cached)
+ok  	thoughtflow/internal/pkg/workspace	(cached)
+?   	thoughtflow/internal/testutil/designfixture	[no test files]
+?   	thoughtflow/internal/testutil/llmfixture	[no test files]
+ok  	thoughtflow/scripts	(cached)
+?   	thoughtflow/scripts/designcheck	[no test files]
+?   	thoughtflow/web	[no test files]
